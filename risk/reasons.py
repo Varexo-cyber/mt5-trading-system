@@ -18,6 +18,10 @@ class Reason(StrEnum):
     """Why a trade was allowed, or the specific gate that stopped it."""
 
     OK = "OK"
+    NO_SIGNAL = "NO_SIGNAL"
+    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+    AI_VETO = "AI_VETO"
+    LIVE_NOT_ARMED = "LIVE_NOT_ARMED"
 
     # -- sizing: the account cannot express this trade --------------------
     #: Computed lot is below the broker's minimum. The system skips instead of

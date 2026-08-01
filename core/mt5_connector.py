@@ -461,7 +461,7 @@ class MT5Connector:
             raise SymbolNotAvailableError(
                 f"{symbol}: no rates for timeframe {timeframe} ({self._error_text()})"
             )
-        return rates
+        return self._normalise_rate_times(rates)
 
     def copy_rates_range(self, symbol: str, timeframe: int, start: datetime, end: datetime) -> Any:
         """Bars in [start, end]. Used by the backtester and the data warm-up."""
@@ -471,7 +471,17 @@ class MT5Connector:
             raise SymbolNotAvailableError(
                 f"{symbol}: copy_rates_range failed ({self._error_text()})"
             )
-        return rates
+        return self._normalise_rate_times(rates)
+
+    def _normalise_rate_times(self, rates: Any) -> Any:
+        """Return broker-wall-clock rate timestamps as UTC without mutating MT5 memory."""
+        seconds = int(self._server_offset.total_seconds())
+        names = getattr(getattr(rates, "dtype", None), "names", None)
+        if not seconds or not names or "time" not in names:
+            return rates
+        normalised = rates.copy()
+        normalised["time"] -= seconds
+        return normalised
 
     # -- execution ----------------------------------------------------------
 
