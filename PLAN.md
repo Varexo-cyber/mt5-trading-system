@@ -1,6 +1,6 @@
 # Plan — autonoom MT5 trading systeem
 
-Status: **Fase 1 en 2 af.** Alles hieronder is de afspraak voor de rest.
+Status: **Fase 1, 2 en 3 af.** Alles hieronder is de afspraak voor de rest.
 
 Documenten zijn in het Nederlands (die lees jij), code en docstrings in het
 Engels (dat is de taal van de libraries waar het tussen staat, en gemengde
@@ -87,7 +87,7 @@ iets weggooit waar werk in zit.
 
 ---
 
-## 1. Wat er nu staat (Fase 1 + 2)
+## 1. Wat er nu staat (Fase 1 t/m 3)
 
 ```
 mt5-trading-system/
@@ -105,6 +105,13 @@ mt5-trading-system/
 │   ├── mt5_connector.py     verbinding, reconnect, order execution, retries
 │   ├── data_manager.py      OHLCV, multi-timeframe, caching, datakwaliteit
 │   └── startup.py           startup-guard + haalbaarheidsrapport
+├── filters/
+│   ├── base.py              Filter-protocol + FilterChain (stopt bij eerste block)
+│   ├── news_filter.py       VERPLICHT, fail-closed
+│   ├── calendar/            events, providers (2 remote + file), fail-safe service
+│   ├── session_filter.py    Londen/NY/Azië, rollover, weekendranden
+│   ├── spread_filter.py     zelflerende baseline per instrument per uur
+│   └── correlation_filter.py  rollende correlatie, richtingsbewust
 ├── risk/
 │   ├── reasons.py           gesloten vocabulaire van redenen (gaat in de journal)
 │   ├── position_sizer.py    lotberekening + de undercapitalized-check
@@ -115,9 +122,10 @@ mt5-trading-system/
 ├── infra/
 │   ├── logging.py           JSON naar bestand, leesbaar naar console
 │   └── killswitch.py        het STOP-bestand
-├── tests/                   208 tests, groen, draaien zonder MT5
+├── scripts/verify_calendar.py     verifieert de kalenderbronnen live
+├── tests/                   282 tests, groen, draaien zonder MT5
 ├── scripts/phase1_acceptance.py   de demo-order test (draai dit op Windows)
-└── main.py                  --check-config / --status / --data SYMBOL / --risk
+└── main.py                  --check-config / --status / --risk / --filters / --data
 ```
 
 ### Keuzes die ik gemaakt heb, en waarom
@@ -182,6 +190,22 @@ symbool, of het risico verhogen na een verlies gooien een `ForbiddenStrategyErro
 Als een strategie dat probeert is er iets fundamenteel mis, en doorgaan zou het
 verbod adviserend maken.
 
+**Geen kalender betekent geen trade.** Het nieuwsfilter blokkeert als beide
+bronnen down zijn én de cache verlopen is. Een lege kalender en een ontbrekende
+kalender zijn van buitenaf niet te onderscheiden, en één keer verkeerd gokken
+tijdens een NFP kost meer dan alle setups die het filter ooit zal skippen.
+De cache verloopt (`max_calendar_age_minutes`, standaard 3 uur) — een kalender
+van vier uur oud weet niets van een verplaatste of toegevoegde release.
+
+**Een parser die 3 van de 40 events teruggeeft is gevaarlijker dan één die
+crasht.** De ontbrekende 37 zijn onzichtbaar en het filter meldt "veilig" voor
+een venster dat het had moeten blokkeren. Elke parser telt daarom hoeveel
+records hij niet kon lezen en laat de hele fetch falen boven 10%.
+
+**Onbekende correlatie blokkeert.** Als de correlatie tussen een kandidaat en
+een open positie niet te meten is (te weinig overlappende bars, ontbrekende
+data), is dat geen bewijs dat ze onafhankelijk zijn.
+
 ### Eén ontwerpprobleem dat ik onderweg vond
 
 `max_sl_pips` is een FX-regel. Een "pip" op goud is één point ($0,01), dus een
@@ -205,7 +229,7 @@ Op elk platform (geen MT5 nodig):
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest              # 208 tests
+.venv/bin/python -m pytest              # 282 tests
 .venv/bin/python main.py --check-config
 ```
 
@@ -234,7 +258,7 @@ echte spread, en die drie getallen bepalen of Fase 8 zinvol is.
 | Fase | Inhoud | Klaar wanneer |
 |---|---|---|
 | ~~2~~ | ~~Position sizer, risk manager, SQLite journal~~ | **Af** — 80 tests op sizing, limieten en journal |
-| **3** | Nieuwsfilter (eerst), sessie, spread, correlatie | Nieuwsfilter blokkeert aantoonbaar rond een echt NFP, en blokkeert álles als geen enkele provider antwoordt |
+| ~~3~~ | ~~Nieuwsfilter, sessie, spread, correlatie~~ | **Af** — 74 tests. Nog te doen: `verify_calendar.py` één keer draaien tegen de echte feeds |
 | **4** | Analyse: market structure → levels → SMC → indicatoren. Eén module per keer, elk met een plot | Jij bevestigt op een chart dat de module ziet wat jij ziet |
 | **5** | Confluence engine + backtester (pessimistisch: echte spreads, slippage, commissie, SL-eerst bij intrabar-ambiguïteit) | Walk-forward draait; look-ahead-test slaagt |
 | **6** | Trade management + live loop op demo | Loop draait een week zonder handmatige interventie; reconciliatie clean |
@@ -242,8 +266,7 @@ echte spread, en die drie getallen bepalen of Fase 8 zinvol is.
 | **8** | Micro-live shakeout | Nul onverklaarde discrepanties |
 | **9** | Evaluatie & opschalen | `sample_size_check` zegt dat er genoeg trades zijn |
 
-Fase 3 is klein genoeg voor één sessie. Fase 4 is het grootste blok en wordt
-per module opgeleverd.
+Fase 4 is het grootste blok en wordt per module opgeleverd.
 
 ---
 
@@ -262,9 +285,16 @@ hoe Fase 3 en 8 eruitzien, dus hoe eerder hoe beter.
    of wordt de rekening voor Fase 8 opgehoogd? Dit is de belangrijkste vraag in
    dit document.
 
-3. **Welke kalenderbron voor het nieuwsfilter?** Ik heb er twee nodig die
-   onafhankelijk van elkaar down kunnen gaan. Voorkeur? Zo niet, dan kies ik en
-   documenteer ik de keuze in Fase 3.
+3. ~~**Welke kalenderbron?**~~ Gekozen: ForexFactory via FairEconomy (primair)
+   en TradingView's publieke endpoint (fallback), plus een lokale
+   file-provider voor de backtest en als handmatige noodklep. **Maar:** deze
+   omgeving blokkeert uitgaand HTTPS naar externe hosts, dus ik heb de parsers
+   niet tegen echte responses kunnen draaien. Draai
+   `python scripts/verify_calendar.py --raw` één keer op jouw machine en stuur
+   me de output — dan corrigeer ik de parsers met echte data. **Doe dit vóór
+   fase 8.** Waar je op let staat in de docstring van dat script; de
+   belangrijkste: nul high-impact events in een normale week is de signatuur
+   van een parser die het impact-veld kwijt is.
 
 4. **Draait de PC 24/5 of wordt het een VPS?** Bij een PC die 's nachts uitgaat
    moet het systeem weten dat het posities kan aantreffen die het niet zelf

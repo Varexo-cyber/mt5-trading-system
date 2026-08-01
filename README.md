@@ -29,7 +29,14 @@ questions. Read `CLAUDE.md` for the conventions this codebase is held to.
 - A SQLite journal that records **every** analysis cycle — including the
   overwhelming majority that produce no trade — plus per-module scores, full
   execution telemetry, MAE/MFE in R, and shadow trades for blocked setups.
-- Structured JSON logging, a filesystem kill switch, and 208 tests that run
+- A mandatory news filter that **fails closed**: two independent calendar
+  providers, an expiring disk cache, and a hard block when none of them can
+  answer. No calendar means no trade.
+- Session, spread and correlation filters. The spread filter learns its own
+  per-instrument, per-hour baseline from observation; the correlation filter is
+  direction-aware, so long EURUSD against short GBPUSD passes while long
+  against long does not.
+- Structured JSON logging, a filesystem kill switch, and 282 tests that run
   without a terminal on any platform.
 
 ## Setup
@@ -48,6 +55,7 @@ cp config/.env.example config/.env       # then fill it in
 python main.py --check-config     # validate configuration offline
 python main.py --status           # connect, run the startup guard, print the report
 python main.py --risk             # risk state: every limit and how close we are
+python main.py --filters EURUSD   # each filter's verdict for one symbol
 python main.py --data EURUSD      # multi-timeframe summary with ATR
 python -m pytest                  # the test suite
 ```
@@ -60,6 +68,21 @@ python scripts/phase1_acceptance.py --symbol EURUSD
 ```
 
 It refuses to run against a live account.
+
+## Before going live: verify the calendar
+
+The remote calendar parsers were written against each feed's documented shape
+but could not be exercised against live responses in the environment they were
+written in, which blocks outbound HTTPS to third-party hosts. Run this once on
+a machine with open internet:
+
+```bash
+python scripts/verify_calendar.py --raw
+```
+
+Zero high-impact events in a normal week is the signature of a parser that lost
+the impact field. Treat the remote providers as unverified until this has
+passed.
 
 ## Kill switch
 

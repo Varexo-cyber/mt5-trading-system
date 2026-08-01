@@ -286,7 +286,11 @@ class NewsFilterConfig(Base):
     #: How long a cached calendar stays usable if every provider is down.
     max_calendar_age_minutes: int = Field(default=180, ge=15, le=1440)
     refresh_interval_minutes: int = Field(default=30, ge=5, le=720)
-    providers: tuple[str, ...] = ("jblanked", "nfs_cached")
+    #: Tried in order; the first success wins. Names resolve in
+    #: filters/calendar/providers.py::build_providers.
+    providers: tuple[str, ...] = ("faireconomy", "tradingview")
+    #: Where the last good fetch is cached, relative to the project root.
+    cache_path: str = "data/calendar/cache.json"
 
     @model_validator(mode="after")
     def _windows_meet_minimums(self) -> NewsFilterConfig:
@@ -328,6 +332,8 @@ class SpreadFilterConfig(Base):
     absolute_max_pips: dict[str, float] = Field(default_factory=dict)
     #: Observations needed before the learned baseline replaces the fallback.
     min_observations: int = Field(default=200, ge=20)
+    #: How long spread observations are kept before pruning.
+    retention_days: int = Field(default=60, ge=7, le=730)
 
 
 class CorrelationFilterConfig(Base):

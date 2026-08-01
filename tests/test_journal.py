@@ -13,7 +13,7 @@ from config.schema import Settings
 from core.clock import SimulatedClock
 from core.instrument import InstrumentSpec
 from core.types import Direction, OrderResult, Signal
-from journal.database import Journal, iso, parse_iso
+from journal.database import SCHEMA_VERSION, Journal, iso, parse_iso
 from journal.recorder import CycleContext, Recorder
 from risk.position_sizer import PositionSizer, SizingResult
 from risk.reasons import Reason
@@ -81,10 +81,11 @@ class TestSchema:
 
     def test_migration_is_idempotent(self, tmp_path: Path, clock: SimulatedClock) -> None:
         path = tmp_path / "j.db"
-        with Journal(path, clock):
-            pass
+        with Journal(path, clock) as first:
+            applied = first.scalar("SELECT COUNT(*) FROM schema_version")
         with Journal(path, clock) as second:
-            assert second.scalar("SELECT COUNT(*) FROM schema_version") == 1
+            assert second.scalar("SELECT COUNT(*) FROM schema_version") == applied
+            assert second.scalar("SELECT MAX(version) FROM schema_version") == SCHEMA_VERSION
 
     def test_future_schema_is_refused(self, tmp_path: Path, clock: SimulatedClock) -> None:
         """Never write into a journal a newer version wrote."""

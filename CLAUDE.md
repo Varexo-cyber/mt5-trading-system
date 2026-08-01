@@ -2,7 +2,7 @@
 
 Read this before touching anything in this repository.
 
-Current state: **Phases 1-2 complete.** `PLAN.md` has the roadmap, the open
+Current state: **Phases 1-3 complete.** `PLAN.md` has the roadmap, the open
 questions, and the reasoning behind the design choices below.
 
 ---
@@ -33,6 +33,10 @@ implementing it.
    streak-based sizing permitted.
 8. **Loss limits are measured on equity, not realised P/L,** and their anchors
    live in the journal so a restart cannot hand back a fresh daily budget.
+9. **A partial answer is worse than no answer.** A calendar parser that loses
+   most records, a correlation that cannot be measured, a spread with no
+   baseline and no fallback — all of these block rather than pass. "Unknown"
+   is never treated as "fine".
 
 ## Design conventions
 
@@ -78,6 +82,7 @@ matter, and they are the ones you cannot trigger on demand against a broker.
 ```
 config/    typed configuration; schema.py is where hard rules live
 core/      types, errors, clock, instrument maths, connector, data, startup guard
+filters/   news (mandatory, fail-closed), session, spread, correlation + the chain
 risk/      reasons (journal vocabulary), position sizer, risk manager
 journal/   SQLite schema + writer; every cycle, trade and execution detail
 infra/     logging (JSON), kill switch
@@ -86,7 +91,7 @@ scripts/   operator tools (phase1_acceptance.py)
 docs/      modules/<name>.md per analysis module, hypotheses/ pre-registrations
 ```
 
-Planned, not yet built: `filters/`, `analysis/`, `strategy/`, `backtest/`,
+Planned, not yet built: `analysis/`, `strategy/`, `backtest/`,
 `learning/`, `monitoring/`, and `risk/trade_manager.py`. See `PLAN.md`.
 
 ## Style
@@ -124,4 +129,6 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 python main.py --check-config          # offline validation
 python main.py --status                # needs a terminal
 python main.py --risk                  # risk state and every limit
+python main.py --filters EURUSD        # every filter's verdict, no short-circuit
+python scripts/verify_calendar.py --raw  # verify the calendar feeds (do this once)
 ```

@@ -36,7 +36,7 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
@@ -207,6 +207,23 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         )
         """,
         "CREATE INDEX idx_config_hash ON config_snapshots(config_hash)",
+    ),
+    2: (
+        # Observed spreads, bucketed by hour of day. The spread filter learns
+        # its own baseline from these rather than trusting a static threshold:
+        # EURUSD at 09:00 and EURUSD at 22:00 are different instruments as far
+        # as cost of entry is concerned.
+        """
+        CREATE TABLE spread_observations (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol      TEXT    NOT NULL,
+            hour_utc    INTEGER NOT NULL,
+            spread_pips REAL    NOT NULL,
+            ts          TEXT    NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_spread_symbol_hour ON spread_observations(symbol, hour_utc)",
+        "CREATE INDEX idx_spread_ts ON spread_observations(ts)",
     ),
 }
 
@@ -433,6 +450,36 @@ class Journal:
             "SELECT 1 FROM trades WHERE symbol = ? AND closed_at IS NULL LIMIT 1", (symbol,)
         ).fetchone()
         return row is not None
+
+    # -- spread baseline ---------------------------------------------------
+
+    def record_spread(self, symbol: str, spread_pips: float, moment: datetime) -> None:
+        """Store one spread observation for the hour it fell in."""
+        self.conn.execute(
+            "INSERT INTO spread_observations (symbol, hour_utc, spread_pips, ts) "
+            "VALUES (?,?,?,?)",
+            (symbol, moment.astimezone(UTC).hour, spread_pips, iso(moment)),
+        )
+
+    def spread_samples(self, symbol: str, hour_utc: int, limit: int = 2000) -> list[float]:
+        """Most recent observations for a symbol in a given hour, newest first."""
+        rows = self.conn.execute(
+            "SELECT spread_pips FROM spread_observations WHERE symbol = ? AND hour_utc = ? "
+            "ORDER BY ts DESC LIMIT ?",
+            (symbol, hour_utc, limit),
+        ).fetchall()
+        return [float(row[0]) for row in rows]
+
+    def last_spread_observation(self, symbol: str) -> datetime | None:
+        row = self.conn.execute(
+            "SELECT MAX(ts) AS ts FROM spread_observations WHERE symbol = ?", (symbol,)
+        ).fetchone()
+        return None if row is None or row["ts"] is None else parse_iso(row["ts"])
+
+    def prune_spread_observations(self, before: datetime) -> int:
+        """Drop observations older than `before`. Returns the number removed."""
+        cursor = self.conn.execute("DELETE FROM spread_observations WHERE ts < ?", (iso(before),))
+        return cursor.rowcount or 0
 
     # -- generic helpers ---------------------------------------------------
 
