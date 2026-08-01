@@ -1,12 +1,12 @@
 # MT5 trading system
 
 A research-driven autonomous trading system for MetaTrader 5, built in phases.
-**Phase 1 (foundation) is complete**; there is no strategy and no order loop yet.
+**Phases 1-2 are complete** (foundation, risk layer, journal); there is no strategy and no order loop yet.
 
 Read `PLAN.md` for the roadmap, the honest account-size arithmetic, and the open
 questions. Read `CLAUDE.md` for the conventions this codebase is held to.
 
-## What Phase 1 gives you
+## What is built
 
 - Typed, validated configuration where the hard risk rules are **validators**,
   not comments — you cannot enable martingale or a fail-open news filter by
@@ -20,7 +20,16 @@ questions. Read `CLAUDE.md` for the conventions this codebase is held to.
 - A startup guard that computes, per symbol, the widest stop your account can
   actually afford at your configured risk — and says so out loud when the
   answer is "none".
-- Structured JSON logging, a filesystem kill switch, and 128 tests that run
+- A position sizer that **skips** trades it cannot size rather than rounding up
+  to the broker's minimum lot, and says in plain numbers how far off it was.
+- A risk manager with daily/weekly loss limits measured on equity, a drawdown
+  circuit breaker that trips the kill switch, anti-martingale risk reduction
+  after a losing streak, and assertions that crash on averaging down, hedging,
+  or any post-loss risk increase.
+- A SQLite journal that records **every** analysis cycle — including the
+  overwhelming majority that produce no trade — plus per-module scores, full
+  execution telemetry, MAE/MFE in R, and shadow trades for blocked setups.
+- Structured JSON logging, a filesystem kill switch, and 208 tests that run
   without a terminal on any platform.
 
 ## Setup
@@ -38,6 +47,7 @@ cp config/.env.example config/.env       # then fill it in
 ```bash
 python main.py --check-config     # validate configuration offline
 python main.py --status           # connect, run the startup guard, print the report
+python main.py --risk             # risk state: every limit and how close we are
 python main.py --data EURUSD      # multi-timeframe summary with ATR
 python -m pytest                  # the test suite
 ```

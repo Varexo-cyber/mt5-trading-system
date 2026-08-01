@@ -96,6 +96,10 @@ risk:
 
   kelly_fraction: 0.25
 
+  # FX rollover, not midnight — otherwise the daily stop resets mid-session.
+  day_boundary_utc: "21:00"
+  margin_safety_factor: 2.0
+
   # Validated as permanently false. Editing these fails the config load.
   forbidden:
     martingale: false

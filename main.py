@@ -8,6 +8,7 @@ can place orders before the net exists is a system that will place a bad one.
     python main.py --check-config      # offline: validate config only
     python main.py --status            # connect, run the startup guard, report
     python main.py --data EURUSD       # fetch and summarise the MTF view
+    python main.py --risk              # current risk state and every limit
 """
 
 from __future__ import annotations
@@ -25,9 +26,12 @@ from core.data_manager import DataManager, atr
 from core.errors import KillSwitchEngaged, TradingSystemError
 from core.mt5_connector import MT5Connector
 from core.startup import enforce, run_startup_guard
-from core.types import Timeframe
+from core.types import AccountSnapshot, Timeframe
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger, setup_logging
+from journal.database import Journal
+from journal.recorder import Recorder
+from risk.risk_manager import RiskManager
 
 log = get_logger("main")
 
@@ -42,6 +46,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--status", action="store_true", help="connect and run the startup guard")
     parser.add_argument(
         "--data", metavar="SYMBOL", help="fetch and summarise the multi-timeframe view"
+    )
+    parser.add_argument(
+        "--risk", action="store_true", help="show the current risk state and all limits"
     )
     parser.add_argument(
         "--no-confirm",
@@ -139,10 +146,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.data:
             show_data(connector, settings, args.data)
-        elif not args.status:
+        if args.risk:
+            show_risk(connector, settings, account, kill_switch)
+        if not (args.data or args.risk or args.status):
             print(
-                "\nPhase 1 only: no trading loop yet. "
-                "Use --status or --data SYMBOL. See PLAN.md for the roadmap."
+                "\nPhases 1-2 only: no trading loop yet. Use --status, --risk, "
+                "or --data SYMBOL. See PLAN.md for the roadmap."
             )
         return 0
     except TradingSystemError as exc:
@@ -179,3 +188,69 @@ def show_data(connector: MT5Connector, settings: Settings, symbol: str) -> None:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def show_risk(
+    connector: MT5Connector,
+    settings: Settings,
+    account: AccountSnapshot,
+    kill_switch: KillSwitch,
+) -> None:
+    """Print the live risk picture: every limit, and how close we are to it.
+
+    Reads the journal, so the numbers shown are the same ones the gates use —
+    not a separate calculation that could drift from the real thing.
+    """
+    clock = LiveClock(connector.server_offset)
+    journal = Journal(
+        PACKAGE_ROOT / settings.journal.database_path,
+        clock,
+        day_boundary_utc=settings.risk.day_boundary_utc,
+    ).open()
+    try:
+        Recorder(journal, clock, settings).record_config_snapshot()
+        manager = RiskManager(
+            settings=settings,
+            journal=journal,
+            clock=clock,
+            kill_switch=kill_switch,
+            margin_safety_factor=settings.risk.margin_safety_factor,
+        )
+        positions = connector.positions(magic=settings.system.magic_number)
+        state = manager.build_state(account, positions)
+        decision = manager.check_can_trade(state)
+
+        ccy = state.currency
+        print(f"\n  RISK STATE — {settings.mode.value}")
+        print(f"    equity        {state.equity:.2f} {ccy}   (peak {state.equity_peak:.2f})")
+        print(
+            f"    day           {state.day_pnl_pct:+.2f}%  "
+            f"limit -{settings.effective_daily_loss_limit_pct():.1f}%   "
+            f"since {state.day_start:%Y-%m-%d %H:%M} UTC"
+        )
+        print(
+            f"    week          {state.week_pnl_pct:+.2f}%  "
+            f"limit -{settings.risk.weekly_loss_limit_pct:.1f}%   "
+            f"since {state.week_start:%Y-%m-%d %H:%M} UTC"
+        )
+        print(
+            f"    drawdown      {state.drawdown_pct:.2f}%  "
+            f"breaker {settings.risk.max_drawdown_circuit_breaker_pct:.1f}%"
+        )
+        print(
+            f"    trades        {state.trades_today}/"
+            f"{settings.effective_max_trades_per_day()} today, "
+            f"{state.trades_this_week}/{settings.risk.max_trades_per_week} this week"
+        )
+        print(
+            f"    positions     {len(state.open_positions)}/"
+            f"{settings.effective_max_positions()} open"
+        )
+        print(
+            f"    streak        {state.consecutive_losses} consecutive losses  "
+            f"-> risk x{manager.risk_multiplier(state):.2f}"
+        )
+        verdict = "CLEAR" if decision.approved else str(decision.reason)
+        print(f"\n    verdict       {verdict}\n                  {decision.detail}")
+    finally:
+        journal.close()

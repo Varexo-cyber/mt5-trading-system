@@ -1,6 +1,6 @@
 # Plan — autonoom MT5 trading systeem
 
-Status: **Fase 1 af.** Alles hieronder is de afspraak voor de rest.
+Status: **Fase 1 en 2 af.** Alles hieronder is de afspraak voor de rest.
 
 Documenten zijn in het Nederlands (die lees jij), code en docstrings in het
 Engels (dat is de taal van de libraries waar het tussen staat, en gemengde
@@ -87,7 +87,7 @@ iets weggooit waar werk in zit.
 
 ---
 
-## 1. Wat er nu staat (Fase 1)
+## 1. Wat er nu staat (Fase 1 + 2)
 
 ```
 mt5-trading-system/
@@ -105,12 +105,19 @@ mt5-trading-system/
 │   ├── mt5_connector.py     verbinding, reconnect, order execution, retries
 │   ├── data_manager.py      OHLCV, multi-timeframe, caching, datakwaliteit
 │   └── startup.py           startup-guard + haalbaarheidsrapport
+├── risk/
+│   ├── reasons.py           gesloten vocabulaire van redenen (gaat in de journal)
+│   ├── position_sizer.py    lotberekening + de undercapitalized-check
+│   └── risk_manager.py      alle limieten, circuit breaker, verboden praktijken
+├── journal/
+│   ├── database.py          SQLite-schema, migraties, risk-queries
+│   └── recorder.py          schrijft cycli, trades, executies, shadow trades
 ├── infra/
 │   ├── logging.py           JSON naar bestand, leesbaar naar console
 │   └── killswitch.py        het STOP-bestand
-├── tests/                   128 tests, groen, draaien zonder MT5
+├── tests/                   208 tests, groen, draaien zonder MT5
 ├── scripts/phase1_acceptance.py   de demo-order test (draai dit op Windows)
-└── main.py                  --check-config / --status / --data SYMBOL
+└── main.py                  --check-config / --status / --data SYMBOL / --risk
 ```
 
 ### Keuzes die ik gemaakt heb, en waarom
@@ -136,6 +143,18 @@ via exact hetzelfde codepad te replayen.
 Naar boven afronden verhoogt het risico boven wat de sizer berekende, en maakt
 je risicopercentage een leugen.
 
+**Verliezen worden op equity gemeten, niet op gerealiseerde P&L.** Een open
+verliezer telt dus meteen mee voor de daglimiet. Anders kan de rekening 8%
+onder water staan met een "0% dagverlies" en vrolijk nieuwe posities openen.
+
+**De dag rolt om 21:00 UTC, niet om middernacht.** Dat is de FX-rollover.
+Bij middernacht UTC zou de daglimiet midden in de New York-sessie resetten.
+De week begint op de zondag-grens, want de FX-week opent zondagavond.
+
+**De equity-ankers staan in de journal, niet in het geheugen.** Een herstart om
+14:00 na 2% verlies mag geen vers dagbudget teruggeven. `INSERT OR IGNORE` op
+de dag/week-grens is precies wat dat voorkomt.
+
 **Slippage heeft een richtingsbewust teken.** Positief = slechter dan gevraagd,
 of je nu long of short zat. Ruwe prijsverschillen middelen over longs en shorts
 heft echte slippage bijna precies op tot nul, en dan denk je dat je executie
@@ -157,11 +176,26 @@ startfout in plaats van analyse op de verkeerde timeframe.
 USD-paren handelt het probleem van de broker en niet van ons — een eigen
 conversietabel is een extra plek waar iets stil fout kan gaan.
 
-### Wat Fase 1 nog niet kan
+**Verboden praktijken crashen, ze worden niet geweigerd.** Een gate die "nee"
+zegt is normaal en wordt gelogd. Maar averaging down, hedgen van hetzelfde
+symbool, of het risico verhogen na een verlies gooien een `ForbiddenStrategyError`.
+Als een strategie dat probeert is er iets fundamenteel mis, en doorgaan zou het
+verbod adviserend maken.
 
-Er is geen strategie, geen risk manager en geen orderloop. Dat is de bedoelde
-volgorde: het vangnet (Fase 2) en het nieuwsfilter (Fase 3) komen vóór iets dat
-zelfstandig orders kan versturen.
+### Eén ontwerpprobleem dat ik onderweg vond
+
+`max_sl_pips` is een FX-regel. Een "pip" op goud is één point ($0,01), dus een
+plafond van 30 pips zou daar een stoploss van 30 cent betekenen. Ik pas het
+plafond daarom alleen op FX toe; voor de rest is de geldgebaseerde
+undercapitalized-check de bindende grens, en die is exact in plaats van een
+benadering. Als goud in fase 5 echt verhandelbaar wordt, wil je dit waarschijnlijk
+in ATR-veelvouden uitdrukken in plaats van in pips. Genoteerd voor dan.
+
+### Wat er nog niet is
+
+Geen strategie, geen filters, geen orderloop. Dat is de bedoelde volgorde: het
+vangnet (Fase 2) en het nieuwsfilter (Fase 3) komen vóór iets dat zelfstandig
+orders kan versturen.
 
 ---
 
@@ -171,7 +205,7 @@ Op elk platform (geen MT5 nodig):
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest              # 128 tests
+.venv/bin/python -m pytest              # 208 tests
 .venv/bin/python main.py --check-config
 ```
 
@@ -199,7 +233,7 @@ echte spread, en die drie getallen bepalen of Fase 8 zinvol is.
 
 | Fase | Inhoud | Klaar wanneer |
 |---|---|---|
-| **2** | Position sizer (incl. undercapitalized-check), risk manager met alle limieten, SQLite journal | Unit tests op sizing en limieten groen; journal schrijft ook non-trades |
+| ~~2~~ | ~~Position sizer, risk manager, SQLite journal~~ | **Af** — 80 tests op sizing, limieten en journal |
 | **3** | Nieuwsfilter (eerst), sessie, spread, correlatie | Nieuwsfilter blokkeert aantoonbaar rond een echt NFP, en blokkeert álles als geen enkele provider antwoordt |
 | **4** | Analyse: market structure → levels → SMC → indicatoren. Eén module per keer, elk met een plot | Jij bevestigt op een chart dat de module ziet wat jij ziet |
 | **5** | Confluence engine + backtester (pessimistisch: echte spreads, slippage, commissie, SL-eerst bij intrabar-ambiguïteit) | Walk-forward draait; look-ahead-test slaagt |
@@ -208,8 +242,8 @@ echte spread, en die drie getallen bepalen of Fase 8 zinvol is.
 | **8** | Micro-live shakeout | Nul onverklaarde discrepanties |
 | **9** | Evaluatie & opschalen | `sample_size_check` zegt dat er genoeg trades zijn |
 
-Fase 2 en 3 zijn beide klein genoeg om in één sessie te doen. Fase 4 is het
-grootste blok en wordt per module opgeleverd.
+Fase 3 is klein genoeg voor één sessie. Fase 4 is het grootste blok en wordt
+per module opgeleverd.
 
 ---
 
