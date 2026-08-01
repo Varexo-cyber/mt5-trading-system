@@ -185,6 +185,20 @@ class TestModeResolution:
         assert "EURUSD.pro" in settings.active_whitelist
         assert settings.symbol_allowed_at_equity("EURUSD.pro", 100.0)[0]
 
+    def test_symbol_override_bypasses_global_suffix(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        data = copy.deepcopy(raw)
+        data["system"]["mode"] = "backtest"
+        data["instruments"]["symbol_suffix"] = ".i"
+        data["instruments"]["symbol_overrides"] = {"XAUUSD": "XAUUSD"}
+        settings = load_settings(write(tmp_path, data), env_overrides=False)
+
+        assert "EURUSD.i" in settings.active_whitelist
+        assert "XAUUSD" in settings.active_whitelist
+        assert "XAUUSD.i" not in settings.active_whitelist
+        assert settings.symbol_allowed_at_equity("XAUUSD", 1000.0) == (True, "OK")
+
     def test_equity_gate_blocks_gold_on_a_small_account(
         self, raw: dict[str, Any], tmp_path: Path
     ) -> None:

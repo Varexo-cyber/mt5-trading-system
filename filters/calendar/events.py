@@ -87,9 +87,7 @@ class EconomicEvent:
         return self.currency.upper() in currencies
 
     def describe(self) -> str:
-        return (
-            f"{self.when:%Y-%m-%d %H:%M} UTC {self.currency} " f"{self.impact.name} — {self.title}"
-        )
+        return f"{self.when:%Y-%m-%d %H:%M} UTC {self.currency} {self.impact.name} — {self.title}"
 
 
 def symbol_currencies(currency_base: str, currency_profit: str) -> frozenset[str]:

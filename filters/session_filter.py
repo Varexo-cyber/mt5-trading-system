@@ -67,6 +67,11 @@ class SessionFilter(Filter):
         self.rollover = Window(
             "rollover", _parse(config.rollover_block[0]), _parse(config.rollover_block[1])
         )
+        self.continuous_maintenance = Window(
+            "continuous-maintenance",
+            _parse(config.continuous_maintenance_block[0]),
+            _parse(config.continuous_maintenance_block[1]),
+        )
         self.friday_cutoff = (
             _parse(config.block_friday_after) if config.block_friday_after else None
         )
@@ -105,9 +110,34 @@ class SessionFilter(Filter):
     def check(self, ctx: FilterContext) -> FilterVerdict:
         now = ctx.now
         label = self.session_label(now)
+        asset_class = ctx.spec.asset_class.value
 
         if not self.config.enabled:
-            return FilterVerdict.allow(self.name, "session filter disabled", session=label)
+            return FilterVerdict.allow(
+                self.name,
+                "session filter disabled",
+                session=label,
+                asset_class=asset_class,
+            )
+
+        if asset_class in self.config.continuous_asset_classes:
+            if self.continuous_maintenance.contains(now):
+                return FilterVerdict.block(
+                    self.name,
+                    Reason.ROLLOVER_WINDOW,
+                    f"{asset_class} maintenance buffer "
+                    f"({self.continuous_maintenance.describe()} UTC)",
+                    session="continuous-maintenance",
+                    asset_class=asset_class,
+                )
+            return FilterVerdict.allow(
+                self.name,
+                f"{asset_class} uses its continuous-market profile; quote freshness and "
+                "spread are checked separately",
+                session="continuous",
+                session_overlap=False,
+                asset_class=asset_class,
+            )
 
         weekday = now.weekday()
         clock_time = now.timetz().replace(tzinfo=None)
@@ -119,6 +149,7 @@ class SessionFilter(Filter):
                 Reason.MARKET_CLOSED,
                 f"FX market is closed ({now:%A %H:%M} UTC)",
                 session=label,
+                asset_class=asset_class,
             )
 
         # Rollover: the widest spreads of the day, on the thinnest book.
@@ -129,6 +160,7 @@ class SessionFilter(Filter):
                 f"inside the daily rollover window ({self.rollover.describe()} UTC), "
                 f"where spreads widen and liquidity disappears",
                 session=label,
+                asset_class=asset_class,
             )
 
         # Weekend edges: gap risk on Friday, thin reopen on Sunday.
@@ -139,6 +171,7 @@ class SessionFilter(Filter):
                 f"Friday after {self.friday_cutoff:%H:%M} UTC; a position held over the "
                 f"weekend carries gap risk a stop cannot bound",
                 session=label,
+                asset_class=asset_class,
             )
         if self.sunday_open is not None and weekday == 6 and clock_time < self.sunday_open:
             return FilterVerdict.block(
@@ -146,6 +179,7 @@ class SessionFilter(Filter):
                 Reason.WEEKEND_EDGE,
                 f"Sunday before {self.sunday_open:%H:%M} UTC; the reopen book is too thin",
                 session=label,
+                asset_class=asset_class,
             )
 
         active = self.active_sessions(now)
@@ -157,6 +191,7 @@ class SessionFilter(Filter):
                 f"{now:%H:%M} UTC is in {label or 'no session'}; this mode trades "
                 f"{', '.join(self.config.tradable_sessions)}",
                 session=label,
+                asset_class=asset_class,
             )
 
         overlap = len(tradable) > 1
@@ -165,6 +200,7 @@ class SessionFilter(Filter):
             f"{label}{' (overlap)' if overlap else ''}",
             session=label,
             session_overlap=overlap,
+            asset_class=asset_class,
         )
 
 

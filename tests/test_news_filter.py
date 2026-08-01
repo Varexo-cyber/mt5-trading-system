@@ -20,9 +20,12 @@ from core.types import Direction, Position
 from filters.base import FilterContext
 from filters.calendar.events import EconomicEvent, Impact, deduplicate, symbol_currencies
 from filters.calendar.providers import (
+    TRADINGVIEW_HEADERS,
     CalendarProvider,
     CalendarUnavailableError,
+    FairEconomyProvider,
     FileCalendarProvider,
+    TradingViewProvider,
 )
 from filters.calendar.service import CalendarService
 from filters.news_filter import NewsFilter
@@ -375,3 +378,43 @@ class TestFileProvider:
         )
         with pytest.raises(CalendarUnavailableError, match="could not parse"):
             FileCalendarProvider(path).fetch(NOW - timedelta(days=1), NOW + timedelta(days=1))
+
+
+class TestRemoteProviders:
+    def test_faireconomy_refuses_a_missing_next_week(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = FairEconomyProvider()
+        current = [
+            {
+                "date": NOW.isoformat(),
+                "country": "USD",
+                "title": "CPI",
+                "impact": "High",
+            }
+        ]
+
+        def fake_get(url: str, timeout: float, headers=None):  # type: ignore[no-untyped-def]
+            del timeout, headers
+            if url == provider.THIS_WEEK:
+                return current
+            raise CalendarUnavailableError("next week is unavailable")
+
+        monkeypatch.setattr(provider, "_get_json", fake_get)
+
+        with pytest.raises(CalendarUnavailableError, match="refusing partial data"):
+            provider.fetch(NOW - timedelta(days=1), NOW + timedelta(days=7))
+
+    def test_tradingview_sends_required_browser_headers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = TradingViewProvider()
+        captured: dict[str, str] = {}
+
+        def fake_get(url: str, timeout: float, headers: dict[str, str] | None = None):
+            del url, timeout
+            captured.update(headers or {})
+            return {"status": "ok", "result": []}
+
+        monkeypatch.setattr(provider, "_get_json", fake_get)
+
+        assert provider.fetch(NOW, NOW + timedelta(days=7)) == []
+        assert captured == TRADINGVIEW_HEADERS

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 from core.mt5_codes import (
@@ -44,6 +45,18 @@ _NON_FX_BASE_CODES = frozenset({"XAU", "XAG", "XPT", "XPD", "BTC", "ETH", "LTC",
 #: FX contracts are 100 000 units (1 000 on cent accounts). Gold is 100 ounces,
 #: indices are 1 or 10 per point. The size is the cleanest structural signal.
 _MIN_FX_CONTRACT_SIZE = 1_000.0
+
+
+class AssetClass(StrEnum):
+    """Broker-neutral market families with materially different microstructure."""
+
+    FOREX = "forex"
+    CRYPTO = "crypto"
+    STOCK = "stock"
+    INDEX = "index"
+    METAL = "metal"
+    COMMODITY = "commodity"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +89,11 @@ class InstrumentSpec:
     trade_mode: int
     #: Whether the symbol is FX-like (pip = 10 points) or point-quoted.
     is_forex: bool
+    #: Broker catalogue metadata. `path` is especially useful because MT5
+    #: symbols such as BTCUSD do not reliably expose a crypto base currency.
+    path: str
+    description: str
+    asset_class: AssetClass
 
     # -- construction -----------------------------------------------------
 
@@ -120,6 +138,9 @@ class InstrumentSpec:
             and digits in (*_FX_PIP_DIGITS, *_FX_WHOLE_PIP_DIGITS)
             and float(info.trade_contract_size) >= _MIN_FX_CONTRACT_SIZE
         )
+        path = str(getattr(info, "path", ""))
+        description = str(getattr(info, "description", ""))
+        asset_class = _classify_asset(path, currency_base, is_forex)
 
         return cls(
             symbol=str(info.name),
@@ -139,6 +160,9 @@ class InstrumentSpec:
             filling_mode_mask=int(getattr(info, "filling_mode", 0)),
             trade_mode=int(getattr(info, "trade_mode", SYMBOL_TRADE_MODE_FULL)),
             is_forex=is_forex,
+            path=path,
+            description=description,
+            asset_class=asset_class,
         )
 
     # -- pip maths --------------------------------------------------------
@@ -293,8 +317,29 @@ class InstrumentSpec:
     def describe(self) -> str:
         """One-line summary for startup logs and the execution report."""
         return (
-            f"{self.symbol}: digits={self.digits} pip={self.pip_size:g} "
+            f"{self.symbol}: class={self.asset_class.value} digits={self.digits} "
+            f"pip={self.pip_size:g} "
             f"pip_value/lot={self.pip_value_per_lot():.4f} (account ccy) "
             f"lots[{self.volume_min:g}..{self.volume_max:g} step {self.volume_step:g}] "
             f"stops_level={self.stops_level}pt filling={self.preferred_filling().name}"
         )
+
+
+def _classify_asset(path: str, currency_base: str, is_forex: bool) -> AssetClass:
+    """Classify from MT5's catalogue path, with conservative fallbacks."""
+    if is_forex:
+        return AssetClass.FOREX
+    root = path.split("\\", 1)[0].strip().lower()
+    if root in {"crypto", "cryptos"}:
+        return AssetClass.CRYPTO
+    if root in {"stock", "stocks", "shares"}:
+        return AssetClass.STOCK
+    if root in {"index", "indices"}:
+        return AssetClass.INDEX
+    if root in {"commodity", "commodities"}:
+        return AssetClass.METAL if "metal" in path.lower() else AssetClass.COMMODITY
+    if currency_base.upper() in {"XAU", "XAG", "XPT", "XPD"}:
+        return AssetClass.METAL
+    if currency_base.upper() in {"BTC", "ETH", "LTC", "XRP"}:
+        return AssetClass.CRYPTO
+    return AssetClass.UNKNOWN

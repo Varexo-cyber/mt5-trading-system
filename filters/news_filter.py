@@ -114,7 +114,7 @@ class NewsFilter(Filter):
         return FilterVerdict.allow(
             self.name,
             (
-                f"clear; next blackout in {minutes_to_news:.0f} min " f"({upcoming.event.title})"
+                f"clear; next blackout in {minutes_to_news:.0f} min ({upcoming.event.title})"
                 if upcoming is not None
                 else "clear; no high-impact events in the visible window"
             ),

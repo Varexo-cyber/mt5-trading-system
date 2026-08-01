@@ -15,12 +15,18 @@ dependencies = [
 
 [project.optional-dependencies]
 live = ["MetaTrader5>=5.0.45"]
+dashboard = [
+    "streamlit>=1.40",
+    "plotly>=5.24",
+    "matplotlib>=3.9",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "black>=24.0",
     "ruff>=0.5",
     "mypy>=1.10",
+    "matplotlib>=3.9",
 ]
 
 [build-system]
@@ -28,7 +34,18 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["core", "config", "infra"]
+packages = [
+    "analysis",
+    "config",
+    "core",
+    "dashboard",
+    "filters",
+    "filters.calendar",
+    "infra",
+    "journal",
+    "reporting",
+    "risk",
+]
 
 [tool.black]
 line-length = 100
@@ -53,6 +70,7 @@ ignore = [
 # Operator-facing entry points: printing IS the interface.
 "main.py" = ["T201"]
 "scripts/*" = ["T201", "E402"]
+"dashboard/app.py" = ["E402"]  # repo root must precede Streamlit/site-packages
 "core/startup.py" = ["T201"]
 
 [tool.mypy]

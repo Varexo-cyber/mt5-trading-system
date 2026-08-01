@@ -22,9 +22,9 @@ import numpy as np
 import pandas as pd
 
 from config.schema import DataConfig
+from core.broker import MarketDataProvider
 from core.clock import Clock
 from core.errors import DataIntegrityError, InsufficientDataError, StaleDataError
-from core.mt5_connector import MT5Connector
 from core.types import MarketContext, Series, Tick, Timeframe
 from infra.logging import get_logger
 
@@ -48,7 +48,7 @@ class DataManager:
     the same moment.
     """
 
-    def __init__(self, connector: MT5Connector, config: DataConfig, clock: Clock) -> None:
+    def __init__(self, connector: MarketDataProvider, config: DataConfig, clock: Clock) -> None:
         self.connector = connector
         self.config = config
         self.clock = clock

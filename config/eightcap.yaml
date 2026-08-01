@@ -1,0 +1,10 @@
+# Broker overlay verified against Eightcap-Live on 2026-08-01.
+#
+# Use with:
+#   python main.py --overlay config/eightcap.yaml --status
+#
+# Eightcap suffixes FX majors with `.i`, while XAUUSD keeps its canonical name.
+instruments:
+  symbol_suffix: ".i"
+  symbol_overrides:
+    XAUUSD: XAUUSD

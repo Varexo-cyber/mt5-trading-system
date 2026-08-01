@@ -54,6 +54,7 @@ data:
 instruments:
   # Broker symbol suffix, e.g. ".pro", "m", "_ecn". Leave empty if none.
   symbol_suffix: ""
+  symbol_overrides: {}
 
   whitelist:
     # micro_live: FX majors only. Tight spreads, deep liquidity, and the
@@ -186,12 +187,30 @@ filters:
     rollover_block: ["20:45", "21:15"]
     block_friday_after: "19:00"
     block_sunday_before: "23:00"
+    continuous_asset_classes: [crypto]
+    continuous_maintenance_block: ["23:55", "00:10"]
 
   spread:
     enabled: true
     max_spread_multiple: 2.0
     min_observations: 200
     retention_days: 60
+    # Cross-asset ceiling in basis points of mid-price. This is what makes a
+    # $2.70 BTC spread comparable to a 1-pip EURUSD spread.
+    max_spread_bps:
+      forex: 2.0
+      crypto: 5.0
+      stock: 20.0
+      index: 10.0
+      metal: 10.0
+      commodity: 20.0
+    max_tick_age_seconds:
+      forex: 30
+      crypto: 30
+      stock: 120
+      index: 30
+      metal: 30
+      commodity: 60
     absolute_max_pips:              # backstop until the baseline is learned
       EURUSD: 2.0
       GBPUSD: 3.0
@@ -210,6 +229,20 @@ filters:
     max_abs_correlation: 0.7
     lookback_bars: 200
     timeframe: H1
+
+analysis:
+  market_structure:
+    enabled: true
+    signal_timeframe: H1
+    bias_timeframe: H4
+    internal_swing_lookback: 1
+    external_swing_lookback: 3
+    atr_period: 14
+    bos_close_buffer_atr: 0.05
+    equal_level_tolerance_atr: 0.10
+    bos_score: 70.0
+    minimum_confidence: 0.50
+    full_confidence_break_atr: 0.50
 
 trade_management:
   sl_atr_buffer_multiple: 0.5

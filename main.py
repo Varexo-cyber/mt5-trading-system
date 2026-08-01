@@ -22,6 +22,7 @@ from types import FrameType
 
 from config.loader import PACKAGE_ROOT, load_credentials, load_settings, terminal_path_from_env
 from config.schema import Settings
+from core.broker import Broker
 from core.clock import LiveClock
 from core.data_manager import DataManager, atr
 from core.errors import KillSwitchEngaged, TradingSystemError
@@ -81,7 +82,7 @@ def configure(settings: Settings) -> None:
     )
 
 
-def install_signal_handlers(connector: MT5Connector | None) -> None:
+def install_signal_handlers(connector: Broker | None) -> None:
     """Ctrl+C must close the session cleanly and say so in the log.
 
     A half-open terminal session leaves positions unmanaged, which is the one
@@ -175,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         connector.shutdown()
 
 
-def show_data(connector: MT5Connector, settings: Settings, symbol: str) -> None:
+def show_data(connector: Broker, settings: Settings, symbol: str) -> None:
     """Print the multi-timeframe view, so it can be eyeballed against a chart."""
     clock = LiveClock(connector.server_offset)
     manager = DataManager(connector, settings.data, clock)
@@ -204,7 +205,7 @@ if __name__ == "__main__":
 
 
 def show_risk(
-    connector: MT5Connector,
+    connector: Broker,
     settings: Settings,
     account: AccountSnapshot,
     kill_switch: KillSwitch,
@@ -270,7 +271,7 @@ def show_risk(
 
 
 def build_filter_chain(
-    connector: MT5Connector, settings: Settings, journal: Journal, clock: LiveClock
+    connector: Broker, settings: Settings, journal: Journal, clock: LiveClock
 ) -> FilterChain:
     """Assemble the filters in evaluation order.
 
@@ -307,7 +308,7 @@ def build_filter_chain(
     )
 
 
-def show_filters(connector: MT5Connector, settings: Settings, symbol: str) -> None:
+def show_filters(connector: Broker, settings: Settings, symbol: str) -> None:
     """Run every filter for one symbol and print each verdict individually.
 
     Runs them all rather than short-circuiting like the live chain does: when
