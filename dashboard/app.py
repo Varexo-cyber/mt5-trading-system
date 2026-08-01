@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
+import os
+import subprocess
 import sys
 from importlib import invalidate_caches
 from pathlib import Path
@@ -215,14 +218,65 @@ try:
         )
 
     with control_tab:
+        pid_path = ROOT / "runtime" / "jarvis.pid"
+        heartbeat_path = ROOT / "runtime" / "heartbeat.json"
+        running_pid = int(pid_path.read_text().strip()) if pid_path.exists() else 0
+        running = False
+        if running_pid:
+            if sys.platform == "win32":
+                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, running_pid)
+                running = bool(handle)
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+            else:
+                try:
+                    os.kill(running_pid, 0)
+                    running = True
+                except OSError:
+                    running = False
+            if not running:
+                pid_path.unlink(missing_ok=True)
+        st.metric("Jarvis service", f"RUNNING (PID {running_pid})" if running else "OFF")
+        if heartbeat_path.exists():
+            st.json(heartbeat_path.read_text(encoding="utf-8"), expanded=False)
         stopped = kill_switch.is_engaged()
         st.metric("Hard STOP", "ENGAGED" if stopped else "clear")
         st.warning(
-            "There is no validated autonomous execution loop yet. Clearing STOP permits "
-            "monitoring and future supervised runs; it does not certify live trading."
+            "MONITOR and PAPER are autonomous. LIVE remains locked until the registered "
+            "out-of-sample, demo and account-arming gates have all passed."
         )
         if st.button("STOP BOT NOW", type="primary", use_container_width=True):
             kill_switch.engage("operator dashboard emergency stop")
+            st.rerun()
+        start_monitor, start_paper = st.columns(2)
+        creation_flags = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        if start_monitor.button(
+            "Start MONITOR", disabled=running or stopped, use_container_width=True
+        ):
+            subprocess.Popen(
+                [sys.executable, str(ROOT / "jarvis.py"), "--operation", "monitor"],
+                cwd=ROOT,
+                creationflags=creation_flags,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            st.rerun()
+        if start_paper.button("Start PAPER", disabled=running or stopped, use_container_width=True):
+            subprocess.Popen(
+                [sys.executable, str(ROOT / "jarvis.py"), "--operation", "paper"],
+                cwd=ROOT,
+                creationflags=creation_flags,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             st.rerun()
         confirmation = st.text_input("Type CLEAR STOP to reset the hard stop")
         if st.button(

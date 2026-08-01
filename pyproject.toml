@@ -20,6 +20,7 @@ dashboard = [
     "plotly>=5.24",
     "matplotlib>=3.9",
 ]
+ai = ["openai>=1.50", "anthropic>=0.40"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -35,16 +36,22 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = [
+    "advisory",
     "analysis",
+    "backtesting",
     "config",
     "core",
     "dashboard",
+    "execution",
     "filters",
     "filters.calendar",
     "infra",
     "journal",
+    "monitoring",
     "reporting",
     "risk",
+    "runner",
+    "scanner",
 ]
 
 [tool.black]
@@ -69,6 +76,7 @@ ignore = [
 "tests/*" = ["ARG", "N802", "SLF001"]
 # Operator-facing entry points: printing IS the interface.
 "main.py" = ["T201"]
+"jarvis.py" = ["T201"]
 "scripts/*" = ["T201", "E402"]
 "dashboard/app.py" = ["E402"]  # repo root must precede Streamlit/site-packages
 "core/startup.py" = ["T201"]

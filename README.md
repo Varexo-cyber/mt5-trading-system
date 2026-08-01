@@ -83,6 +83,25 @@ demo loop in phases 4–6 are validated.
 Eightcap-specific symbol names live in `config/eightcap.yaml`; FX uses `.i`,
 while BTCUSD, XAUUSD, stocks and indices keep their catalogue names.
 
+## Autonomous Jarvis service
+
+```powershell
+# One bounded, read-only whole-market batch
+.venv-live\Scripts\python.exe jarvis.py --operation monitor --once
+
+# Continuous read-only scanner
+.venv-live\Scripts\python.exe jarvis.py --operation monitor
+
+# Persistent paper trading on live Eightcap quotes
+.venv-live\Scripts\python.exe jarvis.py --operation paper
+```
+
+The scanner rotates through the complete supported broker catalogue rather
+than hammering all symbols simultaneously. It ranks each batch cheaply,
+deep-reads the best candidates across D1/H4/H1/M15/M5, applies confluence,
+filters, risk sizing and journalling, and then advances its persistent cursor.
+See `docs/JARVIS.md` for controls, AI consensus and Windows autostart.
+
 The Phase 1 acceptance test — one demo order, placed, verified and closed, with
 every execution detail printed — is:
 
@@ -94,10 +113,9 @@ It refuses to run against a live account.
 
 ## Before going live: verify the calendar
 
-The remote calendar parsers were written against each feed's documented shape
-but could not be exercised against live responses in the environment they were
-written in, which blocks outbound HTTPS to third-party hosts. Run this once on
-a machine with open internet:
+Both calendar response shapes were verified against live feeds on 2026-08-01.
+Continue archiving weekly so multi-year backtests do not depend on short-lived
+free-feed history:
 
 ```bash
 python scripts/verify_calendar.py --raw

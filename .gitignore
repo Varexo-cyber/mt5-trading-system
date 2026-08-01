@@ -13,6 +13,7 @@ logs/
 *.sqlite3
 data_cache/
 STOP
+runtime/
 
 # Python
 __pycache__/

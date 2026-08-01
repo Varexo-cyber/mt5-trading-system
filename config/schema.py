@@ -429,8 +429,43 @@ class MarketStructureConfig(Base):
         return self
 
 
+class ConfluenceConfig(Base):
+    """Decision policy shared by paper, backtest and live execution."""
+
+    score_threshold: float = Field(default=55.0, ge=1.0, le=100.0)
+    minimum_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    minimum_directional_modules: int = Field(default=2, ge=1, le=10)
+    minimum_agreement_ratio: float = Field(default=0.60, ge=0.5, le=1.0)
+    target_r_multiple: float = Field(default=2.0, ge=1.0, le=10.0)
+    atr_stop_multiple: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: Paper/backtest may research every module. Live execution is restricted
+    #: to this independently validated subset; empty means live entries block.
+    live_enabled_modules: tuple[str, ...] = ()
+    weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "market_structure": 1.0,
+            "trend_momentum": 1.0,
+            "liquidity_sweep": 0.8,
+            "level_reaction": 0.7,
+            "volatility_regime": 0.0,
+        }
+    )
+
+    @field_validator("weights")
+    @classmethod
+    def _weights_are_bounded(cls, value: dict[str, float]) -> dict[str, float]:
+        if not value:
+            raise ValueError("analysis.confluence.weights may not be empty")
+        if any(weight < 0.0 or weight > 5.0 for weight in value.values()):
+            raise ValueError("analysis weights must be between 0 and 5")
+        if not any(weight > 0 for weight in value.values()):
+            raise ValueError("at least one analysis weight must be positive")
+        return value
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
+    confluence: ConfluenceConfig = ConfluenceConfig()
 
 
 # ------------------------------------------------------ trade management ---
@@ -480,6 +515,20 @@ class MonitoringConfig(Base):
     alerts_enabled: bool = False
     alert_channel: Literal["telegram", "discord", "none"] = "none"
     reconciliation_enabled: bool = True
+    report_interval_minutes: int = Field(default=15, ge=1, le=1440)
+    report_directory: str = "runtime/reports"
+
+
+class AIConfig(Base):
+    """Optional second-opinion layer; it can veto but never bypass hard gates."""
+
+    enabled: bool = False
+    provider: Literal["openai", "anthropic", "consensus"] = "consensus"
+    openai_model: str = "gpt-5.6-terra"
+    anthropic_model: str = ""
+    minimum_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
+    fail_closed: Literal[True] = True
 
 
 # -------------------------------------------------------------- settings ---
@@ -500,6 +549,7 @@ class Settings(Base):
     trade_management: TradeManagementConfig = TradeManagementConfig()
     journal: JournalConfig = JournalConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
+    ai: AIConfig = AIConfig()
 
     @field_validator("modes")
     @classmethod

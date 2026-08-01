@@ -243,6 +243,22 @@ analysis:
     bos_score: 70.0
     minimum_confidence: 0.50
     full_confidence_break_atr: 0.50
+  confluence:
+    score_threshold: 55.0
+    minimum_confidence: 0.45
+    minimum_directional_modules: 2
+    minimum_agreement_ratio: 0.60
+    target_r_multiple: 2.0
+    atr_stop_multiple: 1.5
+    # Paper/backtest can research every module. Live stays fail-closed until a
+    # module has passed the registered out-of-sample protocol.
+    live_enabled_modules: []
+    weights:
+      market_structure: 1.0
+      trend_momentum: 1.0
+      liquidity_sweep: 0.8
+      level_reaction: 0.7
+      volatility_regime: 0.0
 
 trade_management:
   sl_atr_buffer_multiple: 0.5
@@ -269,3 +285,14 @@ monitoring:
   alerts_enabled: false
   alert_channel: none
   reconciliation_enabled: true
+  report_interval_minutes: 15
+  report_directory: runtime/reports
+
+ai:
+  enabled: false
+  provider: consensus
+  openai_model: gpt-5.6-terra
+  anthropic_model: ""              # set explicitly after checking your Anthropic account
+  minimum_confidence: 0.65
+  timeout_seconds: 30
+  fail_closed: true
