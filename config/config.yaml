@@ -1,0 +1,230 @@
+# =============================================================================
+#  Trading system configuration
+# =============================================================================
+#  Every number the system acts on lives here. Nothing is hardcoded in strategy
+#  or risk code. The file is validated against config/schema.py at load time:
+#  an unknown key, a missing key, or a value that breaks a hard rule is a
+#  startup failure, not a warning.
+#
+#  Credentials do NOT live here. See config/.env.example.
+# =============================================================================
+
+system:
+  # backtest | paper | micro_live | scaling
+  mode: backtest
+  magic_number: 770101
+  loop_interval_seconds: 30
+  kill_switch_file: STOP
+  enforce_account_mode_match: true
+
+mt5:
+  terminal_path: ""            # empty = let the MT5 package auto-discover
+  connect_timeout_ms: 60000
+  portable: false
+  max_connect_attempts: 5
+  reconnect_backoff_seconds: [2, 4, 8, 16, 30]
+  order_max_attempts: 3
+  order_retry_delay_ms: 250
+  deviation_points: 10
+  slow_call_warn_ms: 1000
+
+logging:
+  level: INFO
+  console: true
+  console_level: INFO
+  directory: logs
+  filename: trading.jsonl
+  max_bytes: 52428800
+  backup_count: 20
+
+data:
+  # Highest timeframe first: HTF bias -> MTF zone -> LTF timing.
+  timeframes: [D1, H4, H1, M15, M5]
+  bars:
+    D1: 750
+    H4: 1500
+    H1: 2000
+    M15: 2000
+    M5: 2000
+  min_bars_required: 200
+  stale_after_bars: 3.0
+  cache_ttl_seconds: 20.0
+  max_gap_fraction: 0.02
+
+instruments:
+  # Broker symbol suffix, e.g. ".pro", "m", "_ecn". Leave empty if none.
+  symbol_suffix: ""
+
+  whitelist:
+    # micro_live: FX majors only. Tight spreads, deep liquidity, and the
+    # smallest money-per-pip available, which is the only thing that makes a
+    # EUR 100 account expressible at all.
+    micro_live: [EURUSD, GBPUSD, USDJPY, AUDUSD]
+    scaling: [EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, EURGBP, EURJPY, GBPJPY, XAUUSD]
+    paper: [EURUSD, GBPUSD, USDJPY, AUDUSD]
+    backtest: [EURUSD, GBPUSD, USDJPY, AUDUSD, USDCAD, XAUUSD]
+
+  # Symbols requiring a minimum equity before they may be traded at all.
+  # Gold at 0.01 lot moves USD 1 per USD 1 of price; a normal 8-dollar stop is
+  # 8% of a 100-euro account before the setup is even scored.
+  min_equity_for_symbol:
+    XAUUSD: 500
+    XAGUSD: 500
+    US30: 2000
+    NAS100: 2000
+    GER40: 2000
+    BTCUSD: 2000
+
+risk:
+  # Operative size per trade. Absolute ceiling no mode may exceed: 2%.
+  risk_per_trade_pct: 1.0
+  max_risk_per_trade_pct: 2.0
+
+  max_concurrent_positions: 2
+  max_trades_per_day: 3
+  max_trades_per_week: 10
+
+  daily_loss_limit_pct: 3.0
+  weekly_loss_limit_pct: 6.0
+  max_drawdown_circuit_breaker_pct: 15.0
+
+  min_risk_reward: 2.0
+
+  # Anti-martingale: risk goes DOWN after losses, never up.
+  losing_streak_threshold: 3
+  losing_streak_risk_multiplier: 0.5
+
+  kelly_fraction: 0.25
+
+  # Validated as permanently false. Editing these fails the config load.
+  forbidden:
+    martingale: false
+    grid: false
+    averaging_down: false
+    recovery_lot_increase: false
+    trade_without_stop_loss: false
+
+modes:
+  backtest:
+    max_risk_per_trade_pct: 1.0
+    max_sl_pips: 60
+    max_trades_per_day: 3
+    daily_loss_limit_pct: 3.0
+    max_concurrent_positions: 2
+    max_journal_detail: true
+    min_equity: 0
+
+  paper:
+    max_risk_per_trade_pct: 1.0
+    max_sl_pips: 60
+    max_trades_per_day: 3
+    daily_loss_limit_pct: 3.0
+    max_concurrent_positions: 2
+    max_journal_detail: true
+    min_equity: 0
+
+  micro_live:
+    # Live money, EUR 100-200. Goal is validating execution, not making money.
+    max_risk_per_trade_pct: 2.0
+    max_sl_pips: 30
+    max_trades_per_day: 2
+    daily_loss_limit_pct: 4.0
+    max_concurrent_positions: 2
+    max_journal_detail: true
+    min_equity: 50
+    max_equity: 500
+
+  scaling:
+    max_risk_per_trade_pct: 1.0
+    max_sl_pips: 60
+    max_trades_per_day: 3
+    daily_loss_limit_pct: 3.0
+    max_concurrent_positions: 2
+    max_journal_detail: false
+    min_equity: 500
+
+filters:
+  news:
+    enabled: true
+    high_impact:
+      minutes_before: 60
+      minutes_after: 30
+    extreme_impact:
+      minutes_before: 120
+      minutes_after: 60
+    extreme_keywords:
+      - FOMC
+      - Non-Farm
+      - Nonfarm
+      - NFP
+      - CPI
+      - Interest Rate Decision
+      - ECB Press Conference
+      - Fed Chair
+      - FOMC Statement
+      - Rate Statement
+    fail_closed: true               # no calendar -> no trades. Not negotiable.
+    open_position_action: break_even
+    max_calendar_age_minutes: 180
+    refresh_interval_minutes: 30
+    providers: [jblanked, nfs_cached]
+
+  session:
+    enabled: true
+    sessions:                        # UTC
+      asia:     ["00:00", "08:00"]
+      london:   ["07:00", "16:00"]
+      newyork:  ["12:00", "21:00"]
+    tradable_sessions: [london, newyork]
+    rollover_block: ["20:45", "21:15"]
+    block_friday_after: "19:00"
+    block_sunday_before: "23:00"
+
+  spread:
+    enabled: true
+    max_spread_multiple: 2.0
+    min_observations: 200
+    absolute_max_pips:              # backstop until the baseline is learned
+      EURUSD: 2.0
+      GBPUSD: 3.0
+      USDJPY: 2.5
+      AUDUSD: 3.0
+      USDCAD: 3.0
+      USDCHF: 3.0
+      NZDUSD: 4.0
+      EURGBP: 3.0
+      EURJPY: 3.5
+      GBPJPY: 5.0
+      XAUUSD: 50.0
+
+  correlation:
+    enabled: true
+    max_abs_correlation: 0.7
+    lookback_bars: 200
+    timeframe: H1
+
+trade_management:
+  sl_atr_buffer_multiple: 0.5
+  sl_atr_period: 14
+  break_even_at_r: 1.0
+  break_even_offset_atr: 0.1
+  partial_close_at_r: 1.5
+  partial_close_fraction: 0.5
+  trailing_mode: atr
+  trailing_atr_multiple: 2.0
+  time_exit_hours: 24.0
+  time_exit_min_abs_r: 0.3
+
+journal:
+  database_path: journal/trading.db
+  record_non_trades: true
+  snapshot_bars_before: 200
+  snapshot_bars_after: 100
+  shadow_trades: true
+
+monitoring:
+  healthcheck_interval_seconds: 60
+  heartbeat_timeout_seconds: 300
+  alerts_enabled: false
+  alert_channel: none
+  reconciliation_enabled: true
