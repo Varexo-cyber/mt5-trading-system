@@ -127,6 +127,9 @@ class DataConfig(Base):
 class InstrumentsConfig(Base):
     #: Broker-specific suffix, e.g. ".pro" or "m". Appended to every symbol.
     symbol_suffix: str = ""
+    #: Exact broker names for exceptions to the global suffix. Some brokers
+    #: suffix FX symbols but leave metals or indices unchanged.
+    symbol_overrides: dict[str, str] = Field(default_factory=dict)
     #: Tradable symbols per mode. The active mode's list is the whitelist;
     #: anything not on it is not tradable, full stop.
     whitelist: dict[str, tuple[str, ...]]
@@ -146,6 +149,20 @@ class InstrumentsConfig(Base):
         if empty:
             raise ValueError(f"empty whitelist for mode(s): {empty}")
         return value
+
+    def broker_symbol(self, canonical: str) -> str:
+        """Return the broker's exact symbol name for a canonical symbol."""
+        return self.symbol_overrides.get(canonical, f"{canonical}{self.symbol_suffix}")
+
+    def canonical_symbol(self, broker_symbol: str) -> str:
+        """Return the canonical name used by risk and equity-gate rules."""
+        for canonical, exact in self.symbol_overrides.items():
+            if exact == broker_symbol:
+                return canonical
+        suffix = self.symbol_suffix
+        if suffix and broker_symbol.endswith(suffix):
+            return broker_symbol[: -len(suffix)]
+        return broker_symbol
 
 
 # ------------------------------------------------------------------ risk ---
@@ -321,6 +338,10 @@ class SessionFilterConfig(Base):
     rollover_block: tuple[str, str] = ("20:45", "21:15")
     block_friday_after: str | None = "19:00"
     block_sunday_before: str | None = "23:00"
+    #: These markets are not forced through the FX London/New York calendar.
+    #: A missing/stale broker tick still blocks them later in the chain.
+    continuous_asset_classes: tuple[str, ...] = ("crypto",)
+    continuous_maintenance_block: tuple[str, str] = ("23:55", "00:10")
 
 
 class SpreadFilterConfig(Base):
@@ -330,6 +351,30 @@ class SpreadFilterConfig(Base):
     max_spread_multiple: float = Field(default=2.0, gt=1.0)
     #: Absolute ceiling in pips as a backstop while the baseline is warming up.
     absolute_max_pips: dict[str, float] = Field(default_factory=dict)
+    #: Cross-asset backstop. One "pip" is not comparable between BTC, AAPL
+    #: and EURUSD, so unknown symbols are bounded as basis points of mid-price.
+    max_spread_bps: dict[str, float] = Field(
+        default_factory=lambda: {
+            "forex": 2.0,
+            "crypto": 5.0,
+            "stock": 20.0,
+            "index": 10.0,
+            "metal": 10.0,
+            "commodity": 20.0,
+        }
+    )
+    #: A non-zero weekend quote can still be Friday's close. Treat age as a
+    #: hard gate before interpreting the numerical spread.
+    max_tick_age_seconds: dict[str, int] = Field(
+        default_factory=lambda: {
+            "forex": 30,
+            "crypto": 30,
+            "stock": 120,
+            "index": 30,
+            "metal": 30,
+            "commodity": 60,
+        }
+    )
     #: Observations needed before the learned baseline replaces the fallback.
     min_observations: int = Field(default=200, ge=20)
     #: How long spread observations are kept before pruning.
@@ -350,6 +395,42 @@ class FiltersConfig(Base):
     session: SessionFilterConfig = SessionFilterConfig()
     spread: SpreadFilterConfig = SpreadFilterConfig()
     correlation: CorrelationFilterConfig = CorrelationFilterConfig()
+
+
+# ------------------------------------------------------------- analysis ---
+
+
+class MarketStructureConfig(Base):
+    enabled: bool = True
+    signal_timeframe: str = "H1"
+    bias_timeframe: str = "H4"
+    internal_swing_lookback: int = Field(default=1, ge=1, le=10)
+    external_swing_lookback: int = Field(default=3, ge=2, le=20)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    bos_close_buffer_atr: float = Field(default=0.05, ge=0.0, le=1.0)
+    equal_level_tolerance_atr: float = Field(default=0.10, gt=0.0, le=1.0)
+    bos_score: float = Field(default=70.0, gt=0.0, le=100.0)
+    minimum_confidence: float = Field(default=0.50, ge=0.0, lt=1.0)
+    full_confidence_break_atr: float = Field(default=0.50, gt=0.0, le=5.0)
+
+    @field_validator("signal_timeframe", "bias_timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        from core.types import Timeframe
+
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _internal_is_finer_than_external(self) -> MarketStructureConfig:
+        if self.internal_swing_lookback >= self.external_swing_lookback:
+            raise ValueError("internal swing lookback must be smaller than external lookback")
+        if self.signal_timeframe == self.bias_timeframe:
+            raise ValueError("market-structure signal and bias timeframes must differ")
+        return self
+
+
+class AnalysisConfig(Base):
+    market_structure: MarketStructureConfig = MarketStructureConfig()
 
 
 # ------------------------------------------------------ trade management ---
@@ -415,6 +496,7 @@ class Settings(Base):
     risk: RiskConfig = RiskConfig()
     modes: dict[str, ModeLimits]
     filters: FiltersConfig = FiltersConfig()
+    analysis: AnalysisConfig = AnalysisConfig()
     trade_management: TradeManagementConfig = TradeManagementConfig()
     journal: JournalConfig = JournalConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
@@ -480,8 +562,10 @@ class Settings(Base):
 
     @property
     def active_whitelist(self) -> tuple[str, ...]:
-        suffix = self.instruments.symbol_suffix
-        return tuple(f"{sym}{suffix}" for sym in self.instruments.whitelist[self.system.mode.value])
+        return tuple(
+            self.instruments.broker_symbol(sym)
+            for sym in self.instruments.whitelist[self.system.mode.value]
+        )
 
     def effective_max_risk_pct(self) -> float:
         """Risk ceiling that applies right now (mode value, globally bounded)."""
@@ -508,8 +592,7 @@ class Settings(Base):
         """
         if symbol not in self.active_whitelist:
             return False, f"SYMBOL_NOT_WHITELISTED_FOR_{self.mode.value.upper()}"
-        suffix = self.instruments.symbol_suffix
-        bare = symbol[: -len(suffix)] if suffix and symbol.endswith(suffix) else symbol
+        bare = self.instruments.canonical_symbol(symbol)
         required = self.instruments.min_equity_for_symbol.get(bare)
         if required is not None and equity < required:
             return False, f"SYMBOL_BLOCKED_EQUITY_BELOW_{required:g}"

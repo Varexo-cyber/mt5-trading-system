@@ -4,13 +4,11 @@ Two independent remote feeds plus a local file source, so one host going down
 does not stop all trading — which is what would otherwise happen, because the
 news filter fails closed by design.
 
-**Verification status.** The parsers below are written against each feed's
-documented/observed JSON shape, but the build environment this code was written
-in blocks outbound HTTPS to third-party hosts, so they have **not** been run
-against live responses. Run `scripts/verify_calendar.py` on a machine with
-open internet before trusting them; it dumps the raw payload next to the
-parsed events so any mismatch is obvious. Until that has been done once, treat
-the remote providers as unverified.
+**Verification status.** Both response shapes were checked against live feeds
+on 2026-08-01. TradingView requires browser-origin headers; without them its
+otherwise public endpoint returns HTTP 403. FairEconomy's current-week file was
+available while its next-week file returned 404, so the provider must reject
+that partial answer and let the service fall back to TradingView.
 
 A parser that silently returns 3 of 40 events is more dangerous than one that
 raises: the missing 37 are invisible, and the filter reports "all clear" for a
@@ -35,6 +33,12 @@ from infra.logging import get_logger
 log = get_logger(__name__)
 
 USER_AGENT = "mt5-trading-system/0.1 (+calendar filter)"
+
+TRADINGVIEW_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Origin": "https://www.tradingview.com",
+    "Referer": "https://www.tradingview.com/",
+}
 
 #: Fail the fetch if more than this fraction of records will not parse.
 MAX_UNPARSEABLE_FRACTION = 0.10
@@ -61,9 +65,12 @@ class CalendarProvider(ABC):
 
     # -- shared plumbing ---------------------------------------------------
 
-    def _get_json(self, url: str, timeout: float) -> Any:
+    def _get_json(self, url: str, timeout: float, headers: dict[str, str] | None = None) -> Any:
+        request_headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+        request_headers.update(headers or {})
         request = urllib.request.Request(
-            url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+            url,
+            headers=request_headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -131,13 +138,14 @@ class FairEconomyProvider(CalendarProvider):
         for url in urls:
             try:
                 payload = self._get_json(url, self.timeout)
-            except CalendarUnavailableError:
-                # Next week's file is frequently absent early in the week; only
-                # the current week is load-bearing.
-                if url is self.THIS_WEEK:
-                    raise
-                log.debug("next-week calendar unavailable", extra={"provider": self.name})
-                continue
+            except CalendarUnavailableError as exc:
+                # The default window reaches seven days ahead. Accepting only
+                # the current file would label an incomplete calendar as safe
+                # and prevent the fallback provider from supplying the gap.
+                raise CalendarUnavailableError(
+                    f"{self.name}: incomplete weekly calendar because {url} failed; "
+                    "refusing partial data"
+                ) from exc
             reachable = True
 
             if not isinstance(payload, list):
@@ -212,7 +220,7 @@ class TradingViewProvider(CalendarProvider):
     def fetch(self, start: datetime, end: datetime) -> list[EconomicEvent]:
         countries = ",".join(sorted(self.COUNTRY_TO_CURRENCY))
         url = f"{self.URL}?from={_z(start)}&to={_z(end)}&countries={countries}"
-        payload = self._get_json(url, self.timeout)
+        payload = self._get_json(url, self.timeout, TRADINGVIEW_HEADERS)
 
         if not isinstance(payload, dict) or "result" not in payload:
             raise CalendarUnavailableError(f"{self.name}: unexpected response envelope")

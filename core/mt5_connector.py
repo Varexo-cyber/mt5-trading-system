@@ -52,6 +52,7 @@ from core.types import (
     OrderRequest,
     OrderResult,
     Position,
+    SymbolDescriptor,
     Tick,
 )
 from infra.logging import get_logger
@@ -351,6 +352,22 @@ class MT5Connector:
 
     # -- symbols -----------------------------------------------------------
 
+    def symbols(self) -> list[SymbolDescriptor]:
+        """Return the broker catalogue without selecting every instrument."""
+        raw = self._call("symbols_get")
+        if raw is None:
+            raise MT5ConnectionError(f"symbols_get() failed: {self._error_text()}")
+        return [
+            SymbolDescriptor(
+                name=str(item.name),
+                path=str(getattr(item, "path", "")),
+                description=str(getattr(item, "description", "")),
+                visible=bool(getattr(item, "visible", False)),
+                selected=bool(getattr(item, "select", False)),
+            )
+            for item in raw
+        ]
+
     def select(self, symbol: str) -> None:
         """Add a symbol to Market Watch. Required before any data call.
 
@@ -392,8 +409,12 @@ class MT5Connector:
         raw = self._call("symbol_info_tick", symbol)
         if raw is None or float(raw.ask) <= 0:
             raise SymbolNotAvailableError(f"{symbol}: no tick available ({self._error_text()})")
-        moment = datetime.fromtimestamp(int(raw.time), tz=UTC)
-        self._update_server_offset(moment)
+        server_moment = datetime.fromtimestamp(int(raw.time), tz=UTC)
+        self._update_server_offset(server_moment)
+        # Some MT5 brokers encode ticks in their server wall-clock timezone
+        # while the Python package exposes the integer as a Unix timestamp.
+        # Keep the offset explicit and expose UTC everywhere else in the app.
+        moment = server_moment - self._server_offset
         return Tick(
             symbol=symbol,
             time=moment,
@@ -411,6 +432,13 @@ class MT5Connector:
         """
         delta = server_time - datetime.now(UTC)
         hours = round(delta.total_seconds() / 3600.0)
+        residual_seconds = abs(delta.total_seconds() - hours * 3600.0)
+
+        # A stale weekend quote can be many hours old and must never be
+        # mistaken for a timezone. Real broker offsets are bounded and a fresh
+        # tick lands very close to a whole-hour difference from UTC.
+        if abs(hours) > 14 or residual_seconds > 300:
+            return
         offset = timedelta(hours=hours)
         if offset != self._server_offset:
             log.info(

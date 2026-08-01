@@ -54,6 +54,8 @@ def eurusd_spec(**overrides: Any) -> SimpleNamespace:
         "currency_margin": "EUR",
         "filling_mode": 2,  # IOC
         "trade_mode": 4,  # full
+        "path": "Forex\\Majors\\EURUSD",
+        "description": "Euro vs US Dollar",
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -78,6 +80,8 @@ def usdjpy_spec(**overrides: Any) -> SimpleNamespace:
         "currency_margin": "USD",
         "filling_mode": 1,  # FOK only
         "trade_mode": 4,
+        "path": "Forex\\Majors\\USDJPY",
+        "description": "US Dollar vs Yen",
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -102,6 +106,8 @@ def xauusd_spec(**overrides: Any) -> SimpleNamespace:
         "currency_margin": "USD",
         "filling_mode": 2,
         "trade_mode": 4,
+        "path": "Commodities\\Metals\\XAUUSD",
+        "description": "Gold vs US Dollar",
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -196,6 +202,17 @@ class FakeMT5:
         )
 
     # -- symbols ----------------------------------------------------------
+
+    def symbols_get(self) -> tuple[SimpleNamespace, ...]:
+        self.calls.append(("symbols_get", ()))
+        return tuple(
+            SimpleNamespace(
+                **vars(spec),
+                visible=name in self.quotes,
+                select=name in self.quotes,
+            )
+            for name, spec in self.specs.items()
+        )
 
     def symbol_select(self, symbol: str, enable: bool = True) -> bool:
         self.calls.append(("symbol_select", (symbol,)))

@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from core.instrument import InstrumentSpec
+from core.instrument import AssetClass, InstrumentSpec
 from core.mt5_codes import OrderFilling
 from tests.fakes.fake_mt5 import eurusd_spec, usdjpy_spec, xauusd_spec
 
@@ -44,6 +44,23 @@ class TestPipMaths:
         # Two digits and a non-currency base: pip must be one point, not ten.
         assert xauusd.is_forex is False
         assert xauusd.pip_size == pytest.approx(0.01)
+
+    def test_mt5_catalogue_path_classifies_asset_family(self, xauusd: InstrumentSpec) -> None:
+        crypto = InstrumentSpec.from_mt5(
+            xauusd_spec(
+                name="BTCUSD",
+                path="Cryptos\\High Cap\\BTCUSD",
+                currency_base="USD",
+                trade_contract_size=1.0,
+            )
+        )
+        stock = InstrumentSpec.from_mt5(
+            xauusd_spec(name="AAPL", path="Stock\\NAS\\AAPL", currency_base="USD")
+        )
+
+        assert crypto.asset_class is AssetClass.CRYPTO
+        assert stock.asset_class is AssetClass.STOCK
+        assert xauusd.asset_class is AssetClass.METAL
 
     def test_pip_value_per_lot_eurusd(self, eurusd: InstrumentSpec) -> None:
         # tick_value 1.0 per 0.00001 -> 10.0 per 0.0001 on 1.00 lot

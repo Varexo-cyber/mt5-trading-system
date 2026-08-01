@@ -50,6 +50,7 @@ class Reason(StrEnum):
     #: Friday close or Sunday reopen — thin books, gap risk over the weekend.
     WEEKEND_EDGE = "WEEKEND_EDGE"
     MARKET_CLOSED = "MARKET_CLOSED"
+    STALE_QUOTE = "STALE_QUOTE"
     SPREAD_TOO_WIDE = "SPREAD_TOO_WIDE"
     #: A second position that would double the same underlying currency risk.
     CORRELATED_EXPOSURE = "CORRELATED_EXPOSURE"

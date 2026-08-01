@@ -456,16 +456,27 @@ class Journal:
     def record_spread(self, symbol: str, spread_pips: float, moment: datetime) -> None:
         """Store one spread observation for the hour it fell in."""
         self.conn.execute(
-            "INSERT INTO spread_observations (symbol, hour_utc, spread_pips, ts) "
-            "VALUES (?,?,?,?)",
+            "INSERT INTO spread_observations (symbol, hour_utc, spread_pips, ts) VALUES (?,?,?,?)",
             (symbol, moment.astimezone(UTC).hour, spread_pips, iso(moment)),
         )
 
-    def spread_samples(self, symbol: str, hour_utc: int, limit: int = 2000) -> list[float]:
-        """Most recent observations for a symbol in a given hour, newest first."""
+    def spread_samples(
+        self,
+        symbol: str,
+        hour_utc: int,
+        limit: int = 2000,
+        *,
+        weekend: bool | None = None,
+    ) -> list[float]:
+        """Recent hourly samples, optionally split into weekday/weekend regimes."""
+        regime_sql = ""
+        if weekend is True:
+            regime_sql = " AND CAST(strftime('%w', ts) AS INTEGER) IN (0, 6)"
+        elif weekend is False:
+            regime_sql = " AND CAST(strftime('%w', ts) AS INTEGER) NOT IN (0, 6)"
         rows = self.conn.execute(
-            "SELECT spread_pips FROM spread_observations WHERE symbol = ? AND hour_utc = ? "
-            "ORDER BY ts DESC LIMIT ?",
+            "SELECT spread_pips FROM spread_observations WHERE symbol = ? AND hour_utc = ?"
+            f"{regime_sql} ORDER BY ts DESC LIMIT ?",
             (symbol, hour_utc, limit),
         ).fetchall()
         return [float(row[0]) for row in rows]

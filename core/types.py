@@ -22,11 +22,23 @@ class Timeframe(Enum):
     """Timeframes we support, carrying their MT5 constant and bar duration."""
 
     M1 = "M1"
+    M2 = "M2"
+    M3 = "M3"
+    M4 = "M4"
     M5 = "M5"
+    M6 = "M6"
+    M10 = "M10"
+    M12 = "M12"
     M15 = "M15"
+    M20 = "M20"
     M30 = "M30"
     H1 = "H1"
+    H2 = "H2"
+    H3 = "H3"
     H4 = "H4"
+    H6 = "H6"
+    H8 = "H8"
+    H12 = "H12"
     D1 = "D1"
     W1 = "W1"
     MN1 = "MN1"
@@ -44,11 +56,23 @@ class Timeframe(Enum):
         """
         minutes = {
             "M1": 1,
+            "M2": 2,
+            "M3": 3,
+            "M4": 4,
             "M5": 5,
+            "M6": 6,
+            "M10": 10,
+            "M12": 12,
             "M15": 15,
+            "M20": 20,
             "M30": 30,
             "H1": 60,
+            "H2": 120,
+            "H3": 180,
             "H4": 240,
+            "H6": 360,
+            "H8": 480,
+            "H12": 720,
             "D1": 1440,
             "W1": 10080,
             "MN1": 43200,
@@ -237,6 +261,17 @@ class AnalysisModule(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class SymbolDescriptor:
+    """Lightweight entry from the broker's instrument catalogue."""
+
+    name: str
+    path: str
+    description: str
+    visible: bool
+    selected: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AccountSnapshot:
     """Account state at one instant, as reported by the terminal."""
 
@@ -303,13 +338,11 @@ class OrderRequest:
             raise ValueError(f"{self.symbol}: volume must be positive, got {self.volume}")
         if self.direction is Direction.LONG and self.sl >= self.reference_price:
             raise ValueError(
-                f"{self.symbol}: long stop {self.sl} is at or above entry "
-                f"{self.reference_price}"
+                f"{self.symbol}: long stop {self.sl} is at or above entry {self.reference_price}"
             )
         if self.direction is Direction.SHORT and self.sl <= self.reference_price:
             raise ValueError(
-                f"{self.symbol}: short stop {self.sl} is at or below entry "
-                f"{self.reference_price}"
+                f"{self.symbol}: short stop {self.sl} is at or below entry {self.reference_price}"
             )
 
 

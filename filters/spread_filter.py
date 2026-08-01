@@ -93,20 +93,24 @@ class SpreadFilter(Filter):
 
     # -- baseline ----------------------------------------------------------
 
-    def baseline(self, symbol: str, hour_utc: int) -> tuple[float | None, int]:
+    def baseline(
+        self, symbol: str, hour_utc: int, *, weekend: bool = False
+    ) -> tuple[float | None, int]:
         """Median spread for this symbol at this hour, and the sample count.
 
         Returns `(None, n)` while `n` is below `min_observations`, which is the
         caller's signal to use the absolute fallback instead.
         """
-        samples = self.journal.spread_samples(symbol, hour_utc)
+        samples = self.journal.spread_samples(symbol, hour_utc, weekend=weekend)
         if len(samples) < self.config.min_observations:
             return None, len(samples)
         return statistics.median(samples), len(samples)
 
-    def ceiling(self, symbol: str, hour_utc: int) -> tuple[float, str, int]:
+    def ceiling(
+        self, symbol: str, hour_utc: int, *, weekend: bool = False
+    ) -> tuple[float, str, int]:
         """Maximum acceptable spread in pips, plus how it was derived."""
-        median, count = self.baseline(symbol, hour_utc)
+        median, count = self.baseline(symbol, hour_utc, weekend=weekend)
         if median is not None:
             return median * self.config.max_spread_multiple, "learned", count
 
@@ -129,6 +133,30 @@ class SpreadFilter(Filter):
 
         spread_pips = ctx.spec.price_to_pips(ctx.tick.spread)
         hour = ctx.now.hour
+        weekend = ctx.now.weekday() >= 5
+        asset_class = ctx.spec.asset_class.value
+        tick_age_seconds = max(0.0, (ctx.now - ctx.tick.time).total_seconds())
+        max_tick_age = self.config.max_tick_age_seconds.get(asset_class)
+
+        if max_tick_age is None:
+            return FilterVerdict.block(
+                self.name,
+                Reason.STALE_QUOTE,
+                f"no quote-age limit configured for asset class {asset_class!r}",
+                asset_class=asset_class,
+                tick_age_seconds=round(tick_age_seconds, 3),
+            )
+        if tick_age_seconds > max_tick_age:
+            return FilterVerdict.block(
+                self.name,
+                Reason.STALE_QUOTE,
+                f"{ctx.symbol} quote is {tick_age_seconds:.1f}s old; "
+                f"{asset_class} limit is {max_tick_age}s",
+                asset_class=asset_class,
+                tick_age_seconds=round(tick_age_seconds, 3),
+                max_tick_age_seconds=max_tick_age,
+            )
+
         self.observe(ctx.symbol, spread_pips, ctx.now)
 
         if not self.config.enabled:
@@ -136,36 +164,58 @@ class SpreadFilter(Filter):
                 self.name, "spread filter disabled", spread_pips=round(spread_pips, 3)
             )
 
-        limit, source, count = self.ceiling(ctx.symbol, hour)
+        limit, source, count = self.ceiling(ctx.symbol, hour, weekend=weekend)
+        mid = ctx.tick.mid
+        spread_bps = ctx.tick.spread / mid * 10_000 if mid > 0 else float("inf")
+        bps_limit = self.config.max_spread_bps.get(asset_class)
+        min_lot_cost = ctx.spec.money_per_lot(ctx.tick.spread) * ctx.spec.volume_min
+        regime = "weekend" if weekend else "weekday"
         data = {
             "spread_pips": round(spread_pips, 3),
             "spread_limit_pips": round(limit, 3),
+            "spread_bps": round(spread_bps, 3),
+            "spread_limit_bps": None if bps_limit is None else round(bps_limit, 3),
+            "spread_min_lot_cost": round(min_lot_cost, 4),
             "spread_baseline_source": source,
             "spread_samples": count,
+            "spread_regime": regime,
+            "asset_class": asset_class,
+            "tick_age_seconds": round(tick_age_seconds, 3),
+            "max_tick_age_seconds": max_tick_age,
         }
 
-        if source == "unknown":
+        if source == "unknown" and bps_limit is None:
             return FilterVerdict.block(
                 self.name,
                 Reason.SPREAD_TOO_WIDE,
                 f"{ctx.symbol}: only {count} spread observations for hour {hour:02d} "
                 f"(need {self.config.min_observations}) and no entry in "
-                f"filters.spread.absolute_max_pips. Refusing rather than guessing.",
+                "filters.spread.absolute_max_pips and no basis-point ceiling for "
+                f"asset class {asset_class!r}. Refusing rather than guessing.",
                 **data,
             )
 
-        if spread_pips > limit:
+        if bps_limit is not None and spread_bps > bps_limit:
+            return FilterVerdict.block(
+                self.name,
+                Reason.SPREAD_TOO_WIDE,
+                f"{asset_class} spread {spread_bps:.2f} bps exceeds the "
+                f"{bps_limit:.2f} bps cross-asset limit ({regime})",
+                **data,
+            )
+
+        if source != "unknown" and spread_pips > limit:
             return FilterVerdict.block(
                 self.name,
                 Reason.SPREAD_TOO_WIDE,
                 f"spread {spread_pips:.2f} pips exceeds the {limit:.2f} pip limit for "
-                f"hour {hour:02d} ({source} baseline from {count} samples)",
+                f"hour {hour:02d} ({source} {regime} baseline from {count} samples)",
                 **data,
             )
 
         return FilterVerdict.allow(
             self.name,
-            f"spread {spread_pips:.2f} of {limit:.2f} pips allowed ({source})",
+            f"spread {spread_pips:.2f} pips / {spread_bps:.2f} bps allowed ({source}, {regime})",
             **data,
         )
 

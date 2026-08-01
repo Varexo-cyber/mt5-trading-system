@@ -23,7 +23,7 @@ from filters.session_filter import SessionFilter
 from filters.spread_filter import SpreadFilter
 from journal.database import Journal
 from risk.reasons import Reason
-from tests.fakes.fake_mt5 import eurusd_spec
+from tests.fakes.fake_mt5 import eurusd_spec, xauusd_spec
 
 # Wednesday, London/NY overlap.
 NOW = datetime(2026, 3, 11, 14, 30, tzinfo=UTC)
@@ -39,6 +39,7 @@ def context(
     *,
     now: datetime = NOW,
     spread: float = 0.00012,
+    bid: float = 1.08500,
     direction: Direction = Direction.LONG,
     positions: tuple[Position, ...] = (),
 ) -> FilterContext:
@@ -47,7 +48,7 @@ def context(
         spec=spec,
         now=now,
         direction=direction,
-        tick=Tick(symbol=spec.symbol, time=now, bid=1.08500, ask=1.08500 + spread),
+        tick=Tick(symbol=spec.symbol, time=now, bid=bid, ask=bid + spread),
         open_positions=positions,
     )
 
@@ -120,6 +121,22 @@ class TestSessionFilter:
         moment = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
         verdict = filter_.check(context(spec, now=moment))
         assert verdict.reason is Reason.MARKET_CLOSED
+
+    def test_crypto_uses_continuous_profile_on_saturday(self, filter_: SessionFilter) -> None:
+        crypto = InstrumentSpec.from_mt5(
+            xauusd_spec(
+                name="BTCUSD",
+                path="Cryptos\\High Cap\\BTCUSD",
+                currency_base="USD",
+                trade_contract_size=1.0,
+            )
+        )
+        moment = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
+        verdict = filter_.check(context(crypto, now=moment, bid=116_000.0, spread=2.70))
+
+        assert verdict.passed
+        assert verdict.data["session"] == "continuous"
+        assert verdict.data["asset_class"] == "crypto"
 
     def test_sunday_before_reopen_is_market_closed(
         self, filter_: SessionFilter, spec: InstrumentSpec
@@ -195,10 +212,46 @@ class TestSpreadFilter:
         self, config: SpreadFilterConfig, journal: Journal, clock: SimulatedClock
     ) -> None:
         """No baseline and no configured ceiling means refuse, not guess."""
-        odd = InstrumentSpec.from_mt5(eurusd_spec(name="EXOTIC"))
-        verdict = SpreadFilter(config, journal, clock).check(context(odd))
+        odd = InstrumentSpec.from_mt5(
+            eurusd_spec(name="EXOTIC", path="Other\\EXOTIC", trade_contract_size=1.0)
+        )
+        config_with_quote_age = config.model_copy(update={"max_tick_age_seconds": {"unknown": 30}})
+        verdict = SpreadFilter(config_with_quote_age, journal, clock).check(context(odd))
         assert not verdict.passed
         assert "Refusing rather than guessing" in verdict.detail
+
+    def test_crypto_spread_is_judged_in_basis_points(self, filter_: SpreadFilter) -> None:
+        crypto = InstrumentSpec.from_mt5(
+            xauusd_spec(
+                name="BTCUSD",
+                path="Cryptos\\High Cap\\BTCUSD",
+                currency_base="USD",
+                trade_contract_size=1.0,
+                trade_tick_value=0.01,
+            )
+        )
+        saturday = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
+
+        normal = filter_.check(context(crypto, now=saturday, bid=116_000.0, spread=2.70))
+        wide = filter_.check(context(crypto, now=saturday, bid=116_000.0, spread=100.0))
+
+        assert normal.passed
+        assert normal.data["spread_baseline_source"] == "unknown"
+        assert normal.data["spread_bps"] == pytest.approx(0.233, abs=0.001)
+        assert normal.data["spread_regime"] == "weekend"
+        assert not wide.passed
+        assert "bps" in wide.detail
+
+    def test_weekend_samples_do_not_pollute_weekday_baseline(self, filter_: SpreadFilter) -> None:
+        weekday = datetime(2026, 3, 11, 14, 0, tzinfo=UTC)
+        weekend = datetime(2026, 3, 14, 14, 0, tzinfo=UTC)
+        for index in range(20):
+            filter_.observe("EURUSD", 0.8, weekday + timedelta(minutes=index))
+        for index in range(20):
+            filter_.observe("EURUSD", 5.0, weekend + timedelta(minutes=index))
+
+        assert filter_.baseline("EURUSD", 14, weekend=False)[0] == pytest.approx(0.8)
+        assert filter_.baseline("EURUSD", 14, weekend=True)[0] == pytest.approx(5.0)
 
     @staticmethod
     def _seed(filter_: SpreadFilter, values: list[float], hour: int = 14) -> None:
@@ -250,6 +303,23 @@ class TestSpreadFilter:
         """Cannot measure the spread means cannot clear it."""
         ctx = FilterContext(symbol="EURUSD", spec=spec, now=NOW, tick=None)
         assert not filter_.check(ctx).passed
+
+    def test_stale_nonzero_weekend_quote_blocks(
+        self, filter_: SpreadFilter, spec: InstrumentSpec
+    ) -> None:
+        stale = Tick(
+            symbol=spec.symbol,
+            time=NOW - timedelta(hours=48),
+            bid=1.08500,
+            ask=1.08512,
+        )
+        ctx = FilterContext(symbol=spec.symbol, spec=spec, now=NOW, tick=stale)
+
+        verdict = filter_.check(ctx)
+
+        assert not verdict.passed
+        assert verdict.reason is Reason.STALE_QUOTE
+        assert verdict.data["tick_age_seconds"] == pytest.approx(48 * 3600)
 
     def test_broker_suffix_finds_the_fallback(
         self, config: SpreadFilterConfig, journal: Journal, clock: SimulatedClock
@@ -310,7 +380,8 @@ class TestCorrelationFilter:
     ) -> None:
         shared = self._walk(1)
         filter_ = self._filter(
-            config, {"EURUSD": shared, "GBPUSD": shared * 1.2 + 0.1}  # near-perfect correlation
+            config,
+            {"EURUSD": shared, "GBPUSD": shared * 1.2 + 0.1},  # near-perfect correlation
         )
         verdict = filter_.check(
             context(spec, direction=Direction.LONG, positions=(position("GBPUSD"),))

@@ -7,6 +7,8 @@ demand against a real broker, and exactly what must be handled correctly.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from config.schema import MT5Config
@@ -102,6 +104,14 @@ class TestConnection:
 
 
 class TestSymbols:
+    def test_catalogue_exposes_path_and_description(self, connector: MT5Connector) -> None:
+        connector.connect()
+        symbols = connector.symbols()
+
+        eurusd = next(item for item in symbols if item.name == "EURUSD")
+        assert eurusd.path.startswith("Forex")
+        assert "Euro" in eurusd.description
+
     def test_unknown_symbol_names_the_suffix_problem(self, connector: MT5Connector) -> None:
         connector.connect()
         with pytest.raises(SymbolNotAvailableError, match="suffix"):
@@ -126,6 +136,27 @@ class TestSymbols:
         tick = connector.tick("EURUSD")
         assert tick.ask > tick.bid
         assert tick.spread == pytest.approx(0.00012)
+
+    def test_tick_normalises_a_broker_server_timezone(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        fake.now = datetime.now(UTC) + timedelta(hours=3)
+        connector.connect()
+
+        tick = connector.tick("EURUSD")
+
+        assert connector.server_offset == timedelta(hours=3)
+        assert abs((tick.time - datetime.now(UTC)).total_seconds()) < 2
+
+    def test_stale_weekend_tick_does_not_corrupt_server_offset(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        fake.now = datetime.now(UTC) - timedelta(hours=16, minutes=37)
+        connector.connect()
+
+        connector.tick("EURUSD")
+
+        assert connector.server_offset == timedelta(0)
 
 
 class TestOrderExecution:

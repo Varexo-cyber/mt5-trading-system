@@ -59,8 +59,29 @@ python main.py --status           # connect, run the startup guard, print the re
 python main.py --risk             # risk state: every limit and how close we are
 python main.py --filters EURUSD   # each filter's verdict for one symbol
 python main.py --data EURUSD      # multi-timeframe summary with ATR
+
+# Eightcap-Live (FX symbols use `.i`; XAUUSD does not)
+python main.py --overlay config/eightcap.yaml --status
 python -m pytest                  # the test suite
 ```
+
+## Local dashboard
+
+On Windows, install the dashboard extra once and then double-click
+`launch_dashboard.cmd`:
+
+```powershell
+.venv-live\Scripts\python.exe -m pip install -e ".[live,dashboard]"
+```
+
+The app runs on `127.0.0.1` only. It reads the connected MT5 account, all broker
+catalogue instruments, active positions and up to four of MT5's 21 timeframes
+at once. It also generates a PDF report and exposes the real filesystem-backed
+`STOP` switch. Live execution remains locked until the strategy, backtester and
+demo loop in phases 4–6 are validated.
+
+Eightcap-specific symbol names live in `config/eightcap.yaml`; FX uses `.i`,
+while BTCUSD, XAUUSD, stocks and indices keep their catalogue names.
 
 The Phase 1 acceptance test — one demo order, placed, verified and closed, with
 every execution detail printed — is:

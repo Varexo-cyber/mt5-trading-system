@@ -1,0 +1,1526 @@
+[
+ {
+  "when": "2026-07-31T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Employment Cost - Wages QoQ",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-07-31T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Employment Cost - Benefits QoQ",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-07-31T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Employment Cost Index QoQ",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-07-31T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "GDP MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-07-31T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "GDP MoM Prel",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-07-31T13:45:00+00:00",
+  "currency": "USD",
+  "title": "Chicago PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-07-31T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Michigan Current Conditions Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-07-31T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Michigan Consumer Sentiment Final",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-07-31T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Michigan Inflation Expectations Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-07-31T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Michigan Consumer Expectations Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-07-31T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Michigan 5 Year Inflation Expectations Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-07-31T15:00:00+00:00",
+  "currency": "CAD",
+  "title": "Budget Balance",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-07-31T15:00:00+00:00",
+  "currency": "CAD",
+  "title": "Budget Balance",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-07-31T17:00:00+00:00",
+  "currency": "USD",
+  "title": "Baker Hughes Total Rigs Count",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-07-31T17:00:00+00:00",
+  "currency": "USD",
+  "title": "Baker Hughes Oil Rig Count",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-01T00:00:00+00:00",
+  "currency": "CHF",
+  "title": "Swiss National Day",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-02T22:45:00+00:00",
+  "currency": "NZD",
+  "title": "Building Permits MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-02T23:00:00+00:00",
+  "currency": "AUD",
+  "title": "Cotality Dwelling Prices MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-02T23:00:00+00:00",
+  "currency": "AUD",
+  "title": "S&P Global Manufacturing PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T00:00:00+00:00",
+  "currency": "GBP",
+  "title": "Late Summer Bank Holiday",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T00:00:00+00:00",
+  "currency": "CAD",
+  "title": "Civic Holiday",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T00:30:00+00:00",
+  "currency": "JPY",
+  "title": "S&P Global Manufacturing PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T01:00:00+00:00",
+  "currency": "AUD",
+  "title": "TD-MI Inflation Gauge MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T01:45:00+00:00",
+  "currency": "CNY",
+  "title": "RatingDog Manufacturing PMI",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-03T06:00:00+00:00",
+  "currency": "EUR",
+  "title": "Retail Sales MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-03T06:00:00+00:00",
+  "currency": "EUR",
+  "title": "Retail Sales YoY",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-03T06:30:00+00:00",
+  "currency": "CHF",
+  "title": "Inflation Rate MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T06:30:00+00:00",
+  "currency": "CHF",
+  "title": "Inflation Rate YoY",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-03T07:00:00+00:00",
+  "currency": "EUR",
+  "title": "Tourist Arrivals YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T07:15:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Manufacturing PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-03T07:30:00+00:00",
+  "currency": "CHF",
+  "title": "procure.ch Manufacturing PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-03T07:45:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Manufacturing PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-03T07:50:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Manufacturing PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T07:55:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Manufacturing PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T08:00:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Manufacturing PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T08:30:00+00:00",
+  "currency": "GBP",
+  "title": "S&P Global Manufacturing PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T12:00:00+00:00",
+  "currency": "EUR",
+  "title": "New Car Sales YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T13:00:00+00:00",
+  "currency": "EUR",
+  "title": "3-Month BTF Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T13:00:00+00:00",
+  "currency": "EUR",
+  "title": "6-Month BTF Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T13:00:00+00:00",
+  "currency": "EUR",
+  "title": "12-Month BTF Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T13:45:00+00:00",
+  "currency": "USD",
+  "title": "S&P Global Manufacturing PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Manufacturing Prices",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Manufacturing PMI",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-03T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Manufacturing New Orders",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Manufacturing Employment",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-03T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Construction Spending MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T15:30:00+00:00",
+  "currency": "USD",
+  "title": "3-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T15:30:00+00:00",
+  "currency": "USD",
+  "title": "6-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T16:30:00+00:00",
+  "currency": "EUR",
+  "title": "New Car Registrations YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T18:00:00+00:00",
+  "currency": "USD",
+  "title": "Loan Officer Survey",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T19:00:00+00:00",
+  "currency": "USD",
+  "title": "Treasury Refunding Financing Estimates",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-03T23:50:00+00:00",
+  "currency": "JPY",
+  "title": "Monetary Base YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "Household Spending YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "ANZ-Indeed Job Ads MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "Household Spending MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T02:35:00+00:00",
+  "currency": "NZD",
+  "title": "1-Year Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T02:35:00+00:00",
+  "currency": "NZD",
+  "title": "3-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T02:35:00+00:00",
+  "currency": "NZD",
+  "title": "6-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T03:35:00+00:00",
+  "currency": "JPY",
+  "title": "10-Year JGB Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T06:30:00+00:00",
+  "currency": "AUD",
+  "title": "Commodity Prices YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T06:45:00+00:00",
+  "currency": "EUR",
+  "title": "Budget Balance",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T07:00:00+00:00",
+  "currency": "EUR",
+  "title": "Unemployment Change",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T08:00:00+00:00",
+  "currency": "EUR",
+  "title": "Retail Sales MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T08:00:00+00:00",
+  "currency": "EUR",
+  "title": "Retail Sales YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T08:40:00+00:00",
+  "currency": "EUR",
+  "title": "6-Month Letras Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T08:40:00+00:00",
+  "currency": "EUR",
+  "title": "12-Month Letras Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T09:00:00+00:00",
+  "currency": "GBP",
+  "title": "Treasury Gilt 2032 Auctions",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T09:30:00+00:00",
+  "currency": "EUR",
+  "title": "2-Year Schatz Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T10:00:00+00:00",
+  "currency": "USD",
+  "title": "LMI Logistics Managers Index",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Imports",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Balance of Trade",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Exports",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Balance of Trade",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Exports",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Imports",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T12:55:00+00:00",
+  "currency": "USD",
+  "title": "Redbook YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T13:00:00+00:00",
+  "currency": "NZD",
+  "title": "Global Dairy Trade Price Index",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T13:20:00+00:00",
+  "currency": "USD",
+  "title": "NY Fed Bill Purchases 1 to 4 months",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T13:30:00+00:00",
+  "currency": "CAD",
+  "title": "S&P Global Manufacturing PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T14:00:00+00:00",
+  "currency": "USD",
+  "title": "JOLTs Job Quits",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T14:00:00+00:00",
+  "currency": "USD",
+  "title": "RCM/TIPP Economic Optimism Index",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Factory Orders ex Transportation",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Factory Orders MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T14:00:00+00:00",
+  "currency": "USD",
+  "title": "JOLTs Job Openings",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-04T15:30:00+00:00",
+  "currency": "USD",
+  "title": "52-Week Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T15:30:00+00:00",
+  "currency": "USD",
+  "title": "6-Week Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T16:00:00+00:00",
+  "currency": "EUR",
+  "title": "New Car Registrations YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T18:00:00+00:00",
+  "currency": "USD",
+  "title": "Total Vehicle Sales",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T20:30:00+00:00",
+  "currency": "USD",
+  "title": "API Crude Oil Stock Change",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T22:45:00+00:00",
+  "currency": "NZD",
+  "title": "Labour Costs Index QoQ",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T22:45:00+00:00",
+  "currency": "NZD",
+  "title": "Employment Change QoQ",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T22:45:00+00:00",
+  "currency": "NZD",
+  "title": "Participation Rate",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T22:45:00+00:00",
+  "currency": "NZD",
+  "title": "Labour Costs Index YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T22:45:00+00:00",
+  "currency": "NZD",
+  "title": "Unemployment Rate",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T23:00:00+00:00",
+  "currency": "AUD",
+  "title": "S&P Global Composite PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T23:00:00+00:00",
+  "currency": "AUD",
+  "title": "Ai Group Industry Index",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-04T23:00:00+00:00",
+  "currency": "AUD",
+  "title": "Ai Group Manufacturing Index",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T23:00:00+00:00",
+  "currency": "AUD",
+  "title": "S&P Global Services PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T23:00:00+00:00",
+  "currency": "AUD",
+  "title": "Ai Group Construction Index",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T23:30:00+00:00",
+  "currency": "JPY",
+  "title": "Average Cash Earnings YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T23:30:00+00:00",
+  "currency": "JPY",
+  "title": "Overtime Pay YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-04T23:50:00+00:00",
+  "currency": "JPY",
+  "title": "BoJ Monetary Policy Meeting Minutes",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T00:30:00+00:00",
+  "currency": "JPY",
+  "title": "S&P Global Services PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T00:30:00+00:00",
+  "currency": "JPY",
+  "title": "S&P Global Composite PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T01:45:00+00:00",
+  "currency": "CNY",
+  "title": "RatingDog Services PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T01:45:00+00:00",
+  "currency": "CNY",
+  "title": "RatingDog Composite PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T03:35:00+00:00",
+  "currency": "JPY",
+  "title": "BoJ JGB Purchase",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T06:45:00+00:00",
+  "currency": "EUR",
+  "title": "Industrial Production MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T07:15:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Composite PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T07:15:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Services PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T07:45:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Composite PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T07:45:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Services PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T07:50:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Services PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T07:50:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Composite PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T07:55:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Composite PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T07:55:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Services PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T08:00:00+00:00",
+  "currency": "GBP",
+  "title": "New Car Sales YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T08:00:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Composite PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T08:00:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Services PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T08:30:00+00:00",
+  "currency": "GBP",
+  "title": "S&P Global Composite PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T08:30:00+00:00",
+  "currency": "GBP",
+  "title": "S&P Global Services PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T09:00:00+00:00",
+  "currency": "EUR",
+  "title": "PPI MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T09:00:00+00:00",
+  "currency": "EUR",
+  "title": "PPI YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T09:30:00+00:00",
+  "currency": "EUR",
+  "title": "5-Year Bobl/g Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T09:30:00+00:00",
+  "currency": "EUR",
+  "title": "30-Year Bund/g Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T09:30:00+00:00",
+  "currency": "EUR",
+  "title": "10-Year Bund/g Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T10:00:00+00:00",
+  "currency": "EUR",
+  "title": "New Car Registrations YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T10:10:00+00:00",
+  "currency": "EUR",
+  "title": "3-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T10:10:00+00:00",
+  "currency": "EUR",
+  "title": "6-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T10:10:00+00:00",
+  "currency": "EUR",
+  "title": "12-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T11:00:00+00:00",
+  "currency": "USD",
+  "title": "MBA Mortgage Applications",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T11:00:00+00:00",
+  "currency": "USD",
+  "title": "MBA Purchase Index",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T11:00:00+00:00",
+  "currency": "USD",
+  "title": "MBA 30-Year Mortgage Rate",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T11:00:00+00:00",
+  "currency": "USD",
+  "title": "MBA Mortgage Market Index",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T11:00:00+00:00",
+  "currency": "USD",
+  "title": "MBA Mortgage Refinance Index",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T12:15:00+00:00",
+  "currency": "USD",
+  "title": "ADP Employment Change",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Treasury Refunding Announcement",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T13:45:00+00:00",
+  "currency": "USD",
+  "title": "S&P Global Services PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T13:45:00+00:00",
+  "currency": "USD",
+  "title": "S&P Global Composite PMI Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Services Prices",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Services Business Activity",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Services PMI",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-05T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Services Employment",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:00:00+00:00",
+  "currency": "USD",
+  "title": "ISM Services New Orders",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Distillate Stocks Change",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Crude Oil Imports Change",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Distillate Fuel Production Change",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Heating Oil Stocks Change",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Gasoline Stocks Change",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Cushing Crude Oil Stocks Change",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Crude Oil Stocks Change",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Refinery Crude Runs Change",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Gasoline Production Change",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T15:30:00+00:00",
+  "currency": "USD",
+  "title": "17-Week Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T16:00:00+00:00",
+  "currency": "CAD",
+  "title": "2-Year Bond Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T20:05:00+00:00",
+  "currency": "USD",
+  "title": "Fed Cook Speech",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-05T23:50:00+00:00",
+  "currency": "JPY",
+  "title": "Stock Investment by Foreigners",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-05T23:50:00+00:00",
+  "currency": "JPY",
+  "title": "Foreign Bond Investment",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "Exports MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "Imports MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "Balance of Trade",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-06T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "Building Permits MoM Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "Building Permits YoY Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T01:30:00+00:00",
+  "currency": "AUD",
+  "title": "Private House Approvals MoM Final",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T03:35:00+00:00",
+  "currency": "JPY",
+  "title": "6-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T03:35:00+00:00",
+  "currency": "JPY",
+  "title": "30-Year JGB Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T06:00:00+00:00",
+  "currency": "EUR",
+  "title": "Factory Orders MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T06:45:00+00:00",
+  "currency": "EUR",
+  "title": "Private Non Farm Payrolls QoQ Prel",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T07:00:00+00:00",
+  "currency": "EUR",
+  "title": "Industrial Production YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T07:00:00+00:00",
+  "currency": "CHF",
+  "title": "Unemployment Rate",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T07:30:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Construction PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T07:30:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Construction PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T07:30:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Construction PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T07:30:00+00:00",
+  "currency": "EUR",
+  "title": "S&P Global Construction PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T08:00:00+00:00",
+  "currency": "EUR",
+  "title": "Industrial Production MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T08:00:00+00:00",
+  "currency": "EUR",
+  "title": "Industrial Production YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T08:30:00+00:00",
+  "currency": "GBP",
+  "title": "S&P Global Construction PMI",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T08:40:00+00:00",
+  "currency": "EUR",
+  "title": "15-Year Index-Linked Obligacion Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T08:40:00+00:00",
+  "currency": "EUR",
+  "title": "5-Year Bonos Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T08:40:00+00:00",
+  "currency": "EUR",
+  "title": "7-Year Obligacion Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T08:40:00+00:00",
+  "currency": "EUR",
+  "title": "10-Year Obligacion Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T09:00:00+00:00",
+  "currency": "EUR",
+  "title": "Retail Sales MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T09:00:00+00:00",
+  "currency": "EUR",
+  "title": "Retail Sales YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T09:00:00+00:00",
+  "currency": "EUR",
+  "title": "2037 OAT Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T09:00:00+00:00",
+  "currency": "EUR",
+  "title": "2036 OAT Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T09:00:00+00:00",
+  "currency": "EUR",
+  "title": "2044 OAT Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T09:30:00+00:00",
+  "currency": "USD",
+  "title": "Challenger Job Cuts",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Continuing Jobless Claims",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Jobless Claims 4-week Average",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Initial Jobless Claims",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Unit Labour Costs QoQ Prel",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Nonfarm Productivity QoQ Prel",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T13:20:00+00:00",
+  "currency": "USD",
+  "title": "NY Fed Bill Purchases 4 to 12 months",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T13:30:00+00:00",
+  "currency": "CAD",
+  "title": "S&P Global Services PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T13:30:00+00:00",
+  "currency": "CAD",
+  "title": "S&P Global Composite PMI",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Wholesale Inventories MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T14:30:00+00:00",
+  "currency": "USD",
+  "title": "EIA Natural Gas Stocks Change",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T15:30:00+00:00",
+  "currency": "USD",
+  "title": "4-Week Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T15:30:00+00:00",
+  "currency": "USD",
+  "title": "8-Week Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T16:00:00+00:00",
+  "currency": "USD",
+  "title": "30-Year Mortgage Rate",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T16:00:00+00:00",
+  "currency": "USD",
+  "title": "15-Year Mortgage Rate",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T16:00:00+00:00",
+  "currency": "CAD",
+  "title": "10-Year Bond Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T20:30:00+00:00",
+  "currency": "USD",
+  "title": "Fed Balance Sheet",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-06T21:30:00+00:00",
+  "currency": "USD",
+  "title": "Fed Musalem Speech",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T23:30:00+00:00",
+  "currency": "JPY",
+  "title": "Household Spending YoY",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T23:30:00+00:00",
+  "currency": "JPY",
+  "title": "Household Spending MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-06T23:50:00+00:00",
+  "currency": "JPY",
+  "title": "Foreign Exchange Reserves",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T03:00:00+00:00",
+  "currency": "CNY",
+  "title": "Exports YoY",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-07T03:00:00+00:00",
+  "currency": "CNY",
+  "title": "Balance of Trade",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-07T03:00:00+00:00",
+  "currency": "CNY",
+  "title": "Imports YoY",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-07T03:00:00+00:00",
+  "currency": "CNY",
+  "title": "Balance of Trade Yuan",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T03:35:00+00:00",
+  "currency": "JPY",
+  "title": "3-Month Bill Auction",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T05:00:00+00:00",
+  "currency": "JPY",
+  "title": "Coincident Index Prel",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T05:00:00+00:00",
+  "currency": "JPY",
+  "title": "Leading Economic Index Prel",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T05:30:00+00:00",
+  "currency": "EUR",
+  "title": "Unemployment Rate",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T06:00:00+00:00",
+  "currency": "GBP",
+  "title": "Lloyds House Price Index MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T06:00:00+00:00",
+  "currency": "GBP",
+  "title": "Lloyds House Price Index YoY",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T06:00:00+00:00",
+  "currency": "EUR",
+  "title": "Industrial Production MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T06:00:00+00:00",
+  "currency": "EUR",
+  "title": "Exports MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T06:00:00+00:00",
+  "currency": "EUR",
+  "title": "Imports MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T06:00:00+00:00",
+  "currency": "EUR",
+  "title": "Balance of Trade",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-07T06:45:00+00:00",
+  "currency": "EUR",
+  "title": "Foreign Exchange Reserves",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T06:45:00+00:00",
+  "currency": "EUR",
+  "title": "Imports",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T06:45:00+00:00",
+  "currency": "EUR",
+  "title": "Current Account",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T06:45:00+00:00",
+  "currency": "EUR",
+  "title": "Balance of Trade",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T06:45:00+00:00",
+  "currency": "EUR",
+  "title": "Exports",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T07:00:00+00:00",
+  "currency": "CHF",
+  "title": "Consumer Confidence",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T07:00:00+00:00",
+  "currency": "CHF",
+  "title": "Foreign Exchange Reserves",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T08:00:00+00:00",
+  "currency": "CNY",
+  "title": "Foreign Exchange Reserves",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T09:00:00+00:00",
+  "currency": "GBP",
+  "title": "BBA Mortgage Rate",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Participation Rate",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Non Farm Payrolls",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Government Payrolls",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Nonfarm Payrolls Private",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Average Hourly Earnings YoY",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Unemployment Rate",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Average Hourly Earnings MoM",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "U-6 Unemployment Rate",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Average Weekly Hours",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "USD",
+  "title": "Manufacturing Payrolls",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Unemployment Rate",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Employment Change",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Part Time Employment Chg",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Average Hourly Wages YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Participation Rate",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T12:30:00+00:00",
+  "currency": "CAD",
+  "title": "Full Time Employment Chg",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T13:00:00+00:00",
+  "currency": "USD",
+  "title": "Used Car Prices YoY",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T13:00:00+00:00",
+  "currency": "USD",
+  "title": "Used Car Prices MoM",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T14:00:00+00:00",
+  "currency": "CAD",
+  "title": "Ivey PMI s.a",
+  "impact": "HIGH"
+ },
+ {
+  "when": "2026-08-07T14:00:00+00:00",
+  "currency": "USD",
+  "title": "Fed Barkin Speech",
+  "impact": "MEDIUM"
+ },
+ {
+  "when": "2026-08-07T15:00:00+00:00",
+  "currency": "USD",
+  "title": "Consumer Inflation Expectations",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T17:00:00+00:00",
+  "currency": "USD",
+  "title": "Baker Hughes Total Rigs Count",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T17:00:00+00:00",
+  "currency": "USD",
+  "title": "Baker Hughes Oil Rig Count",
+  "impact": "LOW"
+ },
+ {
+  "when": "2026-08-07T19:00:00+00:00",
+  "currency": "USD",
+  "title": "Consumer Credit Change",
+  "impact": "LOW"
+ }
+]

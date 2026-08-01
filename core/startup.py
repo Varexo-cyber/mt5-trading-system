@@ -25,9 +25,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from config.schema import Settings
+from core.broker import Broker
 from core.errors import StartupGuardError
 from core.instrument import InstrumentSpec
-from core.mt5_connector import MT5Connector
 from core.types import AccountSnapshot, TradingMode
 from infra.logging import get_logger
 
@@ -87,8 +87,7 @@ class StartupReport:
             "=" * 72,
             f"  STARTUP CHECK — mode: {self.mode.value.upper()}",
             "=" * 72,
-            f"  Account      {acct.login} @ {acct.server}"
-            f"   ({'DEMO' if acct.is_demo else 'LIVE'})",
+            f"  Account      {acct.login} @ {acct.server}   ({'DEMO' if acct.is_demo else 'LIVE'})",
             f"  Equity       {acct.equity:.2f} {acct.currency}"
             f"   (balance {acct.balance:.2f}, leverage 1:{acct.leverage})",
             "",
@@ -120,7 +119,7 @@ class StartupReport:
 
 
 def run_startup_guard(
-    settings: Settings, connector: MT5Connector, account: AccountSnapshot
+    settings: Settings, connector: Broker, account: AccountSnapshot
 ) -> StartupReport:
     """Validate that equity, mode, whitelist and broker specs are consistent.
 
