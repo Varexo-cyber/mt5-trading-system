@@ -9,6 +9,7 @@ can place orders before the net exists is a system that will place a bad one.
     python main.py --status            # connect, run the startup guard, report
     python main.py --data EURUSD       # fetch and summarise the MTF view
     python main.py --risk              # current risk state and every limit
+    python main.py --filters EURUSD    # run every filter and show each verdict
 """
 
 from __future__ import annotations
@@ -26,7 +27,14 @@ from core.data_manager import DataManager, atr
 from core.errors import KillSwitchEngaged, TradingSystemError
 from core.mt5_connector import MT5Connector
 from core.startup import enforce, run_startup_guard
-from core.types import AccountSnapshot, Timeframe
+from core.types import AccountSnapshot, Direction, Timeframe
+from filters.base import FilterChain, FilterContext
+from filters.calendar.providers import build_providers
+from filters.calendar.service import CalendarService
+from filters.correlation_filter import CorrelationFilter
+from filters.news_filter import NewsFilter
+from filters.session_filter import SessionFilter
+from filters.spread_filter import SpreadFilter
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger, setup_logging
 from journal.database import Journal
@@ -49,6 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--risk", action="store_true", help="show the current risk state and all limits"
+    )
+    parser.add_argument(
+        "--filters", metavar="SYMBOL", help="run every filter for a symbol and show each verdict"
     )
     parser.add_argument(
         "--no-confirm",
@@ -148,10 +159,12 @@ def main(argv: list[str] | None = None) -> int:
             show_data(connector, settings, args.data)
         if args.risk:
             show_risk(connector, settings, account, kill_switch)
-        if not (args.data or args.risk or args.status):
+        if args.filters:
+            show_filters(connector, settings, args.filters)
+        if not (args.data or args.risk or args.filters or args.status):
             print(
-                "\nPhases 1-2 only: no trading loop yet. Use --status, --risk, "
-                "or --data SYMBOL. See PLAN.md for the roadmap."
+                "\nPhases 1-3 only: no trading loop yet. Use --status, --risk, "
+                "--filters SYMBOL or --data SYMBOL. See PLAN.md for the roadmap."
             )
         return 0
     except TradingSystemError as exc:
@@ -252,5 +265,82 @@ def show_risk(
         )
         verdict = "CLEAR" if decision.approved else str(decision.reason)
         print(f"\n    verdict       {verdict}\n                  {decision.detail}")
+    finally:
+        journal.close()
+
+
+def build_filter_chain(
+    connector: MT5Connector, settings: Settings, journal: Journal, clock: LiveClock
+) -> FilterChain:
+    """Assemble the filters in evaluation order.
+
+    Order is not arbitrary: most absolute first, so the reason that reaches the
+    journal is the most fundamental one. A cycle blocked by both a news
+    blackout and a wide spread should read as the blackout.
+    """
+    news_config = settings.filters.news
+    calendar_dir = PACKAGE_ROOT / Path(news_config.cache_path).parent
+    calendar = CalendarService(
+        build_providers(news_config.providers, calendar_dir=calendar_dir),
+        clock,
+        cache_path=PACKAGE_ROOT / news_config.cache_path,
+        refresh_interval_minutes=news_config.refresh_interval_minutes,
+        max_age_minutes=news_config.max_calendar_age_minutes,
+    )
+    data = DataManager(connector, settings.data, clock)
+
+    return FilterChain(
+        [
+            NewsFilter(news_config, calendar, clock),
+            SessionFilter(settings.filters.session),
+            SpreadFilter(
+                settings.filters.spread,
+                journal,
+                clock,
+                retention_days=settings.filters.spread.retention_days,
+            ),
+            CorrelationFilter(
+                settings.filters.correlation,
+                lambda symbol, timeframe: data.get_series(symbol, timeframe),
+            ),
+        ]
+    )
+
+
+def show_filters(connector: MT5Connector, settings: Settings, symbol: str) -> None:
+    """Run every filter for one symbol and print each verdict individually.
+
+    Runs them all rather than short-circuiting like the live chain does: when
+    you are checking whether the filters behave, seeing only the first block
+    hides the other three.
+    """
+    clock = LiveClock(connector.server_offset)
+    journal = Journal(
+        PACKAGE_ROOT / settings.journal.database_path,
+        clock,
+        day_boundary_utc=settings.risk.day_boundary_utc,
+    ).open()
+    try:
+        chain = build_filter_chain(connector, settings, journal, clock)
+        spec = connector.spec(symbol)
+        ctx = FilterContext(
+            symbol=symbol,
+            spec=spec,
+            now=clock.now(),
+            direction=Direction.LONG,
+            tick=connector.tick(symbol),
+            open_positions=tuple(connector.positions(magic=settings.system.magic_number)),
+        )
+
+        print(f"\n  FILTERS — {symbol} at {ctx.now:%Y-%m-%d %H:%M} UTC")
+        blocked = []
+        for filter_ in chain.filters:
+            verdict = filter_.check(ctx)
+            mark = "pass" if verdict.passed else "BLOCK"
+            print(f"    {mark:<6}{filter_.name:<13}{verdict.detail}")
+            if not verdict.passed:
+                blocked.append(f"{filter_.name} ({verdict.reason})")
+
+        print(f"\n    entry {'ALLOWED' if not blocked else 'BLOCKED by ' + ', '.join(blocked)}\n")
     finally:
         journal.close()

@@ -39,6 +39,21 @@ class Reason(StrEnum):
     SYMBOL_BLOCKED_BY_EQUITY = "SYMBOL_BLOCKED_BY_EQUITY"
     SYMBOL_NOT_TRADABLE = "SYMBOL_NOT_TRADABLE"
 
+    # -- filters -----------------------------------------------------------
+    #: Inside a high-impact news blackout window.
+    NEWS_BLACKOUT = "NEWS_BLACKOUT"
+    #: No provider answered and the cache is stale. No data means no trade.
+    NEWS_CALENDAR_UNAVAILABLE = "NEWS_CALENDAR_UNAVAILABLE"
+    OUTSIDE_TRADABLE_SESSION = "OUTSIDE_TRADABLE_SESSION"
+    #: Daily rollover: spreads blow out and liquidity vanishes.
+    ROLLOVER_WINDOW = "ROLLOVER_WINDOW"
+    #: Friday close or Sunday reopen — thin books, gap risk over the weekend.
+    WEEKEND_EDGE = "WEEKEND_EDGE"
+    MARKET_CLOSED = "MARKET_CLOSED"
+    SPREAD_TOO_WIDE = "SPREAD_TOO_WIDE"
+    #: A second position that would double the same underlying currency risk.
+    CORRELATED_EXPOSURE = "CORRELATED_EXPOSURE"
+
     # -- exposure limits ---------------------------------------------------
     MAX_POSITIONS_REACHED = "MAX_POSITIONS_REACHED"
     MAX_TRADES_PER_DAY = "MAX_TRADES_PER_DAY"
@@ -64,13 +79,16 @@ class Reason(StrEnum):
         """True for reasons that stop the whole system, not just one trade.
 
         The distinction matters: a skipped setup is normal and expected, while
-        a halt is an event that has to reach a human.
+        a halt is an event that has to reach a human. A missing calendar counts
+        as a halt: it stops every symbol, not just this one, and if it persists
+        the system is silently doing nothing all day.
         """
         return self in _HALTING
 
 
 _HALTING = frozenset(
     {
+        Reason.NEWS_CALENDAR_UNAVAILABLE,
         Reason.DAILY_LOSS_LIMIT,
         Reason.WEEKLY_LOSS_LIMIT,
         Reason.CIRCUIT_BREAKER,
