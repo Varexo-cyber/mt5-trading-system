@@ -2,7 +2,7 @@
 
 Read this before touching anything in this repository.
 
-Current state: **Phase 1 complete.** `PLAN.md` has the roadmap, the open
+Current state: **Phases 1-2 complete.** `PLAN.md` has the roadmap, the open
 questions, and the reasoning behind the design choices below.
 
 ---
@@ -27,6 +27,12 @@ implementing it.
 6. **No trade is the default.** A trade is the exception that has to earn its
    way past every filter. Code that makes trading easier needs a much better
    argument than code that makes it harder.
+7. **Risk never increases after a loss.** `RiskManager.assert_not_forbidden`
+   raises on it, as it does on averaging down and hedging the same symbol.
+   Halving risk after a losing streak (anti-martingale) is the only
+   streak-based sizing permitted.
+8. **Loss limits are measured on equity, not realised P/L,** and their anchors
+   live in the journal so a restart cannot hand back a fresh daily budget.
 
 ## Design conventions
 
@@ -59,6 +65,10 @@ in `core/mt5_codes.py` and verified against the real package at connect time.
 Never import `MetaTrader5` at module scope — it breaks the test suite and every
 non-Windows contributor.
 
+**Reasons are a closed vocabulary.** `risk/reasons.py` strings land verbatim in
+the journal and are grouped by in reports. Renaming a member breaks historical
+queries; add a new one instead.
+
 **Test through `FakeMT5`.** `tests/fakes/fake_mt5.py` scripts return codes,
 fill offsets and connection failures. The failure paths are the ones that
 matter, and they are the ones you cannot trigger on demand against a broker.
@@ -68,14 +78,16 @@ matter, and they are the ones you cannot trigger on demand against a broker.
 ```
 config/    typed configuration; schema.py is where hard rules live
 core/      types, errors, clock, instrument maths, connector, data, startup guard
+risk/      reasons (journal vocabulary), position sizer, risk manager
+journal/   SQLite schema + writer; every cycle, trade and execution detail
 infra/     logging (JSON), kill switch
 tests/     pytest; runs on any platform, no terminal required
 scripts/   operator tools (phase1_acceptance.py)
 docs/      modules/<name>.md per analysis module, hypotheses/ pre-registrations
 ```
 
-Planned, not yet built: `filters/`, `analysis/`, `strategy/`, `risk/`,
-`backtest/`, `journal/`, `learning/`, `monitoring/`. See `PLAN.md`.
+Planned, not yet built: `filters/`, `analysis/`, `strategy/`, `backtest/`,
+`learning/`, `monitoring/`, and `risk/trade_manager.py`. See `PLAN.md`.
 
 ## Style
 
@@ -111,4 +123,5 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m ruff check . && .venv/bin/python -m black --check .
 python main.py --check-config          # offline validation
 python main.py --status                # needs a terminal
+python main.py --risk                  # risk state and every limit
 ```

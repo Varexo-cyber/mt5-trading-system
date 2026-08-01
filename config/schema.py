@@ -192,6 +192,14 @@ class RiskConfig(Base):
     #: known exactly; it never is, and the overestimate is what ruins accounts.
     kelly_fraction: float = Field(default=0.25, gt=0.0, le=0.5)
 
+    #: When a trading day rolls over, in UTC. Defaults to the FX rollover
+    #: rather than midnight, so the daily loss limit does not reset in the
+    #: middle of the New York session.
+    day_boundary_utc: str = Field(default="21:00", pattern=r"^\d{2}:\d{2}$")
+    #: Margin headroom multiplier. A position that consumes the last of the
+    #: free margin leaves nothing for the excursion before its own stop.
+    margin_safety_factor: float = Field(default=2.0, ge=1.0, le=10.0)
+
     forbidden: ForbiddenPractices = ForbiddenPractices()
 
     @model_validator(mode="after")
