@@ -12,6 +12,7 @@ from core.broker import Broker
 from core.instrument import InstrumentSpec
 from core.types import (
     AccountSnapshot,
+    ClosedPosition,
     Direction,
     OrderRequest,
     OrderResult,
@@ -38,6 +39,7 @@ class PaperBroker:
         self.currency = currency
         self._balance = starting_balance
         self._positions: list[Position] = []
+        self._closed: dict[int, ClosedPosition] = {}
         self._next_ticket = 1_000_000
         self._connected = False
         self._load()
@@ -159,13 +161,29 @@ class PaperBroker:
         )
 
     def close_position(self, position: Position, volume: float | None = None) -> OrderResult:
-        if volume is not None and volume < position.volume:
-            raise ValueError("paper broker partial close is intentionally unsupported")
         tick = self.tick(position.symbol)
         fill = tick.bid if position.direction is Direction.LONG else tick.ask
-        pnl = self._pnl(position, fill)
+        close_volume = volume if volume is not None else position.volume
+        if close_volume <= 0 or close_volume > position.volume:
+            raise ValueError(f"invalid paper close volume {close_volume:g}")
+        pnl = self._pnl(position, fill) * (close_volume / position.volume)
         self._balance += pnl
-        self._positions = [item for item in self._positions if item.ticket != position.ticket]
+        remaining = position.volume - close_volume
+        if remaining > 0:
+            reduced = Position(
+                **{
+                    **asdict(position),
+                    "volume": remaining,
+                    "profit": position.profit - pnl,
+                }
+            )
+            self._positions = [
+                reduced if item.ticket == position.ticket else item for item in self._positions
+            ]
+            self._remember_closed(position, fill, pnl, "PARTIAL", volume=close_volume)
+        else:
+            self._positions = [item for item in self._positions if item.ticket != position.ticket]
+            self._remember_closed(position, fill, pnl, "MANUAL")
         self._save()
         return OrderResult(
             ok=True,
@@ -175,8 +193,8 @@ class PaperBroker:
             order_ticket=position.ticket,
             deal_ticket=position.ticket,
             position_ticket=position.ticket,
-            requested_volume=position.volume,
-            filled_volume=position.volume,
+            requested_volume=close_volume,
+            filled_volume=close_volume,
             requested_price=fill,
             filled_price=fill,
             slippage_pips=0.0,
@@ -204,6 +222,12 @@ class PaperBroker:
                 marked = Position(**{**asdict(position), "profit": self._pnl(position, exit_price)})
                 if stop_hit or target_hit:
                     self._balance += marked.profit
+                    self._remember_closed(
+                        marked,
+                        exit_price,
+                        marked.profit,
+                        "SL" if stop_hit else "TP",
+                    )
                     events.append((marked, "SL" if stop_hit else "TP"))
                 else:
                     updated.append(marked)
@@ -212,6 +236,51 @@ class PaperBroker:
         self._positions = updated
         self._save()
         return events
+
+    def closed_position(self, position_ticket: int) -> ClosedPosition | None:
+        return self._closed.get(position_ticket)
+
+    def estimate_margin(
+        self,
+        symbol: str,
+        direction: Direction,
+        volume: float,
+        price: float,
+    ) -> float:
+        return self.market.estimate_margin(symbol, direction, volume, price)
+
+    def _remember_closed(
+        self,
+        position: Position,
+        exit_price: float,
+        pnl_money: float,
+        reason: str,
+        *,
+        volume: float | None = None,
+    ) -> None:
+        closed_volume = position.volume if volume is None else volume
+        previous = self._closed.get(position.ticket)
+        total_volume = closed_volume + (previous.volume if previous is not None else 0.0)
+        weighted_price = (
+            exit_price * closed_volume
+            + (previous.exit_price * previous.volume if previous is not None else 0.0)
+        ) / total_volume
+        self._closed[position.ticket] = ClosedPosition(
+            position_ticket=position.ticket,
+            symbol=position.symbol,
+            closed_at=datetime.now(UTC),
+            exit_price=weighted_price,
+            volume=total_volume,
+            pnl_money=pnl_money + (previous.pnl_money if previous is not None else 0.0),
+            reason=reason,
+            deal_tickets=(
+                *(previous.deal_tickets if previous is not None else ()),
+                position.ticket,
+            ),
+        )
+        if len(self._closed) > 1_000:
+            oldest = min(self._closed.values(), key=lambda item: item.closed_at)
+            self._closed.pop(oldest.position_ticket, None)
 
     def _pnl(self, position: Position, exit_price: float) -> float:
         spec = self.spec(position.symbol)
@@ -248,6 +317,7 @@ class PaperBroker:
             return
         payload = json.loads(self.state_path.read_text(encoding="utf-8"))
         self._balance = float(payload["balance"])
+        self.currency = str(payload.get("currency", self.currency))
         self._next_ticket = int(payload["next_ticket"])
         self._positions = [
             Position(
@@ -259,11 +329,22 @@ class PaperBroker:
             )
             for row in payload.get("positions", [])
         ]
+        self._closed = {
+            int(row["position_ticket"]): ClosedPosition(
+                **{
+                    **row,
+                    "closed_at": datetime.fromisoformat(row["closed_at"]),
+                    "deal_tickets": tuple(row.get("deal_tickets", [])),
+                }
+            )
+            for row in payload.get("closed_positions", [])
+        }
 
     def _save(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
             "balance": self._balance,
+            "currency": self.currency,
             "next_ticket": self._next_ticket,
             "positions": [
                 {
@@ -272,6 +353,13 @@ class PaperBroker:
                     "opened_at": position.opened_at.isoformat(),
                 }
                 for position in self._positions
+            ],
+            "closed_positions": [
+                {
+                    **asdict(position),
+                    "closed_at": position.closed_at.isoformat(),
+                }
+                for position in self._closed.values()
             ],
         }
         temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")

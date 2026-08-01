@@ -31,6 +31,7 @@ class BacktestOrder:
     take_profit: float
     score: float = 0.0
     confidence: float = 0.0
+    modules: tuple[str, ...] = ()
 
     @property
     def risk(self) -> float:
@@ -59,6 +60,9 @@ class BacktestResult:
     profit_factor: float
     max_drawdown_r: float
     sharpe: float
+    longest_losing_streak: int = 0
+    max_drawdown_duration_trades: int = 0
+    monte_carlo_20pct_drawdown_probability: float = 0.0
 
     @property
     def sample_size(self) -> int:
@@ -107,6 +111,26 @@ class PessimisticBacktester:
                 continue
             future = future.iloc[: self.assumptions.max_holding_bars]
             trades.append(self._replay(order, future))
+        return self._summarise(trades)
+
+    def run_non_overlapping(
+        self, frame: pd.DataFrame, orders: list[BacktestOrder]
+    ) -> BacktestResult:
+        """Replay one position at a time, matching the small-account risk limit."""
+        self._validate(frame)
+        trades: list[BacktestTrade] = []
+        unavailable_until: datetime | None = None
+        for order in sorted(orders, key=lambda item: item.decided_at):
+            if unavailable_until is not None and order.decided_at <= unavailable_until:
+                continue
+            if order.risk <= 0:
+                continue
+            future = frame[frame.index > order.decided_at]
+            if future.empty:
+                continue
+            trade = self._replay(order, future.iloc[: self.assumptions.max_holding_bars])
+            trades.append(trade)
+            unavailable_until = trade.exited_at
         return self._summarise(trades)
 
     def _replay(self, order: BacktestOrder, future: pd.DataFrame) -> BacktestTrade:
@@ -193,6 +217,8 @@ class PessimisticBacktester:
         std = float(returns.std(ddof=1)) if len(returns) > 1 else 0.0
         sharpe = float(returns.mean() / std * sqrt(len(returns))) if std > 0 else 0.0
         profit_factor = float(wins.sum() / abs(losses.sum())) if losses.size else float("inf")
+        losing_streak = longest_losing_streak(returns.tolist())
+        duration = max_drawdown_duration(returns.tolist())
         return BacktestResult(
             tuple(trades),
             float(returns.sum()),
@@ -201,7 +227,59 @@ class PessimisticBacktester:
             profit_factor,
             float(drawdown.max(initial=0.0)),
             sharpe,
+            losing_streak,
+            duration,
+            monte_carlo_drawdown_probability(returns.tolist()),
         )
+
+
+def longest_losing_streak(returns: list[float]) -> int:
+    longest = current = 0
+    for value in returns:
+        current = current + 1 if value < 0 else 0
+        longest = max(longest, current)
+    return longest
+
+
+def max_drawdown_duration(returns: list[float]) -> int:
+    equity = peak = 0.0
+    current = longest = 0
+    for value in returns:
+        equity += value
+        if equity >= peak:
+            peak = equity
+            current = 0
+        else:
+            current += 1
+            longest = max(longest, current)
+    return longest
+
+
+def monte_carlo_drawdown_probability(
+    returns: list[float],
+    *,
+    simulations: int = 1_000,
+    risk_pct_per_r: float = 1.0,
+    drawdown_threshold_pct: float = 20.0,
+    seed: int = 770101,
+) -> float:
+    """Probability a shuffled trade path breaches the configured drawdown."""
+    if simulations < 1:
+        raise ValueError("simulations must be positive")
+    if not returns:
+        return 0.0
+    rng = np.random.default_rng(seed)
+    values = np.asarray(returns, dtype=float)
+    breaches = 0
+    for _ in range(simulations):
+        equity = peak = 1.0
+        for value in rng.permutation(values):
+            equity *= max(0.0, 1.0 + value * risk_pct_per_r / 100.0)
+            peak = max(peak, equity)
+            if peak > 0 and (peak - equity) / peak * 100.0 >= drawdown_threshold_pct:
+                breaches += 1
+                break
+    return breaches / simulations
 
 
 def deflated_sharpe_probability(returns: list[float], configurations_tested: int) -> float:

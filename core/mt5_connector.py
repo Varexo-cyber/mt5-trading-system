@@ -48,6 +48,7 @@ from core.mt5_codes import (
 )
 from core.types import (
     AccountSnapshot,
+    ClosedPosition,
     Direction,
     OrderRequest,
     OrderResult,
@@ -343,12 +344,112 @@ class MT5Connector:
                     tp=float(p.tp),
                     profit=float(p.profit),
                     swap=float(p.swap),
-                    opened_at=datetime.fromtimestamp(int(p.time), tz=UTC),
+                    opened_at=self._normalise_mt5_timestamp(int(p.time)),
                     magic=int(p.magic),
                     comment=str(p.comment),
                 )
             )
         return out
+
+    def closed_position(self, position_ticket: int) -> ClosedPosition | None:
+        """Recover exact final accounting for a broker-closed position.
+
+        MT5 assigns the same ``position_id`` to every deal in one position's
+        lifecycle. Entry commission may be charged on the opening deal, so net
+        PnL deliberately sums all monetary fields across all lifecycle deals,
+        while exit price and volume use only closing/reversal deals.
+        """
+        raw = self._call("history_deals_get", position=position_ticket)
+        if raw is None:
+            code, _ = self._last_error_tuple()
+            if code == 0:
+                return None
+            raise MT5ConnectionError(
+                f"history_deals_get(position={position_ticket}) failed: {self._error_text()}"
+            )
+        deals = list(raw)
+        exit_entries = {
+            int(getattr(self.mt5, "DEAL_ENTRY_OUT", 1)),
+            int(getattr(self.mt5, "DEAL_ENTRY_INOUT", 2)),
+            int(getattr(self.mt5, "DEAL_ENTRY_OUT_BY", 3)),
+        }
+        exits = [deal for deal in deals if int(getattr(deal, "entry", -1)) in exit_entries]
+        if not exits:
+            return None
+        volume = sum(float(getattr(deal, "volume", 0.0) or 0.0) for deal in exits)
+        if volume <= 0:
+            return None
+        exit_price = (
+            sum(
+                float(getattr(deal, "price", 0.0) or 0.0)
+                * float(getattr(deal, "volume", 0.0) or 0.0)
+                for deal in exits
+            )
+            / volume
+        )
+        final_deal = max(exits, key=lambda deal: int(getattr(deal, "time_msc", 0)))
+        pnl_money = sum(
+            sum(
+                float(getattr(deal, field, 0.0) or 0.0)
+                for field in ("profit", "commission", "swap", "fee")
+            )
+            for deal in deals
+        )
+        reason = self._deal_reason(int(getattr(final_deal, "reason", -1)))
+        symbol = str(getattr(final_deal, "symbol", "")) or str(getattr(deals[0], "symbol", ""))
+        return ClosedPosition(
+            position_ticket=position_ticket,
+            symbol=symbol,
+            closed_at=self._normalise_mt5_timestamp(int(final_deal.time)),
+            exit_price=exit_price,
+            volume=volume,
+            pnl_money=pnl_money,
+            reason=reason,
+            deal_tickets=tuple(int(deal.ticket) for deal in exits),
+        )
+
+    def estimate_margin(
+        self,
+        symbol: str,
+        direction: Direction,
+        volume: float,
+        price: float,
+    ) -> float:
+        """Return broker-calculated required margin in account currency."""
+        self.select(symbol)
+        order_type = OrderType.BUY if direction is Direction.LONG else OrderType.SELL
+        margin = self._call("order_calc_margin", int(order_type), symbol, volume, price)
+        if margin is None:
+            raise MT5ConnectionError(
+                f"order_calc_margin({symbol}, {volume}) failed: {self._error_text()}"
+            )
+        value = float(margin)
+        if value < 0:
+            raise MT5ConnectionError(f"order_calc_margin({symbol}) returned {value}")
+        return value
+
+    def _normalise_mt5_timestamp(self, timestamp: int) -> datetime:
+        return datetime.fromtimestamp(timestamp, tz=UTC) - self._server_offset
+
+    def _deal_reason(self, value: int) -> str:
+        names = (
+            "CLIENT",
+            "MOBILE",
+            "WEB",
+            "EXPERT",
+            "SL",
+            "TP",
+            "SO",
+            "ROLLOVER",
+            "VMARGIN",
+            "SPLIT",
+            "CORPORATE_ACTION",
+        )
+        fallback = {name: index for index, name in enumerate(names)}
+        for name in names:
+            if value == int(getattr(self.mt5, f"DEAL_REASON_{name}", fallback[name])):
+                return name
+        return f"BROKER_REASON_{value}"
 
     # -- symbols -----------------------------------------------------------
 
@@ -469,7 +570,9 @@ class MT5Connector:
         rates = self._call("copy_rates_range", symbol, timeframe, start, end)
         if rates is None:
             raise SymbolNotAvailableError(
-                f"{symbol}: copy_rates_range failed ({self._error_text()})"
+                f"{symbol}: copy_rates_range(timeframe={timeframe}, "
+                f"start={start.isoformat()}, end={end.isoformat()}) failed "
+                f"({self._error_text()})"
             )
         return self._normalise_rate_times(rates)
 

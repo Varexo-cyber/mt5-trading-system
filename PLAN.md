@@ -1,6 +1,8 @@
 # Plan — autonoom MT5 trading systeem
 
-Status: **Fase 1, 2 en 3 af.** Alles hieronder is de afspraak voor de rest.
+Status: **de codepaden van fase 1 t/m 9 zijn gebouwd.** Live blijft bewust
+geblokkeerd tot de vooraf geregistreerde backtest, 30 paperdagen en demo-executie
+daadwerkelijk voldoende bewijs hebben opgeleverd. Code-compleet is geen bewezen edge.
 
 Documenten zijn in het Nederlands (die lees jij), code en docstrings in het
 Engels (dat is de taal van de libraries waar het tussen staat, en gemengde
@@ -215,11 +217,11 @@ undercapitalized-check de bindende grens, en die is exact in plaats van een
 benadering. Als goud in fase 5 echt verhandelbaar wordt, wil je dit waarschijnlijk
 in ATR-veelvouden uitdrukken in plaats van in pips. Genoteerd voor dan.
 
-### Wat er nog niet is
+### Wat nog niet door tijd kan worden afgedwongen
 
-Geen strategie, geen filters, geen orderloop. Dat is de bedoelde volgorde: het
-vangnet (Fase 2) en het nieuwsfilter (Fase 3) komen vóór iets dat zelfstandig
-orders kan versturen.
+De infrastructuur staat, maar de vereiste steekproef niet: minimaal 100 OOS
+trades per module, 30 dagen paper en een clean demo-executie. De promotie-audit
+blokkeert live automatisch zolang die feiten ontbreken.
 
 ---
 
@@ -229,7 +231,7 @@ Op elk platform (geen MT5 nodig):
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/python -m pytest              # 282 tests
+.venv/bin/python -m pytest              # 300+ tests
 .venv/bin/python main.py --check-config
 ```
 
@@ -259,12 +261,12 @@ echte spread, en die drie getallen bepalen of Fase 8 zinvol is.
 |---|---|---|
 | ~~2~~ | ~~Position sizer, risk manager, SQLite journal~~ | **Af** — 80 tests op sizing, limieten en journal |
 | ~~3~~ | ~~Nieuwsfilter, sessie, spread, correlatie~~ | **Af** — 74 tests. Nog te doen: `verify_calendar.py` één keer draaien tegen de echte feeds |
-| **4** | Analyse: market structure → levels → SMC → indicatoren. Eén module per keer, elk met een plot | Jij bevestigt op een chart dat de module ziet wat jij ziet |
-| **5** | Confluence engine + backtester (pessimistisch: echte spreads, slippage, commissie, SL-eerst bij intrabar-ambiguïteit) | Walk-forward draait; look-ahead-test slaagt |
-| **6** | Trade management + live loop op demo | Loop draait een week zonder handmatige interventie; reconciliatie clean |
-| **7** | Monitoring, rapportage, postmortem | Wekelijks rapport genereert zichzelf |
-| **8** | Micro-live shakeout | Nul onverklaarde discrepanties |
-| **9** | Evaluatie & opschalen | `sample_size_check` zegt dat er genoeg trades zijn |
+| ~~4~~ | Analyse: structure, trend, levels, sweeps, volatility | **Code af; weights wachten op bewijs** |
+| ~~5~~ | Confluence + pessimistische MTF replay | **Code af; holdout standaard vergrendeld** |
+| ~~6~~ | Trade management + demo loop | **Code af; demo-account en looptijd nog nodig** |
+| ~~7~~ | Monitoring, rapportage, postmortem | **Af; dagelijks/wekelijks/execution automatisch** |
+| **8** | Micro-live shakeout | **Geblokkeerd tot promotion audit volledig groen is** |
+| **9** | Evaluatie & opschalen | **Guardrails af; empirische sample nog niet** |
 
 Fase 4 is het grootste blok en wordt per module opgeleverd.
 

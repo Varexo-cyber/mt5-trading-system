@@ -1,7 +1,9 @@
 # MT5 trading system
 
-A research-driven autonomous trading system for MetaTrader 5, built in phases.
-**Phases 1-2 are complete** (foundation, risk layer, journal); there is no strategy and no order loop yet.
+A research-driven autonomous trading system for MetaTrader 5. The scanner,
+multi-timeframe analysis, paper/demo execution, position management, monitoring
+and reporting loops are implemented. Live execution remains evidence-locked;
+the current research sample does not justify risking money.
 
 **Continuing this project in a new session? Start with `HANDOFF.md`.**
 
@@ -38,7 +40,15 @@ questions. Read `CLAUDE.md` for the conventions this codebase is held to.
   per-instrument, per-hour baseline from observation; the correlation filter is
   direction-aware, so long EURUSD against short GBPUSD passes while long
   against long does not.
-- Structured JSON logging, a filesystem kill switch, and 282 tests that run
+- Whole-catalogue rotation, asset-aware profiles, bounded optional AI vetoes,
+  persistent paper execution and a hard-gated MT5 demo mode.
+- Exact deal reconciliation, broker-calculated margin, partial-close crash
+  recovery, news de-risking and evidence-based live promotion.
+- Look-ahead-safe historical replay, registered parameter sweeps, deflated
+  Sharpe and Monte Carlo drawdown diagnostics.
+- Daily, weekly and execution reports plus guarded learning proposals,
+  30-day shadow configuration and config rollback.
+- Structured JSON logging, a filesystem kill switch, and 300+ tests that run
   without a terminal on any platform.
 
 ## Setup
@@ -63,6 +73,9 @@ python main.py --data EURUSD      # multi-timeframe summary with ATR
 # Eightcap-Live (FX symbols use `.i`; XAUUSD does not)
 python main.py --overlay config/eightcap.yaml --status
 python -m pytest                  # the test suite
+
+# Explain every live gate; cannot arm until all evidence passes
+python scripts/audit_live_promotion.py
 ```
 
 ## Local dashboard
@@ -94,6 +107,9 @@ while BTCUSD, XAUUSD, stocks and indices keep their catalogue names.
 
 # Persistent paper trading on live Eightcap quotes
 .venv-live\Scripts\python.exe jarvis.py --operation paper
+
+# Real MT5 execution, accepted only when MT5 reports a demo account
+.venv-live\Scripts\python.exe jarvis.py --operation demo
 ```
 
 The scanner rotates through the complete supported broker catalogue rather

@@ -28,13 +28,19 @@ from core.types import OrderRequest, TradingMode
 from execution.manager import PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
+from filters.news_filter import NewsFilter
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger
 from journal.database import Journal
 from journal.recorder import CycleContext, Recorder
+from learning.config_control import ShadowRecorder
 from main import build_filter_chain
 from monitoring.alerts import AlertSender
+from monitoring.operation_ledger import OperationLedger
+from promotion.audit import PromotionAudit
 from reporting.daily_report import DailyReportGenerator
+from reporting.execution_report import ExecutionReportGenerator
+from reporting.weekly_report import WeeklyReportGenerator
 from risk.position_sizer import PositionSizer
 from risk.reasons import Reason
 from risk.risk_manager import RiskManager
@@ -46,6 +52,7 @@ log = get_logger(__name__)
 class OperationMode(StrEnum):
     MONITOR = "monitor"
     PAPER = "paper"
+    DEMO = "demo"
     LIVE = "live"
 
 
@@ -96,15 +103,29 @@ class JarvisRunner:
             ],
             self.settings.analysis.confluence,
         )
+        self.shadow = ShadowRecorder(root)
+        self.shadow_engine = self._shadow_engine()
         self.advisor = build_advisor(self.settings.ai)
         self.cursor = self._load_cursor()
+        self.operation_ledger = OperationLedger(root / "runtime" / "operation_history.json")
 
     def connect(self) -> None:
         account = self.broker.connect()
+        try:
+            self._assert_account_mode(account.is_demo)
+        except Exception:
+            self.broker.shutdown()
+            raise
         self.clock.server_offset = self.broker.server_offset
         self.journal.open()
         self.recorder = Recorder(self.journal, self.clock, self.settings)
-        self.risk = RiskManager(self.settings, self.journal, self.clock, self.kill_switch)
+        self.risk = RiskManager(
+            self.settings,
+            self.journal,
+            self.clock,
+            self.kill_switch,
+            margin_estimator=self.broker.estimate_margin,
+        )
         self.filters = build_filter_chain(self.broker, self.settings, self.journal, self.clock)
         self.scanner = UniverseScanner(self.broker, self.settings)
         self.manager = PositionManager(self.broker, self.journal, self.settings)
@@ -114,6 +135,11 @@ class JarvisRunner:
             self.root / self.settings.monitoring.report_directory,
             self.settings.monitoring.report_interval_minutes,
         )
+        report_directory = self.root / self.settings.monitoring.report_directory
+        self.weekly_reports = WeeklyReportGenerator(self.journal, report_directory, self.settings)
+        self.execution_reports = ExecutionReportGenerator(
+            self.journal, report_directory / "EXECUTION_REPORT.md"
+        )
         self.recorder.record_config_snapshot()
         if self.operation is OperationMode.LIVE:
             self._assert_live_armed(account.login)
@@ -121,10 +147,12 @@ class JarvisRunner:
             "jarvis connected",
             extra={"event": "jarvis_start", "operation": self.operation.value},
         )
+        self.operation_ledger.start(self.operation.value, account.login, self.clock.now())
         self.alerts.send(f"Jarvis started in {self.operation.value.upper()} mode")
 
     def close(self) -> None:
         self._save_cursor()
+        self.operation_ledger.finish(self.clock.now())
         self.journal.close()
         self.broker.shutdown()
 
@@ -154,15 +182,24 @@ class JarvisRunner:
         reconciliation = self.manager.reconcile(positions)
         self._record_management(reconciliation)
         if any(event.action == "BROKER_CLOSED_PENDING_HISTORY" for event in reconciliation):
+            self.alerts.send(
+                "CRITICAL: broker/journal closure could not be recovered; new risk halted"
+            )
             self.risk.halt("broker/journal reconciliation requires deal-history recovery")
         positions = self.broker.positions(magic=self.settings.system.magic_number)
+        news_filter = next(
+            (item for item in self.filters.filters if isinstance(item, NewsFilter)), None
+        )
+        if news_filter is not None:
+            self._record_management(self.manager.manage_news(positions, news_filter))
+            positions = self.broker.positions(magic=self.settings.system.magic_number)
         self._record_management(self.manager.manage(positions, self.clock.now()))
         positions = self.broker.positions(magic=self.settings.system.magic_number)
         state = self.risk.build_state(account, positions)
         if self.risk.circuit_breaker_tripped(state):
             for position in positions:
                 self.broker.close_position(position)
-            self.risk.trip_circuit_breaker(state)
+            self.alerts.send(self.risk.trip_circuit_breaker(state))
             return self._summary(started_at, ScanBatch((), 0, 0, self.cursor, 0), 0, 0)
 
         batch = self.scanner.scan(cursor=self.cursor, batch_size=batch_size, keep=deep_candidates)
@@ -181,7 +218,13 @@ class JarvisRunner:
         self._save_cursor()
         summary = self._summary(started_at, batch, deep, opened)
         self._save_heartbeat(summary)
+        self.operation_ledger.cycle(
+            summary.finished_at,
+            trades_opened=summary.trades_opened,
+        )
         self.reports.maybe_generate(self.broker.account(), self.clock.now())
+        self.weekly_reports.maybe_generate(self.broker.account(), self.clock.now())
+        self.execution_reports.maybe_generate(self.clock.now())
         return summary
 
     def _process_candidate(self, symbol: str, account, positions) -> bool:  # type: ignore[no-untyped-def]
@@ -189,6 +232,9 @@ class JarvisRunner:
         try:
             context = self.data.get_context(symbol, force_refresh=True)
             idea = self.engine.evaluate(context, self.settings.mode)
+            if self.shadow_engine is not None:
+                candidate = self.shadow_engine.evaluate(context, TradingMode.PAPER)
+                self.shadow.record(symbol, idea, candidate, self.clock.now())
         except (TradingSystemError, ValueError) as exc:
             self._record_skip(cycle_id, symbol, account.equity, Reason.DATA_UNAVAILABLE, str(exc))
             return False
@@ -272,6 +318,24 @@ class JarvisRunner:
             )
             self.recorder.record_sizing(cycle_pk, sizing)
             return False
+        margin = self.risk.check_margin(
+            state,
+            symbol,
+            idea.direction,
+            sizing.volume,
+            sizing.entry,
+        )
+        if not margin.approved:
+            cycle_pk = self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                margin.reason,
+                margin.detail,
+                signals=list(idea.signals),
+            )
+            self.recorder.record_sizing(cycle_pk, sizing)
+            return False
         self.risk.assert_not_forbidden(sizing, state)
 
         cycle_pk = self.recorder.record_cycle(
@@ -305,6 +369,7 @@ class JarvisRunner:
             self.recorder.record_order_attempt(
                 trade_id=None, kind="ENTRY", symbol=symbol, result=result
             )
+            self.alerts.send(f"Order rejected: {symbol} {result.retcode_name} {result.comment}")
             return False
         trade_id = self.recorder.record_trade_open(
             cycle_pk=cycle_pk,
@@ -315,6 +380,10 @@ class JarvisRunner:
         )
         self.recorder.record_order_attempt(
             trade_id=trade_id, kind="ENTRY", symbol=symbol, result=result
+        )
+        self.alerts.send(
+            f"Opened {symbol} {idea.direction.name} {sizing.volume:g} lots, "
+            f"entry {result.filled_price:g}, SL {sizing.sl:g}, TP {sizing.tp:g}"
         )
         return True
 
@@ -343,16 +412,27 @@ class JarvisRunner:
             row = self.journal.open_trade_by_ticket(position.ticket)
             if row is None:
                 continue
+            closed = self.broker.closed_position(position.ticket)
+            if closed is None:
+                self.risk.halt(f"paper closure #{position.ticket} missing from durable ledger")
+                continue
             self.recorder.record_trade_close(
                 int(row["id"]),
-                exit_price=(position.tp if reason == "TP" else position.sl),
-                pnl_money=position.profit,
+                exit_price=closed.exit_price,
+                pnl_money=closed.pnl_money,
                 exit_reason=reason,
                 equity_after=self.broker.account().equity,
+                closed_at=closed.closed_at,
+            )
+            self.alerts.send(
+                f"Paper position #{position.ticket} closed {reason}: "
+                f"{closed.pnl_money:+.2f} {self.broker.account().currency}"
             )
 
     def _record_management(self, events) -> None:  # type: ignore[no-untyped-def]
         for event in events:
+            if event.action == "BROKER_CLOSED_PENDING_HISTORY":
+                self.operation_ledger.reconciliation_failure(self.clock.now())
             row = self.journal.open_trade_by_ticket(event.ticket)
             if row is None:
                 continue
@@ -360,8 +440,12 @@ class JarvisRunner:
             self.recorder.record_management_action(
                 trade_id,
                 action=event.action,
+                volume_closed=event.volume_closed,
+                r_at_action=event.r_at_action,
                 note=event.detail,
             )
+            if event.remaining_volume is not None:
+                self.journal.update_open_trade_volume(event.ticket, event.remaining_volume)
             if event.exit_price is not None and event.pnl_money is not None:
                 self.recorder.record_trade_close(
                     trade_id,
@@ -369,9 +453,15 @@ class JarvisRunner:
                     pnl_money=event.pnl_money,
                     exit_reason=event.action,
                     equity_after=self.broker.account().equity,
+                    closed_at=event.closed_at,
+                )
+                self.alerts.send(
+                    f"Position #{event.ticket} closed ({event.action}): "
+                    f"{event.pnl_money:+.2f} {self.broker.account().currency}"
                 )
 
     def _assert_live_armed(self, login: int) -> None:
+        PromotionAudit(self.root, self.settings).assert_passed()
         path = self.root / "runtime" / "LIVE_ARMED.json"
         if not path.exists():
             raise RuntimeError("LIVE_NOT_ARMED: run paper/demo acceptance and create arming file")
@@ -379,11 +469,19 @@ class JarvisRunner:
         if payload.get("login") != login or payload.get("phrase") != "I_ACCEPT_LIVE_RISK":
             raise RuntimeError("LIVE_NOT_ARMED: account or confirmation phrase mismatch")
 
+    def _assert_account_mode(self, is_demo: bool) -> None:
+        if self.operation is OperationMode.DEMO and not is_demo:
+            raise RuntimeError(
+                "DEMO_ACCOUNT_REQUIRED: refusing to send demo orders to a live MT5 account"
+            )
+        if self.operation is OperationMode.LIVE and is_demo:
+            raise RuntimeError("LIVE_ACCOUNT_REQUIRED: live mode cannot run on a demo account")
+
     @staticmethod
     def _settings_for_operation(settings: Settings, operation: OperationMode) -> Settings:
         mode = (
             TradingMode.PAPER
-            if operation in {OperationMode.MONITOR, OperationMode.PAPER}
+            if operation in {OperationMode.MONITOR, OperationMode.PAPER, OperationMode.DEMO}
             else TradingMode.MICRO_LIVE
         )
         return settings.model_copy(
@@ -398,6 +496,24 @@ class JarvisRunner:
             return int(json.loads(path.read_text(encoding="utf-8")).get("cursor", 0))
         except (OSError, ValueError, json.JSONDecodeError):
             return 0
+
+    def _shadow_engine(self) -> ConfluenceEngine | None:
+        candidate_path = self.root / "runtime" / "shadow" / "candidate.yaml"
+        if not candidate_path.exists():
+            return None
+        from config.loader import load_settings
+
+        candidate = load_settings(candidate_path, env_overrides=False)
+        return ConfluenceEngine(
+            [
+                MarketStructure(candidate.analysis.market_structure),
+                TrendMomentum(),
+                LiquiditySweep(),
+                LevelReaction(),
+                VolatilityRegime(),
+            ],
+            candidate.analysis.confluence,
+        )
 
     def _save_cursor(self) -> None:
         path = self.root / "runtime" / "runner_state.json"

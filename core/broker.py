@@ -16,7 +16,16 @@ from datetime import datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
 from core.instrument import InstrumentSpec
-from core.types import AccountSnapshot, OrderRequest, OrderResult, Position, SymbolDescriptor, Tick
+from core.types import (
+    AccountSnapshot,
+    ClosedPosition,
+    Direction,
+    OrderRequest,
+    OrderResult,
+    Position,
+    SymbolDescriptor,
+    Tick,
+)
 
 
 @runtime_checkable
@@ -77,3 +86,13 @@ class Broker(MarketDataProvider, Protocol):
     def modify_stops(self, position: Position, *, sl: float, tp: float) -> OrderResult: ...
 
     def close_position(self, position: Position, volume: float | None = None) -> OrderResult: ...
+
+    def closed_position(self, position_ticket: int) -> ClosedPosition | None: ...
+
+    def estimate_margin(
+        self,
+        symbol: str,
+        direction: Direction,
+        volume: float,
+        price: float,
+    ) -> float: ...

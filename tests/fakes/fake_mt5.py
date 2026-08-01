@@ -146,6 +146,8 @@ class FakeMT5:
     calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
     orders_sent: list[dict[str, Any]] = field(default_factory=list)
     positions: list[SimpleNamespace] = field(default_factory=list)
+    deals: list[SimpleNamespace] = field(default_factory=list)
+    margin_required: float = 1.0
     _initialized: bool = False
     _retcode_iter: Iterator[int] | None = None
 
@@ -265,6 +267,19 @@ class FakeMT5:
         if symbol is None:
             return tuple(self.positions)
         return tuple(p for p in self.positions if p.symbol == symbol)
+
+    def history_deals_get(self, *, position: int) -> tuple[SimpleNamespace, ...]:
+        self.calls.append(("history_deals_get", (position,)))
+        return tuple(deal for deal in self.deals if int(deal.position_id) == position)
+
+    def order_calc_margin(
+        self, action: int, symbol: str, volume: float, price: float
+    ) -> float | None:
+        self.calls.append(("order_calc_margin", (action, symbol, volume, price)))
+        if symbol not in self.specs:
+            self.error = (-10002, "Unknown symbol")
+            return None
+        return self.margin_required * volume
 
     def order_send(self, request: dict[str, Any]) -> SimpleNamespace:
         self.calls.append(("order_send", (request.get("symbol"),)))

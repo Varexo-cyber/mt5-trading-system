@@ -403,6 +403,23 @@ class Journal:
             ).fetchall()
         )
 
+    def management_action_exists(self, ticket: int, actions: tuple[str, ...]) -> bool:
+        if not actions:
+            return False
+        placeholders = ",".join("?" for _ in actions)
+        row = self.conn.execute(
+            "SELECT 1 FROM management_actions a JOIN trades t ON t.id = a.trade_id "
+            f"WHERE t.ticket = ? AND a.action IN ({placeholders}) LIMIT 1",
+            (ticket, *actions),
+        ).fetchone()
+        return row is not None
+
+    def update_open_trade_volume(self, ticket: int, volume: float) -> None:
+        self.conn.execute(
+            "UPDATE trades SET volume = ? WHERE ticket = ? AND closed_at IS NULL",
+            (volume, ticket),
+        )
+
     def equity_mark(self, period: str, period_key: datetime) -> float | None:
         row = self.conn.execute(
             "SELECT equity FROM equity_marks WHERE period = ? AND period_key = ?",

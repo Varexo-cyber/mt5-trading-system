@@ -67,6 +67,7 @@ class Reason(StrEnum):
     #: averaging down or gridding, both of which are forbidden outright.
     POSITION_ALREADY_OPEN = "POSITION_ALREADY_OPEN"
     INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
+    MARGIN_ESTIMATE_FAILED = "MARGIN_ESTIMATE_FAILED"
 
     # -- loss limits -------------------------------------------------------
     DAILY_LOSS_LIMIT = "DAILY_LOSS_LIMIT_HIT"

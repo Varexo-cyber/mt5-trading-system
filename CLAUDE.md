@@ -2,9 +2,10 @@
 
 Read this before touching anything in this repository.
 
-Current state: **Phases 1-3 complete.** `HANDOFF.md` is the full brief for
-continuing the work — read it before starting Phase 4. `PLAN.md` has the roadmap, the open
-questions, and the reasoning behind the design choices below.
+Current state: the autonomous monitor/paper/demo architecture and all safety
+gates through live promotion are implemented. Empirical validation and elapsed
+paper/demo evidence are intentionally incomplete, so LIVE remains locked.
+`HANDOFF.md` records the original brief; `docs/JARVIS.md` is the operator guide.
 
 ---
 
@@ -90,10 +91,14 @@ infra/     logging (JSON), kill switch
 tests/     pytest; runs on any platform, no terminal required
 scripts/   operator tools (phase1_acceptance.py)
 docs/      modules/<name>.md per analysis module, hypotheses/ pre-registrations
+analysis/  replayable market modules and weighted confluence
+backtesting/ pessimistic execution, MTF replay and validation evidence
+execution/ paper broker and restart-safe position management
+runner/    autonomous monitor/paper/demo/live orchestration
+reporting/ daily, weekly, PDF and execution reports
+learning/  postmortems, bounded proposals, shadow configs and rollback
+promotion/ evidence-derived live gate
 ```
-
-Planned, not yet built: `analysis/`, `strategy/`, `backtest/`,
-`learning/`, `monitoring/`, and `risk/trade_manager.py`. See `PLAN.md`.
 
 ## Style
 

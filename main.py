@@ -1,15 +1,10 @@
-"""Phase 1 entry point.
+"""Read-only diagnostic entry point for the autonomous trading system.
 
-What exists today: connect, validate, load data, report. There is no strategy
-and no order loop yet, and that ordering is deliberate — the risk layer
-(Phase 2) and the news filter (Phase 3) are the safety net, and a system that
-can place orders before the net exists is a system that will place a bad one.
-
-    python main.py --check-config      # offline: validate config only
-    python main.py --status            # connect, run the startup guard, report
-    python main.py --data EURUSD       # fetch and summarise the MTF view
-    python main.py --risk              # current risk state and every limit
-    python main.py --filters EURUSD    # run every filter and show each verdict
+python main.py --check-config      # offline: validate config only
+python main.py --status            # connect, run the startup guard, report
+python main.py --data EURUSD       # fetch and summarise the MTF view
+python main.py --risk              # current risk state and every limit
+python main.py --filters EURUSD    # run every filter and show each verdict
 """
 
 from __future__ import annotations
@@ -164,8 +159,8 @@ def main(argv: list[str] | None = None) -> int:
             show_filters(connector, settings, args.filters)
         if not (args.data or args.risk or args.filters or args.status):
             print(
-                "\nPhases 1-3 only: no trading loop yet. Use --status, --risk, "
-                "--filters SYMBOL or --data SYMBOL. See PLAN.md for the roadmap."
+                "\nDiagnostic mode only. Use --status, --risk, --filters SYMBOL or "
+                "--data SYMBOL. Start autonomous modes with jarvis.py or the dashboard."
             )
         return 0
     except TradingSystemError as exc:

@@ -9,9 +9,12 @@ config/.env
 logs/
 *.log
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 data_cache/
+data/history/
 STOP
 runtime/
 

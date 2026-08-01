@@ -1,0 +1,230 @@
+"""Look-ahead-safe multi-timeframe context replay and evidence reporting."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from math import isfinite
+from pathlib import Path
+
+import pandas as pd
+
+from analysis.confluence import ConfluenceEngine
+from backtesting.engine import (
+    BacktestOrder,
+    BacktestResult,
+    PessimisticBacktester,
+    deflated_sharpe_probability,
+)
+from core.broker import MarketDataProvider
+from core.types import MarketContext, Series, Tick, Timeframe, TradingMode
+
+REPLAY_TIMEFRAMES = (
+    Timeframe.D1,
+    Timeframe.H4,
+    Timeframe.H1,
+    Timeframe.M15,
+    Timeframe.M5,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentEvidence:
+    name: str
+    start: str
+    end: str
+    decisions: int
+    trades: int
+    total_r: float
+    expectancy_r: float
+    win_rate: float
+    profit_factor: float | None
+    max_drawdown_r: float
+    sharpe: float
+    deflated_sharpe_probability: float
+    module_trade_counts: dict[str, int]
+    returns_by_module: dict[str, tuple[float, ...]]
+
+
+class HistoricalContextReplay:
+    """Recreate exactly what modules could know at each closed H1 bar."""
+
+    def __init__(
+        self,
+        engine: ConfluenceEngine,
+        *,
+        history_bars: int = 300,
+        decision_stride_bars: int = 1,
+    ) -> None:
+        if history_bars < 120:
+            raise ValueError("history_bars must be at least 120")
+        if decision_stride_bars < 1:
+            raise ValueError("decision_stride_bars must be positive")
+        self.engine = engine
+        self.history_bars = history_bars
+        self.decision_stride_bars = decision_stride_bars
+
+    def orders(
+        self,
+        symbol: str,
+        frames: dict[Timeframe, pd.DataFrame],
+        *,
+        point: float,
+        start: datetime,
+        end: datetime,
+    ) -> list[BacktestOrder]:
+        missing = set(REPLAY_TIMEFRAMES) - set(frames)
+        if missing:
+            raise ValueError(f"replay missing timeframes: {sorted(tf.value for tf in missing)}")
+        decisions = frames[Timeframe.H1]
+        closed_at = decisions.index + Timeframe.H1.duration
+        eligible = decisions[(closed_at >= start) & (closed_at < end)]
+        orders: list[BacktestOrder] = []
+        for sequence, opened_at in enumerate(eligible.index):
+            if sequence % self.decision_stride_bars:
+                continue
+            decided_at = (opened_at + Timeframe.H1.duration).to_pydatetime()
+            series: dict[Timeframe, Series] = {}
+            complete = True
+            for timeframe in REPLAY_TIMEFRAMES:
+                frame = frames[timeframe]
+                available = frame[frame.index + timeframe.duration <= decided_at].tail(
+                    self.history_bars
+                )
+                if len(available) < 120:
+                    complete = False
+                    break
+                series[timeframe] = Series(symbol, timeframe, available, decided_at)
+            if not complete:
+                continue
+            executable = series[Timeframe.M5].df.iloc[-1]
+            mid = float(executable["close"])
+            spread_points = max(float(executable.get("spread", 0.0)), 0.0)
+            spread = spread_points * point
+            tick = Tick(
+                symbol,
+                decided_at,
+                bid=mid - spread / 2,
+                ask=mid + spread / 2,
+            )
+            idea = self.engine.evaluate(
+                MarketContext(symbol, decided_at, series, tick), TradingMode.BACKTEST
+            )
+            if not idea.approved or idea.direction is None:
+                continue
+            active = tuple(
+                signal.module
+                for signal in idea.signals
+                if signal.score * int(idea.direction) > 0 and signal.confidence > 0
+            )
+            orders.append(
+                BacktestOrder(
+                    symbol=symbol,
+                    decided_at=decided_at,
+                    direction=idea.direction,
+                    entry=idea.entry,
+                    stop_loss=idea.stop_loss,
+                    take_profit=idea.take_profit,
+                    score=idea.score,
+                    confidence=idea.confidence,
+                    modules=active,
+                )
+            )
+        return orders
+
+
+def frame_from_mt5(raw: object) -> pd.DataFrame:
+    frame = pd.DataFrame(raw)
+    if frame.empty or "time" not in frame:
+        raise ValueError("MT5 returned no timestamped historical bars")
+    frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+    return frame.set_index("time").sort_index().loc[lambda value: ~value.index.duplicated()]
+
+
+def fetch_mt5_history(
+    market: MarketDataProvider,
+    symbol: str,
+    timeframe: Timeframe,
+    start: datetime,
+    end: datetime,
+    *,
+    max_bars_per_chunk: int = 40_000,
+) -> pd.DataFrame:
+    """Fetch long ranges in bounded chunks accepted by the MT5 terminal."""
+    if end <= start:
+        raise ValueError("history end must be after start")
+    chunks: list[pd.DataFrame] = []
+    cursor = start
+    span = timeframe.duration * max_bars_per_chunk
+    while cursor < end:
+        chunk_end = min(cursor + span, end)
+        raw = market.copy_rates_range(symbol, timeframe.mt5_value, cursor, chunk_end)
+        frame = pd.DataFrame(raw)
+        if not frame.empty:
+            chunks.append(frame_from_mt5(raw))
+        cursor = chunk_end
+    if not chunks:
+        raise ValueError(f"{symbol} {timeframe.value}: no historical bars returned")
+    combined = pd.concat(chunks).sort_index()
+    return combined[~combined.index.duplicated(keep="last")]
+
+
+def archive_frame(frame: pd.DataFrame, path: Path) -> None:
+    """Merge an MT5 slice into a durable, de-duplicated CSV archive."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    combined = frame
+    if path.exists():
+        previous = pd.read_csv(path, index_col="time", parse_dates=["time"])
+        previous.index = pd.DatetimeIndex(previous.index)
+        combined = pd.concat([previous, frame])
+    combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    combined.to_csv(path, index_label="time")
+
+
+def build_segment_evidence(
+    name: str,
+    execution_frame: pd.DataFrame,
+    orders: list[BacktestOrder],
+    *,
+    start: datetime,
+    end: datetime,
+    configurations_tested: int,
+) -> tuple[SegmentEvidence, BacktestResult]:
+    selected = [order for order in orders if start <= order.decided_at < end]
+    result = PessimisticBacktester().run_non_overlapping(execution_frame, selected)
+    returns = [trade.net_r for trade in result.trades]
+    counts: dict[str, int] = {}
+    module_returns: dict[str, list[float]] = {}
+    for trade in result.trades:
+        for module in trade.order.modules:
+            counts[module] = counts.get(module, 0) + 1
+            module_returns.setdefault(module, []).append(trade.net_r)
+    evidence = SegmentEvidence(
+        name=name,
+        start=start.isoformat(),
+        end=end.isoformat(),
+        decisions=len(selected),
+        trades=result.sample_size,
+        total_r=result.total_r,
+        expectancy_r=result.expectancy_r,
+        win_rate=result.win_rate,
+        profit_factor=result.profit_factor if isfinite(result.profit_factor) else None,
+        max_drawdown_r=result.max_drawdown_r,
+        sharpe=result.sharpe,
+        deflated_sharpe_probability=deflated_sharpe_probability(returns, configurations_tested),
+        module_trade_counts=counts,
+        returns_by_module={key: tuple(values) for key, values in module_returns.items()},
+    )
+    return evidence, result
+
+
+def write_evidence_report(
+    path: Path,
+    *,
+    metadata: dict[str, object],
+    segments: list[SegmentEvidence],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"metadata": metadata, "segments": [asdict(segment) for segment in segments]}
+    path.write_text(json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8")
