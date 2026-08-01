@@ -6,7 +6,10 @@ but it cannot bypass the execution engine's risk and validation layers.
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -16,11 +19,49 @@ from core.instrument import AssetClass, InstrumentSpec
 from core.mt5_connector import MT5Connector
 from core.types import (
     AccountSnapshot,
+    Direction,
     Position,
     SymbolDescriptor,
     Tick,
     Timeframe,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class PaperSnapshot:
+    balance: float
+    equity: float
+    currency: str
+    positions: tuple[Position, ...]
+
+
+def load_paper_snapshot(path: Path) -> PaperSnapshot | None:
+    """Read the simulator state without opening or mutating the paper broker."""
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        positions = tuple(
+            Position(
+                **{
+                    **row,
+                    "direction": Direction[row["direction"]],
+                    "opened_at": datetime.fromisoformat(row["opened_at"]),
+                }
+            )
+            for row in payload.get("positions", [])
+        )
+        balance = float(payload["balance"])
+        equity = balance + sum(item.profit + item.swap for item in positions)
+        return PaperSnapshot(
+            balance,
+            equity,
+            str(payload.get("currency", "EUR")),
+            positions,
+        )
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+        return None
+
 
 PROFILE_TIMEFRAMES: dict[AssetClass, tuple[Timeframe, ...]] = {
     AssetClass.FOREX: (Timeframe.D1, Timeframe.H4, Timeframe.H1, Timeframe.M15, Timeframe.M5),
@@ -81,7 +122,6 @@ class DashboardService:
         if frame.empty:
             return frame
         frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
-        frame["time"] = frame["time"] - pd.to_timedelta(self.connector.server_offset)
         frame = frame.set_index("time").sort_index()
         now = datetime.now(UTC)
         if frame.index[-1].to_pydatetime() + timeframe.duration > now:

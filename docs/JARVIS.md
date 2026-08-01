@@ -7,6 +7,8 @@
   It never sends an order.
 - `PAPER`: the same service plus persistent simulated positions filled from
   live Eightcap bid/ask quotes. Paper balance and positions survive restarts.
+- `DEMO`: sends real MT5 orders through the full execution and reconciliation
+  path, but hard-refuses to start unless MT5 reports a demo account.
 - `LIVE`: the real MT5 execution adapter. It starts only when the config is
   micro-live, the account matches `runtime/LIVE_ARMED.json`, and at least two
   analysis modules are explicitly listed as independently validated.
@@ -21,6 +23,10 @@ of the launchers. MT5 must remain open and logged in.
 3. Let it rotate through the catalogue for at least a week.
 4. Stop it, clear STOP by typing the confirmation, then start **PAPER**.
 5. Leave paper running for thirty days and inspect `runtime/reports`.
+6. Log MT5 into a demo account and run **DEMO** to validate broker execution.
+
+Install `install_calendar_archive_task.cmd` once so the economic-calendar
+history grows every Sunday. Free feeds cannot reconstruct past years later.
 
 The service writes `runtime/heartbeat.json`. `runtime/jarvis.pid` exists only
 while the service is running. The dashboard STOP button writes the durable
@@ -60,3 +66,34 @@ There is deliberately no one-click live button. Live requires all of:
 
 Until then the code can scan, reason and paper trade automatically without
 being able to spend the live balance.
+
+Inspect the gates at any time:
+
+```powershell
+.venv-live\Scripts\python.exe scripts\audit_live_promotion.py
+```
+
+The command reports failures and exits without arming. Only after every gate
+passes can `--arm` bind approval to the currently connected live account.
+
+## Historical validation
+
+`validate_strategy.py` fetches long MT5 ranges in safe chunks, archives them
+locally, recreates D1/H4/H1/M15/M5 context using closed bars only, and runs the
+pre-registered 3x3 market-structure sweep. The last 20% is not evaluated unless
+`--unlock-holdout` is supplied, and a durable ledger refuses a second look.
+
+```powershell
+.venv-live\Scripts\python.exe scripts\validate_strategy.py `
+  --symbol EURUSD.i --symbol GBPUSD.i --symbol USDJPY.i `
+  --symbol AUDUSD.i --symbol USDCAD.i `
+  --start 2015-01-01 --end 2026-01-01 --configurations-tested 9
+```
+
+## Guarded learning
+
+Weekly reports may propose weight changes but never apply them. Proposals are
+capped at +/-15%, need 100 trades spanning 30 days, and then run as a no-order
+shadow configuration for another 30 days. Use `scripts/config_control.py` for
+snapshots, starting a shadow, explicit promotion and rollback. Every approved
+change must also be recorded in `learning/changelog.md`.

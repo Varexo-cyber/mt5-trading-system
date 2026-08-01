@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import subprocess
 import sys
@@ -26,7 +27,12 @@ from config.loader import PACKAGE_ROOT, load_credentials, load_settings, termina
 from core.instrument import AssetClass
 from core.mt5_connector import MT5Connector
 from core.types import Timeframe
-from dashboard.service import PROFILE_TIMEFRAMES, DashboardService, catalogue_asset_class
+from dashboard.service import (
+    PROFILE_TIMEFRAMES,
+    DashboardService,
+    catalogue_asset_class,
+    load_paper_snapshot,
+)
 from infra.killswitch import KillSwitch
 from reporting.pdf_report import build_pdf_report
 
@@ -95,11 +101,25 @@ try:
     if st.sidebar.button("Refresh broker data", use_container_width=True):
         st.rerun()
 
-    first, second, third, fourth = st.columns(4)
+    heartbeat_path = ROOT / "runtime" / "heartbeat.json"
+    try:
+        heartbeat = (
+            json.loads(heartbeat_path.read_text(encoding="utf-8"))
+            if heartbeat_path.exists()
+            else {}
+        )
+    except (OSError, json.JSONDecodeError):
+        heartbeat = {}
+    paper = load_paper_snapshot(ROOT / "runtime" / "paper_state.json")
+    first, second, third, fourth, fifth = st.columns(5)
     first.metric("Balance", f"{account.balance:.2f} {account.currency}")
     second.metric("Equity", f"{account.equity:.2f} {account.currency}")
     third.metric("Open positions", str(len(positions)))
-    fourth.metric("Execution", "LOCKED" if not settings.mode.is_live else settings.mode.value)
+    fourth.metric("Jarvis mode", str(heartbeat.get("operation", "OFF")).upper())
+    fifth.metric(
+        "Paper equity",
+        f"{paper.equity:.2f} {paper.currency}" if paper is not None else "not started",
+    )
 
     overview_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
         ["Overview", "Charts", "Positions", "PDF report", "Control"]
@@ -182,6 +202,7 @@ try:
             st.plotly_chart(figure, use_container_width=True)
 
     with positions_tab:
+        st.subheader("Broker positions")
         if not positions:
             st.success("No open positions.")
         else:
@@ -205,6 +226,30 @@ try:
                 use_container_width=True,
                 hide_index=True,
             )
+        st.subheader("Paper positions")
+        if paper is None or not paper.positions:
+            st.info("No simulated positions.")
+        else:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "ticket": p.ticket,
+                            "symbol": p.symbol,
+                            "side": p.direction.name,
+                            "lots": p.volume,
+                            "open": p.price_open,
+                            "sl": p.sl,
+                            "tp": p.tp,
+                            "pnl": p.profit + p.swap,
+                            "opened_utc": p.opened_at,
+                        }
+                        for p in paper.positions
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     with report_tab:
         st.write("The report contains account state, positions, spread costs and selected charts.")
@@ -219,7 +264,6 @@ try:
 
     with control_tab:
         pid_path = ROOT / "runtime" / "jarvis.pid"
-        heartbeat_path = ROOT / "runtime" / "heartbeat.json"
         running_pid = int(pid_path.read_text().strip()) if pid_path.exists() else 0
         running = False
         if running_pid:
@@ -242,13 +286,13 @@ try:
         stopped = kill_switch.is_engaged()
         st.metric("Hard STOP", "ENGAGED" if stopped else "clear")
         st.warning(
-            "MONITOR and PAPER are autonomous. LIVE remains locked until the registered "
+            "MONITOR, PAPER and DEMO are autonomous. LIVE remains locked until the registered "
             "out-of-sample, demo and account-arming gates have all passed."
         )
         if st.button("STOP BOT NOW", type="primary", use_container_width=True):
             kill_switch.engage("operator dashboard emergency stop")
             st.rerun()
-        start_monitor, start_paper = st.columns(2)
+        start_monitor, start_paper, start_demo = st.columns(3)
         creation_flags = (
             getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -270,6 +314,27 @@ try:
         if start_paper.button("Start PAPER", disabled=running or stopped, use_container_width=True):
             subprocess.Popen(
                 [sys.executable, str(ROOT / "jarvis.py"), "--operation", "paper"],
+                cwd=ROOT,
+                creationflags=creation_flags,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            st.rerun()
+        demo_disabled = running or stopped or not account.is_demo
+        if start_demo.button(
+            "Start DEMO",
+            disabled=demo_disabled,
+            help=(
+                "Log MT5 into a demo account first; the runner hard-refuses DEMO on live."
+                if not account.is_demo
+                else None
+            ),
+            use_container_width=True,
+        ):
+            subprocess.Popen(
+                [sys.executable, str(ROOT / "jarvis.py"), "--operation", "demo"],
                 cwd=ROOT,
                 creationflags=creation_flags,
                 close_fds=True,

@@ -321,7 +321,13 @@ class RiskManager:
         if self.margin_estimator is None:
             return RiskDecision.allow("margin check skipped (no estimator)")
 
-        required = self.margin_estimator(symbol, direction, volume, price)
+        try:
+            required = self.margin_estimator(symbol, direction, volume, price)
+        except Exception as exc:  # noqa: BLE001 - inability to price margin must fail closed
+            return RiskDecision.block(
+                Reason.MARGIN_ESTIMATE_FAILED,
+                f"{symbol}: broker margin estimate failed: {exc}",
+            )
         headroom = required * self.margin_safety_factor
         if headroom > state.margin_free:
             return RiskDecision.block(

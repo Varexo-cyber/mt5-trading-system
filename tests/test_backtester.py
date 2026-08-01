@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -10,9 +11,13 @@ from backtesting.engine import (
     BacktestOrder,
     PessimisticBacktester,
     deflated_sharpe_probability,
+    longest_losing_streak,
+    max_drawdown_duration,
+    monte_carlo_drawdown_probability,
     walk_forward_split,
 )
-from core.types import Direction
+from backtesting.replay import REPLAY_TIMEFRAMES, HistoricalContextReplay
+from core.types import Direction, Timeframe
 
 
 def frame(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:
@@ -71,3 +76,57 @@ def test_deflated_sharpe_penalises_more_trials() -> None:
     returns = [1, 1, 0.5, -0.2, 1.2, 0.4, 0.8, -0.1] * 5
 
     assert deflated_sharpe_probability(returns, 2) > deflated_sharpe_probability(returns, 100)
+
+
+def test_historical_context_never_contains_an_unclosed_bar() -> None:
+    end = datetime(2026, 8, 1, tzinfo=UTC)
+    frames = {}
+    for timeframe in REPLAY_TIMEFRAMES:
+        index = pd.date_range(end=end, periods=150, freq=timeframe.duration, tz=UTC)
+        frames[timeframe] = pd.DataFrame(
+            {
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "spread": 2,
+            },
+            index=index,
+        )
+
+    class SpyEngine:
+        calls = 0
+
+        def evaluate(self, context, _mode):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            for timeframe, series in context.series.items():
+                assert series.df.index[-1] + timeframe.duration <= context.now
+            return SimpleNamespace(approved=False, direction=None)
+
+    spy = SpyEngine()
+    replay = HistoricalContextReplay(spy, history_bars=120)  # type: ignore[arg-type]
+
+    orders = replay.orders(
+        "TEST",
+        frames,
+        point=0.01,
+        start=end - Timeframe.H1.duration * 10,
+        end=end + Timeframe.H1.duration,
+    )
+
+    assert orders == []
+    assert spy.calls > 0
+
+
+def test_risk_diagnostics_include_streak_duration_and_monte_carlo() -> None:
+    returns = [1.0, -1.0, -1.0, -1.0, 2.0]
+
+    assert longest_losing_streak(returns) == 3
+    assert max_drawdown_duration(returns) == 4
+    probability = monte_carlo_drawdown_probability(
+        returns,
+        simulations=100,
+        risk_pct_per_r=10.0,
+        drawdown_threshold_pct=15.0,
+    )
+    assert 0.0 <= probability <= 1.0

@@ -316,6 +316,20 @@ class Position:
 
 
 @dataclass(frozen=True, slots=True)
+class ClosedPosition:
+    """Broker-confirmed final accounting for a position lifecycle."""
+
+    position_ticket: int
+    symbol: str
+    closed_at: datetime
+    exit_price: float
+    volume: float
+    pnl_money: float
+    reason: str
+    deal_tickets: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class OrderRequest:
     """A market order we intend to send. Built by the risk layer, not strategy."""
 

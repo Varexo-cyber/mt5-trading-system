@@ -40,6 +40,21 @@ class DailyReportGenerator:
             (iso(start), iso(end)),
         )
         realised = sum(float(row["pnl_money"] or 0.0) for row in trades if row["closed_at"])
+        execution = self.journal.query(
+            "SELECT ok, retcode_name, COUNT(*) AS n FROM order_attempts "
+            "WHERE ts >= ? AND ts < ? GROUP BY ok, retcode_name ORDER BY n DESC",
+            (iso(start), iso(end)),
+        )
+        reconciliation = self.journal.query(
+            "SELECT action, COUNT(*) AS n FROM management_actions "
+            "WHERE ts >= ? AND ts < ? AND action LIKE 'BROKER_%' GROUP BY action",
+            (iso(start), iso(end)),
+        )
+        unresolved = sum(
+            int(row["n"])
+            for row in reconciliation
+            if row["action"] == "BROKER_CLOSED_PENDING_HISTORY"
+        )
         lines = [
             f"# Jarvis daily report — {start.date().isoformat()}",
             "",
@@ -68,6 +83,16 @@ class DailyReportGenerator:
             )
         if not trades:
             lines.append("- No trades opened.")
+        lines.extend(["", "## Execution integrity", ""])
+        lines.append(f"- Unexplained broker/journal differences: {unresolved}")
+        lines.extend(
+            f"- Orders {'accepted' if row['ok'] else 'rejected'} / "
+            f"{row['retcode_name']}: {row['n']}"
+            for row in execution
+        )
+        lines.extend(f"- Reconciliation {row['action']}: {row['n']}" for row in reconciliation)
+        if not execution:
+            lines.append("- No order attempts.")
 
         self.directory.mkdir(parents=True, exist_ok=True)
         stem = self.directory / f"jarvis-{start.date().isoformat()}"

@@ -8,6 +8,7 @@ demand against a real broker, and exactly what must be handled correctly.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -305,6 +306,63 @@ class TestOrderExecution:
         with pytest.raises(Halt):
             connector.order_send(self._request(), spec)
         assert not fake.orders_sent
+
+
+class TestBrokerAccounting:
+    def test_closed_position_recovers_exact_net_deal_result(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        moment = datetime.now(UTC)
+        fake.deals = [
+            SimpleNamespace(
+                ticket=100,
+                position_id=42,
+                entry=0,
+                reason=3,
+                time=int((moment - timedelta(hours=2)).timestamp()),
+                time_msc=int((moment - timedelta(hours=2)).timestamp() * 1000),
+                volume=0.01,
+                price=1.085,
+                profit=0.0,
+                commission=-0.04,
+                swap=0.0,
+                fee=0.0,
+                symbol="EURUSD",
+            ),
+            SimpleNamespace(
+                ticket=101,
+                position_id=42,
+                entry=1,
+                reason=4,
+                time=int(moment.timestamp()),
+                time_msc=int(moment.timestamp() * 1000),
+                volume=0.01,
+                price=1.083,
+                profit=-2.0,
+                commission=-0.04,
+                swap=-0.1,
+                fee=-0.02,
+                symbol="EURUSD",
+            ),
+        ]
+        connector.connect()
+
+        closed = connector.closed_position(42)
+
+        assert closed is not None
+        assert closed.exit_price == pytest.approx(1.083)
+        assert closed.pnl_money == pytest.approx(-2.20)
+        assert closed.reason == "SL"
+        assert closed.deal_tickets == (101,)
+
+    def test_margin_uses_broker_calculation(self, connector: MT5Connector, fake: FakeMT5) -> None:
+        fake.margin_required = 120.0
+        connector.connect()
+
+        required = connector.estimate_margin("EURUSD", Direction.LONG, 0.05, 1.085)
+
+        assert required == pytest.approx(6.0)
+        assert any(name == "order_calc_margin" for name, _ in fake.calls)
 
 
 class TestOrderRequestValidation:
