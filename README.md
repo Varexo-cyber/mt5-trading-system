@@ -3,6 +3,8 @@
 A research-driven autonomous trading system for MetaTrader 5, built in phases.
 **Phases 1-2 are complete** (foundation, risk layer, journal); there is no strategy and no order loop yet.
 
+**Continuing this project in a new session? Start with `HANDOFF.md`.**
+
 Read `PLAN.md` for the roadmap, the honest account-size arithmetic, and the open
 questions. Read `CLAUDE.md` for the conventions this codebase is held to.
 

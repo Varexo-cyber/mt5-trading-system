@@ -2,7 +2,8 @@
 
 Read this before touching anything in this repository.
 
-Current state: **Phases 1-3 complete.** `PLAN.md` has the roadmap, the open
+Current state: **Phases 1-3 complete.** `HANDOFF.md` is the full brief for
+continuing the work — read it before starting Phase 4. `PLAN.md` has the roadmap, the open
 questions, and the reasoning behind the design choices below.
 
 ---
