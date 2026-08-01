@@ -53,6 +53,12 @@ Run `install_autostart_monitor.cmd` once. It registers a per-user task named
 `JarvisTradingMonitor` that starts monitor mode when you log in. It does not
 configure live mode. MT5 still needs to be running and logged in.
 
+For an evidence-collection workstation, run `install_autostart_paper.cmd`
+instead. It registers `JarvisMetaTrader5`, starts the saved MT5 terminal
+minimized at login, then starts `JarvisTradingPaper` after a 60-second delay.
+The installer disables `JarvisTradingMonitor` so only one runner can start.
+This changes only automatic PAPER operation; LIVE remains evidence-locked.
+
 ## Live promotion
 
 There is deliberately no one-click live button. Live requires all of:
