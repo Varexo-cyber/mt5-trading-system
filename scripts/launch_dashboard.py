@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -41,11 +42,26 @@ def main() -> int:
         "--server.port",
         "8501",
         "--server.headless",
-        "false",
+        "true",
         "--browser.gatherUsageStats",
         "false",
     ]
-    return subprocess.run(command, cwd=ROOT, check=False).returncode
+    process = subprocess.Popen(command, cwd=ROOT)
+    for _ in range(150):
+        if dashboard_is_running():
+            webbrowser.open(DASHBOARD_URL)
+            return process.wait()
+        return_code = process.poll()
+        if return_code is not None:
+            return return_code
+        time.sleep(0.2)
+
+    process.terminate()
+    try:
+        return process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.wait()
 
 
 if __name__ == "__main__":
