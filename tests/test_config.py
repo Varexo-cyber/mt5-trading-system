@@ -158,7 +158,7 @@ class TestModeResolution:
         assert settings.mode is TradingMode.MICRO_LIVE
         assert settings.effective_max_risk_pct() == 2.0
         assert settings.effective_risk_pct() == 1.0  # configured 1%, mode allows up to 2%
-        assert settings.effective_max_trades_per_day() == 2
+        assert settings.effective_max_trades_per_day() == 6
         assert settings.effective_daily_loss_limit_pct() == 4.0
         assert settings.active_limits.max_journal_detail is True
 
@@ -287,3 +287,89 @@ class TestCredentials:
         assert "hunter2" not in repr(creds)
         assert "hunter2" not in f"{creds}"
         assert creds.password == "hunter2-should-not-leak"
+
+
+class TestUniverseMode:
+    """`affordable` widens what is considered, never what may be risked."""
+
+    def test_whitelist_mode_blocks_everything_else(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        settings = load_settings(write(tmp_path, raw), env_overrides=False)
+        assert settings.instruments.universe_mode == "whitelist"
+        allowed, reason = settings.symbol_allowed_at_equity("AAPL", 10_000.0)
+        assert not allowed
+        assert reason.startswith("SYMBOL_NOT_WHITELISTED")
+
+    def test_affordable_mode_lets_the_sizer_decide(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        data = copy.deepcopy(raw)
+        data["instruments"]["universe_mode"] = "affordable"
+        settings = load_settings(write(tmp_path, data), env_overrides=False)
+
+        allowed, reason = settings.symbol_allowed_at_equity("AAPL", 10_000.0)
+        assert allowed and reason == "OK"
+
+    def test_equity_floors_still_apply_in_affordable_mode(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        """Widening the universe must not disarm the per-symbol equity gate."""
+        data = copy.deepcopy(raw)
+        data["instruments"]["universe_mode"] = "affordable"
+        settings = load_settings(write(tmp_path, data), env_overrides=False)
+
+        allowed, reason = settings.symbol_allowed_at_equity("XAUUSD", 100.0)
+        assert not allowed
+        assert reason == "SYMBOL_BLOCKED_EQUITY_BELOW_500"
+
+    def test_blocklist_wins_in_both_modes(self, raw: dict[str, Any], tmp_path: Path) -> None:
+        for mode in ("whitelist", "affordable"):
+            data = copy.deepcopy(raw)
+            data["instruments"]["universe_mode"] = mode
+            data["instruments"]["blocklist"] = ["EURUSD"]
+            settings = load_settings(write(tmp_path, data), env_overrides=False)
+            allowed, reason = settings.symbol_allowed_at_equity("EURUSD", 10_000.0)
+            assert not allowed, mode
+            assert reason == "SYMBOL_BLOCKLISTED"
+
+    def test_blocklist_matches_through_a_broker_suffix(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        data = copy.deepcopy(raw)
+        data["instruments"]["universe_mode"] = "affordable"
+        data["instruments"]["symbol_suffix"] = ".i"
+        data["instruments"]["blocklist"] = ["GBPJPY"]
+        settings = load_settings(write(tmp_path, data), env_overrides=False)
+        assert settings.symbol_allowed_at_equity("GBPJPY.i", 10_000.0)[1] == "SYMBOL_BLOCKLISTED"
+
+
+class TestTradeFrequency:
+    def test_the_daily_loss_limit_binds_before_the_trade_count(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        """The count is a backstop against a bug, not the throttle on trading.
+
+        At 1% risk a 4% daily stop halts after four full losers, well before
+        the six-trade ceiling. If the count were the binding constraint the
+        system would be refusing good setups for bookkeeping reasons.
+        """
+        data = copy.deepcopy(raw)
+        data["system"]["mode"] = "micro_live"
+        settings = load_settings(write(tmp_path, data), env_overrides=False)
+
+        losers_to_daily_stop = (
+            settings.effective_daily_loss_limit_pct() / settings.effective_risk_pct()
+        )
+        assert losers_to_daily_stop < settings.effective_max_trades_per_day()
+
+    def test_shipped_eightcap_overlay_is_valid(self) -> None:
+        """The live overlay must load; a duplicate YAML key silently drops half."""
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+        assert settings.instruments.symbol_suffix == ".i"
+        assert settings.instruments.universe_mode == "affordable"
+        assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
+        assert settings.ai.anthropic_model == "claude-sonnet-5"
+        assert settings.scanner.deep_candidates == 20

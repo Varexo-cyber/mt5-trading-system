@@ -130,11 +130,9 @@ def apply_experimental_live_limits(settings: Settings) -> Settings:
     limits[TradingMode.MICRO_LIVE.value] = limits[TradingMode.MICRO_LIVE.value].model_copy(
         update={"max_risk_per_trade_pct": EXPERIMENTAL_RISK_PER_TRADE_PCT}
     )
-    enabled = tuple(
-        name for name, weight in settings.analysis.confluence.weights.items() if weight > 0.0
-    )
-    confluence = settings.analysis.confluence.model_copy(update={"live_enabled_modules": enabled})
-    analysis = settings.analysis.model_copy(update={"confluence": confluence})
-    return settings.model_copy(
-        update={"system": system, "risk": risk, "modes": limits, "analysis": analysis}
-    )
+    # `live_enabled_modules` is deliberately NOT derived here. Auto-promoting
+    # every weighted module the moment the experiment is armed would mean an
+    # unvalidated module reaches real money as a side effect of arming, which
+    # is exactly the silent step this contract exists to prevent. Promoting a
+    # module to live is an explicit edit in config, visible in a diff.
+    return settings.model_copy(update={"system": system, "risk": risk, "modes": limits})

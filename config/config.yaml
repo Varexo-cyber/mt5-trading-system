@@ -56,6 +56,13 @@ instruments:
   symbol_suffix: ""
   symbol_overrides: {}
 
+  # whitelist  = only the symbols listed below may trade.
+  # affordable = any symbol the broker offers may be considered; the position
+  #              sizer decides what this account can actually express. The
+  #              undercapitalised check is exact where a whitelist only guesses.
+  universe_mode: whitelist
+  blocklist: []
+
   whitelist:
     # micro_live: FX majors only. Tight spreads, deep liquidity, and the
     # smallest money-per-pip available, which is the only thing that makes a
@@ -82,8 +89,13 @@ risk:
   max_risk_per_trade_pct: 2.0
 
   max_concurrent_positions: 2
-  max_trades_per_day: 3
-  max_trades_per_week: 10
+  # A trade counter is a crude circuit breaker. The binding constraint is the
+  # daily loss limit below: at 1% risk a 4% daily stop halts after four losers
+  # regardless of how many setups appeared. The count is left generous so a
+  # genuinely good day is not truncated, and low enough that a signal-generation
+  # bug cannot empty the account before the loss limit catches it.
+  max_trades_per_day: 6
+  max_trades_per_week: 20
 
   daily_loss_limit_pct: 3.0
   weekly_loss_limit_pct: 6.0
@@ -113,7 +125,7 @@ modes:
   backtest:
     max_risk_per_trade_pct: 1.0
     max_sl_pips: 60
-    max_trades_per_day: 3
+    max_trades_per_day: 6
     daily_loss_limit_pct: 3.0
     max_concurrent_positions: 2
     max_journal_detail: true
@@ -122,7 +134,7 @@ modes:
   paper:
     max_risk_per_trade_pct: 1.0
     max_sl_pips: 60
-    max_trades_per_day: 3
+    max_trades_per_day: 6
     daily_loss_limit_pct: 3.0
     max_concurrent_positions: 2
     max_journal_detail: true
@@ -132,7 +144,7 @@ modes:
     # Live money, EUR 100-200. Goal is validating execution, not making money.
     max_risk_per_trade_pct: 2.0
     max_sl_pips: 30
-    max_trades_per_day: 2
+    max_trades_per_day: 6
     daily_loss_limit_pct: 4.0
     max_concurrent_positions: 2
     max_journal_detail: true
@@ -142,7 +154,7 @@ modes:
   scaling:
     max_risk_per_trade_pct: 1.0
     max_sl_pips: 60
-    max_trades_per_day: 3
+    max_trades_per_day: 6
     daily_loss_limit_pct: 3.0
     max_concurrent_positions: 2
     max_journal_detail: false
@@ -279,6 +291,12 @@ journal:
   snapshot_bars_after: 100
   shadow_trades: true
 
+scanner:
+  # null = rank the entire broker catalogue every cycle.
+  batch_size: null
+  # Top-ranked symbols promoted to full multi-timeframe analysis per cycle.
+  deep_candidates: 12
+
 monitoring:
   healthcheck_interval_seconds: 60
   heartbeat_timeout_seconds: 300
@@ -291,7 +309,7 @@ monitoring:
 ai:
   enabled: false
   provider: consensus
-  openai_model: gpt-5.6-terra
+  openai_model: gpt-5.1
   anthropic_model: ""              # set explicitly after checking your Anthropic account
   minimum_confidence: 0.65
   timeout_seconds: 30
