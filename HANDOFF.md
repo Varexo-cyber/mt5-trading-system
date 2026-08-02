@@ -466,6 +466,61 @@ also a veto and a thinking model is slower than a plain completion.
 rather than relying on a live call: no sampling parameters, no `budget_tokens`,
 `max_tokens` ≥ 2000, and the thinking block excluded from the parsed verdict.
 
+### First run against the live broker (2026-08-02)
+
+Three verification scripts were run against the real Eightcap terminal for the
+first time. The AI gate came back `READY`. The rest produced findings.
+
+**The calendar is single-source right now.** `faireconomy` fails on
+`ff_calendar_nextweek.json`; `tradingview` returns a full week (241 events, 14
+high impact) and the service falls through to it, so the news filter works.
+That is the fallback design behaving correctly, but the redundancy the design
+asks for is gone until faireconomy is fixed. Changes made: the wrapped error now
+carries the underlying reason (a 429 needs backing off, a 404 means the feed
+moved, a timeout means the network — all three previously printed "failed"); the
+two weekly files are spaced apart and retried twice, since fetching one CDN
+origin back-to-back is the request pattern most likely to be rate limited; and
+the bespoke User-Agent was replaced with a browser one. **Retrying does not
+soften fail-closed** — a real outage still raises and still stops trading.
+
+**`main.py --status` crashed instead of reporting.** The mode was `backtest`
+while the terminal was on a live account, so `enforce()` raised and no
+diagnostics ran. A read-only tool that refuses to run precisely when the
+configuration is wrong is useless at the one moment it is needed. It now prints
+the report, runs the diagnostics, and returns exit code 1. Note for the record:
+the assertion in the old comment that `jarvis.py` called `enforce()` was wrong —
+it never did. It has its own hard asserts for the money-losing cases
+(`_assert_account_mode`, the arming file, the experimental contract, the AI
+gate), which is why this is a reporting change and not a safety hole.
+
+**A whitelisted symbol below its equity floor no longer blocks startup.**
+XAUUSD at EUR 100 was a blocking error. But the equity floors exist so an
+account can grow into instruments it cannot afford yet, so this is the expected
+state of a small account, not a misconfiguration — and the floor already
+prevents the trade. It is now a warning. If the floors rule out *everything*,
+"no tradable symbol survived" still blocks, which is the case that matters.
+
+**The autonomous path had no feasibility report.** `JarvisRunner.connect` now
+logs the same startup report and alerts if nothing is expressible. The number
+that governs this account — 1% risk buys ~11.5 pips of stop at the minimum lot,
+measured, not estimated — was previously visible only if the operator happened
+to run `main.py --status` first. A run that skips every setup for a legitimate
+reason looked identical to one that was broken.
+
+**The EUR 100 arithmetic, now measured rather than predicted:**
+
+| symbol | pip value @ 0.01 lot | widest stop at 1% risk |
+|---|---|---|
+| EURUSD.i | EUR 0.087 | 11.5 pips |
+| GBPUSD.i | EUR 0.087 | 11.5 pips |
+| USDJPY.i | EUR 0.055 | 18.2 pips |
+| AUDUSD.i | EUR 0.087 | 11.5 pips |
+| USDCAD.i | EUR 0.062 | 16.2 pips |
+
+Every structural stop wider than that is skipped as
+`TRADE_SKIPPED_UNDERCAPITALIZED`. This is the constraint described in §1, now
+confirmed against the actual broker. Nothing in the code can fix it.
+
 ## 6. Known issues and design debt
 
 **`max_sl_pips` is an FX-shaped rule.** A "pip" on gold is one point ($0.01),

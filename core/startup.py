@@ -165,7 +165,18 @@ def run_startup_guard(
     for symbol in settings.active_whitelist:
         allowed, reason = settings.symbol_allowed_at_equity(symbol, account.equity)
         if not allowed:
-            errors.append(f"{symbol}: whitelisted for this mode but blocked — {reason}")
+            # A warning, not an error. The equity floors exist precisely so the
+            # account can grow into instruments it cannot afford yet, so a
+            # whitelist naming XAUUSD at EUR 100 is the expected state of a
+            # small account, not a misconfiguration. The floor already stops the
+            # trade; refusing to *start* on top of that would mean hand-editing
+            # the whitelist every time equity crosses a threshold. If the floors
+            # rule out everything, "no tradable symbol survived" below still
+            # errors, which is the case that actually matters.
+            warnings.append(
+                f"{symbol}: whitelisted for this mode but not available at this equity "
+                f"— {reason}. It becomes available as the account grows."
+            )
             continue
         try:
             spec = connector.spec(symbol)
