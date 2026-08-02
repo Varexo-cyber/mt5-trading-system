@@ -38,6 +38,11 @@ from main import build_filter_chain
 from monitoring.alerts import AlertSender
 from monitoring.operation_ledger import OperationLedger
 from promotion.audit import PromotionAudit
+from promotion.experimental import (
+    ExperimentalLiveContract,
+    apply_experimental_live_limits,
+    contract_path,
+)
 from reporting.daily_report import DailyReportGenerator
 from reporting.execution_report import ExecutionReportGenerator
 from reporting.weekly_report import WeeklyReportGenerator
@@ -54,6 +59,7 @@ class OperationMode(StrEnum):
     PAPER = "paper"
     DEMO = "demo"
     LIVE = "live"
+    EXPERIMENTAL_LIVE = "experimental_live"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,11 +114,18 @@ class JarvisRunner:
         self.advisor = build_advisor(self.settings.ai)
         self.cursor = self._load_cursor()
         self.operation_ledger = OperationLedger(root / "runtime" / "operation_history.json")
+        self.experimental_contract: ExperimentalLiveContract | None = None
 
     def connect(self) -> None:
         account = self.broker.connect()
         try:
             self._assert_account_mode(account.is_demo)
+            if self.operation is OperationMode.LIVE:
+                self._assert_live_armed(account.login)
+            elif self.operation is OperationMode.EXPERIMENTAL_LIVE:
+                contract = ExperimentalLiveContract.load(contract_path(self.root))
+                contract.assert_compatible(account, self.settings)
+                self.experimental_contract = contract
         except Exception:
             self.broker.shutdown()
             raise
@@ -141,8 +154,6 @@ class JarvisRunner:
             self.journal, report_directory / "EXECUTION_REPORT.md"
         )
         self.recorder.record_config_snapshot()
-        if self.operation is OperationMode.LIVE:
-            self._assert_live_armed(account.login)
         log.info(
             "jarvis connected",
             extra={"event": "jarvis_start", "operation": self.operation.value},
@@ -161,8 +172,16 @@ class JarvisRunner:
         try:
             while True:
                 if self.kill_switch.is_engaged():
-                    log.warning("STOP engaged; Jarvis service exiting")
-                    break
+                    remaining = self._flatten_owned_positions("operator hard STOP")
+                    if not remaining:
+                        log.warning("STOP engaged; owned positions flat; Jarvis service exiting")
+                        break
+                    log.critical(
+                        "STOP engaged but owned positions remain; retrying closures",
+                        extra={"event": "stop_close_retry", "positions": len(remaining)},
+                    )
+                    time.sleep(self.settings.system.loop_interval_seconds)
+                    continue
                 started = time.monotonic()
                 self.run_once()
                 elapsed = time.monotonic() - started
@@ -173,12 +192,15 @@ class JarvisRunner:
     def run_once(self, *, batch_size: int = 25, deep_candidates: int = 5) -> CycleSummary:
         started_at = self.clock.now()
         if self.kill_switch.is_engaged():
+            self._flatten_owned_positions("operator hard STOP")
             return self._summary(started_at, ScanBatch((), 0, 0, self.cursor, 0), 0, 0)
         self.broker.ensure_connected()
         if isinstance(self.broker, PaperBroker):
             self._record_paper_closures(self.broker.mark_to_market())
         account = self.broker.account()
         positions = self.broker.positions(magic=self.settings.system.magic_number)
+        if self._experimental_floor_tripped(account.equity, positions):
+            return self._summary(started_at, ScanBatch((), 0, 0, self.cursor, 0), 0, 0)
         reconciliation = self.manager.reconcile(positions)
         self._record_management(reconciliation)
         if any(event.action == "BROKER_CLOSED_PENDING_HISTORY" for event in reconciliation):
@@ -353,6 +375,8 @@ class JarvisRunner:
         self.recorder.record_sizing(cycle_pk, sizing)
         if self.operation is OperationMode.MONITOR:
             return False
+        if not self._entry_still_allowed():
+            return False
         request = OrderRequest(
             symbol=symbol,
             direction=idea.direction,
@@ -362,7 +386,9 @@ class JarvisRunner:
             reference_price=sizing.entry,
             deviation_points=self.settings.mt5.deviation_points,
             magic=self.settings.system.magic_number,
-            comment="jarvis",
+            comment=(
+                "jarvis-exp-live" if self.operation is OperationMode.EXPERIMENTAL_LIVE else "jarvis"
+            ),
         )
         result = self.broker.order_send(request, spec)
         if not result.ok:
@@ -474,11 +500,13 @@ class JarvisRunner:
             raise RuntimeError(
                 "DEMO_ACCOUNT_REQUIRED: refusing to send demo orders to a live MT5 account"
             )
-        if self.operation is OperationMode.LIVE and is_demo:
+        if self.operation in {OperationMode.LIVE, OperationMode.EXPERIMENTAL_LIVE} and is_demo:
             raise RuntimeError("LIVE_ACCOUNT_REQUIRED: live mode cannot run on a demo account")
 
     @staticmethod
     def _settings_for_operation(settings: Settings, operation: OperationMode) -> Settings:
+        if operation is OperationMode.EXPERIMENTAL_LIVE:
+            return apply_experimental_live_limits(settings)
         mode = (
             TradingMode.PAPER
             if operation in {OperationMode.MONITOR, OperationMode.PAPER, OperationMode.DEMO}
@@ -487,6 +515,71 @@ class JarvisRunner:
         return settings.model_copy(
             update={"system": settings.system.model_copy(update={"mode": mode})}
         )
+
+    def _entry_still_allowed(self) -> bool:
+        """Last-moment entry guard; exits and position management remain available."""
+        if self.kill_switch.is_engaged():
+            return False
+        if self.experimental_contract is None:
+            return True
+        account = self.broker.account()
+        if self._experimental_floor_tripped(
+            account.equity,
+            self.broker.positions(magic=self.settings.system.magic_number),
+        ):
+            return False
+        self.experimental_contract.assert_compatible(account, self.settings)
+        return True
+
+    def _experimental_floor_tripped(self, equity: float, positions) -> bool:  # type: ignore[no-untyped-def]
+        contract = self.experimental_contract
+        if contract is None or not contract.floor_breached(equity):
+            return False
+        message = (
+            f"EXPERIMENTAL LIVE CAPITAL STOP: equity {equity:.2f} {contract.currency} "
+            f"reached floor {contract.equity_floor:.2f} from initial "
+            f"{contract.initial_equity:.2f}."
+        )
+        remaining = self._flatten_owned_positions(message, positions=positions)
+        if remaining:
+            message += f" {len(remaining)} owned position(s) still require closure."
+        else:
+            message += " All owned positions are flat."
+        self.risk.halt(message)
+        self.kill_switch.engage(message)
+        self.alerts.send(message)
+        return True
+
+    def _flatten_owned_positions(self, reason: str, *, positions=None):  # type: ignore[no-untyped-def]
+        """Close only this system's magic-number positions and report survivors."""
+        owned = (
+            tuple(positions)
+            if positions is not None
+            else tuple(self.broker.positions(magic=self.settings.system.magic_number))
+        )
+        for position in owned:
+            try:
+                result = self.broker.close_position(position)
+            except Exception:
+                log.exception(
+                    "exception while flattening owned position",
+                    extra={"event": "flatten_exception", "ticket": position.ticket},
+                )
+                continue
+            if not result.ok:
+                log.critical(
+                    "broker rejected emergency close",
+                    extra={
+                        "event": "flatten_rejected",
+                        "ticket": position.ticket,
+                        "retcode": result.retcode,
+                        "comment": result.comment,
+                    },
+                )
+        remaining = tuple(self.broker.positions(magic=self.settings.system.magic_number))
+        if remaining:
+            self.alerts.send(f"CRITICAL: {reason}; {len(remaining)} Jarvis position(s) still open")
+        return remaining
 
     def _load_cursor(self) -> int:
         path = self.root / "runtime" / "runner_state.json"
