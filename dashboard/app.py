@@ -243,6 +243,23 @@ try:
         )
     except (OSError, json.JSONDecodeError):
         heartbeat = {}
+    pid_path = ROOT / "runtime" / "jarvis.pid"
+    running_pid = int(pid_path.read_text().strip()) if pid_path.exists() else 0
+    running = False
+    if running_pid:
+        if sys.platform == "win32":
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, running_pid)
+            running = bool(handle)
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        else:
+            try:
+                os.kill(running_pid, 0)
+                running = True
+            except OSError:
+                running = False
+        if not running:
+            pid_path.unlink(missing_ok=True)
     experimental_contract = None
     experimental_error = "not armed"
     try:
@@ -259,16 +276,19 @@ try:
     first.metric("Balance", f"{account.balance:.2f} {account.currency}")
     second.metric("Equity", f"{account.equity:.2f} {account.currency}")
     third.metric("Open positions", str(len(positions)))
-    fourth.metric("Jarvis mode", str(heartbeat.get("operation", "OFF")).upper())
+    active_operation = str(heartbeat.get("operation", "OFF")).upper() if running else "OFF"
+    fourth.metric("Jarvis mode", active_operation)
     fifth.metric(
         "Paper equity",
         f"{paper.equity:.2f} {paper.currency}" if paper is not None else "not started",
     )
-    if heartbeat.get("operation") == "experimental_live":
+    if running and heartbeat.get("operation") == "experimental_live":
         st.error(
             f"REAL MONEY ACTIVE - account {account.login}, equity {account.equity:.2f} "
             f"{account.currency}. Use the Control tab for the hard stop."
         )
+    elif kill_switch.is_engaged():
+        st.warning("Jarvis is OFF because the durable hard STOP is engaged.")
 
     overview_tab, scanner_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
         ["Overview", "Live scanner", "Charts", "Positions", "PDF report", "Control"]
@@ -426,23 +446,6 @@ try:
         control_error = st.session_state.pop("control_error", "")
         if control_error:
             st.error(control_error, icon=":material/error:")
-        pid_path = ROOT / "runtime" / "jarvis.pid"
-        running_pid = int(pid_path.read_text().strip()) if pid_path.exists() else 0
-        running = False
-        if running_pid:
-            if sys.platform == "win32":
-                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, running_pid)
-                running = bool(handle)
-                if handle:
-                    ctypes.windll.kernel32.CloseHandle(handle)
-            else:
-                try:
-                    os.kill(running_pid, 0)
-                    running = True
-                except OSError:
-                    running = False
-            if not running:
-                pid_path.unlink(missing_ok=True)
         st.metric("Jarvis service", f"RUNNING (PID {running_pid})" if running else "OFF")
         with st.container(border=True):
             st.subheader("Claude trade gate")
