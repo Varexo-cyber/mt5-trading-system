@@ -1,3 +1,4 @@
 from promotion.audit import PromotionAudit, PromotionCheck
+from promotion.experimental import ExperimentalLiveContract
 
-__all__ = ["PromotionAudit", "PromotionCheck"]
+__all__ = ["ExperimentalLiveContract", "PromotionAudit", "PromotionCheck"]

@@ -12,6 +12,11 @@
 - `LIVE`: the real MT5 execution adapter. It starts only when the config is
   micro-live, the account matches `runtime/LIVE_ARMED.json`, and at least two
   analysis modules are explicitly listed as independently validated.
+- `EXPERIMENTAL_LIVE`: a separate, explicitly accepted real-money experiment.
+  It is bound to one login/server/currency contract, fixes both requested and
+  maximum risk at 1% per trade, uses the 15% peak drawdown breaker, and also
+  stops at 85% of the equity recorded when the contract was armed. It does not
+  pretend the current research modules have passed normal live promotion.
 
 Opening MT5 alone does not start Jarvis. Start it through the dashboard or one
 of the launchers. MT5 must remain open and logged in.
@@ -30,7 +35,9 @@ history grows every Sunday. Free feeds cannot reconstruct past years later.
 
 The service writes `runtime/heartbeat.json`. `runtime/jarvis.pid` exists only
 while the service is running. The dashboard STOP button writes the durable
-`STOP` file; the service then exits and cannot restart until a human clears it.
+`STOP` file. Jarvis stops new entries, closes positions carrying its own magic
+number, and exits only when those positions are flat. A rejected closure is
+retried; manual positions are never touched.
 
 ## AI review
 
@@ -61,6 +68,11 @@ launcher reopens the existing local app instead of starting duplicates. The
 installer disables `JarvisTradingMonitor` so only one runner can start. This
 changes only automatic PAPER operation; LIVE remains evidence-locked.
 
+After an experimental contract has been created, run
+`install_autostart_experimental_live.cmd` to replace PAPER autostart with the
+account-bound real-money runner. It registers `JarvisTradingExperimentalLive`,
+disables `JarvisTradingPaper`, and keeps the MT5 and dashboard startup tasks.
+
 ## Live promotion
 
 There is deliberately no one-click live button. Live requires all of:
@@ -83,6 +95,13 @@ Inspect the gates at any time:
 
 The command reports failures and exits without arming. Only after every gate
 passes can `--arm` bind approval to the currently connected live account.
+
+The owner-authorized `EXPERIMENTAL_LIVE` path is deliberately separate from
+this normal promotion. It scans the supported broker catalogue but can place
+entries only in the micro-live whitelist (`EURUSD.i`, `GBPUSD.i`, `USDJPY.i`,
+`AUDUSD.i`). The analysis is deterministic confluence across D1/H4/H1/M15/M5;
+the optional external AI adviser remains disabled unless API credentials and
+models are explicitly configured. No win rate or profit is guaranteed.
 
 ## Historical validation
 

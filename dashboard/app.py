@@ -34,13 +34,18 @@ from dashboard.service import (
     load_paper_snapshot,
 )
 from infra.killswitch import KillSwitch
+from promotion.experimental import (
+    ExperimentalLiveContract,
+    apply_experimental_live_limits,
+    contract_path,
+)
 from reporting.pdf_report import build_pdf_report
 
 OVERLAY = PACKAGE_ROOT / "config" / "eightcap.yaml"
 
 st.set_page_config(page_title="MT5 Control Deck", page_icon="📈", layout="wide")
 st.title("MT5 Control Deck")
-st.caption("Read-only market intelligence and hard-stop control. Live execution is locked.")
+st.caption("Market intelligence, reporting and hard-stop control for Jarvis.")
 
 settings = load_settings(overlay=OVERLAY)
 credentials = load_credentials(required=False)
@@ -98,7 +103,7 @@ try:
         max_selections=4,
     )
     bar_count = st.sidebar.slider("Bars per chart", 100, 1000, 300, 50)
-    if st.sidebar.button("Refresh broker data", use_container_width=True):
+    if st.sidebar.button("Refresh broker data", width="stretch"):
         st.rerun()
 
     heartbeat_path = ROOT / "runtime" / "heartbeat.json"
@@ -110,6 +115,17 @@ try:
         )
     except (OSError, json.JSONDecodeError):
         heartbeat = {}
+    experimental_contract = None
+    experimental_error = "not armed"
+    try:
+        experimental_contract = ExperimentalLiveContract.load(contract_path(ROOT))
+        experimental_contract.assert_compatible(
+            account,
+            apply_experimental_live_limits(settings),
+        )
+        experimental_error = ""
+    except RuntimeError as exc:
+        experimental_error = str(exc)
     paper = load_paper_snapshot(ROOT / "runtime" / "paper_state.json")
     first, second, third, fourth, fifth = st.columns(5)
     first.metric("Balance", f"{account.balance:.2f} {account.currency}")
@@ -120,6 +136,11 @@ try:
         "Paper equity",
         f"{paper.equity:.2f} {paper.currency}" if paper is not None else "not started",
     )
+    if heartbeat.get("operation") == "experimental_live":
+        st.error(
+            f"REAL MONEY ACTIVE - account {account.login}, equity {account.equity:.2f} "
+            f"{account.currency}. Use the Control tab for the hard stop."
+        )
 
     overview_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
         ["Overview", "Charts", "Positions", "PDF report", "Control"]
@@ -199,7 +220,7 @@ try:
                 xaxis_rangeslider_visible=False,
                 template="plotly_dark",
             )
-            st.plotly_chart(figure, use_container_width=True)
+            st.plotly_chart(figure, width="stretch")
 
     with positions_tab:
         st.subheader("Broker positions")
@@ -223,7 +244,7 @@ try:
                         for p in positions
                     ]
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
         st.subheader("Paper positions")
@@ -247,7 +268,7 @@ try:
                         for p in paper.positions
                     ]
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
             )
 
@@ -259,7 +280,7 @@ try:
             data=pdf,
             file_name=f"mt5-report-{selected_name}.pdf",
             mime="application/pdf",
-            use_container_width=True,
+            width="stretch",
         )
 
     with control_tab:
@@ -286,21 +307,27 @@ try:
         stopped = kill_switch.is_engaged()
         st.metric("Hard STOP", "ENGAGED" if stopped else "clear")
         st.warning(
-            "MONITOR, PAPER and DEMO are autonomous. LIVE remains locked until the registered "
-            "out-of-sample, demo and account-arming gates have all passed."
+            "Standard LIVE remains locked behind the validation protocol. EXPERIMENTAL LIVE "
+            "is a separate real-money mode using the owner's explicit loss acceptance."
         )
-        if st.button("STOP BOT NOW", type="primary", use_container_width=True):
+        if experimental_contract is not None and not experimental_error:
+            st.error(
+                f"EXPERIMENTAL LIVE ARMED - account {experimental_contract.login}; "
+                f"1.0% per trade; 15.0% drawdown stop; absolute equity floor "
+                f"{experimental_contract.equity_floor:.2f} {experimental_contract.currency}."
+            )
+        else:
+            st.info(f"Experimental live unavailable: {experimental_error}")
+        if st.button("STOP AND FLATTEN JARVIS", type="primary", width="stretch"):
             kill_switch.engage("operator dashboard emergency stop")
             st.rerun()
-        start_monitor, start_paper, start_demo = st.columns(3)
+        start_monitor, start_paper, start_demo, start_experimental = st.columns(4)
         creation_flags = (
             getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
-        if start_monitor.button(
-            "Start MONITOR", disabled=running or stopped, use_container_width=True
-        ):
+        if start_monitor.button("Start MONITOR", disabled=running or stopped, width="stretch"):
             subprocess.Popen(
                 [sys.executable, str(ROOT / "jarvis.py"), "--operation", "monitor"],
                 cwd=ROOT,
@@ -311,7 +338,7 @@ try:
                 stderr=subprocess.DEVNULL,
             )
             st.rerun()
-        if start_paper.button("Start PAPER", disabled=running or stopped, use_container_width=True):
+        if start_paper.button("Start PAPER", disabled=running or stopped, width="stretch"):
             subprocess.Popen(
                 [sys.executable, str(ROOT / "jarvis.py"), "--operation", "paper"],
                 cwd=ROOT,
@@ -331,10 +358,43 @@ try:
                 if not account.is_demo
                 else None
             ),
-            use_container_width=True,
+            width="stretch",
         ):
             subprocess.Popen(
                 [sys.executable, str(ROOT / "jarvis.py"), "--operation", "demo"],
+                cwd=ROOT,
+                creationflags=creation_flags,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            st.rerun()
+        experimental_disabled = (
+            running
+            or stopped
+            or account.is_demo
+            or experimental_contract is None
+            or bool(experimental_error)
+        )
+        if start_experimental.button(
+            "Start EXPERIMENTAL LIVE",
+            disabled=experimental_disabled,
+            help=(
+                experimental_error
+                if experimental_error
+                else "Starts autonomous orders with real money on the bound account."
+            ),
+            type="primary",
+            width="stretch",
+        ):
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(ROOT / "jarvis.py"),
+                    "--operation",
+                    "experimental_live",
+                ],
                 cwd=ROOT,
                 creationflags=creation_flags,
                 close_fds=True,
@@ -347,7 +407,7 @@ try:
         if st.button(
             "Clear STOP",
             disabled=confirmation != "CLEAR STOP",
-            use_container_width=True,
+            width="stretch",
         ):
             kill_switch.clear()
             st.rerun()

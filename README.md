@@ -90,7 +90,7 @@ On Windows, install the dashboard extra once and then double-click
 The app runs on `127.0.0.1` only. It reads the connected MT5 account, all broker
 catalogue instruments, active positions and up to four of MT5's 21 timeframes
 at once. It also generates a PDF report and exposes the real filesystem-backed
-`STOP` switch. Live execution remains locked until the strategy, backtester and
+`STOP` switch. Standard live execution remains locked until the strategy, backtester and
 demo loop in phases 4–6 are validated.
 
 Eightcap-specific symbol names live in `config/eightcap.yaml`; FX uses `.i`,
@@ -110,6 +110,9 @@ while BTCUSD, XAUUSD, stocks and indices keep their catalogue names.
 
 # Real MT5 execution, accepted only when MT5 reports a demo account
 .venv-live\Scripts\python.exe jarvis.py --operation demo
+
+# Explicitly armed real-money experiment (never accepted on demo)
+.venv-live\Scripts\python.exe jarvis.py --operation experimental_live
 ```
 
 The scanner rotates through the complete supported broker catalogue rather
@@ -120,6 +123,13 @@ See `docs/JARVIS.md` for controls, AI consensus and Windows autostart. Use
 `install_autostart_paper.cmd` to start the saved MT5 terminal minimized at
 login, start PAPER sixty seconds later, and open the local dashboard after
 ninety seconds; it disables monitor autostart and never arms LIVE.
+
+Once an experimental contract exists, `install_autostart_experimental_live.cmd`
+replaces PAPER autostart with the bound real-money mode. The fixed envelope is
+1% per trade, a 15% peak drawdown breaker, and an additional absolute floor at
+85% of the equity recorded when the contract was armed. It scans the complete
+supported catalogue, but real entries remain restricted to the four micro-live
+FX majors in `config/config.yaml`.
 
 The Phase 1 acceptance test — one demo order, placed, verified and closed, with
 every execution detail printed — is:
