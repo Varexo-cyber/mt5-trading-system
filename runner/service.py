@@ -31,7 +31,8 @@ from core.broker import Broker
 from core.clock import LiveClock
 from core.data_manager import DataManager
 from core.errors import TradingSystemError
-from core.types import OrderRequest, TradingMode
+from core.startup import run_startup_guard
+from core.types import AccountSnapshot, OrderRequest, TradingMode
 from execution.manager import PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
@@ -168,6 +169,7 @@ class JarvisRunner:
             self.journal, report_directory / "EXECUTION_REPORT.md"
         )
         self.recorder.record_config_snapshot()
+        self._report_feasibility(account)
         if self.operation is OperationMode.EXPERIMENTAL_LIVE:
             self._report_promotion_evidence()
         log.info(
@@ -674,6 +676,45 @@ class JarvisRunner:
                 f"EXPERIMENTAL LIVE armed with {len(failures)}/{len(checks)} promotion checks "
                 f"still failing. This is real money on unvalidated evidence: "
                 + "; ".join(f"{item.name}" for item in failures[:6])
+            )
+
+    def _report_feasibility(self, account: AccountSnapshot) -> None:
+        """Log what this equity can actually express, before the first cycle.
+
+        The autonomous path had no equivalent of `main.py --status`, so the one
+        fact that governs a EUR 100 account — that 1% risk buys roughly eleven
+        pips of stop at the minimum lot, and every structural stop wider than
+        that is skipped — was visible only if the operator happened to run the
+        diagnostic first. A run that skips every setup for an entirely
+        legitimate reason looks identical to one that is broken.
+
+        Reports; never blocks. The hard refusals live in `connect` above, and
+        the position sizer enforces the arithmetic per trade regardless.
+        """
+        try:
+            report = run_startup_guard(self.settings, self.broker, account)
+        except Exception:
+            log.exception("feasibility report failed", extra={"event": "feasibility_failed"})
+            return
+
+        expressible = [item.symbol for item in report.symbols if item.is_expressible]
+        log.info(
+            "startup feasibility",
+            extra={
+                "event": "feasibility_report",
+                "equity": account.equity,
+                "currency": account.currency,
+                "risk_money": round(report.risk_money, 2),
+                "expressible": expressible,
+                "warnings": list(report.warnings),
+                "errors": list(report.errors),
+            },
+        )
+        if not expressible:
+            self.alerts.send(
+                f"No whitelisted symbol can express a trade at {report.risk_pct:.2f}% risk on "
+                f"{account.equity:.2f} {account.currency}. The system will scan and analyse "
+                f"but skip essentially every setup."
             )
 
     def _assert_live_armed(self, login: int) -> None:

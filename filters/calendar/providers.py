@@ -19,6 +19,7 @@ not read and fails the whole fetch past a threshold.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
@@ -38,6 +39,14 @@ TRADINGVIEW_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "Origin": "https://www.tradingview.com",
     "Referer": "https://www.tradingview.com/",
+}
+
+# The weekly JSON is served to browsers through a CDN that is unfriendly to
+# unrecognised clients. A bespoke User-Agent buys nothing here and risks being
+# filtered, which surfaces as an unexplained failure of one of the two files.
+FAIRECONOMY_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Referer": "https://www.forexfactory.com/",
 }
 
 #: Fail the fetch if more than this fraction of records will not parse.
@@ -122,9 +131,47 @@ class FairEconomyProvider(CalendarProvider):
     THIS_WEEK = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
     NEXT_WEEK = "https://nfs.faireconomy.media/ff_calendar_nextweek.json"
 
-    def __init__(self, timeout: float = 15.0, *, include_next_week: bool = True) -> None:
+    def __init__(
+        self,
+        timeout: float = 15.0,
+        *,
+        include_next_week: bool = True,
+        retries: int = 2,
+        spacing_seconds: float = 1.5,
+    ) -> None:
         self.timeout = timeout
         self.include_next_week = include_next_week
+        self.retries = retries
+        self.spacing_seconds = spacing_seconds
+
+    def _get_json_with_retry(self, url: str) -> Any:
+        """Fetch, retrying transient failures before declaring the feed down.
+
+        This does not soften fail-closed: after the last attempt the error is
+        raised exactly as before, and a genuine outage still stops trading. It
+        only stops a single dropped connection or a rate-limit response from
+        being promoted into "no calendar, do not trade" — a needless halt is a
+        cost too, just a quieter one.
+        """
+        last: CalendarUnavailableError | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                return self._get_json(url, self.timeout, FAIRECONOMY_HEADERS)
+            except CalendarUnavailableError as exc:
+                last = exc
+                if attempt < self.retries:
+                    log.warning(
+                        "calendar fetch failed, retrying",
+                        extra={
+                            "event": "calendar_fetch_retry",
+                            "provider": self.name,
+                            "url": url,
+                            "attempt": attempt + 1,
+                            "reason": str(exc),
+                        },
+                    )
+                    time.sleep(self.spacing_seconds * (attempt + 1))
+        raise last  # type: ignore[misc]  # the loop always runs at least once
 
     def fetch(self, start: datetime, end: datetime) -> list[EconomicEvent]:
         urls = [self.THIS_WEEK]
@@ -135,16 +182,27 @@ class FairEconomyProvider(CalendarProvider):
         failed = total = 0
         reachable = False
 
-        for url in urls:
+        for index, url in enumerate(urls):
+            if index:
+                # The two weekly files are one CDN origin. Fetching them
+                # back-to-back is the request pattern most likely to be rate
+                # limited, and a rate-limited second file is indistinguishable
+                # from an outage to everything downstream.
+                time.sleep(self.spacing_seconds)
             try:
-                payload = self._get_json(url, self.timeout)
+                payload = self._get_json_with_retry(url)
             except CalendarUnavailableError as exc:
                 # The default window reaches seven days ahead. Accepting only
                 # the current file would label an incomplete calendar as safe
                 # and prevent the fallback provider from supplying the gap.
+                #
+                # Carry the underlying reason forward. "failed" alone cannot be
+                # acted on: an HTTP 429 means back off, a 404 means the feed
+                # moved, and a timeout means the network. They need different
+                # fixes and previously looked identical.
                 raise CalendarUnavailableError(
-                    f"{self.name}: incomplete weekly calendar because {url} failed; "
-                    "refusing partial data"
+                    f"{self.name}: incomplete weekly calendar because {url} failed "
+                    f"({exc}); refusing partial data"
                 ) from exc
             reachable = True
 

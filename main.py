@@ -149,7 +149,26 @@ def main(argv: list[str] | None = None) -> int:
     try:
         account = connector.connect()
         report = run_startup_guard(settings, connector, account)
-        enforce(report, require_confirmation=not args.no_confirm)
+
+        # `main.py` never opens a position — it reads. So the guard reports here
+        # instead of aborting: a diagnostic that refuses to run exactly when the
+        # configuration is wrong is useless at the one moment you need it. The
+        # exit code still carries the verdict.
+        #
+        # This does not weaken the trading path, which never went through
+        # `enforce()` in the first place. `JarvisRunner.connect` has its own hard
+        # asserts for the cases that can lose money — `_assert_account_mode`,
+        # the arming file, the experimental contract, the AI gate — and it now
+        # logs this same feasibility report at startup.
+        if not report.ok:
+            print(report.render())
+            print(
+                "\nBLOCKED for trading — the checks above must pass before "
+                "jarvis.py will start. Diagnostics below still ran.",
+                file=sys.stderr,
+            )
+        else:
+            enforce(report, require_confirmation=not args.no_confirm)
 
         if args.data:
             show_data(connector, settings, args.data)
@@ -162,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
                 "\nDiagnostic mode only. Use --status, --risk, --filters SYMBOL or "
                 "--data SYMBOL. Start autonomous modes with jarvis.py or the dashboard."
             )
-        return 0
+        return 0 if report.ok else 1
     except TradingSystemError as exc:
         log.error("startup failed", exc_info=True)
         print(f"\n{type(exc).__name__}: {exc}", file=sys.stderr)

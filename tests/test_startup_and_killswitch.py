@@ -110,6 +110,46 @@ class TestGuardBlocks:
         assert report.ok
         assert any("DEMO" in w for w in report.warnings)
 
+    def test_a_symbol_the_account_cannot_afford_yet_warns_but_does_not_block(
+        self, tmp_path: Path, raw: dict[str, Any]
+    ) -> None:
+        """A EUR 100 whitelist naming XAUUSD is a small account, not a broken config.
+
+        The equity floor already forbids the trade. Refusing to *start* on top of
+        that would mean hand-editing the whitelist every time equity crosses a
+        threshold, which is exactly what the floors exist to avoid.
+        """
+        data = copy.deepcopy(raw)
+        data["system"]["mode"] = "micro_live"
+        data["instruments"]["whitelist"]["micro_live"] = ["EURUSD", "XAUUSD"]
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        settings = load_settings(path, env_overrides=False)
+
+        connector = connected(100.0)
+        report = run_startup_guard(settings, connector, connector.account())
+
+        assert report.ok
+        assert any("XAUUSD" in w and "as the account grows" in w for w in report.warnings)
+        assert not any("XAUUSD" in e for e in report.errors)
+
+    def test_an_equity_floor_that_rules_out_everything_still_blocks(
+        self, tmp_path: Path, raw: dict[str, Any]
+    ) -> None:
+        """Downgrading the per-symbol check must not lose the case that matters."""
+        data = copy.deepcopy(raw)
+        data["system"]["mode"] = "micro_live"
+        data["instruments"]["whitelist"]["micro_live"] = ["XAUUSD"]
+        path = tmp_path / "config.yaml"
+        path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        settings = load_settings(path, env_overrides=False)
+
+        connector = connected(100.0)
+        report = run_startup_guard(settings, connector, connector.account())
+
+        assert not report.ok
+        assert any("no tradable symbol survived" in e for e in report.errors)
+
     def test_missing_symbol_blocks_startup(self, tmp_path: Path, raw: dict[str, Any]) -> None:
         data = copy.deepcopy(raw)
         data["system"]["mode"] = "backtest"

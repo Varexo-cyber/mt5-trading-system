@@ -382,7 +382,7 @@ class TestFileProvider:
 
 class TestRemoteProviders:
     def test_faireconomy_refuses_a_missing_next_week(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        provider = FairEconomyProvider()
+        provider = FairEconomyProvider(retries=0, spacing_seconds=0.0)
         current = [
             {
                 "date": NOW.isoformat(),
@@ -396,11 +396,53 @@ class TestRemoteProviders:
             del timeout, headers
             if url == provider.THIS_WEEK:
                 return current
-            raise CalendarUnavailableError("next week is unavailable")
+            raise CalendarUnavailableError("HTTP Error 429: Too Many Requests")
 
         monkeypatch.setattr(provider, "_get_json", fake_get)
 
-        with pytest.raises(CalendarUnavailableError, match="refusing partial data"):
+        with pytest.raises(CalendarUnavailableError, match="refusing partial data") as caught:
+            provider.fetch(NOW - timedelta(days=1), NOW + timedelta(days=7))
+
+        # The reason has to survive the wrapping. A 429 means back off, a 404
+        # means the feed moved, a timeout means the network — different fixes
+        # that were previously all reported with the same word, "failed".
+        assert "429" in str(caught.value)
+
+    def test_faireconomy_retries_before_declaring_the_feed_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A rate-limited second file must not be promoted into "do not trade"."""
+        provider = FairEconomyProvider(retries=2, spacing_seconds=0.0)
+        attempts: list[str] = []
+        record = {"date": NOW.isoformat(), "country": "USD", "title": "CPI", "impact": "High"}
+
+        def fake_get(url: str, timeout: float, headers=None):  # type: ignore[no-untyped-def]
+            del timeout, headers
+            attempts.append(url)
+            if url == provider.NEXT_WEEK and attempts.count(url) < 3:
+                raise CalendarUnavailableError("HTTP Error 429: Too Many Requests")
+            return [record]
+
+        monkeypatch.setattr(provider, "_get_json", fake_get)
+
+        events = provider.fetch(NOW - timedelta(days=1), NOW + timedelta(days=7))
+
+        assert len(events) == 2
+        assert attempts.count(provider.NEXT_WEEK) == 3
+
+    def test_faireconomy_still_gives_up_when_every_attempt_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retrying must not soften fail-closed: a real outage still stops trading."""
+        provider = FairEconomyProvider(retries=2, spacing_seconds=0.0)
+
+        def fake_get(url: str, timeout: float, headers=None):  # type: ignore[no-untyped-def]
+            del url, timeout, headers
+            raise CalendarUnavailableError("connection refused")
+
+        monkeypatch.setattr(provider, "_get_json", fake_get)
+
+        with pytest.raises(CalendarUnavailableError):
             provider.fetch(NOW - timedelta(days=1), NOW + timedelta(days=7))
 
     def test_tradingview_sends_required_browser_headers(
