@@ -39,6 +39,18 @@ while the service is running. The dashboard STOP button writes the durable
 number, and exits only when those positions are flat. A rejected closure is
 retried; manual positions are never touched.
 
+The dashboard's **Live scanner** tab refreshes every five seconds from
+`runtime/scan_activity.json`. It shows the rotating catalogue coverage, every
+recent cheap inspection, the exact rejection stage and the final deep-analysis
+decision. The ledger retains the latest status per symbol and the most recent
+500 inspection records; it is bounded so it cannot grow forever.
+
+With the default settings Jarvis inspects 25 symbols every roughly 30 seconds
+and deep-analyses at most five. A catalogue of 847 symbols therefore takes
+about 17 minutes per full rotation. Scanning all 847 symbols every second is
+intentionally unsupported: it would overload the terminal, multiply stale and
+partial reads, and does not create better signals.
+
 ## AI review
 
 AI is optional in the base research configuration. The Eightcap overlay makes
@@ -90,6 +102,9 @@ After an experimental contract has been created, run
 `install_autostart_experimental_live.cmd` to replace PAPER autostart with the
 account-bound real-money runner. It registers `JarvisTradingExperimentalLive`,
 disables `JarvisTradingPaper`, and keeps the MT5 and dashboard startup tasks.
+If a durable STOP exists at login, the runner stays safe and exits. In the
+dashboard type `clear stop` and choose **CLEAR STOP + START REAL TRADING** to
+clear it and start the account-bound experimental runner in one explicit step.
 
 ## Live promotion
 

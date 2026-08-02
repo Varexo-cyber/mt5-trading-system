@@ -35,6 +35,7 @@ from dashboard.service import (
     load_paper_snapshot,
 )
 from infra.killswitch import KillSwitch
+from monitoring.scan_activity import read_scan_activity
 from promotion.experimental import (
     ExperimentalLiveContract,
     apply_experimental_live_limits,
@@ -64,6 +65,124 @@ ai_ready = (
     and bool(os.getenv("ANTHROPIC_API_KEY"))
 )
 ai_reviews = read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl")
+
+
+@st.fragment(run_every="5s")
+def render_live_scanner() -> None:
+    state = read_scan_activity(ROOT / "runtime" / "scan_activity.json")
+    if not state:
+        st.info(
+            "Nog geen scanlog beschikbaar. Wis STOP en start een Jarvis-modus; "
+            "de eerste 25 inspecties verschijnen daarna hier."
+        )
+        return
+
+    symbols = list(state.get("symbols", {}).values())
+    recent = list(state.get("recent", []))
+    universe_size = int(state.get("universe_size", 0))
+    seen = len(symbols)
+    coverage = min(100.0, 100.0 * seen / universe_size) if universe_size else 0.0
+    last_batch = state.get("last_batch", {})
+    with st.container(horizontal=True):
+        st.metric("Broker-markten", f"{universe_size:,}", border=True)
+        st.metric("Unieke markten gezien", f"{seen:,}", border=True)
+        st.metric("Rotatie-dekking", f"{coverage:.1f}%", border=True)
+        st.metric(
+            "Laatste batch",
+            f"{int(last_batch.get('inspected', 0))} bekeken",
+            border=True,
+        )
+        st.metric("Totaal inspecties", f"{int(state.get('total_inspections', 0)):,}", border=True)
+
+    st.caption(
+        f"Automatische update iedere 5 seconden · scannerstand: {state.get('operation', 'off')} · "
+        f"laatst bijgewerkt: {state.get('updated_at', 'onbekend')}"
+    )
+    st.info(
+        "De scanner roteert standaard 25 markten per cyclus van ongeveer 30 seconden. "
+        "Een catalogus van 847 markten duurt dus ongeveer 17 minuten per volledige ronde. "
+        "Alleen de vijf beste van iedere batch krijgen de zware multi-timeframeanalyse."
+    )
+
+    view = st.segmented_control(
+        "Weergave",
+        ["Recente inspecties", "Laatste status per markt"],
+        default="Recente inspecties",
+        key="scanner_view",
+    )
+    rows = recent if view == "Recente inspecties" else symbols
+    asset_classes = sorted({str(row.get("asset_class", "unknown")) for row in rows})
+    selected_classes = (
+        st.pills(
+            "Assetklassen",
+            asset_classes,
+            default=asset_classes,
+            selection_mode="multi",
+            key="scanner_asset_classes",
+        )
+        or []
+    )
+    filtered = [row for row in rows if row.get("asset_class") in selected_classes]
+    display_rows = []
+    for row in reversed(filtered[-250:]):
+        deep_status = row.get("deep_status")
+        deep_reason = row.get("deep_reason")
+        deep_detail = row.get("deep_detail")
+        why = (
+            f"{deep_reason}: {deep_detail}"
+            if deep_reason and deep_detail
+            else deep_reason or deep_detail or row.get("reason")
+        )
+        display_rows.append(
+            {
+                "Tijd (UTC)": row.get("deep_at") or row.get("inspected_at"),
+                "Markt": row.get("symbol"),
+                "Klasse": row.get("asset_class"),
+                "Besluit": deep_status or row.get("status"),
+                "Fase": "deep analysis" if deep_status else row.get("stage"),
+                "Waarom": why,
+                "Spread (bps)": row.get("spread_bps"),
+                "Quoteleeftijd (s)": row.get("quote_age_seconds"),
+                "Rangscore": row.get("rank"),
+            }
+        )
+    if display_rows:
+        st.dataframe(
+            pd.DataFrame(display_rows),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Spread (bps)": st.column_config.NumberColumn(format="%.3f"),
+                "Quoteleeftijd (s)": st.column_config.NumberColumn(format="%.1f"),
+                "Rangscore": st.column_config.NumberColumn(format="%.3f"),
+            },
+        )
+        reason_counts = (
+            pd.DataFrame(display_rows)["Besluit"]
+            .value_counts()
+            .rename_axis("Besluit")
+            .reset_index(name="Aantal")
+        )
+        st.bar_chart(reason_counts, x="Besluit", y="Aantal")
+    else:
+        st.warning("Geen scanregels voor deze selectie.")
+
+    with st.expander("Hoe Jarvis van scan naar trade gaat"):
+        st.markdown(
+            """
+1. Haal een groep van 25 symbolen uit de Eightcap-catalogus.
+2. Controleer per symbool of het verhandelbaar is en een verse prijs heeft.
+3. Blokkeer een te hoge spread of ontbrekende H1-geschiedenis.
+4. Geef de overblijvers een lichte trend/activiteit-rangscore.
+5. Analyseer maximaal vijf winnaars zwaar op D1, H4, H1, M15 en M5.
+6. Controleer whitelist, balans, bestaande posities, nieuws, sessie en correlatie.
+7. Bereken een echte stoploss, take-profit, lotgrootte en maximaal 1% risico.
+8. Vraag Claude als laatste veto. Claude mag nooit risico of orderwaarden veranderen.
+9. Stuur alleen bij alle groene poorten een order naar MT5/Eightcap.
+10. Beheer daarna SL, break-even, trailing/exit en schrijf alles in het journaal.
+"""
+        )
+
 
 try:
     account = service.connect()
@@ -150,8 +269,8 @@ try:
             f"{account.currency}. Use the Control tab for the hard stop."
         )
 
-    overview_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
-        ["Overview", "Charts", "Positions", "PDF report", "Control"]
+    overview_tab, scanner_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
+        ["Overview", "Live scanner", "Charts", "Positions", "PDF report", "Control"]
     )
 
     frames: dict[str, pd.DataFrame] = {}
@@ -203,6 +322,14 @@ try:
             c.metric("Spread", f"{spread_pips:.2f} pips / {spread_bps:.3f} bps")
             d.metric("Min-lot spread cost", f"{spread_cost:.4f} {account.currency}")
             e.metric("Quote age", f"{tick_age:.0f}s")
+
+    with scanner_tab:
+        st.subheader("Wat Jarvis achter de schermen scant")
+        st.warning(
+            "De hele catalogus wordt bekeken, maar met EUR 100 mogen alleen EURUSD.i, "
+            "GBPUSD.i, USDJPY.i en AUDUSD.i uiteindelijk een echte order worden."
+        )
+        render_live_scanner()
 
     with charts_tab:
         if not frames:
@@ -465,14 +592,51 @@ try:
         confirmation_ok = " ".join(confirmation.split()).casefold() == "clear stop"
         if confirmation and not confirmation_ok:
             st.caption("Type the two words **clear stop**. Capitalization does not matter.")
-        if st.button(
-            "Clear STOP",
+        clear_only, clear_and_live = st.columns(2)
+        if clear_only.button(
+            "Clear STOP only",
             disabled=not stopped or not confirmation_ok,
+            type="primary",
             width="stretch",
         ):
             kill_switch.clear()
             st.session_state["control_notice"] = (
                 "Hard STOP cleared. Jarvis remains off until you explicitly start a mode."
+            )
+            st.rerun()
+        clear_and_live_disabled = (
+            not stopped
+            or not confirmation_ok
+            or running
+            or account.is_demo
+            or experimental_contract is None
+            or bool(experimental_error)
+            or not ai_ready
+        )
+        if clear_and_live.button(
+            "CLEAR STOP + START REAL TRADING",
+            disabled=clear_and_live_disabled,
+            type="primary",
+            help="Clears STOP and immediately starts account-bound Experimental Live.",
+            width="stretch",
+        ):
+            kill_switch.clear()
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(ROOT / "jarvis.py"),
+                    "--operation",
+                    "experimental_live",
+                ],
+                cwd=ROOT,
+                creationflags=creation_flags,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            st.session_state["control_notice"] = (
+                "STOP cleared and EXPERIMENTAL LIVE started with real money."
             )
             st.rerun()
 finally:

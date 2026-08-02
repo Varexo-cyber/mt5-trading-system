@@ -37,6 +37,7 @@ from learning.config_control import ShadowRecorder
 from main import build_filter_chain
 from monitoring.alerts import AlertSender
 from monitoring.operation_ledger import OperationLedger
+from monitoring.scan_activity import ScanActivityLedger
 from promotion.audit import PromotionAudit
 from promotion.experimental import (
     ExperimentalLiveContract,
@@ -67,10 +68,12 @@ class CycleSummary:
     started_at: datetime
     finished_at: datetime
     inspected: int
+    rejected: int
     deep_analysed: int
     candidates: int
     trades_opened: int
     next_cursor: int
+    universe_size: int
 
 
 class JarvisRunner:
@@ -116,6 +119,7 @@ class JarvisRunner:
         self.ai_ledger = AIReviewLedger(root / "runtime" / "ai_reviews.jsonl")
         self.cursor = self._load_cursor()
         self.operation_ledger = OperationLedger(root / "runtime" / "operation_history.json")
+        self.scan_activity = ScanActivityLedger(root / "runtime" / "scan_activity.json")
         self.experimental_contract: ExperimentalLiveContract | None = None
 
     def connect(self) -> None:
@@ -196,14 +200,14 @@ class JarvisRunner:
         started_at = self.clock.now()
         if self.kill_switch.is_engaged():
             self._flatten_owned_positions("operator hard STOP")
-            return self._summary(started_at, ScanBatch((), 0, 0, self.cursor, 0), 0, 0)
+            return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
         self.broker.ensure_connected()
         if isinstance(self.broker, PaperBroker):
             self._record_paper_closures(self.broker.mark_to_market())
         account = self.broker.account()
         positions = self.broker.positions(magic=self.settings.system.magic_number)
         if self._experimental_floor_tripped(account.equity, positions):
-            return self._summary(started_at, ScanBatch((), 0, 0, self.cursor, 0), 0, 0)
+            return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
         reconciliation = self.manager.reconcile(positions)
         self._record_management(reconciliation)
         if any(event.action == "BROKER_CLOSED_PENDING_HISTORY" for event in reconciliation):
@@ -225,9 +229,10 @@ class JarvisRunner:
             for position in positions:
                 self.broker.close_position(position)
             self.alerts.send(self.risk.trip_circuit_breaker(state))
-            return self._summary(started_at, ScanBatch((), 0, 0, self.cursor, 0), 0, 0)
+            return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
 
         batch = self.scanner.scan(cursor=self.cursor, batch_size=batch_size, keep=deep_candidates)
+        self.scan_activity.record_batch(batch, started_at, self.operation.value)
         self.cursor = batch.next_cursor
         opened = 0
         deep = 0
@@ -424,8 +429,22 @@ class JarvisRunner:
         )
         self.recorder.record_sizing(cycle_pk, sizing)
         if self.operation is OperationMode.MONITOR:
+            self.scan_activity.record_deep_decision(
+                symbol,
+                "MONITOR_SIGNAL_ONLY",
+                "All gates passed in monitor mode",
+                "Monitor mode cannot send an order",
+                self.clock.now(),
+            )
             return False
         if not self._entry_still_allowed():
+            self.scan_activity.record_deep_decision(
+                symbol,
+                "LAST_MOMENT_BLOCK",
+                "Entry guard changed after analysis",
+                "STOP, account contract or capital floor blocked the order",
+                self.clock.now(),
+            )
             return False
         request = OrderRequest(
             symbol=symbol,
@@ -442,6 +461,13 @@ class JarvisRunner:
         )
         result = self.broker.order_send(request, spec)
         if not result.ok:
+            self.scan_activity.record_deep_decision(
+                symbol,
+                "ORDER_REJECTED",
+                result.retcode_name,
+                result.comment,
+                self.clock.now(),
+            )
             self.recorder.record_order_attempt(
                 trade_id=None, kind="ENTRY", symbol=symbol, result=result
             )
@@ -461,6 +487,13 @@ class JarvisRunner:
             f"Opened {symbol} {idea.direction.name} {sizing.volume:g} lots, "
             f"entry {result.filled_price:g}, SL {sizing.sl:g}, TP {sizing.tp:g}"
         )
+        self.scan_activity.record_deep_decision(
+            symbol,
+            "TRADE_OPENED",
+            "Broker confirmed the entry",
+            f"Position ticket {result.position_ticket}",
+            self.clock.now(),
+        )
         return True
 
     def _record_skip(
@@ -474,7 +507,7 @@ class JarvisRunner:
         signals=None,  # type: ignore[no-untyped-def]
         extra=None,  # type: ignore[no-untyped-def]
     ) -> int:
-        return self.recorder.record_cycle(
+        cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
             context=CycleContext(symbol, equity, extra=extra),
             reason=reason,
@@ -482,6 +515,14 @@ class JarvisRunner:
             signals=signals,
             weights=self.settings.analysis.confluence.weights,
         )
+        self.scan_activity.record_deep_decision(
+            symbol,
+            "DEEP_REJECTED",
+            str(reason),
+            detail,
+            self.clock.now(),
+        )
+        return cycle_pk
 
     def _record_paper_closures(self, events) -> None:  # type: ignore[no-untyped-def]
         for position, reason in events:
@@ -735,9 +776,11 @@ class JarvisRunner:
                     "operation": self.operation.value,
                     "finished_at": summary.finished_at.isoformat(),
                     "inspected": summary.inspected,
+                    "rejected": summary.rejected,
                     "deep_analysed": summary.deep_analysed,
                     "trades_opened": summary.trades_opened,
                     "next_cursor": summary.next_cursor,
+                    "universe_size": summary.universe_size,
                 },
                 indent=2,
             ),
@@ -746,11 +789,13 @@ class JarvisRunner:
 
     def _summary(self, started: datetime, batch: ScanBatch, deep: int, opened: int) -> CycleSummary:
         return CycleSummary(
-            started,
-            self.clock.now(),
-            batch.inspected,
-            deep,
-            len(batch.candidates),
-            opened,
-            batch.next_cursor,
+            started_at=started,
+            finished_at=self.clock.now(),
+            inspected=batch.inspected,
+            rejected=batch.rejected,
+            deep_analysed=deep,
+            candidates=len(batch.candidates),
+            trades_opened=opened,
+            next_cursor=batch.next_cursor,
+            universe_size=batch.universe_size,
         )

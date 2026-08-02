@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -160,6 +160,27 @@ def test_scanner_rotates_and_ranks_available_catalogue() -> None:
     assert batch.universe_size == 2
     assert batch.next_cursor == 0
     assert {item.symbol for item in batch.candidates} == {"EURUSD", "USDJPY"}
+    assert len(batch.inspections) == 2
+    assert {item.status for item in batch.inspections} == {"SHORTLISTED"}
+    assert all(item.reason for item in batch.inspections)
+    market.shutdown()
+
+
+def test_scanner_explains_a_closed_or_stale_market() -> None:
+    # Older than any plausible broker-server timezone offset, so the connector
+    # correctly treats this as a closed-market quote rather than UTC normalization.
+    fake = FakeMT5(now=datetime.now(UTC) - timedelta(days=2))
+    market = connector(fake)
+    market.connect()
+    scanner = UniverseScanner(market, load_settings(env_overrides=False))
+
+    batch = scanner.scan(cursor=0, batch_size=1, keep=1)
+
+    assert batch.candidates == ()
+    assert batch.rejected == 1
+    assert batch.inspections[0].status == "REJECTED"
+    assert batch.inspections[0].stage == "quote"
+    assert "stale" in batch.inspections[0].reason.casefold()
     market.shutdown()
 
 
