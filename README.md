@@ -119,7 +119,7 @@ The scanner rotates through the complete supported broker catalogue rather
 than hammering all symbols simultaneously. It ranks each batch cheaply,
 deep-reads the best candidates across D1/H4/H1/M15/M5, applies confluence,
 filters, risk sizing and journalling, and then advances its persistent cursor.
-See `docs/JARVIS.md` for controls, AI consensus and Windows autostart. Use
+See `docs/JARVIS.md` for controls, the fail-closed Claude gate and Windows autostart. Use
 `install_autostart_paper.cmd` to start the saved MT5 terminal minimized at
 login, start PAPER sixty seconds later, and open the local dashboard after
 ninety seconds; it disables monitor autostart and never arms LIVE.

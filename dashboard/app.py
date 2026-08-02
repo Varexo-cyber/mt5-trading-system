@@ -23,6 +23,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from advisory import read_recent_reviews
 from config.loader import PACKAGE_ROOT, load_credentials, load_settings, terminal_path_from_env
 from core.instrument import AssetClass
 from core.mt5_connector import MT5Connector
@@ -56,6 +57,13 @@ connector = MT5Connector(
 )
 service = DashboardService(connector, settings)
 kill_switch = KillSwitch.in_dir(PACKAGE_ROOT, settings.system.kill_switch_file)
+ai_ready = (
+    settings.ai.enabled
+    and settings.ai.provider == "anthropic"
+    and bool(settings.ai.anthropic_model)
+    and bool(os.getenv("ANTHROPIC_API_KEY"))
+)
+ai_reviews = read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl")
 
 try:
     account = service.connect()
@@ -302,6 +310,27 @@ try:
             if not running:
                 pid_path.unlink(missing_ok=True)
         st.metric("Jarvis service", f"RUNNING (PID {running_pid})" if running else "OFF")
+        with st.container(border=True):
+            st.subheader("Claude trade gate")
+            ai_state = "READY — FAIL CLOSED" if ai_ready else "BLOCKED"
+            st.metric("Status", ai_state)
+            st.caption(
+                f"Provider: {settings.ai.provider} · model: "
+                f"{settings.ai.anthropic_model or 'not configured'}"
+            )
+            if ai_reviews:
+                latest = ai_reviews[-1]
+                st.write(
+                    {
+                        "last_event": latest.get("event"),
+                        "timestamp": latest.get("timestamp"),
+                        "symbol": latest.get("symbol")
+                        or (latest.get("outcome") or {}).get("symbol"),
+                        "decision": latest.get("decision") or latest.get("reflection"),
+                    }
+                )
+            else:
+                st.info("No Claude trade review has been recorded yet.")
         if heartbeat_path.exists():
             st.json(heartbeat_path.read_text(encoding="utf-8"), expanded=False)
         stopped = kill_switch.is_engaged()
@@ -376,13 +405,18 @@ try:
             or account.is_demo
             or experimental_contract is None
             or bool(experimental_error)
+            or not ai_ready
         )
         if start_experimental.button(
             "Start EXPERIMENTAL LIVE",
             disabled=experimental_disabled,
             help=(
-                experimental_error
-                if experimental_error
+                (
+                    "Claude gate is not ready; live starts fail closed."
+                    if not ai_ready
+                    else experimental_error
+                )
+                if (not ai_ready or experimental_error)
                 else "Starts autonomous orders with real money on the bound account."
             ),
             type="primary",
