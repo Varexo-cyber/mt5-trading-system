@@ -55,9 +55,11 @@ configure live mode. MT5 still needs to be running and logged in.
 
 For an evidence-collection workstation, run `install_autostart_paper.cmd`
 instead. It registers `JarvisMetaTrader5`, starts the saved MT5 terminal
-minimized at login, then starts `JarvisTradingPaper` after a 60-second delay.
-The installer disables `JarvisTradingMonitor` so only one runner can start.
-This changes only automatic PAPER operation; LIVE remains evidence-locked.
+minimized at login, starts `JarvisTradingPaper` after a 60-second delay, and
+opens `JarvisDashboard` after 90 seconds. The single-instance dashboard
+launcher reopens the existing local app instead of starting duplicates. The
+installer disables `JarvisTradingMonitor` so only one runner can start. This
+changes only automatic PAPER operation; LIVE remains evidence-locked.
 
 ## Live promotion
 

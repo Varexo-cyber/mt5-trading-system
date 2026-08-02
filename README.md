@@ -118,8 +118,8 @@ deep-reads the best candidates across D1/H4/H1/M15/M5, applies confluence,
 filters, risk sizing and journalling, and then advances its persistent cursor.
 See `docs/JARVIS.md` for controls, AI consensus and Windows autostart. Use
 `install_autostart_paper.cmd` to start the saved MT5 terminal minimized at
-login and start PAPER sixty seconds later; it disables monitor autostart and
-never arms LIVE.
+login, start PAPER sixty seconds later, and open the local dashboard after
+ninety seconds; it disables monitor autostart and never arms LIVE.
 
 The Phase 1 acceptance test — one demo order, placed, verified and closed, with
 every execution detail printed — is:

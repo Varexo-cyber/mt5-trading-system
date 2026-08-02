@@ -1,17 +1,29 @@
 param(
     [string]$Mt5Path = "C:\Program Files\MetaTrader 5\terminal64.exe",
     [ValidateRange(15, 600)]
-    [int]$PaperDelaySeconds = 60
+    [int]$PaperDelaySeconds = 60,
+    [ValidateRange(30, 900)]
+    [int]$DashboardDelaySeconds = 90
 )
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Pythonw = Join-Path $RepoRoot ".venv-live\Scripts\pythonw.exe"
 $Jarvis = Join-Path $RepoRoot "jarvis.py"
+$DashboardLauncher = Join-Path $PSScriptRoot "launch_dashboard.py"
 $Mt5Launcher = Join-Path $PSScriptRoot "launch_mt5_minimized.ps1"
 $WindowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 
-foreach ($RequiredFile in @($Pythonw, $Jarvis, $Mt5Launcher, $Mt5Path, $WindowsPowerShell)) {
+foreach (
+    $RequiredFile in @(
+        $Pythonw,
+        $Jarvis,
+        $DashboardLauncher,
+        $Mt5Launcher,
+        $Mt5Path,
+        $WindowsPowerShell
+    )
+) {
     if (-not (Test-Path -LiteralPath $RequiredFile)) {
         throw "Missing required file: $RequiredFile"
     }
@@ -60,6 +72,29 @@ Register-ScheduledTask `
     -Description "Start Jarvis PAPER trading after MT5; this task cannot submit live orders." `
     -Force | Out-Null
 
+$DashboardTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$DashboardTrigger.Delay = "PT${DashboardDelaySeconds}S"
+$DashboardAction = New-ScheduledTaskAction `
+    -Execute $Pythonw `
+    -Argument "`"$DashboardLauncher`"" `
+    -WorkingDirectory $RepoRoot
+$DashboardSettings = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit (New-TimeSpan -Days 3650) `
+    -RestartCount 10 `
+    -RestartInterval (New-TimeSpan -Minutes 1) `
+    -MultipleInstances IgnoreNew `
+    -StartWhenAvailable `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask `
+    -TaskName "JarvisDashboard" `
+    -Action $DashboardAction `
+    -Trigger $DashboardTrigger `
+    -Settings $DashboardSettings `
+    -Description "Start the local Jarvis Streamlit dashboard and open it in the default browser." `
+    -Force | Out-Null
+
 $OldMonitor = Get-ScheduledTask -TaskName "JarvisTradingMonitor" -ErrorAction SilentlyContinue
 if ($OldMonitor) {
     Disable-ScheduledTask -TaskName "JarvisTradingMonitor" | Out-Null
@@ -67,4 +102,5 @@ if ($OldMonitor) {
 
 Write-Host "Installed JarvisMetaTrader5 at login."
 Write-Host "Installed JarvisTradingPaper with a $PaperDelaySeconds-second delay."
+Write-Host "Installed JarvisDashboard with a $DashboardDelaySeconds-second delay."
 Write-Host "Disabled JarvisTradingMonitor to prevent duplicate runners."
