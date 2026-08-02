@@ -196,7 +196,7 @@ class JarvisRunner:
         finally:
             self.close()
 
-    def run_once(self, *, batch_size: int = 25, deep_candidates: int = 5) -> CycleSummary:
+    def run_once(self, *, batch_size: int | None = None, deep_candidates: int = 5) -> CycleSummary:
         started_at = self.clock.now()
         if self.kill_switch.is_engaged():
             self._flatten_owned_positions("operator hard STOP")

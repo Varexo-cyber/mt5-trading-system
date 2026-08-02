@@ -73,7 +73,7 @@ def render_live_scanner() -> None:
     if not state:
         st.info(
             "Nog geen scanlog beschikbaar. Wis STOP en start een Jarvis-modus; "
-            "de eerste 25 inspecties verschijnen daarna hier."
+            "de volledige ondersteunde Eightcap-catalogus verschijnt daarna hier."
         )
         return
 
@@ -99,9 +99,10 @@ def render_live_scanner() -> None:
         f"laatst bijgewerkt: {state.get('updated_at', 'onbekend')}"
     )
     st.info(
-        "De scanner roteert standaard 25 markten per cyclus van ongeveer 30 seconden. "
-        "Een catalogus van 847 markten duurt dus ongeveer 17 minuten per volledige ronde. "
-        "Alleen de vijf beste van iedere batch krijgen de zware multi-timeframeanalyse."
+        "Iedere cyclus screent de volledige ondersteunde Eightcap-catalogus. "
+        "De doeltijd tussen cycli is 30 seconden, maar een volledige scan kan langer duren; "
+        "dan begint de volgende cyclus zodra MT5 klaar is. Alleen de vijf beste markten "
+        "krijgen daarna de zware multi-timeframeanalyse."
     )
 
     view = st.segmented_control(
@@ -170,10 +171,10 @@ def render_live_scanner() -> None:
     with st.expander("Hoe Jarvis van scan naar trade gaat"):
         st.markdown(
             """
-1. Haal een groep van 25 symbolen uit de Eightcap-catalogus.
+1. Haal alle ondersteunde symbolen uit de Eightcap-catalogus.
 2. Controleer per symbool of het verhandelbaar is en een verse prijs heeft.
 3. Blokkeer een te hoge spread of ontbrekende H1-geschiedenis.
-4. Geef de overblijvers een lichte trend/activiteit-rangscore.
+4. Geef alle overblijvers een lichte trend/activiteit-rangscore.
 5. Analyseer maximaal vijf winnaars zwaar op D1, H4, H1, M15 en M5.
 6. Controleer whitelist, balans, bestaande posities, nieuws, sessie en correlatie.
 7. Bereken een echte stoploss, take-profit, lotgrootte en maximaal 1% risico.

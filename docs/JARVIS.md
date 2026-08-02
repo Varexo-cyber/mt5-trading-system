@@ -2,7 +2,7 @@
 
 ## Modes
 
-- `MONITOR`: rotates through the complete supported MT5 catalogue, ranks live
+- `MONITOR`: screens the complete supported MT5 catalogue every cycle, ranks live
   candidates, performs deep multi-timeframe analysis and journals decisions.
   It never sends an order.
 - `PAPER`: the same service plus persistent simulated positions filled from
@@ -45,11 +45,12 @@ recent cheap inspection, the exact rejection stage and the final deep-analysis
 decision. The ledger retains the latest status per symbol and the most recent
 500 inspection records; it is bounded so it cannot grow forever.
 
-With the default settings Jarvis inspects 25 symbols every roughly 30 seconds
-and deep-analyses at most five. A catalogue of 847 symbols therefore takes
-about 17 minutes per full rotation. Scanning all 847 symbols every second is
-intentionally unsupported: it would overload the terminal, multiply stale and
-partial reads, and does not create better signals.
+With the default settings Jarvis cheaply inspects the complete supported
+catalogue every cycle and deep-analyses at most five. The loop targets a new
+cycle every 30 seconds, but it never overlaps scans: if MT5 needs longer to
+inspect the full catalogue, the next cycle begins immediately after completion.
+Scanning all symbols across every timeframe every second remains intentionally
+unsupported because it would overload the terminal and multiply partial reads.
 
 ## AI review
 
