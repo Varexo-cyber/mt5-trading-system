@@ -35,6 +35,11 @@ class PaperSnapshot:
     positions: tuple[Position, ...]
 
 
+def stop_confirmation_matches(value: str) -> bool:
+    """Accept the safety phrase independent of capitalization and extra spaces."""
+    return " ".join(value.split()).casefold() == "clear stop"
+
+
 def load_paper_snapshot(path: Path) -> PaperSnapshot | None:
     """Read the simulator state without opening or mutating the paper broker."""
     if not path.exists():

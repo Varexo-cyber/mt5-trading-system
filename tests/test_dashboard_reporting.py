@@ -9,13 +9,25 @@ from config.schema import MT5Config
 from core.mt5_codes import TIMEFRAME_VALUES
 from core.mt5_connector import MT5Connector
 from core.types import Timeframe
-from dashboard.service import DashboardService, catalogue_asset_class, load_paper_snapshot
+from dashboard.service import (
+    DashboardService,
+    catalogue_asset_class,
+    load_paper_snapshot,
+    stop_confirmation_matches,
+)
 from reporting.pdf_report import build_pdf_report
 from tests.fakes.fake_mt5 import FakeMT5
 
 
 def test_every_mt5_timeframe_is_selectable() -> None:
     assert {timeframe.value for timeframe in Timeframe} == set(TIMEFRAME_VALUES)
+
+
+def test_clear_stop_confirmation_ignores_case_and_extra_spaces() -> None:
+    assert stop_confirmation_matches("CLEAR STOP")
+    assert stop_confirmation_matches("clear stop")
+    assert stop_confirmation_matches("  Clear    Stop  ")
+    assert not stop_confirmation_matches("stop")
 
 
 def test_dashboard_reads_catalogue_bars_and_builds_pdf() -> None:

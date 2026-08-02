@@ -33,6 +33,7 @@ from dashboard.service import (
     DashboardService,
     catalogue_asset_class,
     load_paper_snapshot,
+    stop_confirmation_matches,
 )
 from infra.killswitch import KillSwitch
 from promotion.experimental import (
@@ -292,6 +293,9 @@ try:
         )
 
     with control_tab:
+        control_notice = st.session_state.pop("control_notice", "")
+        if control_notice:
+            st.success(control_notice, icon=":material/check_circle:")
         pid_path = ROOT / "runtime" / "jarvis.pid"
         running_pid = int(pid_path.read_text().strip()) if pid_path.exists() else 0
         running = False
@@ -335,6 +339,13 @@ try:
             st.json(heartbeat_path.read_text(encoding="utf-8"), expanded=False)
         stopped = kill_switch.is_engaged()
         st.metric("Hard STOP", "ENGAGED" if stopped else "clear")
+        if stopped:
+            st.error(
+                "STOP is active. New entries are blocked; Jarvis closes its own positions "
+                "and exits. This can take up to one scan interval (about 30 seconds). "
+                f"Reason: {kill_switch.reason() or 'operator stop'}",
+                icon=":material/stop_circle:",
+            )
         st.warning(
             "Standard LIVE remains locked behind the validation protocol. EXPERIMENTAL LIVE "
             "is a separate real-money mode using the owner's explicit loss acceptance."
@@ -347,8 +358,17 @@ try:
             )
         else:
             st.info(f"Experimental live unavailable: {experimental_error}")
-        if st.button("STOP AND FLATTEN JARVIS", type="primary", width="stretch"):
+        stop_label = "STOP IS ENGAGED" if stopped else "STOP AND FLATTEN JARVIS"
+        if st.button(
+            stop_label,
+            type="primary",
+            disabled=stopped,
+            width="stretch",
+        ):
             kill_switch.engage("operator dashboard emergency stop")
+            st.session_state["control_notice"] = (
+                "Hard STOP engaged. Jarvis is blocking entries and flattening its own positions."
+            )
             st.rerun()
         start_monitor, start_paper, start_demo, start_experimental = st.columns(4)
         creation_flags = (
@@ -437,13 +457,24 @@ try:
                 stderr=subprocess.DEVNULL,
             )
             st.rerun()
-        confirmation = st.text_input("Type CLEAR STOP to reset the hard stop")
+        confirmation = st.text_input(
+            "Type clear stop to reset the hard stop",
+            placeholder="clear stop",
+            help="Capitalization and extra spaces do not matter.",
+            key="clear_stop_confirmation",
+        )
+        confirmation_ok = stop_confirmation_matches(confirmation)
+        if confirmation and not confirmation_ok:
+            st.caption("Type the two words **clear stop**. Capitalization does not matter.")
         if st.button(
             "Clear STOP",
-            disabled=confirmation != "CLEAR STOP",
+            disabled=not stopped or not confirmation_ok,
             width="stretch",
         ):
             kill_switch.clear()
+            st.session_state["control_notice"] = (
+                "Hard STOP cleared. Jarvis remains off until you explicitly start a mode."
+            )
             st.rerun()
 finally:
     service.close()
