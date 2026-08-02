@@ -28,6 +28,7 @@ from config.loader import PACKAGE_ROOT, load_credentials, load_settings, termina
 from core.instrument import AssetClass
 from core.mt5_connector import MT5Connector
 from core.types import Timeframe
+from dashboard.ai_exchange import pair_ai_reviews
 from dashboard.service import (
     PROFILE_TIMEFRAMES,
     DashboardService,
@@ -64,7 +65,6 @@ ai_ready = (
     and bool(settings.ai.anthropic_model)
     and bool(os.getenv("ANTHROPIC_API_KEY"))
 )
-ai_reviews = read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl")
 
 
 @st.fragment(run_every="5s")
@@ -185,6 +185,107 @@ def render_live_scanner() -> None:
         )
 
 
+@st.fragment(run_every="3s")
+def render_ai_exchange() -> None:
+    review_rows = read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl", limit=200)
+    exchanges = pair_ai_reviews(review_rows)
+    decisions = [item for item in exchanges if item["status"] != "PENDING"]
+    approvals = sum(item["status"] == "APPROVED" for item in decisions)
+    vetoes = sum(item["status"] == "VETO" for item in decisions)
+    errors = sum(item["status"] == "ERROR / FAIL CLOSED" for item in decisions)
+    pending = sum(item["status"] == "PENDING" for item in exchanges)
+
+    with st.container(horizontal=True):
+        st.metric("Naar Claude gestuurd", len(exchanges), border=True)
+        st.metric("Goedgekeurd", approvals, border=True)
+        st.metric("Veto", vetoes, border=True)
+        st.metric("API-/auditfouten", errors, border=True)
+        st.metric("Wacht op antwoord", pending, border=True)
+
+    st.caption(
+        "Automatische update iedere 3 seconden. Alleen voorstellen die analyse, risico, "
+        "filters, sizing en marge al hebben gehaald, worden betaald naar Claude gestuurd."
+    )
+
+    if exchanges:
+        summary_rows = []
+        for item in exchanges:
+            decision = item["decision"] if isinstance(item["decision"], dict) else {}
+            summary_rows.append(
+                {
+                    "Verzoek (UTC)": item["requested_at"],
+                    "Antwoord (UTC)": item["responded_at"],
+                    "Markt": item["symbol"],
+                    "Richting": item["direction"],
+                    "Status": item["status"],
+                    "Duur (ms)": item["latency_ms"],
+                    "Confidence": decision.get("confidence"),
+                    "Claude zegt": decision.get("thesis") or decision.get("error"),
+                    "Risico's": ", ".join(str(risk) for risk in decision.get("risks", []) or []),
+                }
+            )
+        st.dataframe(
+            pd.DataFrame(summary_rows),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Duur (ms)": st.column_config.NumberColumn(format="%.1f"),
+                "Confidence": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+
+        st.subheader("Exact verzoek en exact antwoord")
+        for item in exchanges[:10]:
+            label = (
+                f"{item['status']} · {item['symbol']} {item['direction']} · "
+                f"{item['requested_at'] or 'tijd onbekend'}"
+            )
+            with st.expander(label):
+                request_column, response_column = st.columns(2)
+                with request_column:
+                    st.markdown("**Signaalsysteem → Claude**")
+                    st.json(item["request"], expanded=False)
+                with response_column:
+                    st.markdown("**Claude → Jarvis**")
+                    if item["decision"]:
+                        st.json(item["decision"], expanded=False)
+                    else:
+                        st.warning("Claude heeft nog geen antwoord teruggegeven.")
+    else:
+        st.info(
+            "Nog niets naar Claude gestuurd. Dat betekent niet dat Jarvis stilstaat: "
+            "tot nu toe heeft geen kandidaat alle vaste poorten vóór Claude gehaald."
+        )
+
+    scan_state = read_scan_activity(ROOT / "runtime" / "scan_activity.json")
+    latest_symbols = list(scan_state.get("symbols", {}).values()) if scan_state else []
+    blocked_before_ai = sorted(
+        (row for row in latest_symbols if row.get("deep_status") == "DEEP_REJECTED"),
+        key=lambda row: str(row.get("deep_at", "")),
+        reverse=True,
+    )[:25]
+    st.subheader("Wel diep bekeken, niet naar Claude gestuurd")
+    if blocked_before_ai:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Tijd (UTC)": row.get("deep_at"),
+                        "Markt": row.get("symbol"),
+                        "Besluit": row.get("deep_reason"),
+                        "Waarom": row.get("deep_detail"),
+                        "Naar Claude": "Nee",
+                    }
+                    for row in blocked_before_ai
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+        )
+    else:
+        st.caption("Nog geen diepe afwijzingen geregistreerd.")
+
+
 try:
     account = service.connect()
     positions = service.positions()
@@ -290,8 +391,16 @@ try:
     elif kill_switch.is_engaged():
         st.warning("Jarvis is OFF because the durable hard STOP is engaged.")
 
-    overview_tab, scanner_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
-        ["Overview", "Live scanner", "Charts", "Positions", "PDF report", "Control"]
+    overview_tab, scanner_tab, ai_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
+        [
+            "Overview",
+            "Live scanner",
+            "AI exchange",
+            "Charts",
+            "Positions",
+            "PDF report",
+            "Control",
+        ]
     )
 
     frames: dict[str, pd.DataFrame] = {}
@@ -351,6 +460,14 @@ try:
             "GBPUSD.i, USDJPY.i en AUDUSD.i uiteindelijk een echte order worden."
         )
         render_live_scanner()
+
+    with ai_tab:
+        st.subheader("Wat Jarvis aan Claude geeft en wat Claude antwoordt")
+        st.warning(
+            "Dit is een transparante veto-laag, geen chat die iedere marktcheck betaalt. "
+            "Claude kan een voorstel alleen goedkeuren of blokkeren."
+        )
+        render_ai_exchange()
 
     with charts_tab:
         if not frames:
@@ -455,8 +572,9 @@ try:
                 f"Provider: {settings.ai.provider} · model: "
                 f"{settings.ai.anthropic_model or 'not configured'}"
             )
-            if ai_reviews:
-                latest = ai_reviews[-1]
+            latest_reviews = read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl")
+            if latest_reviews:
+                latest = latest_reviews[-1]
                 st.write(
                     {
                         "last_event": latest.get("event"),

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from advisory.ledger import AIReviewLedger, read_recent_reviews
-from advisory.providers import DisabledAdvisor, build_advisor
+from advisory.providers import DisabledAdvisor, build_advisor, build_review_payload
 from analysis.confluence import TradeIdea
 from config.loader import load_settings
 from config.schema import AIConfig
@@ -76,6 +76,7 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     idea = TradeIdea("EURUSD", True, Direction.LONG, 70, 0.8, 1.4, 1.3, 1.6, "two agree", (signal,))
 
     advice = adviser.review(idea, context, {"actual_risk_pct": 1.0})
+    safe_payload = build_review_payload(idea, context, {"actual_risk_pct": 1.0})
 
     assert advice.approved
     assert advice.request_id == "req-test"
@@ -83,6 +84,9 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     assert "unit-test-secret" not in request_text
     assert "actual_risk_pct" in request_text
     assert request_text.count("tick_volume") == 3
+    assert safe_payload["symbol"] == "EURUSD"
+    assert safe_payload["executable_proposal"] == {"actual_risk_pct": 1.0}
+    assert len(safe_payload["timeframes"]["H1"]["closed_bars"]) == 3
     output_config = captured["output_config"]
     assert isinstance(output_config, dict)
     assert output_config["format"]["type"] == "json_schema"
@@ -121,6 +125,18 @@ def test_ai_review_ledger_round_trips_safe_events(tmp_path: Path) -> None:
 
     assert rows[-1]["event"] == "pretrade_review"
     assert rows[-1]["symbol"] == "EURUSD"
+
+
+def test_ai_review_reader_skips_a_partial_live_line(tmp_path: Path) -> None:
+    path = tmp_path / "ai.jsonl"
+    path.write_text(
+        '{"event":"pretrade_request","cycle_id":"ok"}\n{"event":',
+        encoding="utf-8",
+    )
+
+    rows = read_recent_reviews(path)
+
+    assert rows == [{"event": "pretrade_request", "cycle_id": "ok"}]
 
 
 def test_daily_report_writes_markdown_and_pdf(tmp_path: Path) -> None:

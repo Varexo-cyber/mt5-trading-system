@@ -121,7 +121,10 @@ D1/H4/H1/M15/M5, then applies confluence, filters, risk sizing and journalling.
 The 30-second loop interval is a target: when a full broker scan takes longer,
 the next cycle starts as soon as the current one finishes.
 The dashboard's **Live scanner** tab shows every cheap inspection and its exact
-pass/reject reason, refreshing every five seconds. See `docs/HOE_JARVIS_WERKT.md`
+pass/reject reason, refreshing every five seconds. **AI exchange** shows the
+exact secret-free candidate payload sent to Claude, the pending state, and
+Claude's structured response, refreshing every three seconds. See
+`docs/HOE_JARVIS_WERKT.md`
 for the plain-Dutch walkthrough and `docs/JARVIS.md` for the technical controls,
 fail-closed Claude gate and Windows autostart. Use
 `install_autostart_paper.cmd` to start the saved MT5 terminal minimized at
