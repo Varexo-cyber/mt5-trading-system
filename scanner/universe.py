@@ -79,14 +79,13 @@ class UniverseScanner:
             item for item in self.broker.symbols() if self._path_class(item.path).value in supported
         ]
 
-    def scan(self, *, cursor: int = 0, batch_size: int = 25, keep: int = 5) -> ScanBatch:
+    def scan(self, *, cursor: int = 0, batch_size: int | None = None, keep: int = 5) -> ScanBatch:
         universe = self.catalogue()
         if not universe:
             return ScanBatch((), (), 0, 0, 0, 0)
         cursor %= len(universe)
-        indices = [
-            (cursor + offset) % len(universe) for offset in range(min(batch_size, len(universe)))
-        ]
+        inspection_count = len(universe) if batch_size is None else min(batch_size, len(universe))
+        indices = [(cursor + offset) % len(universe) for offset in range(inspection_count)]
         candidates: list[ScanCandidate] = []
         inspections: list[ScanInspection] = []
         rejected = 0

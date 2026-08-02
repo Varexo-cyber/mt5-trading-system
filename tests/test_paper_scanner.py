@@ -13,7 +13,7 @@ from execution.manager import PositionManager
 from execution.paper_broker import PaperBroker
 from runner.service import JarvisRunner, OperationMode
 from scanner.universe import UniverseScanner
-from tests.fakes.fake_mt5 import FakeMT5
+from tests.fakes.fake_mt5 import FakeMT5, eurusd_spec
 
 
 def connector(fake: FakeMT5) -> MT5Connector:
@@ -147,14 +147,14 @@ def test_news_break_even_does_not_close_an_already_protected_position(tmp_path: 
     paper.shutdown()
 
 
-def test_scanner_rotates_and_ranks_available_catalogue() -> None:
+def test_scanner_scans_and_ranks_full_available_catalogue_by_default() -> None:
     fake = FakeMT5()
     market = connector(fake)
     market.connect()
     settings = load_settings()
     scanner = UniverseScanner(market, settings)
 
-    batch = scanner.scan(cursor=0, batch_size=2, keep=2)
+    batch = scanner.scan(cursor=0, keep=2)
 
     assert batch.inspected == 2
     assert batch.universe_size == 2
@@ -163,6 +163,27 @@ def test_scanner_rotates_and_ranks_available_catalogue() -> None:
     assert len(batch.inspections) == 2
     assert {item.status for item in batch.inspections} == {"SHORTLISTED"}
     assert all(item.reason for item in batch.inspections)
+    market.shutdown()
+
+
+def test_default_scanner_does_not_stop_after_25_markets() -> None:
+    symbols = [f"EURUSD{number:02d}" for number in range(30)]
+    fake = FakeMT5(
+        specs={
+            symbol: eurusd_spec(name=symbol, path=f"Forex\\Test\\{symbol}") for symbol in symbols
+        },
+        quotes=dict.fromkeys(symbols, (1.08500, 1.08512)),
+    )
+    market = connector(fake)
+    market.connect()
+    scanner = UniverseScanner(market, load_settings(env_overrides=False))
+
+    batch = scanner.scan(keep=5)
+
+    assert batch.universe_size == 30
+    assert batch.inspected == 30
+    assert len(batch.inspections) == 30
+    assert len(batch.candidates) == 5
     market.shutdown()
 
 

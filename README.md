@@ -115,10 +115,11 @@ while BTCUSD, XAUUSD, stocks and indices keep their catalogue names.
 .venv-live\Scripts\python.exe jarvis.py --operation experimental_live
 ```
 
-The scanner rotates through the complete supported broker catalogue rather
-than hammering all symbols simultaneously. It ranks each batch cheaply,
-deep-reads the best candidates across D1/H4/H1/M15/M5, applies confluence,
-filters, risk sizing and journalling, and then advances its persistent cursor.
+The scanner screens the complete supported broker catalogue in every cycle. It
+ranks that full universe, deep-reads at most the five best candidates across
+D1/H4/H1/M15/M5, then applies confluence, filters, risk sizing and journalling.
+The 30-second loop interval is a target: when a full broker scan takes longer,
+the next cycle starts as soon as the current one finishes.
 The dashboard's **Live scanner** tab shows every cheap inspection and its exact
 pass/reject reason, refreshing every five seconds. See `docs/HOE_JARVIS_WERKT.md`
 for the plain-Dutch walkthrough and `docs/JARVIS.md` for the technical controls,

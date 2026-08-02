@@ -34,10 +34,14 @@ Jarvis vraagt de volledige symboolcatalogus op die Eightcap via jouw MT5 laat
 zien. Dat betekent niet dat elk symbool op dat moment open, bruikbaar of
 betaalbaar is.
 
-Hij bekijkt standaard 25 markten per ronde. Een ronde start ongeveer iedere 30
-seconden. Bij 847 symbolen duurt een volledige draai ongeveer 17 minuten. Dat
-is expres: alle 847 markten iedere seconde uitlezen zou MT5 onnodig belasten en
-veel slechte of halve data opleveren.
+Hij screent in iedere ronde alle ondersteunde markten uit de Eightcap-catalogus.
+Het systeem probeert iedere 30 seconden een nieuwe ronde te beginnen. Heeft MT5
+langer nodig om alle symbolen te behandelen, dan wacht Jarvis totdat die ronde
+klaar is en begint hij daarna meteen opnieuw. Rondes overlappen nooit.
+
+Alle markten worden dus meegenomen, maar niet alle 847 markten worden iedere
+seconde op alle timeframes doorgerekend. Dat zou MT5 onnodig belasten en veel
+slechte of halve data opleveren.
 
 Bij iedere markt controleert hij eerst goedkoop:
 
@@ -49,7 +53,7 @@ Bij iedere markt controleert hij eerst goedkoop:
 6. Kan volatiliteit (ATR) worden berekend?
 7. Hoe sterk en actief lijkt deze markt vergeleken met de rest van deze groep?
 
-De beste vijf uit zo'n groep mogen door naar de dure analyse. In het tabblad
+De beste vijf uit de volledige catalogus mogen door naar de dure analyse. In het tabblad
 **Live scanner** zie je voor iedere inspectie het antwoord en de afwijsreden.
 
 ## Wat gebeurt er in de diepe analyse?
@@ -108,8 +112,8 @@ opgeslagen. Rapporten beschrijven dus ook waarom er géén trade kwam.
 3. Typ exact `clear stop` in het bevestigingsveld.
 4. Klik **CLEAR STOP + START REAL TRADING**.
 5. Wacht enkele seconden. Bij **Jarvis service** moet `RUNNING` verschijnen.
-6. Open **Live scanner**. Binnen de eerste cyclus verschijnen maximaal 25
-   nieuwe regels met redenen.
+6. Open **Live scanner**. Na de eerste voltooide cyclus verschijnen de markten
+   met hun redenen. Op een groot brokeraccount kan die eerste cyclus even duren.
 
 Wil je alleen de noodstop wissen en nog niet handelen, kies dan **Clear STOP
 only**. Daarna kun je MONITOR, PAPER of EXPERIMENTAL LIVE apart starten.
