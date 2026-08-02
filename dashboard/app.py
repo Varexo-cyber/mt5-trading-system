@@ -33,7 +33,6 @@ from dashboard.service import (
     DashboardService,
     catalogue_asset_class,
     load_paper_snapshot,
-    stop_confirmation_matches,
 )
 from infra.killswitch import KillSwitch
 from promotion.experimental import (
@@ -463,7 +462,7 @@ try:
             help="Capitalization and extra spaces do not matter.",
             key="clear_stop_confirmation",
         )
-        confirmation_ok = stop_confirmation_matches(confirmation)
+        confirmation_ok = " ".join(confirmation.split()).casefold() == "clear stop"
         if confirmation and not confirmation_ok:
             st.caption("Type the two words **clear stop**. Capitalization does not matter.")
         if st.button(
