@@ -168,6 +168,8 @@ class JarvisRunner:
             self.journal, report_directory / "EXECUTION_REPORT.md"
         )
         self.recorder.record_config_snapshot()
+        if self.operation is OperationMode.EXPERIMENTAL_LIVE:
+            self._report_promotion_evidence()
         log.info(
             "jarvis connected",
             extra={"event": "jarvis_start", "operation": self.operation.value},
@@ -203,7 +205,9 @@ class JarvisRunner:
         finally:
             self.close()
 
-    def run_once(self, *, batch_size: int | None = None, deep_candidates: int = 5) -> CycleSummary:
+    def run_once(
+        self, *, batch_size: int | None = None, deep_candidates: int | None = None
+    ) -> CycleSummary:
         started_at = self.clock.now()
         if self.kill_switch.is_engaged():
             self._flatten_owned_positions("operator hard STOP")
@@ -238,7 +242,15 @@ class JarvisRunner:
             self.alerts.send(self.risk.trip_circuit_breaker(state))
             return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
 
-        batch = self.scanner.scan(cursor=self.cursor, batch_size=batch_size, keep=deep_candidates)
+        batch = self.scanner.scan(
+            cursor=self.cursor,
+            batch_size=batch_size if batch_size is not None else self.settings.scanner.batch_size,
+            keep=(
+                deep_candidates
+                if deep_candidates is not None
+                else self.settings.scanner.deep_candidates
+            ),
+        )
         self.scan_activity.record_batch(batch, started_at, self.operation.value)
         self.cursor = batch.next_cursor
         opened = 0
@@ -631,6 +643,38 @@ class JarvisRunner:
                     f"Position #{event.ticket} closed ({event.action}): "
                     f"{event.pnl_money:+.2f} {self.broker.account().currency}"
                 )
+
+    def _report_promotion_evidence(self) -> None:
+        """Run the evidence audit for experimental live and report, without blocking.
+
+        `LIVE` requires every check to pass. `EXPERIMENTAL_LIVE` deliberately
+        does not: the audit needs 100 out-of-sample trades per module, and
+        those cannot exist before the account has ever traded. Blocking here
+        would make the experiment impossible, which defeats its purpose.
+
+        What is not acceptable is doing that silently. The audit runs, every
+        failing check is logged and alerted, and the operator sees exactly
+        which evidence is missing from the money they are about to risk. The
+        capital protections that do apply — account-bound contract, 1% risk,
+        the 15% floor, every filter, the AI veto — are unaffected.
+        """
+        checks = PromotionAudit(self.root, self.settings).run()
+        failures = [check for check in checks if not check.passed]
+        log.warning(
+            "experimental live running on incomplete evidence",
+            extra={
+                "event": "experimental_live_evidence",
+                "checks_total": len(checks),
+                "checks_failed": len(failures),
+                "missing": [f"{item.name}: {item.detail}" for item in failures],
+            },
+        )
+        if failures:
+            self.alerts.send(
+                f"EXPERIMENTAL LIVE armed with {len(failures)}/{len(checks)} promotion checks "
+                f"still failing. This is real money on unvalidated evidence: "
+                + "; ".join(f"{item.name}" for item in failures[:6])
+            )
 
     def _assert_live_armed(self, login: int) -> None:
         PromotionAudit(self.root, self.settings).assert_passed()

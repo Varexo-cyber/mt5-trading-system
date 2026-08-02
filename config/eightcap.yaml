@@ -2,19 +2,43 @@
 #
 # Use with:
 #   python main.py --overlay config/eightcap.yaml --status
+#   python jarvis.py --operation experimental_live
 #
 # Eightcap suffixes FX majors with `.i`, while XAUUSD keeps its canonical name.
+
 instruments:
   symbol_suffix: ".i"
   symbol_overrides:
     XAUUSD: XAUUSD
 
+  # The whole catalogue is considered, and the position sizer decides what a
+  # EUR 100 account can actually express. This is not the loosening it looks
+  # like: the whitelist was a hand-written guess at affordability, while the
+  # sizer measures it exactly, per symbol, at the current equity and the
+  # setup's real stop distance. Anything it cannot size at 1% risk is still
+  # skipped as TRADE_SKIPPED_UNDERCAPITALIZED.
+  universe_mode: affordable
+  blocklist: []
+
+scanner:
+  batch_size: null        # rank the entire catalogue every cycle
+  deep_candidates: 20     # full multi-timeframe analysis on the top 20
+
+analysis:
+  confluence:
+    # Explicitly promoted to live. NONE of these has passed the registered
+    # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
+    # lists exactly what is still missing, and the runner alerts on it at every
+    # experimental-live start. This line is the deliberate, reviewable act of
+    # accepting that; nothing promotes a module to live on its own any more.
+    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, level_reaction]
+
 # Experimental live uses Claude as a mandatory final veto gate. The API key
-# remains local in config/.env and is never committed or sent to the dashboard.
+# stays in config/.env, is never committed, and is never sent to the dashboard.
 ai:
   enabled: true
   provider: anthropic
-  anthropic_model: claude-sonnet-4-6
+  anthropic_model: claude-sonnet-5
   minimum_confidence: 0.65
   timeout_seconds: 30
   fail_closed: true

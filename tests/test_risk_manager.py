@@ -241,7 +241,7 @@ class TestSystemGates:
             sl=1.08300,
             tp=1.09100,
         )
-        for ticket in range(3):  # scaling allows 3/day
+        for ticket in range(6):  # scaling allows 6/day
             recorder.record_trade_open(
                 cycle_pk=None,
                 sizing=sizing,
@@ -251,7 +251,7 @@ class TestSystemGates:
             )
 
         state = manager.build_state(account(10_000.0))
-        assert state.trades_today == 3
+        assert state.trades_today == 6
         assert manager.check_can_trade(state).reason is Reason.MAX_TRADES_PER_DAY
 
     def test_halt_persists_across_cycles(self, manager: RiskManager) -> None:

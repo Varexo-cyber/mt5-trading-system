@@ -404,6 +404,34 @@ get a calendar the backtester can use over a multi-year window.
 
 ---
 
+## 5b. Changes made after the ChatGPT build (audit round)
+
+- **AI model IDs corrected.** `claude-sonnet-4-6` and `gpt-5.6-terra` do not
+  exist. With `ai.fail_closed: true` every trade would have been vetoed by an
+  API error and the system would have run forever without trading. Now
+  `claude-sonnet-5` / `gpt-5.1`.
+- **`apply_experimental_live_limits` no longer auto-promotes modules to live.**
+  It used to set `live_enabled_modules` to every module with weight > 0, which
+  meant arming the experiment silently put unvalidated analysis on real money.
+  Promotion is now an explicit line in `config/eightcap.yaml`.
+- **`PromotionAudit` now runs for `EXPERIMENTAL_LIVE` too** — reporting, not
+  blocking. Blocking would make the experiment impossible (the audit needs 100
+  OOS trades that cannot exist before trading). Every failing check is logged
+  and alerted at startup, so the missing evidence is visible rather than
+  silently skipped. `LIVE` still requires every check to pass.
+- **`instruments.universe_mode`** added: `whitelist` (default, unchanged) or
+  `affordable`, where any broker symbol may be considered and the position
+  sizer decides what the account can express. The equity floors and the
+  blocklist still apply in both modes.
+- **`scanner.batch_size` / `scanner.deep_candidates`** moved from a hardcoded
+  5 into config; the Eightcap overlay uses 20.
+- **Trade-count ceilings raised** to 6/day, 20/week. The daily *loss* limit is
+  the binding constraint (4% at 1% risk = four losers); the count is a backstop
+  against a signal-generation bug, not the throttle on trading.
+- **Duplicate `instruments:` key in `config/eightcap.yaml` fixed** — the second
+  block was silently discarding `symbol_suffix: ".i"`, so every live symbol
+  name would have been wrong. A test now loads the overlay and asserts on it.
+
 ## 6. Known issues and design debt
 
 **`max_sl_pips` is an FX-shaped rule.** A "pip" on gold is one point ($0.01),
@@ -419,6 +447,20 @@ trades a week, that is decades of validation, and overfitting stops being a
 risk and becomes a certainty. The narrowing in §4 (five to six core modules) is
 deliberate and was accepted. Build the rest as research if you like; do not
 give them weight without evidence.
+
+**Three of the four live-enabled modules have no hypothesis document.**
+`trend_momentum`, `liquidity_sweep` and `level_reaction` carry weight and are
+promoted to live, but `docs/hypotheses/` only contains `market_structure.md`.
+That breaks the pre-registration rule. `market_structure.md` itself is honest —
+it states weight 0 and "not measured" — while `config.yaml` gives it 1.0. Write
+the three missing hypotheses and reconcile the documented weight with the
+configured one.
+
+**The AI veto makes backtest and live diverge.** The adviser can only veto,
+never bypass a gate, which is the right shape. But the backtester does not know
+about it, so any edge measured offline is not the edge live will produce.
+Consider running the veto in shadow (logged, not acted on) until
+`runtime/ai_reviews.jsonl` shows whether it adds value.
 
 **Free calendar feeds only cover this week and next.** Backtesting the news
 filter over history needs the archive built by `verify_calendar.py --archive`,

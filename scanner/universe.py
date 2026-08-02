@@ -100,14 +100,16 @@ class UniverseScanner:
         candidates.sort(key=lambda item: item.rank, reverse=True)
         shortlisted = {item.symbol for item in candidates[:keep]}
         inspections = [
-            replace(
-                row,
-                status="SHORTLISTED",
-                stage="deep_analysis_queued",
-                reason="Top-ranked symbol in this rotating batch; queued for full analysis",
+            (
+                replace(
+                    row,
+                    status="SHORTLISTED",
+                    stage="deep_analysis_queued",
+                    reason="Top-ranked symbol in this rotating batch; queued for full analysis",
+                )
+                if row.symbol in shortlisted
+                else row
             )
-            if row.symbol in shortlisted
-            else row
             for row in inspections
         ]
         next_cursor = (cursor + len(indices)) % len(universe)
@@ -181,9 +183,11 @@ class UniverseScanner:
             if cap is None or spread_bps > cap:
                 return reject(
                     "spread",
-                    f"Spread {spread_bps:.3f} bps exceeds {cap:.3f} bps limit"
-                    if cap is not None
-                    else "No spread limit configured for this asset class",
+                    (
+                        f"Spread {spread_bps:.3f} bps exceeds {cap:.3f} bps limit"
+                        if cap is not None
+                        else "No spread limit configured for this asset class"
+                    ),
                     asset_class=spec.asset_class,
                     spread_bps=spread_bps,
                     quote_age_seconds=age,

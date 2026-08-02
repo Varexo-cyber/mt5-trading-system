@@ -130,8 +130,26 @@ class InstrumentsConfig(Base):
     #: Exact broker names for exceptions to the global suffix. Some brokers
     #: suffix FX symbols but leave metals or indices unchanged.
     symbol_overrides: dict[str, str] = Field(default_factory=dict)
-    #: Tradable symbols per mode. The active mode's list is the whitelist;
-    #: anything not on it is not tradable, full stop.
+    #: How the tradable universe is decided.
+    #:
+    #: ``whitelist``  — only the symbols listed below. Blunt but predictable.
+    #: ``affordable`` — any symbol the broker offers that the position sizer
+    #:   can actually express at the configured risk. The whitelist becomes a
+    #:   preference list for reporting rather than a hard gate.
+    #:
+    #: ``affordable`` is not the looser option it looks like. The whitelist is
+    #: a hand-written proxy for "can this account afford this instrument"; the
+    #: sizer answers that exactly, per symbol, at the current equity and the
+    #: setup's actual stop distance. Replacing the proxy with the exact test
+    #: widens what can be *considered* without widening what can be *risked* —
+    #: anything unaffordable still returns TRADE_SKIPPED_UNDERCAPITALIZED.
+    universe_mode: Literal["whitelist", "affordable"] = "whitelist"
+    #: Never tradable, in either mode. For instruments excluded on grounds the
+    #: arithmetic cannot see: no reliable data, exotic settlement, known bad
+    #: fills. Matched on the canonical name.
+    blocklist: tuple[str, ...] = ()
+    #: Tradable symbols per mode. Under ``whitelist`` this is the hard gate;
+    #: under ``affordable`` it is what the startup report describes.
     whitelist: dict[str, tuple[str, ...]]
     #: Symbols that require at least this much equity (account currency).
     #: Gold and indices sit here because one minimum lot risks several percent
@@ -519,12 +537,29 @@ class MonitoringConfig(Base):
     report_directory: str = "runtime/reports"
 
 
+class ScannerConfig(Base):
+    """How much of the broker catalogue is inspected per cycle.
+
+    The cheap ranking pass covers the whole catalogue; only the top
+    ``deep_candidates`` get full multi-timeframe analysis, and only what
+    survives every deterministic gate reaches the AI reviewer. That staging is
+    what keeps a 800-symbol catalogue affordable in both latency and API cost —
+    deep-analysing everything would take minutes per cycle and reviewing
+    everything with an LLM would cost more than the account is worth.
+    """
+
+    #: Symbols cheaply ranked per cycle. None = the whole catalogue.
+    batch_size: int | None = Field(default=None, ge=1)
+    #: Top-ranked symbols promoted to full analysis each cycle.
+    deep_candidates: int = Field(default=12, ge=1, le=100)
+
+
 class AIConfig(Base):
     """Optional second-opinion layer; it can veto but never bypass hard gates."""
 
     enabled: bool = False
     provider: Literal["openai", "anthropic", "consensus"] = "consensus"
-    openai_model: str = "gpt-5.6-terra"
+    openai_model: str = "gpt-5.1"
     anthropic_model: str = ""
     minimum_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
@@ -549,6 +584,7 @@ class Settings(Base):
     trade_management: TradeManagementConfig = TradeManagementConfig()
     journal: JournalConfig = JournalConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
+    scanner: ScannerConfig = ScannerConfig()
     ai: AIConfig = AIConfig()
 
     @field_validator("modes")
@@ -640,9 +676,11 @@ class Settings(Base):
         Returns (allowed, reason). The reason string is journalled verbatim so
         that "why did it not trade gold" is answerable months later.
         """
-        if symbol not in self.active_whitelist:
-            return False, f"SYMBOL_NOT_WHITELISTED_FOR_{self.mode.value.upper()}"
         bare = self.instruments.canonical_symbol(symbol)
+        if bare in self.instruments.blocklist or symbol in self.instruments.blocklist:
+            return False, "SYMBOL_BLOCKLISTED"
+        if self.instruments.universe_mode == "whitelist" and symbol not in self.active_whitelist:
+            return False, f"SYMBOL_NOT_WHITELISTED_FOR_{self.mode.value.upper()}"
         required = self.instruments.min_equity_for_symbol.get(bare)
         if required is not None and equity < required:
             return False, f"SYMBOL_BLOCKED_EQUITY_BELOW_{required:g}"

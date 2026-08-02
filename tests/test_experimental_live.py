@@ -77,20 +77,33 @@ def test_contract_is_account_bound_and_has_absolute_floor(tmp_path: Path) -> Non
         restored.assert_compatible(account(is_demo=True), settings)
 
 
-def test_experimental_settings_fix_risk_and_explicitly_enable_research_modules() -> None:
+def test_experimental_settings_fix_risk_without_promoting_modules() -> None:
+    """Arming pins the risk envelope. It must not promote a module to live.
+
+    Auto-enabling every weighted module the moment the experiment is armed
+    would put unvalidated analysis on real money as a side effect of arming.
+    Promotion has to be an explicit edit in config, visible in a diff.
+    """
     original = load_settings(env_overrides=False)
     experimental = apply_experimental_live_limits(original)
 
     assert experimental.effective_risk_pct() == 1.0
     assert experimental.effective_max_risk_pct() == 1.0
     assert experimental.risk.max_drawdown_circuit_breaker_pct == 15.0
-    assert experimental.analysis.confluence.live_enabled_modules == (
-        "market_structure",
-        "trend_momentum",
-        "liquidity_sweep",
-        "level_reaction",
+
+    # Whatever the shipped config says is what live gets — no more, no less.
+    assert (
+        experimental.analysis.confluence.live_enabled_modules
+        == original.analysis.confluence.live_enabled_modules
     )
     assert original.analysis.confluence.live_enabled_modules == ()
+
+
+def test_shipped_config_cannot_trade_live_without_an_explicit_promotion() -> None:
+    """With no module promoted, the confluence engine refuses every live entry."""
+    settings = apply_experimental_live_limits(load_settings(env_overrides=False))
+    assert settings.mode.is_live
+    assert settings.analysis.confluence.live_enabled_modules == ()
 
 
 def test_experimental_runner_refuses_missing_contract(tmp_path: Path) -> None:

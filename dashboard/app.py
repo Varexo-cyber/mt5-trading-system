@@ -169,8 +169,7 @@ def render_live_scanner() -> None:
         st.warning("Geen scanregels voor deze selectie.")
 
     with st.expander("Hoe Jarvis van scan naar trade gaat"):
-        st.markdown(
-            """
+        st.markdown("""
 1. Haal alle ondersteunde symbolen uit de Eightcap-catalogus.
 2. Controleer per symbool of het verhandelbaar is en een verse prijs heeft.
 3. Blokkeer een te hoge spread of ontbrekende H1-geschiedenis.
@@ -181,8 +180,7 @@ def render_live_scanner() -> None:
 8. Vraag Claude als laatste veto. Claude mag nooit risico of orderwaarden veranderen.
 9. Stuur alleen bij alle groene poorten een order naar MT5/Eightcap.
 10. Beheer daarna SL, break-even, trailing/exit en schrijf alles in het journaal.
-"""
-        )
+""")
 
 
 @st.fragment(run_every="3s")
