@@ -85,6 +85,16 @@ back once for a process reflection; that reflection is research-only and can
 never alter production parameters automatically. API usage is billed by the
 provider separately from a Claude or ChatGPT chat subscription.
 
+The dashboard's **AI exchange** tab refreshes every three seconds. A
+`pretrade_request` row is written before the API call, so an in-flight request
+appears as `PENDING`; the matching `pretrade_response` contains Claude's exact
+structured decision, confidence, thesis, risks, request ID and safe error code.
+The request shown is the exact secret-free market payload used by the provider:
+module scores, the last three closed bars per decision timeframe, tick,
+executable sizing, filters and account risk context. API keys and request
+headers are never written. Deep candidates rejected before the AI gate are
+listed separately, so an empty paid-AI history does not look like an idle bot.
+
 ## Windows autostart
 
 Run `install_autostart_monitor.cmd` once. It registers a per-user task named

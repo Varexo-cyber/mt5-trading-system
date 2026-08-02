@@ -28,6 +28,16 @@ def read_recent_reviews(path: Path, limit: int = 25) -> list[dict[str, object]]:
         return []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
-        return [json.loads(line) for line in lines if line.strip()]
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError:
         return []
+    rows = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows

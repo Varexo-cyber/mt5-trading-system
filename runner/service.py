@@ -10,7 +10,14 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
-from advisory import Advice, Advisor, AIReviewLedger, DisabledAdvisor, build_advisor
+from advisory import (
+    Advice,
+    Advisor,
+    AIReviewLedger,
+    DisabledAdvisor,
+    build_advisor,
+    build_review_payload,
+)
 from analysis import (
     ConfluenceEngine,
     LevelReaction,
@@ -369,20 +376,21 @@ class JarvisRunner:
                 else None
             ),
         }
-        advice = (
-            Advice(True, 1.0, "Monitor mode does not request paid AI review", provider="monitor")
-            if self.operation is OperationMode.MONITOR
-            else self.advisor.review(idea, context, proposal)
-        )
+        request_payload = build_review_payload(idea, context, proposal)
         try:
             self.ai_ledger.append(
-                "pretrade_review",
+                "pretrade_request",
                 {
                     "cycle_id": cycle_id,
                     "symbol": symbol,
                     "direction": idea.direction.name,
-                    "proposal": proposal,
-                    "decision": advice.safe_dict(),
+                    "provider": (
+                        "monitor"
+                        if self.operation is OperationMode.MONITOR
+                        else self.settings.ai.provider
+                    ),
+                    "model": self.settings.ai.anthropic_model or self.settings.ai.openai_model,
+                    "request": request_payload,
                 },
             )
         except OSError:
@@ -390,11 +398,44 @@ class JarvisRunner:
                 False,
                 0.0,
                 "AI review audit could not be persisted; trade vetoed",
-                provider=advice.provider,
-                model=advice.model,
-                request_id=advice.request_id,
+                provider=self.settings.ai.provider,
+                model=self.settings.ai.anthropic_model or self.settings.ai.openai_model,
                 error="audit_write_failed",
             )
+        else:
+            ai_started = time.monotonic()
+            advice = (
+                Advice(
+                    True,
+                    1.0,
+                    "Monitor mode does not request paid AI review",
+                    provider="monitor",
+                )
+                if self.operation is OperationMode.MONITOR
+                else self.advisor.review(idea, context, proposal)
+            )
+            ai_latency_ms = round((time.monotonic() - ai_started) * 1000, 1)
+            try:
+                self.ai_ledger.append(
+                    "pretrade_response",
+                    {
+                        "cycle_id": cycle_id,
+                        "symbol": symbol,
+                        "direction": idea.direction.name,
+                        "latency_ms": ai_latency_ms,
+                        "decision": advice.safe_dict(),
+                    },
+                )
+            except OSError:
+                advice = Advice(
+                    False,
+                    0.0,
+                    "AI review audit could not be persisted; trade vetoed",
+                    provider=advice.provider,
+                    model=advice.model,
+                    request_id=advice.request_id,
+                    error="audit_write_failed",
+                )
         ai_data = {
             "ai_provider": advice.provider,
             "ai_model": advice.model,

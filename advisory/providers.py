@@ -84,7 +84,7 @@ class OpenAIAdvisor:
             response = self.client.responses.create(
                 model=self.model,
                 instructions=_REVIEW_INSTRUCTIONS,
-                input=_dumps(_payload(idea, context, proposal)),
+                input=_dumps(build_review_payload(idea, context, proposal)),
                 text={
                     "format": {
                         "type": "json_schema",
@@ -167,7 +167,7 @@ class AnthropicAdvisor:
                         "content": _dumps(
                             {
                                 "schema": _REVIEW_SCHEMA,
-                                "trade_candidate": _payload(idea, context, proposal),
+                                "trade_candidate": build_review_payload(idea, context, proposal),
                             }
                         ),
                     }
@@ -282,11 +282,12 @@ def build_advisor(config: AIConfig) -> Advisor:
         ) from exc
 
 
-def _payload(
+def build_review_payload(
     idea: TradeIdea,
     context: MarketContext,
     proposal: Mapping[str, object] | None,
 ) -> dict[str, object]:
+    """Return the exact secret-free trade candidate sent to an AI reviewer."""
     timeframes: dict[str, object] = {}
     for timeframe, series in context.series.items():
         bars: list[dict[str, object]] = []

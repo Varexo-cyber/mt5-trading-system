@@ -136,6 +136,8 @@ geen nette stopmethode; gebruik de rode noodstop.
 
 - **Overview**: balans, equity, verbinding en snelle marktinformatie.
 - **Live scanner**: wat zojuist is bekeken en waarom iets door mocht of afviel.
+- **AI exchange**: het exacte veilige voorstel aan Claude, `PENDING` tijdens de
+  aanvraag, Claude's antwoord en kandidaten die vóór Claude zijn afgewezen.
 - **Charts**: door jou gekozen markt en maximaal vier timeframes tegelijk.
 - **Positions**: open broker- en paperposities.
 - **PDF report**: een momentopname die je kunt downloaden.
@@ -144,3 +146,10 @@ geen nette stopmethode; gebruik de rode noodstop.
 Het dashboard ververst de scannerweergave iedere vijf seconden. De scanner zelf
 werkt ongeveer iedere 30 seconden; vijf seconden verversen maakt de data dus
 niet vijf seconden nieuw.
+
+Claude wordt niet betaald aangeroepen voor iedere catalogusinspectie. Eerst
+moeten analyse, whitelist, rekeningrisico, nieuws, sessie, spread, correlatie,
+lotgrootte en marge allemaal groen zijn. Dit beschermt het kleine API-tegoed.
+Wanneer dat gebeurt, verschijnt het verzoek direct in **AI exchange** en het
+antwoord normaal enkele seconden later. Geen antwoord of een API-fout is altijd
+een veto.
