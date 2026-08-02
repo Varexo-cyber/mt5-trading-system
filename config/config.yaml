@@ -269,7 +269,13 @@ analysis:
       market_structure: 1.0
       trend_momentum: 1.0
       liquidity_sweep: 0.8
-      level_reaction: 0.7
+      # 0 — see docs/hypotheses/level_reaction.md. A rolling 5th/95th
+      # percentile of the last 50 bars is a statistical artefact, not a level
+      # anyone defends, so no counterparty can be named. Kept in the tree so
+      # the record of having tried it survives; rewrite against a real level
+      # definition (touch count, age, S->R flips, round numbers) before it
+      # carries weight again.
+      level_reaction: 0.0
       volatility_regime: 0.0
 
 trade_management:

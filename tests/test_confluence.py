@@ -90,3 +90,38 @@ def test_disagreement_blocks() -> None:
     idea = ConfluenceEngine(disagreeing, config()).evaluate(context(), TradingMode.PAPER)
 
     assert not idea.approved
+
+
+def test_every_live_enabled_module_has_a_hypothesis_document() -> None:
+    """Pre-registration is not optional for anything spending real money.
+
+    A module reaching live without a written mechanism — without a named
+    counterparty losing money on the other side — is data mining with an
+    account attached. This test is the enforcement.
+    """
+    from pathlib import Path
+
+    from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+    root = DEFAULT_CONFIG_PATH.parent.parent
+    for overlay in (None, DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"):
+        settings = load_settings(overlay=overlay, env_overrides=False)
+        for module in settings.analysis.confluence.live_enabled_modules:
+            document = Path(root / "docs" / "hypotheses" / f"{module}.md")
+            assert (
+                document.exists()
+            ), f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
+
+
+def test_weighted_modules_are_documented() -> None:
+    """Anything carrying weight in research needs its reasoning on paper too."""
+
+    from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+    root = DEFAULT_CONFIG_PATH.parent.parent
+    settings = load_settings(env_overrides=False)
+    for module, weight in settings.analysis.confluence.weights.items():
+        if weight <= 0:
+            continue
+        assert (root / "docs" / "hypotheses" / f"{module}.md").exists(), module
+        assert (root / "docs" / "modules" / f"{module}.md").exists(), module

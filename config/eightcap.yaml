@@ -31,7 +31,7 @@ analysis:
     # lists exactly what is still missing, and the runner alerts on it at every
     # experimental-live start. This line is the deliberate, reviewable act of
     # accepting that; nothing promotes a module to live on its own any more.
-    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, level_reaction]
+    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep]
 
 # Experimental live uses Claude as a mandatory final veto gate. The API key
 # stays in config/.env, is never committed, and is never sent to the dashboard.

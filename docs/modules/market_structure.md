@@ -80,5 +80,16 @@ turn the same market event into two independent votes.
 
 ## Weight
 
-**0 — awaiting the registered out-of-sample validation.** No performance claim
-has been made.
+**Research weight 1.0. Live-enabled via `config/eightcap.yaml`, without
+measured evidence.**
+
+No performance claim has been made and none of the checks in
+`scripts/audit_live_promotion.py` has passed. The module carries weight because
+the owner explicitly accepted running the EUR 100 experiment on unvalidated
+analysis — the evidence gate needs 100 out-of-sample trades, and those cannot
+exist before the account has traded.
+
+That is a deviation from the validation protocol in `PLAN.md`, and it is
+recorded here rather than hidden. The runner logs and alerts every failing
+promotion check at each experimental-live start. When the validation runs,
+this section states the measured result and the deviation ends.
