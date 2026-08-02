@@ -54,7 +54,11 @@ def main() -> int:
             },
         )
         if advice.error:
-            print(f"BLOCKED: production response failed validation ({advice.error})")
+            print(f"BLOCKED: the production review path failed ({advice.error})")
+            print(
+                "  Everything after the status code is Claude's own explanation. "
+                "In experimental live this failure is a silent veto on every trade."
+            )
             return 3
         verdict = "APPROVE" if advice.approved else "VETO"
         request_id = advice.request_id or "not-reported"

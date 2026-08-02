@@ -40,5 +40,5 @@ ai:
   provider: anthropic
   anthropic_model: claude-sonnet-5
   minimum_confidence: 0.65
-  timeout_seconds: 30
+  timeout_seconds: 60
   fail_closed: true

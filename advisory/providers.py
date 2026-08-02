@@ -12,6 +12,25 @@ from analysis.confluence import TradeIdea
 from config.schema import AIConfig
 from core.types import MarketContext
 
+# Claude Sonnet 5 and the Opus 4.7+ family reject `temperature`, `top_p` and
+# `top_k` outright, and run adaptive thinking whenever `thinking` is omitted.
+# Both facts matter here. Passing `temperature=0` returns HTTP 400, and because
+# this adviser is fail-closed a 400 does not look like a bug — it looks like a
+# veto, so the system simply never trades and nothing appears broken.
+#
+# Thinking tokens count against `max_tokens`. A budget sized for the JSON answer
+# alone truncates the reply, which surfaces as stop_reason="max_tokens" and is
+# likewise indistinguishable from a veto. The budget below is therefore far
+# larger than the ~200-token verdict needs; the effort hint, not the ceiling, is
+# what actually bounds the spend.
+_MAX_TOKENS = 4_000
+
+# A veto over a small, fully structured payload is a bounded judgement, not a
+# multi-step reasoning problem. `medium` on Sonnet 5 is roughly Sonnet 4.6 at
+# `high`, and keeps the round trip inside `ai.timeout_seconds` — a timeout is
+# another silent veto.
+_EFFORT = "medium"
+
 
 @dataclass(frozen=True, slots=True)
 class Advice:
@@ -152,14 +171,14 @@ class AnthropicAdvisor:
         try:
             message = self.client.messages.create(
                 model=self.model,
-                max_tokens=600,
-                temperature=0,
+                max_tokens=_MAX_TOKENS,
                 system=_REVIEW_INSTRUCTIONS + " Return only one JSON object matching the schema.",
                 output_config={
+                    "effort": _EFFORT,
                     "format": {
                         "type": "json_schema",
                         "schema": _anthropic_schema(_REVIEW_SCHEMA),
-                    }
+                    },
                 },
                 messages=[
                     {
@@ -174,7 +193,8 @@ class AnthropicAdvisor:
                 ],
             )
             request_id = getattr(message, "_request_id", "") or ""
-            if getattr(message, "stop_reason", "") != "end_turn":
+            stop_reason = getattr(message, "stop_reason", "") or "unknown"
+            if stop_reason != "end_turn":
                 return Advice(
                     False,
                     0.0,
@@ -182,9 +202,17 @@ class AnthropicAdvisor:
                     provider="anthropic",
                     model=self.model,
                     request_id=request_id,
-                    error="incomplete_response",
+                    # Naming the reason matters: "max_tokens" means raise the
+                    # budget, "refusal" means the payload tripped a safeguard.
+                    # A bare "incomplete_response" hides which one it was.
+                    error=f"incomplete_response:{stop_reason}",
                 )
-            text = "".join(block.text for block in message.content if hasattr(block, "text"))
+            # Adaptive thinking is on by default, so `content` also carries
+            # thinking blocks. Select on the block type rather than on the
+            # presence of a `.text` attribute.
+            text = "".join(
+                block.text for block in message.content if getattr(block, "type", "") == "text"
+            )
             return _parse_review(
                 text,
                 "anthropic",
@@ -199,15 +227,15 @@ class AnthropicAdvisor:
         try:
             message = self.client.messages.create(
                 model=self.model,
-                max_tokens=500,
-                temperature=0,
+                max_tokens=_MAX_TOKENS,
                 system=_REFLECTION_INSTRUCTIONS
                 + " Return only one JSON object matching the schema.",
                 output_config={
+                    "effort": _EFFORT,
                     "format": {
                         "type": "json_schema",
                         "schema": _anthropic_schema(_REFLECTION_SCHEMA),
-                    }
+                    },
                 },
                 messages=[
                     {
@@ -219,15 +247,21 @@ class AnthropicAdvisor:
                 ],
             )
             request_id = getattr(message, "_request_id", "") or ""
-            if getattr(message, "stop_reason", "") != "end_turn":
+            stop_reason = getattr(message, "stop_reason", "") or "unknown"
+            if stop_reason != "end_turn":
                 return Reflection(
                     "Claude reflection did not finish normally",
                     provider="anthropic",
                     model=self.model,
                     request_id=request_id,
-                    error="incomplete_response",
+                    error=f"incomplete_response:{stop_reason}",
                 )
-            text = "".join(block.text for block in message.content if hasattr(block, "text"))
+            # Adaptive thinking is on by default, so `content` also carries
+            # thinking blocks. Select on the block type rather than on the
+            # presence of a `.text` attribute.
+            text = "".join(
+                block.text for block in message.content if getattr(block, "type", "") == "text"
+            )
             return _parse_reflection(text, "anthropic", self.model, request_id)
         except Exception as exc:  # noqa: BLE001 - trade is already closed; retain the failure only
             return _failed_reflection("anthropic", self.model, exc)
@@ -420,10 +454,36 @@ def _failed_reflection(provider: str, model: str, exc: Exception) -> Reflection:
 
 
 def _safe_error(exc: Exception) -> str:
-    """Return diagnostics without serialising exception text or request headers."""
+    """Return diagnostics without serialising request payloads or headers."""
     status = getattr(exc, "status_code", None)
     suffix = f":http_{status}" if isinstance(status, int) else ""
-    return f"{type(exc).__name__}{suffix}"
+    return f"{type(exc).__name__}{suffix}{_request_shape_detail(exc, status)}"
+
+
+def _request_shape_detail(exc: Exception, status: object) -> str:
+    """Return the API's own message for request-shape errors, and nothing else.
+
+    A fail-closed adviser turns every failure into a veto, so a bare
+    `BadRequestError:http_400` is indistinguishable from a considered "no" and
+    the system silently stops trading. For 400 and 404 the API replies with the
+    name of the offending field or model, which is exactly what is needed to fix
+    it and contains no credential — the key travels in a header, never the body.
+
+    Deliberately limited to those two statuses. A 401, 403, 429 or 5xx is fully
+    described by its status, and their messages can carry organisation detail
+    that has no business in a trade journal.
+    """
+    if status not in {400, 404}:
+        return ""
+    body = getattr(exc, "body", None)
+    message = ""
+    if isinstance(body, Mapping):
+        error = body.get("error")
+        if isinstance(error, Mapping):
+            message = str(error.get("message", ""))
+    if not message:
+        return ""
+    return ":" + " ".join(message.split())[:300]
 
 
 def _dumps(payload: Any) -> str:

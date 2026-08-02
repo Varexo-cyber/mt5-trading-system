@@ -432,6 +432,40 @@ get a calendar the backtester can use over a multi-year window.
   block was silently discarding `symbol_suffix: ".i"`, so every live symbol
   name would have been wrong. A test now loads the overlay and asserts on it.
 
+### The Anthropic request shape (found by running `verify_ai_advisor.py`)
+
+`scripts/verify_ai_advisor.py` returned `BadRequestError:http_400`. Three
+separate problems, all with the same signature — because the adviser is
+fail-closed, none of them crashes anything. Each one turns into a permanent
+veto on every candidate, so the system runs all day, scans the whole
+catalogue, and never trades, with no error anywhere.
+
+1. **`temperature=0` is rejected.** Claude Sonnet 5 and the Opus 4.7+ family
+   return HTTP 400 for any non-default `temperature`, `top_p` or `top_k`.
+   Removed from both `review` and `reflect`. `temperature=0` never guaranteed
+   identical outputs on the older models either, so nothing is lost.
+2. **`max_tokens` was too small for a model that thinks.** From Sonnet 5
+   onward, omitting `thinking` runs *adaptive* thinking, and thinking tokens
+   count against `max_tokens`. At 600 the reply truncates before the JSON,
+   which arrives as `stop_reason="max_tokens"` — another silent veto. Now
+   4000 with `output_config.effort: "medium"`, which is what actually bounds
+   the spend.
+3. **Thinking blocks were being concatenated into the JSON parser.** The text
+   extraction selected on `hasattr(block, "text")`; it now selects on
+   `block.type == "text"`.
+
+Two diagnostics changed so the next failure of this kind is not silent:
+`_safe_error` now appends Claude's own message for 400 and 404 (the statuses
+that name the offending field or model) and nothing for 401/403/429/5xx, whose
+bodies can carry organisation detail; and a non-`end_turn` stop reason is now
+reported as `incomplete_response:<reason>` instead of a bare
+`incomplete_response`. `ai.timeout_seconds` went 30 → 60, since a timeout is
+also a veto and a thinking model is slower than a plain completion.
+
+`tests/test_advisory_reporting.py` now asserts the request shape directly
+rather than relying on a live call: no sampling parameters, no `budget_tokens`,
+`max_tokens` ≥ 2000, and the thinking block excluded from the parsed verdict.
+
 ## 6. Known issues and design debt
 
 **`max_sl_pips` is an FX-shaped rule.** A "pip" on gold is one point ($0.01),
