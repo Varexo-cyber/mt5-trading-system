@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pandas as pd
+import pytest
 
 from advisory.ledger import AIReviewLedger, read_recent_reviews
 from advisory.providers import DisabledAdvisor, build_advisor, build_review_payload
@@ -38,12 +40,19 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     class Messages:
         def create(self, **kwargs):  # type: ignore[no-untyped-def]
             captured.update(kwargs)
+            # Adaptive thinking is on by default from Sonnet 5 onward, so a real
+            # response leads with a thinking block. Only the text block is the
+            # schema-constrained answer.
+            thinking = SimpleNamespace(type="thinking", thinking="{not the answer}")
             block = SimpleNamespace(
+                type="text",
                 text=(
                     '{"approve":true,"confidence":0.8,"thesis":"coherent","risks":["event risk"]}'
-                )
+                ),
             )
-            return SimpleNamespace(content=[block], stop_reason="end_turn", _request_id="req-test")
+            return SimpleNamespace(
+                content=[thinking, block], stop_reason="end_turn", _request_id="req-test"
+            )
 
     class Client:
         def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
@@ -91,6 +100,130 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     assert isinstance(output_config, dict)
     assert output_config["format"]["type"] == "json_schema"
     assert "minimum" not in str(output_config)
+    # The thinking block must never reach the JSON parser.
+    assert advice.thesis == "coherent"
+
+
+def test_anthropic_request_omits_parameters_the_current_models_reject() -> None:
+    """Regression: `temperature=0` returned HTTP 400 and read as a permanent veto.
+
+    Sonnet 5 and the Opus 4.7+ family reject `temperature`, `top_p`, `top_k` and
+    `thinking.budget_tokens`. Because the adviser is fail-closed, such a request
+    does not crash — it vetoes every candidate forever while looking healthy, so
+    the shape of the request is asserted rather than left to a live call.
+    """
+    captured: dict[str, object] = {}
+
+    class Messages:
+        def create(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            verdict = '{"approve":false,"confidence":0.1,"thesis":"no","risks":[]}'
+            block = SimpleNamespace(type="text", text=verdict)
+            return SimpleNamespace(content=[block], stop_reason="end_turn", _request_id="r")
+
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            self.messages = Messages()
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(__import__("sys").modules, "anthropic", SimpleNamespace(Anthropic=Client))
+        patch.setenv("ANTHROPIC_API_KEY", "unit-test-secret")
+        adviser = build_advisor(
+            AIConfig(enabled=True, provider="anthropic", anthropic_model="claude-test")
+        )
+        idea = TradeIdea("EURUSD", False, None, 0, 0, 0, 0, 0, "none", ())
+        adviser.review(idea, MarketContext("EURUSD", datetime(2026, 1, 1, tzinfo=UTC), {}))
+        adviser.reflect({"symbol": "EURUSD", "r_multiple": -1.0})
+
+    for rejected in ("temperature", "top_p", "top_k"):
+        assert rejected not in captured
+    assert "budget_tokens" not in str(captured.get("thinking", ""))
+    # Thinking tokens are charged against max_tokens. A budget sized for the
+    # verdict alone truncates into stop_reason="max_tokens" — another silent veto.
+    assert int(captured["max_tokens"]) >= 2_000
+
+
+def test_a_rejected_request_reports_why_instead_of_a_bare_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A fail-closed veto with no reason is indistinguishable from a considered no."""
+
+    class Rejected(Exception):
+        status_code = 400
+        body: ClassVar[dict[str, object]] = {
+            "error": {"message": "temperature: Extra inputs are not permitted"}
+        }
+
+    class Messages:
+        def create(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise Rejected
+
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            self.messages = Messages()
+
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", SimpleNamespace(Anthropic=Client))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "unit-test-secret")
+    adviser = build_advisor(
+        AIConfig(enabled=True, provider="anthropic", anthropic_model="claude-test")
+    )
+    idea = TradeIdea("EURUSD", False, None, 0, 0, 0, 0, 0, "none", ())
+
+    advice = adviser.review(idea, MarketContext("EURUSD", datetime(2026, 1, 1, tzinfo=UTC), {}))
+
+    assert not advice.approved
+    assert advice.error.startswith("Rejected:http_400:")
+    assert "temperature" in advice.error
+
+
+def test_an_authentication_failure_reports_only_its_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """401/403/429/5xx bodies can carry organisation detail; the status is enough."""
+
+    class Unauthorised(Exception):
+        status_code = 401
+        body: ClassVar[dict[str, object]] = {
+            "error": {"message": "organisation acme-corp key sk-live-tail is revoked"}
+        }
+
+    class Messages:
+        def create(self, **_kwargs):  # type: ignore[no-untyped-def]
+            raise Unauthorised
+
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            self.messages = Messages()
+
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", SimpleNamespace(Anthropic=Client))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "unit-test-secret")
+    adviser = build_advisor(
+        AIConfig(enabled=True, provider="anthropic", anthropic_model="claude-test")
+    )
+    idea = TradeIdea("EURUSD", False, None, 0, 0, 0, 0, 0, "none", ())
+
+    advice = adviser.review(idea, MarketContext("EURUSD", datetime(2026, 1, 1, tzinfo=UTC), {}))
+
+    assert advice.error == "Unauthorised:http_401"
+    assert "acme-corp" not in advice.error
+
+
+def test_a_truncated_response_names_the_stop_reason(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class Messages:
+        def create(self, **_kwargs):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(content=[], stop_reason="max_tokens", _request_id="r")
+
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            self.messages = Messages()
+
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", SimpleNamespace(Anthropic=Client))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "unit-test-secret")
+    adviser = build_advisor(
+        AIConfig(enabled=True, provider="anthropic", anthropic_model="claude-test")
+    )
+    idea = TradeIdea("EURUSD", False, None, 0, 0, 0, 0, 0, "none", ())
+
+    advice = adviser.review(idea, MarketContext("EURUSD", datetime(2026, 1, 1, tzinfo=UTC), {}))
+
+    assert not advice.approved
+    assert advice.error == "incomplete_response:max_tokens"
 
 
 def test_anthropic_timeout_vetoes_without_leaking_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
