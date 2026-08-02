@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -25,8 +25,41 @@ class ScanCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ScanInspection:
+    inspected_at: datetime
+    symbol: str
+    path: str
+    asset_class: AssetClass
+    status: str
+    stage: str
+    reason: str
+    rank: float | None = None
+    spread_bps: float | None = None
+    quote_age_seconds: float | None = None
+    trend_strength_atr: float | None = None
+    latest_bar: datetime | None = None
+
+    def safe_dict(self) -> dict[str, object]:
+        return {
+            "inspected_at": self.inspected_at.isoformat(),
+            "symbol": self.symbol,
+            "path": self.path,
+            "asset_class": self.asset_class.value,
+            "status": self.status,
+            "stage": self.stage,
+            "reason": self.reason,
+            "rank": self.rank,
+            "spread_bps": self.spread_bps,
+            "quote_age_seconds": self.quote_age_seconds,
+            "trend_strength_atr": self.trend_strength_atr,
+            "latest_bar": self.latest_bar.isoformat() if self.latest_bar else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ScanBatch:
     candidates: tuple[ScanCandidate, ...]
+    inspections: tuple[ScanInspection, ...]
     inspected: int
     rejected: int
     next_cursor: int
@@ -49,45 +82,123 @@ class UniverseScanner:
     def scan(self, *, cursor: int = 0, batch_size: int = 25, keep: int = 5) -> ScanBatch:
         universe = self.catalogue()
         if not universe:
-            return ScanBatch((), 0, 0, 0, 0)
+            return ScanBatch((), (), 0, 0, 0, 0)
         cursor %= len(universe)
         indices = [
             (cursor + offset) % len(universe) for offset in range(min(batch_size, len(universe)))
         ]
         candidates: list[ScanCandidate] = []
+        inspections: list[ScanInspection] = []
         rejected = 0
         for index in indices:
             item = universe[index]
-            candidate = self._inspect(item)
+            candidate, inspection = self._inspect(item)
+            inspections.append(inspection)
             if candidate is None:
                 rejected += 1
             else:
                 candidates.append(candidate)
         candidates.sort(key=lambda item: item.rank, reverse=True)
+        shortlisted = {item.symbol for item in candidates[:keep]}
+        inspections = [
+            replace(
+                row,
+                status="SHORTLISTED",
+                stage="deep_analysis_queued",
+                reason="Top-ranked symbol in this rotating batch; queued for full analysis",
+            )
+            if row.symbol in shortlisted
+            else row
+            for row in inspections
+        ]
         next_cursor = (cursor + len(indices)) % len(universe)
         return ScanBatch(
-            tuple(candidates[:keep]), len(indices), rejected, next_cursor, len(universe)
+            tuple(candidates[:keep]),
+            tuple(inspections),
+            len(indices),
+            rejected,
+            next_cursor,
+            len(universe),
         )
 
-    def _inspect(self, descriptor: SymbolDescriptor) -> ScanCandidate | None:
+    def _inspect(self, descriptor: SymbolDescriptor) -> tuple[ScanCandidate | None, ScanInspection]:
+        inspected_at = datetime.now(UTC)
+        path_class = self._path_class(descriptor.path)
+
+        def reject(
+            stage: str,
+            reason: str,
+            *,
+            asset_class: AssetClass = path_class,
+            spread_bps: float | None = None,
+            quote_age_seconds: float | None = None,
+        ) -> tuple[None, ScanInspection]:
+            return None, ScanInspection(
+                inspected_at,
+                descriptor.name,
+                descriptor.path,
+                asset_class,
+                "REJECTED",
+                stage,
+                reason,
+                spread_bps=spread_bps,
+                quote_age_seconds=quote_age_seconds,
+            )
+
         try:
             spec = self.broker.spec(descriptor.name)
-            if not spec.is_tradable or spec.asset_class is AssetClass.UNKNOWN:
-                return None
+            if not spec.is_tradable:
+                return reject(
+                    "broker_contract",
+                    f"Broker reports trade_mode={spec.trade_mode}; instrument is not tradable",
+                    asset_class=spec.asset_class,
+                )
+            if spec.asset_class is AssetClass.UNKNOWN:
+                return reject(
+                    "classification",
+                    "Instrument asset class is unsupported",
+                    asset_class=spec.asset_class,
+                )
             tick = self.broker.tick(descriptor.name)
-            now = datetime.now(UTC)
-            age = max(0.0, (now - tick.time).total_seconds())
+            age = max(0.0, (inspected_at - tick.time).total_seconds())
             max_age = self.settings.filters.spread.max_tick_age_seconds.get(spec.asset_class.value)
-            if max_age is None or age > max_age or tick.mid <= 0:
-                return None
+            if tick.mid <= 0:
+                return reject(
+                    "quote",
+                    "Invalid non-positive quote",
+                    asset_class=spec.asset_class,
+                    quote_age_seconds=age,
+                )
             spread_bps = tick.spread / tick.mid * 10_000
+            if max_age is None or age > max_age:
+                return reject(
+                    "quote",
+                    "Quote is stale; market may be closed",
+                    asset_class=spec.asset_class,
+                    spread_bps=spread_bps,
+                    quote_age_seconds=age,
+                )
             cap = self.settings.filters.spread.max_spread_bps.get(spec.asset_class.value)
             if cap is None or spread_bps > cap:
-                return None
+                return reject(
+                    "spread",
+                    f"Spread {spread_bps:.3f} bps exceeds {cap:.3f} bps limit"
+                    if cap is not None
+                    else "No spread limit configured for this asset class",
+                    asset_class=spec.asset_class,
+                    spread_bps=spread_bps,
+                    quote_age_seconds=age,
+                )
             raw = self.broker.copy_rates(descriptor.name, Timeframe.H1.mt5_value, 90)
             frame = pd.DataFrame(raw)
             if len(frame) < 55:
-                return None
+                return reject(
+                    "history",
+                    f"Only {len(frame)} H1 bars available; at least 55 required",
+                    asset_class=spec.asset_class,
+                    spread_bps=spread_bps,
+                    quote_age_seconds=age,
+                )
             close = frame["close"].astype(float)
             high = frame["high"].astype(float)
             low = frame["low"].astype(float)
@@ -100,7 +211,13 @@ class UniverseScanner:
                 .iloc[-1]
             )
             if not atr or pd.isna(atr):
-                return None
+                return reject(
+                    "ranking",
+                    "ATR could not be calculated from H1 history",
+                    asset_class=spec.asset_class,
+                    spread_bps=spread_bps,
+                    quote_age_seconds=age,
+                )
             ema20 = close.ewm(span=20, adjust=False).mean()
             ema50 = close.ewm(span=50, adjust=False).mean()
             strength = abs(float(ema20.iloc[-1] - ema50.iloc[-1])) / float(atr)
@@ -112,7 +229,7 @@ class UniverseScanner:
             spread_quality = max(0.0, 1.0 - spread_bps / cap)
             rank = strength * 2.0 + activity + spread_quality
             last = datetime.fromtimestamp(int(frame["time"].iloc[-1]), tz=UTC)
-            return ScanCandidate(
+            candidate = ScanCandidate(
                 descriptor.name,
                 spec.asset_class,
                 rank,
@@ -121,8 +238,25 @@ class UniverseScanner:
                 strength,
                 last,
             )
-        except Exception:  # noqa: BLE001 - catalogue contains many closed/unavailable CFDs
-            return None
+            return candidate, ScanInspection(
+                inspected_at,
+                descriptor.name,
+                descriptor.path,
+                spec.asset_class,
+                "ELIGIBLE",
+                "cheap_scan_passed",
+                "Fresh tradable quote, acceptable spread and sufficient H1 history",
+                rank=rank,
+                spread_bps=spread_bps,
+                quote_age_seconds=age,
+                trend_strength_atr=strength,
+                latest_bar=last,
+            )
+        except Exception as exc:  # noqa: BLE001 - catalogue has closed/unavailable CFDs
+            return reject(
+                "broker_data",
+                f"Broker data unavailable ({type(exc).__name__})",
+            )
 
     @staticmethod
     def _path_class(path: str) -> AssetClass:
