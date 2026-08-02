@@ -423,6 +423,9 @@ try:
         control_notice = st.session_state.pop("control_notice", "")
         if control_notice:
             st.success(control_notice, icon=":material/check_circle:")
+        control_error = st.session_state.pop("control_error", "")
+        if control_error:
+            st.error(control_error, icon=":material/error:")
         pid_path = ROOT / "runtime" / "jarvis.pid"
         running_pid = int(pid_path.read_text().strip()) if pid_path.exists() else 0
         running = False
@@ -584,61 +587,77 @@ try:
                 stderr=subprocess.DEVNULL,
             )
             st.rerun()
-        confirmation = st.text_input(
-            "Type clear stop to reset the hard stop",
-            placeholder="clear stop",
-            help="Capitalization and extra spaces do not matter.",
-            key="clear_stop_confirmation",
-        )
+        with st.form("stop_reset_and_start", border=True):
+            st.subheader("STOP resetten of Jarvis opnieuw starten")
+            confirmation = st.text_input(
+                "Type clear stop to confirm",
+                placeholder="clear stop",
+                help="Capitalization and extra spaces do not matter.",
+                key="clear_stop_confirmation",
+            )
+            st.caption(
+                "De knoppen zijn altijd klikbaar. Na de klik krijg je direct een exacte "
+                "foutmelding als een veiligheidsvoorwaarde niet klaar is."
+            )
+            clear_only, clear_and_live = st.columns(2)
+            clear_only_submitted = clear_only.form_submit_button(
+                "Clear STOP only",
+                type="secondary",
+                width="stretch",
+            )
+            clear_and_live_submitted = clear_and_live.form_submit_button(
+                "CLEAR STOP + START REAL TRADING",
+                type="primary",
+                help="Clears STOP and immediately starts account-bound Experimental Live.",
+                width="stretch",
+            )
+
         confirmation_ok = " ".join(confirmation.split()).casefold() == "clear stop"
-        if confirmation and not confirmation_ok:
-            st.caption("Type the two words **clear stop**. Capitalization does not matter.")
-        clear_only, clear_and_live = st.columns(2)
-        if clear_only.button(
-            "Clear STOP only",
-            disabled=not stopped or not confirmation_ok,
-            type="primary",
-            width="stretch",
-        ):
-            kill_switch.clear()
-            st.session_state["control_notice"] = (
-                "Hard STOP cleared. Jarvis remains off until you explicitly start a mode."
-            )
+        if clear_only_submitted:
+            if not confirmation_ok:
+                st.session_state["control_error"] = "Type exact: clear stop"
+            elif not stopped:
+                st.session_state["control_notice"] = "Hard STOP was already clear."
+            else:
+                kill_switch.clear()
+                st.session_state["control_notice"] = (
+                    "Hard STOP cleared. Jarvis remains off until you explicitly start a mode."
+                )
             st.rerun()
-        clear_and_live_disabled = (
-            not stopped
-            or not confirmation_ok
-            or running
-            or account.is_demo
-            or experimental_contract is None
-            or bool(experimental_error)
-            or not ai_ready
-        )
-        if clear_and_live.button(
-            "CLEAR STOP + START REAL TRADING",
-            disabled=clear_and_live_disabled,
-            type="primary",
-            help="Clears STOP and immediately starts account-bound Experimental Live.",
-            width="stretch",
-        ):
-            kill_switch.clear()
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    str(ROOT / "jarvis.py"),
-                    "--operation",
-                    "experimental_live",
-                ],
-                cwd=ROOT,
-                creationflags=creation_flags,
-                close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            st.session_state["control_notice"] = (
-                "STOP cleared and EXPERIMENTAL LIVE started with real money."
-            )
+
+        if clear_and_live_submitted:
+            blockers = []
+            if not confirmation_ok:
+                blockers.append("type exact: clear stop")
+            if running:
+                blockers.append(f"Jarvis is already running as PID {running_pid}")
+            if account.is_demo:
+                blockers.append("MT5 is logged into a demo account")
+            if experimental_contract is None or experimental_error:
+                blockers.append(experimental_error or "experimental contract is unavailable")
+            if not ai_ready:
+                blockers.append("Claude API gate is not ready")
+            if blockers:
+                st.session_state["control_error"] = "Cannot start: " + "; ".join(blockers)
+            else:
+                kill_switch.clear()
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(ROOT / "jarvis.py"),
+                        "--operation",
+                        "experimental_live",
+                    ],
+                    cwd=ROOT,
+                    creationflags=creation_flags,
+                    close_fds=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                st.session_state["control_notice"] = (
+                    "STOP cleared and EXPERIMENTAL LIVE started with real money."
+                )
             st.rerun()
 finally:
     service.close()
