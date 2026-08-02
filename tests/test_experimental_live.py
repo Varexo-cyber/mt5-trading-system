@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from advisory import Advice, Reflection
 from config.loader import load_settings
 from config.schema import MT5Config
 from core.mt5_connector import MT5Connector
@@ -16,6 +17,14 @@ from promotion.experimental import (
 )
 from runner.service import JarvisRunner, OperationMode
 from tests.fakes.fake_mt5 import FakeMT5
+
+
+class ApprovingAdvisor:
+    def review(self, _idea, _context, _proposal=None):  # type: ignore[no-untyped-def]
+        return Advice(True, 0.9, "approved by test adviser", provider="test")
+
+    def reflect(self, _outcome):  # type: ignore[no-untyped-def]
+        return Reflection("test reflection", provider="test")
 
 
 def account(
@@ -98,6 +107,7 @@ def test_experimental_runner_refuses_missing_contract(tmp_path: Path) -> None:
         load_settings(env_overrides=False),
         tmp_path,
         OperationMode.EXPERIMENTAL_LIVE,
+        advisor=ApprovingAdvisor(),
     )
 
     with pytest.raises(RuntimeError, match="EXPERIMENTAL_LIVE_NOT_ARMED"):
@@ -123,6 +133,7 @@ def test_experimental_runner_connects_without_sending_an_order(tmp_path: Path) -
         load_settings(env_overrides=False),
         tmp_path,
         OperationMode.EXPERIMENTAL_LIVE,
+        advisor=ApprovingAdvisor(),
     )
 
     runner.connect()
@@ -150,6 +161,7 @@ def test_experimental_capital_floor_engages_persistent_stop(tmp_path: Path) -> N
         load_settings(env_overrides=False),
         tmp_path,
         OperationMode.EXPERIMENTAL_LIVE,
+        advisor=ApprovingAdvisor(),
     )
     runner.connect()
     try:
@@ -181,6 +193,30 @@ def test_experimental_live_refuses_demo_even_with_contract(tmp_path: Path) -> No
     )
 
     with pytest.raises(RuntimeError, match="LIVE_ACCOUNT_REQUIRED"):
+        runner.connect()
+
+    assert not fake.orders_sent
+
+
+def test_experimental_live_refuses_disabled_ai_gate(tmp_path: Path) -> None:
+    snapshot = account()
+    write_contract(tmp_path, snapshot)
+    fake = FakeMT5(
+        equity=snapshot.equity,
+        balance=snapshot.balance,
+        currency=snapshot.currency,
+        login_id=snapshot.login,
+        server=snapshot.server,
+        is_demo=False,
+    )
+    runner = JarvisRunner(
+        market(fake),
+        load_settings(env_overrides=False),
+        tmp_path,
+        OperationMode.EXPERIMENTAL_LIVE,
+    )
+
+    with pytest.raises(RuntimeError, match="EXPERIMENTAL_LIVE_REQUIRES_AI"):
         runner.connect()
 
     assert not fake.orders_sent

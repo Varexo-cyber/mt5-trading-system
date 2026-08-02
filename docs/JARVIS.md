@@ -41,18 +41,36 @@ retried; manual positions are never touched.
 
 ## AI review
 
-AI is optional and disabled by default. It is a second-opinion veto, not an
-unbounded order tool. Enable only after installing `.[ai]` and setting secrets
-in `config/.env`, never in YAML or Git:
+AI is optional in the base research configuration. The Eightcap overlay makes
+Claude mandatory for `EXPERIMENTAL_LIVE`: it is a final second-opinion veto,
+not an unbounded order tool. The deterministic engine must first clear account,
+news, session, spread, correlation, sizing, margin, stoploss and reward:risk
+rules. Only then is a compact snapshot of the last three closed bars on each
+configured timeframe sent to Claude. Claude can approve or veto; it cannot
+change size, stop, target, risk, filters or account settings.
+
+Install `.[ai]` and set the selected provider secret in `config/.env`, never in
+YAML, Git, a screenshot, or chat:
 
 ```text
-OPENAI_API_KEY=...
 ANTHROPIC_API_KEY=...
+# OPENAI_API_KEY=...  # unused in the current Claude-only Eightcap setup
 ```
 
-Also set an Anthropic model available to your own API account. Consensus mode
-requires both providers to approve. A timeout, malformed response, missing key
-or disagreement blocks the setup.
+The Eightcap overlay currently pins `claude-sonnet-4-6`. Verify authentication
+without placing a trade:
+
+```powershell
+.venv-live\Scripts\python.exe scripts\verify_ai_advisor.py
+```
+
+A timeout, rate limit, authentication error, malformed response, missing key,
+unfinished response, confidence below 0.65 or failed audit write blocks the
+setup. Every proposal and decision is stored in
+`runtime/ai_reviews.jsonl` and shown in the dashboard. A closed trade is sent
+back once for a process reflection; that reflection is research-only and can
+never alter production parameters automatically. API usage is billed by the
+provider separately from a Claude or ChatGPT chat subscription.
 
 ## Windows autostart
 
@@ -100,8 +118,9 @@ The owner-authorized `EXPERIMENTAL_LIVE` path is deliberately separate from
 this normal promotion. It scans the supported broker catalogue but can place
 entries only in the micro-live whitelist (`EURUSD.i`, `GBPUSD.i`, `USDJPY.i`,
 `AUDUSD.i`). The analysis is deterministic confluence across D1/H4/H1/M15/M5;
-the optional external AI adviser remains disabled unless API credentials and
-models are explicitly configured. No win rate or profit is guaranteed.
+in the current Eightcap configuration Claude is a mandatory fail-closed veto
+immediately before an executable proposal can become an order. No win rate or
+profit is guaranteed.
 
 ## Historical validation
 

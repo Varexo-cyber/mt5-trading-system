@@ -8,3 +8,13 @@ instruments:
   symbol_suffix: ".i"
   symbol_overrides:
     XAUUSD: XAUUSD
+
+# Experimental live uses Claude as a mandatory final veto gate. The API key
+# remains local in config/.env and is never committed or sent to the dashboard.
+ai:
+  enabled: true
+  provider: anthropic
+  anthropic_model: claude-sonnet-4-6
+  minimum_confidence: 0.65
+  timeout_seconds: 30
+  fail_closed: true

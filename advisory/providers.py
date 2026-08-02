@@ -1,11 +1,12 @@
-"""Bounded LLM second opinions over structured evidence, never chart screenshots."""
+"""Fail-closed LLM second opinions over bounded, structured market evidence."""
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from analysis.confluence import TradeIdea
 from config.schema import AIConfig
@@ -19,15 +20,50 @@ class Advice:
     thesis: str
     risks: tuple[str, ...] = ()
     provider: str = "disabled"
+    model: str = ""
+    request_id: str = ""
+    error: str = ""
+
+    def safe_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class Reflection:
+    summary: str
+    lessons: tuple[str, ...] = ()
+    process_flags: tuple[str, ...] = ()
+    provider: str = "disabled"
+    model: str = ""
+    request_id: str = ""
+    error: str = ""
+
+    def safe_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 class Advisor(Protocol):
-    def review(self, idea: TradeIdea, context: MarketContext) -> Advice: ...
+    def review(
+        self,
+        idea: TradeIdea,
+        context: MarketContext,
+        proposal: Mapping[str, object] | None = None,
+    ) -> Advice: ...
+
+    def reflect(self, outcome: Mapping[str, object]) -> Reflection: ...
 
 
 class DisabledAdvisor:
-    def review(self, _idea: TradeIdea, _context: MarketContext) -> Advice:
+    def review(
+        self,
+        _idea: TradeIdea,
+        _context: MarketContext,
+        _proposal: Mapping[str, object] | None = None,
+    ) -> Advice:
         return Advice(True, 1.0, "AI advisory disabled", provider="disabled")
+
+    def reflect(self, _outcome: Mapping[str, object]) -> Reflection:
+        return Reflection("AI advisory disabled", provider="disabled")
 
 
 class OpenAIAdvisor:
@@ -38,21 +74,59 @@ class OpenAIAdvisor:
         self.model = config.openai_model
         self.minimum = config.minimum_confidence
 
-    def review(self, idea: TradeIdea, context: MarketContext) -> Advice:
-        response = self.client.responses.create(
-            model=self.model,
-            instructions=_INSTRUCTIONS,
-            input=json.dumps(_payload(idea, context)),
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "trade_review",
-                    "strict": True,
-                    "schema": _SCHEMA,
-                }
-            },
-        )
-        return _parse(response.output_text, "openai", self.minimum)
+    def review(
+        self,
+        idea: TradeIdea,
+        context: MarketContext,
+        proposal: Mapping[str, object] | None = None,
+    ) -> Advice:
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                instructions=_REVIEW_INSTRUCTIONS,
+                input=_dumps(_payload(idea, context, proposal)),
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "trade_review",
+                        "strict": True,
+                        "schema": _REVIEW_SCHEMA,
+                    }
+                },
+            )
+            return _parse_review(
+                response.output_text,
+                "openai",
+                self.model,
+                self.minimum,
+                getattr(response, "_request_id", "") or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - an unavailable adviser must veto, not crash
+            return _failed_advice("openai", self.model, exc)
+
+    def reflect(self, outcome: Mapping[str, object]) -> Reflection:
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                instructions=_REFLECTION_INSTRUCTIONS,
+                input=_dumps(dict(outcome)),
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "trade_reflection",
+                        "strict": True,
+                        "schema": _REFLECTION_SCHEMA,
+                    }
+                },
+            )
+            return _parse_reflection(
+                response.output_text,
+                "openai",
+                self.model,
+                getattr(response, "_request_id", "") or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - reflection cannot affect already-closed risk
+            return _failed_reflection("openai", self.model, exc)
 
 
 class AnthropicAdvisor:
@@ -61,29 +135,115 @@ class AnthropicAdvisor:
 
         if not config.anthropic_model:
             raise RuntimeError("ai.anthropic_model must be configured")
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        self.client = anthropic.Anthropic(
+            api_key=os.environ["ANTHROPIC_API_KEY"],
+            timeout=config.timeout_seconds,
+            max_retries=1,
+        )
         self.model = config.anthropic_model
         self.minimum = config.minimum_confidence
-        self.timeout = config.timeout_seconds
 
-    def review(self, idea: TradeIdea, context: MarketContext) -> Advice:
-        message = self.client.messages.create(
-            model=self.model,
-            max_tokens=500,
-            system=_INSTRUCTIONS + " Return only JSON matching: " + json.dumps(_SCHEMA),
-            messages=[{"role": "user", "content": json.dumps(_payload(idea, context))}],
-            timeout=self.timeout,
-        )
-        text = "".join(block.text for block in message.content if hasattr(block, "text"))
-        return _parse(text, "anthropic", self.minimum)
+    def review(
+        self,
+        idea: TradeIdea,
+        context: MarketContext,
+        proposal: Mapping[str, object] | None = None,
+    ) -> Advice:
+        try:
+            message = self.client.messages.create(
+                model=self.model,
+                max_tokens=600,
+                temperature=0,
+                system=_REVIEW_INSTRUCTIONS + " Return only one JSON object matching the schema.",
+                output_config={
+                    "format": {
+                        "type": "json_schema",
+                        "schema": _anthropic_schema(_REVIEW_SCHEMA),
+                    }
+                },
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _dumps(
+                            {
+                                "schema": _REVIEW_SCHEMA,
+                                "trade_candidate": _payload(idea, context, proposal),
+                            }
+                        ),
+                    }
+                ],
+            )
+            request_id = getattr(message, "_request_id", "") or ""
+            if getattr(message, "stop_reason", "") != "end_turn":
+                return Advice(
+                    False,
+                    0.0,
+                    "Claude response did not finish normally",
+                    provider="anthropic",
+                    model=self.model,
+                    request_id=request_id,
+                    error="incomplete_response",
+                )
+            text = "".join(block.text for block in message.content if hasattr(block, "text"))
+            return _parse_review(
+                text,
+                "anthropic",
+                self.model,
+                self.minimum,
+                request_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - API/auth/timeout/rate limit must all veto
+            return _failed_advice("anthropic", self.model, exc)
+
+    def reflect(self, outcome: Mapping[str, object]) -> Reflection:
+        try:
+            message = self.client.messages.create(
+                model=self.model,
+                max_tokens=500,
+                temperature=0,
+                system=_REFLECTION_INSTRUCTIONS
+                + " Return only one JSON object matching the schema.",
+                output_config={
+                    "format": {
+                        "type": "json_schema",
+                        "schema": _anthropic_schema(_REFLECTION_SCHEMA),
+                    }
+                },
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _dumps(
+                            {"schema": _REFLECTION_SCHEMA, "closed_trade": dict(outcome)}
+                        ),
+                    }
+                ],
+            )
+            request_id = getattr(message, "_request_id", "") or ""
+            if getattr(message, "stop_reason", "") != "end_turn":
+                return Reflection(
+                    "Claude reflection did not finish normally",
+                    provider="anthropic",
+                    model=self.model,
+                    request_id=request_id,
+                    error="incomplete_response",
+                )
+            text = "".join(block.text for block in message.content if hasattr(block, "text"))
+            return _parse_reflection(text, "anthropic", self.model, request_id)
+        except Exception as exc:  # noqa: BLE001 - trade is already closed; retain the failure only
+            return _failed_reflection("anthropic", self.model, exc)
 
 
 class ConsensusAdvisor:
     def __init__(self, advisors: list[Advisor]) -> None:
         self.advisors = advisors
 
-    def review(self, idea: TradeIdea, context: MarketContext) -> Advice:
-        answers = [advisor.review(idea, context) for advisor in self.advisors]
+    def review(
+        self,
+        idea: TradeIdea,
+        context: MarketContext,
+        proposal: Mapping[str, object] | None = None,
+    ) -> Advice:
+        answers = [advisor.review(idea, context, proposal) for advisor in self.advisors]
         approved = bool(answers) and all(answer.approved for answer in answers)
         confidence = min((answer.confidence for answer in answers), default=0.0)
         return Advice(
@@ -92,6 +252,17 @@ class ConsensusAdvisor:
             " | ".join(answer.thesis for answer in answers),
             tuple(risk for answer in answers for risk in answer.risks),
             "consensus",
+            error=" | ".join(answer.error for answer in answers if answer.error),
+        )
+
+    def reflect(self, outcome: Mapping[str, object]) -> Reflection:
+        answers = [advisor.reflect(outcome) for advisor in self.advisors]
+        return Reflection(
+            " | ".join(answer.summary for answer in answers),
+            tuple(lesson for answer in answers for lesson in answer.lessons),
+            tuple(flag for answer in answers for flag in answer.process_flags),
+            "consensus",
+            error=" | ".join(answer.error for answer in answers if answer.error),
         )
 
 
@@ -105,12 +276,45 @@ def build_advisor(config: AIConfig) -> Advisor:
             return AnthropicAdvisor(config)
         return ConsensusAdvisor([OpenAIAdvisor(config), AnthropicAdvisor(config)])
     except (ImportError, KeyError) as exc:
+        missing = type(exc).__name__
         raise RuntimeError(
-            f"AI enabled but provider dependency/credential is missing: {exc}"
+            f"AI enabled but provider dependency/credential is missing ({missing})"
         ) from exc
 
 
-def _payload(idea: TradeIdea, context: MarketContext) -> dict[str, object]:
+def _payload(
+    idea: TradeIdea,
+    context: MarketContext,
+    proposal: Mapping[str, object] | None,
+) -> dict[str, object]:
+    timeframes: dict[str, object] = {}
+    for timeframe, series in context.series.items():
+        bars: list[dict[str, object]] = []
+        for index, row in series.df.tail(3).iterrows():
+            timestamp = index.to_pydatetime() if hasattr(index, "to_pydatetime") else index
+            bars.append(
+                {
+                    "time": timestamp.isoformat(),
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "tick_volume": int(row.get("tick_volume", 0)),
+                }
+            )
+        timeframes[timeframe.value] = {
+            "closed_bars": bars,
+            "sample_size": len(series),
+            "last_closed_bar": series.last_bar_time.isoformat(),
+        }
+    tick = None
+    if context.tick is not None:
+        tick = {
+            "time": context.tick.time.isoformat(),
+            "bid": context.tick.bid,
+            "ask": context.tick.ask,
+            "spread": context.tick.spread,
+        }
     return {
         "symbol": idea.symbol,
         "direction": idea.direction.name if idea.direction else None,
@@ -120,32 +324,136 @@ def _payload(idea: TradeIdea, context: MarketContext) -> dict[str, object]:
         "stop_loss": idea.stop_loss,
         "take_profit": idea.take_profit,
         "modules": [asdict(signal) for signal in idea.signals],
-        "available_timeframes": [timeframe.value for timeframe in context.series],
-        "rule": "May veto only. Never change size, stop, target, risk, or hard filters.",
+        "timeframes": timeframes,
+        "decision_tick": tick,
+        "executable_proposal": dict(proposal or {}),
+        "rule": "Veto or approve only. Never change size, stop, target, risk, or hard filters.",
     }
 
 
-def _parse(text: str, provider: str, minimum: float) -> Advice:
+def _parse_review(
+    text: str,
+    provider: str,
+    model: str,
+    minimum: float,
+    request_id: str,
+) -> Advice:
     try:
-        payload = json.loads(text)
+        payload = json.loads(text.strip())
+        approve = payload["approve"]
+        if not isinstance(approve, bool):
+            raise TypeError("approve must be boolean")  # noqa: TRY301
         confidence = float(payload["confidence"])
-        approved = bool(payload["approve"]) and confidence >= minimum
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence outside [0, 1]")  # noqa: TRY301
+        thesis = str(payload["thesis"]).strip()
+        risks = payload["risks"]
+        if not thesis or not isinstance(risks, list):
+            raise TypeError("thesis/risks have invalid types")  # noqa: TRY301
         return Advice(
-            approved,
+            approve and confidence >= minimum,
             confidence,
-            str(payload["thesis"]),
-            tuple(str(item) for item in payload["risks"]),
+            thesis,
+            tuple(str(item) for item in risks),
             provider,
+            model,
+            request_id,
         )
-    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        return Advice(False, 0.0, f"invalid {provider} response: {exc}", provider=provider)
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return Advice(
+            False,
+            0.0,
+            f"Invalid {provider} review; trade vetoed",
+            provider=provider,
+            model=model,
+            request_id=request_id,
+            error="invalid_response",
+        )
 
 
-_INSTRUCTIONS = """You are a conservative trade-review committee. Review only the supplied
-closed-bar evidence. Veto if evidence conflicts, data is insufficient, the rationale is circular,
-or regime risk is material. You may not propose a different trade or relax any rule."""
+def _parse_reflection(text: str, provider: str, model: str, request_id: str) -> Reflection:
+    try:
+        payload = json.loads(text.strip())
+        summary = str(payload["summary"]).strip()
+        lessons = payload["lessons"]
+        process_flags = payload["process_flags"]
+        if not summary or not isinstance(lessons, list) or not isinstance(process_flags, list):
+            raise TypeError("reflection fields have invalid types")  # noqa: TRY301
+        return Reflection(
+            summary,
+            tuple(str(item) for item in lessons),
+            tuple(str(item) for item in process_flags),
+            provider,
+            model,
+            request_id,
+        )
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return Reflection(
+            f"Invalid {provider} reflection",
+            provider=provider,
+            model=model,
+            request_id=request_id,
+            error="invalid_response",
+        )
 
-_SCHEMA = {
+
+def _failed_advice(provider: str, model: str, exc: Exception) -> Advice:
+    error = _safe_error(exc)
+    return Advice(
+        False,
+        0.0,
+        f"{provider} unavailable; trade vetoed",
+        provider=provider,
+        model=model,
+        error=error,
+    )
+
+
+def _failed_reflection(provider: str, model: str, exc: Exception) -> Reflection:
+    return Reflection(
+        f"{provider} reflection unavailable",
+        provider=provider,
+        model=model,
+        error=_safe_error(exc),
+    )
+
+
+def _safe_error(exc: Exception) -> str:
+    """Return diagnostics without serialising exception text or request headers."""
+    status = getattr(exc, "status_code", None)
+    suffix = f":http_{status}" if isinstance(status, int) else ""
+    return f"{type(exc).__name__}{suffix}"
+
+
+def _dumps(payload: Any) -> str:
+    return json.dumps(payload, separators=(",", ":"), default=str, ensure_ascii=False)
+
+
+def _anthropic_schema(value: Any) -> Any:
+    """Remove unsupported raw-schema constraints; local parsing enforces them."""
+    if isinstance(value, dict):
+        return {
+            key: _anthropic_schema(item)
+            for key, item in value.items()
+            if key not in {"minimum", "maximum", "minLength", "maxLength"}
+        }
+    if isinstance(value, list):
+        return [_anthropic_schema(item) for item in value]
+    return value
+
+
+_REVIEW_INSTRUCTIONS = """You are the final conservative veto gate for a small real-money
+trading experiment. Review only the supplied closed-bar evidence and executable proposal. Veto
+when evidence conflicts, data is insufficient, the rationale is circular, the market regime is
+unclear, or the proposal appears stale. Hard filters and sizing already ran. You may not suggest a
+different trade, change volume, stop, target, risk, or relax any rule. Never infer missing data."""
+
+_REFLECTION_INSTRUCTIONS = """Review one closed trade as a process auditor. Separate outcome luck
+from decision quality. Identify evidence-supported lessons and process flags only. Never recommend
+raising risk, martingale, averaging down, grid trading, or changing production parameters. This
+reflection is logged for research and cannot directly modify the trading system."""
+
+_REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
         "approve": {"type": "boolean"},
@@ -154,5 +462,16 @@ _SCHEMA = {
         "risks": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["approve", "confidence", "thesis", "risks"],
+    "additionalProperties": False,
+}
+
+_REFLECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "lessons": {"type": "array", "items": {"type": "string"}},
+        "process_flags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "lessons", "process_flags"],
     "additionalProperties": False,
 }

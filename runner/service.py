@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
-from advisory import build_advisor
+from advisory import Advice, Advisor, AIReviewLedger, DisabledAdvisor, build_advisor
 from analysis import (
     ConfluenceEngine,
     LevelReaction,
@@ -82,6 +82,7 @@ class JarvisRunner:
         settings: Settings,
         root: Path,
         operation: OperationMode = OperationMode.MONITOR,
+        advisor: Advisor | None = None,
     ) -> None:
         self.root = root
         self.operation = operation
@@ -111,7 +112,8 @@ class JarvisRunner:
         )
         self.shadow = ShadowRecorder(root)
         self.shadow_engine = self._shadow_engine()
-        self.advisor = build_advisor(self.settings.ai)
+        self.advisor = advisor or build_advisor(self.settings.ai)
+        self.ai_ledger = AIReviewLedger(root / "runtime" / "ai_reviews.jsonl")
         self.cursor = self._load_cursor()
         self.operation_ledger = OperationLedger(root / "runtime" / "operation_history.json")
         self.experimental_contract: ExperimentalLiveContract | None = None
@@ -125,6 +127,7 @@ class JarvisRunner:
             elif self.operation is OperationMode.EXPERIMENTAL_LIVE:
                 contract = ExperimentalLiveContract.load(contract_path(self.root))
                 contract.assert_compatible(account, self.settings)
+                self._assert_ai_gate()
                 self.experimental_contract = contract
         except Exception:
             self.broker.shutdown()
@@ -271,19 +274,6 @@ class JarvisRunner:
             )
             return False
 
-        advice = self.advisor.review(idea, context)
-        if not advice.approved:
-            self._record_skip(
-                cycle_id,
-                symbol,
-                account.equity,
-                Reason.AI_VETO,
-                advice.thesis,
-                signals=list(idea.signals),
-                extra={"ai_provider": advice.provider, "ai_risks": advice.risks},
-            )
-            return False
-
         spec = self.broker.spec(symbol)
         state = self.risk.build_state(account, positions)
         risk_decision = self.risk.evaluate(state, symbol, spec)
@@ -360,9 +350,69 @@ class JarvisRunner:
             return False
         self.risk.assert_not_forbidden(sizing, state)
 
+        proposal = {
+            "operation": self.operation.value,
+            "account_currency": account.currency,
+            "equity": account.equity,
+            "margin_free": account.margin_free,
+            "sizing": sizing.journal_row(),
+            "filters": filter_data,
+            "open_positions": len(positions),
+            "quote_age_seconds": (
+                max(0.0, (context.now - context.tick.time).total_seconds())
+                if context.tick is not None
+                else None
+            ),
+        }
+        advice = (
+            Advice(True, 1.0, "Monitor mode does not request paid AI review", provider="monitor")
+            if self.operation is OperationMode.MONITOR
+            else self.advisor.review(idea, context, proposal)
+        )
+        try:
+            self.ai_ledger.append(
+                "pretrade_review",
+                {
+                    "cycle_id": cycle_id,
+                    "symbol": symbol,
+                    "direction": idea.direction.name,
+                    "proposal": proposal,
+                    "decision": advice.safe_dict(),
+                },
+            )
+        except OSError:
+            advice = Advice(
+                False,
+                0.0,
+                "AI review audit could not be persisted; trade vetoed",
+                provider=advice.provider,
+                model=advice.model,
+                request_id=advice.request_id,
+                error="audit_write_failed",
+            )
+        ai_data = {
+            "ai_provider": advice.provider,
+            "ai_model": advice.model,
+            "ai_confidence": advice.confidence,
+            "ai_risks": advice.risks,
+            "ai_request_id": advice.request_id,
+            "ai_error": advice.error,
+        }
+        if not advice.approved:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AI_VETO,
+                advice.thesis,
+                signals=list(idea.signals),
+                extra={**filter_data, **ai_data},
+            )
+            return False
+
         cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
-            context=CycleContext(symbol, account.equity, extra=filter_data),
+            context=CycleContext(symbol, account.equity, extra={**filter_data, **ai_data}),
             reason=Reason.OK,
             detail=idea.reason,
             traded=self.operation is not OperationMode.MONITOR,
@@ -450,6 +500,13 @@ class JarvisRunner:
                 equity_after=self.broker.account().equity,
                 closed_at=closed.closed_at,
             )
+            self._reflect_closed_trade(
+                row,
+                exit_price=closed.exit_price,
+                pnl_money=closed.pnl_money,
+                exit_reason=reason,
+                closed_at=closed.closed_at,
+            )
             self.alerts.send(
                 f"Paper position #{position.ticket} closed {reason}: "
                 f"{closed.pnl_money:+.2f} {self.broker.account().currency}"
@@ -481,6 +538,13 @@ class JarvisRunner:
                     equity_after=self.broker.account().equity,
                     closed_at=event.closed_at,
                 )
+                self._reflect_closed_trade(
+                    row,
+                    exit_price=event.exit_price,
+                    pnl_money=event.pnl_money,
+                    exit_reason=event.action,
+                    closed_at=event.closed_at,
+                )
                 self.alerts.send(
                     f"Position #{event.ticket} closed ({event.action}): "
                     f"{event.pnl_money:+.2f} {self.broker.account().currency}"
@@ -502,6 +566,55 @@ class JarvisRunner:
             )
         if self.operation in {OperationMode.LIVE, OperationMode.EXPERIMENTAL_LIVE} and is_demo:
             raise RuntimeError("LIVE_ACCOUNT_REQUIRED: live mode cannot run on a demo account")
+
+    def _assert_ai_gate(self) -> None:
+        if isinstance(self.advisor, DisabledAdvisor):
+            raise RuntimeError(  # noqa: TRY004 - runtime readiness, not caller type
+                "EXPERIMENTAL_LIVE_REQUIRES_AI: configured adviser is disabled or unavailable"
+            )
+
+    def _reflect_closed_trade(
+        self,
+        row,  # type: ignore[no-untyped-def]
+        *,
+        exit_price: float,
+        pnl_money: float,
+        exit_reason: str,
+        closed_at: datetime | None,
+    ) -> None:
+        if isinstance(self.advisor, DisabledAdvisor):
+            return
+        risk_money = float(row["risk_money"])
+        outcome = {
+            "trade_id": int(row["id"]),
+            "ticket": int(row["ticket"]) if row["ticket"] is not None else None,
+            "symbol": str(row["symbol"]),
+            "direction": str(row["direction"]),
+            "volume": float(row["volume"]),
+            "entry_price": float(row["entry_price"]),
+            "stop_loss": float(row["sl"]),
+            "take_profit": float(row["tp"]),
+            "planned_risk_money": risk_money,
+            "planned_risk_pct": float(row["risk_pct"]),
+            "planned_reward_risk": float(row["planned_rr"]),
+            "exit_price": exit_price,
+            "pnl_money": pnl_money,
+            "pnl_r": pnl_money / risk_money if risk_money > 0 else 0.0,
+            "exit_reason": exit_reason,
+            "opened_at": str(row["opened_at"]),
+            "closed_at": closed_at.isoformat() if closed_at is not None else None,
+        }
+        reflection = self.advisor.reflect(outcome)
+        try:
+            self.ai_ledger.append(
+                "posttrade_reflection",
+                {"outcome": outcome, "reflection": reflection.safe_dict()},
+            )
+        except OSError:
+            log.exception(
+                "failed to persist AI post-trade reflection",
+                extra={"event": "ai_reflection_audit_failed", "trade_id": int(row["id"])},
+            )
 
     @staticmethod
     def _settings_for_operation(settings: Settings, operation: OperationMode) -> Settings:
