@@ -495,13 +495,16 @@ try:
         if st.button(
             stop_label,
             type="primary",
-            disabled=stopped,
             width="stretch",
         ):
-            kill_switch.engage("operator dashboard emergency stop")
-            st.session_state["control_notice"] = (
-                "Hard STOP engaged. Jarvis is blocking entries and flattening its own positions."
-            )
+            if stopped:
+                st.session_state["control_notice"] = "Hard STOP is already engaged."
+            else:
+                kill_switch.engage("operator dashboard emergency stop")
+                st.session_state["control_notice"] = (
+                    "Hard STOP engaged. Jarvis is blocking entries and flattening its own "
+                    "positions."
+                )
             st.rerun()
         start_monitor, start_paper, start_demo, start_experimental = st.columns(4)
         creation_flags = (
@@ -509,9 +512,10 @@ try:
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
-        if start_monitor.button("Start MONITOR", disabled=running or stopped, width="stretch"):
+
+        def launch_mode(operation: str) -> None:
             subprocess.Popen(
-                [sys.executable, str(ROOT / "jarvis.py"), "--operation", "monitor"],
+                [sys.executable, str(ROOT / "jarvis.py"), "--operation", operation],
                 cwd=ROOT,
                 creationflags=creation_flags,
                 close_fds=True,
@@ -519,22 +523,27 @@ try:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+
+        def attempt_start(operation: str, blockers: list[str]) -> None:
+            if blockers:
+                st.session_state["control_error"] = "Cannot start: " + "; ".join(blockers)
+            else:
+                launch_mode(operation)
+                st.session_state["control_notice"] = f"Jarvis {operation.upper()} started."
             st.rerun()
-        if start_paper.button("Start PAPER", disabled=running or stopped, width="stretch"):
-            subprocess.Popen(
-                [sys.executable, str(ROOT / "jarvis.py"), "--operation", "paper"],
-                cwd=ROOT,
-                creationflags=creation_flags,
-                close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            st.rerun()
-        demo_disabled = running or stopped or not account.is_demo
+
+        common_start_blockers = []
+        if stopped:
+            common_start_blockers.append("hard STOP is active; use the reset form below")
+        if running:
+            common_start_blockers.append(f"Jarvis is already running as PID {running_pid}")
+
+        if start_monitor.button("Start MONITOR", width="stretch"):
+            attempt_start("monitor", [*common_start_blockers])
+        if start_paper.button("Start PAPER", width="stretch"):
+            attempt_start("paper", [*common_start_blockers])
         if start_demo.button(
             "Start DEMO",
-            disabled=demo_disabled,
             help=(
                 "Log MT5 into a demo account first; the runner hard-refuses DEMO on live."
                 if not account.is_demo
@@ -542,27 +551,12 @@ try:
             ),
             width="stretch",
         ):
-            subprocess.Popen(
-                [sys.executable, str(ROOT / "jarvis.py"), "--operation", "demo"],
-                cwd=ROOT,
-                creationflags=creation_flags,
-                close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            st.rerun()
-        experimental_disabled = (
-            running
-            or stopped
-            or account.is_demo
-            or experimental_contract is None
-            or bool(experimental_error)
-            or not ai_ready
-        )
+            demo_blockers = [*common_start_blockers]
+            if not account.is_demo:
+                demo_blockers.append("MT5 is logged into a live account, not demo")
+            attempt_start("demo", demo_blockers)
         if start_experimental.button(
             "Start EXPERIMENTAL LIVE",
-            disabled=experimental_disabled,
             help=(
                 (
                     "Claude gate is not ready; live starts fail closed."
@@ -575,21 +569,16 @@ try:
             type="primary",
             width="stretch",
         ):
-            subprocess.Popen(
-                [
-                    sys.executable,
-                    str(ROOT / "jarvis.py"),
-                    "--operation",
-                    "experimental_live",
-                ],
-                cwd=ROOT,
-                creationflags=creation_flags,
-                close_fds=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            st.rerun()
+            experimental_blockers = [*common_start_blockers]
+            if account.is_demo:
+                experimental_blockers.append("MT5 is logged into a demo account")
+            if experimental_contract is None or experimental_error:
+                experimental_blockers.append(
+                    experimental_error or "experimental contract is unavailable"
+                )
+            if not ai_ready:
+                experimental_blockers.append("Claude API gate is not ready")
+            attempt_start("experimental_live", experimental_blockers)
         with st.form("stop_reset_and_start", border=True):
             st.subheader("STOP resetten of Jarvis opnieuw starten")
             confirmation = st.text_input(
