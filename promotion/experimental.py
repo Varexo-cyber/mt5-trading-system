@@ -12,7 +12,22 @@ from core.types import AccountSnapshot, TradingMode
 
 EXPERIMENTAL_LIVE_FILENAME = "EXPERIMENTAL_LIVE.json"
 EXPERIMENTAL_LIVE_PHRASE = "BEVESTIG EXPERIMENTEEL LIVE"
-EXPERIMENTAL_RISK_PER_TRADE_PCT = 1.0
+# 2%, not 1%, and the reason is arithmetic rather than appetite.
+#
+# At EUR 100 the sizer reported: "1.00% of 100.00 is 1.00, which buys 0.0077
+# lots" against a broker minimum of 0.01. Every setup was refused as
+# TRADE_SKIPPED_UNDERCAPITALIZED — correctly, because rounding up to the minimum
+# lot would have risked more than the rule allows. One percent of one hundred
+# euro cannot express a trade on this broker at all, so the experiment could
+# never produce a single observation.
+#
+# Two percent doubles that to 0.0154 lots, which rounds *down* to 0.01 and fits.
+# It is the smallest number that makes the experiment possible, and it stays
+# inside the 2% ceiling `micro_live` already declared, so no limit is being
+# raised to accommodate it. The 15% drawdown floor is unchanged: at 2% a losing
+# run still ends the experiment after roughly seven or eight trades, which is
+# the protection that actually matters here.
+EXPERIMENTAL_RISK_PER_TRADE_PCT = 2.0
 EXPERIMENTAL_MAX_DRAWDOWN_PCT = 15.0
 
 

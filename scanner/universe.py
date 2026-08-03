@@ -9,6 +9,7 @@ import pandas as pd
 
 from config.schema import Settings
 from core.broker import Broker
+from core.clock import Clock, LiveClock
 from core.instrument import AssetClass
 from core.types import SymbolDescriptor, Timeframe
 
@@ -69,9 +70,16 @@ class ScanBatch:
 class UniverseScanner:
     """Cheaply rank one rotating batch; deep analysis runs only on its winners."""
 
-    def __init__(self, broker: Broker, settings: Settings) -> None:
+    def __init__(self, broker: Broker, settings: Settings, clock: Clock | None = None) -> None:
         self.broker = broker
         self.settings = settings
+        # The scanner used `datetime.now(UTC)` directly, against the project rule
+        # that nothing outside `core.clock` reads the wall clock. It is not
+        # cosmetic: quote age is measured against this, so under a simulated
+        # clock every symbol was "stale, market may be closed" and the scanner
+        # could not be tested at all. That is how the deep-analysis stage went
+        # unexamined for so long.
+        self.clock: Clock = clock or LiveClock()
 
     def catalogue(self) -> list[SymbolDescriptor]:
         supported = {asset.value for asset in AssetClass if asset is not AssetClass.UNKNOWN}
@@ -123,7 +131,7 @@ class UniverseScanner:
         )
 
     def _inspect(self, descriptor: SymbolDescriptor) -> tuple[ScanCandidate | None, ScanInspection]:
-        inspected_at = datetime.now(UTC)
+        inspected_at = self.clock.now()
         path_class = self._path_class(descriptor.path)
 
         def reject(

@@ -11,6 +11,7 @@ from config.schema import MT5Config
 from core.mt5_connector import MT5Connector
 from core.types import AccountSnapshot
 from promotion.experimental import (
+    EXPERIMENTAL_RISK_PER_TRADE_PCT,
     ExperimentalLiveContract,
     apply_experimental_live_limits,
     contract_path,
@@ -87,8 +88,10 @@ def test_experimental_settings_fix_risk_without_promoting_modules() -> None:
     original = load_settings(env_overrides=False)
     experimental = apply_experimental_live_limits(original)
 
-    assert experimental.effective_risk_pct() == 1.0
-    assert experimental.effective_max_risk_pct() == 1.0
+    # 2%, because 1% of EUR 100 buys 0.0077 lots against a 0.01 minimum and
+    # therefore cannot express a trade at all. See EXPERIMENTAL_RISK_PER_TRADE_PCT.
+    assert experimental.effective_risk_pct() == EXPERIMENTAL_RISK_PER_TRADE_PCT
+    assert experimental.effective_max_risk_pct() == EXPERIMENTAL_RISK_PER_TRADE_PCT
     assert experimental.risk.max_drawdown_circuit_breaker_pct == 15.0
 
     # Whatever the shipped config says is what live gets — no more, no less.
@@ -152,7 +155,7 @@ def test_experimental_runner_connects_without_sending_an_order(tmp_path: Path) -
     runner.connect()
     try:
         assert runner.experimental_contract is not None
-        assert runner.settings.effective_risk_pct() == 1.0
+        assert runner.settings.effective_risk_pct() == EXPERIMENTAL_RISK_PER_TRADE_PCT
         assert not fake.orders_sent
     finally:
         runner.close()
