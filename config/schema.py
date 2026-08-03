@@ -157,6 +157,23 @@ class InstrumentsConfig(Base):
     #: arithmetic cannot see: no reliable data, exotic settlement, known bad
     #: fills. Matched on the canonical name.
     blocklist: tuple[str, ...] = ()
+    #: Asset classes the scanner will look at. Empty means all of them.
+    #:
+    #: This is a horizon control, not a quality one. The stop is 1.5 ATR and the
+    #: target twice that, so in *market hours* every class reaches its target in
+    #: roughly the same time. What differs is how many hours a week the market
+    #: is open to travel it: FX and metals run 120 hours, a London or Milan
+    #: share 42. The same setup therefore takes about two calendar days on
+    #: EURUSD and over six on CRDA — and with two position slots, a six-day
+    #: trade ties up half the account's capacity for a week.
+    #:
+    #: Values: forex, metal, index, commodity, stock, crypto.
+    asset_classes: tuple[str, ...] = ()
+    #: Restrict the scan to exactly these symbols, before the suffix is applied.
+    #: Empty means the whole catalogue. Use it to watch one instrument closely
+    #: rather than to express a preference — everything else stops being looked
+    #: at, including better setups elsewhere.
+    symbols_only: tuple[str, ...] = ()
     #: Tradable symbols per mode. Under ``whitelist`` this is the hard gate;
     #: under ``affordable`` it is what the startup report describes.
     whitelist: dict[str, tuple[str, ...]]
@@ -164,6 +181,17 @@ class InstrumentsConfig(Base):
     #: Gold and indices sit here because one minimum lot risks several percent
     #: of a small account before the setup is even considered.
     min_equity_for_symbol: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("asset_classes")
+    @classmethod
+    def _known_asset_classes(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        known = {"forex", "metal", "index", "commodity", "stock", "crypto"}
+        unknown = sorted(set(value) - known)
+        if unknown:
+            raise ValueError(
+                f"unknown instruments.asset_classes: {unknown}; known: {sorted(known)}"
+            )
+        return value
 
     @field_validator("whitelist")
     @classmethod

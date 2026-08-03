@@ -32,6 +32,27 @@ instruments:
   # the arithmetic actually says no.
   min_equity_for_symbol: {}
 
+  # WHICH MARKETS ARE LOOKED AT. Empty means everything; this is the one knob
+  # for how long a trade ties up a slot.
+  #
+  # The stop is 1.5 ATR and the target twice that, so measured in *market hours*
+  # every class reaches its target in about the same time. What differs is how
+  # many hours a week the market is open to travel it:
+  #
+  #     FX, metals, crypto   120 open hours/week  ->  ~2 calendar days to target
+  #     LSE / Milan shares    42 open hours/week  ->  ~6 calendar days
+  #
+  # With two position slots, a six-day trade holds half the account's capacity
+  # for a week. That is the real cost of the slow markets, not their quality.
+  #
+  # Values: forex, metal, index, commodity, stock, crypto.
+  asset_classes: [forex, metal, index]
+
+  # Or watch a single instrument. Leave empty for the list above; set e.g.
+  # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded
+  # stops being seen, including better setups elsewhere.
+  symbols_only: []
+
 data:
   # The full ladder, weekly down to one minute. The higher frames set bias, the
   # lower ones are what Claude reads for entry timing — and it uses them: two of

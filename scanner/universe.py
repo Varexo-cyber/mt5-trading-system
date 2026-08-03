@@ -82,9 +82,26 @@ class UniverseScanner:
         self.clock: Clock = clock or LiveClock()
 
     def catalogue(self) -> list[SymbolDescriptor]:
+        """Every broker symbol the operator has asked to look at.
+
+        Two optional narrowings, both off by default. `asset_classes` chooses
+        which kinds of market are scanned at all; `symbols_only` reduces it to a
+        named handful. Neither changes how anything is judged — they decide what
+        gets looked at, and everything they exclude simply never appears.
+        """
         supported = {asset.value for asset in AssetClass if asset is not AssetClass.UNKNOWN}
+        wanted = set(self.settings.instruments.asset_classes) or supported
+        chosen = self.settings.instruments.symbols_only
+        names = (
+            {self.settings.instruments.broker_symbol(name) for name in chosen} if chosen else set()
+        )
+
         return [
-            item for item in self.broker.symbols() if self._path_class(item.path).value in supported
+            item
+            for item in self.broker.symbols()
+            if self._path_class(item.path).value in supported
+            and self._path_class(item.path).value in wanted
+            and (not names or item.name in names)
         ]
 
     def scan(self, *, cursor: int = 0, batch_size: int | None = None, keep: int = 5) -> ScanBatch:
