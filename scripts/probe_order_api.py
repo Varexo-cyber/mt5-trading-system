@@ -1,0 +1,111 @@
+"""Find out how this MetaTrader5 build wants a trade request passed.
+
+Every order came back with no result at all and `[-2] Unnamed arguments not
+allowed`. That is not the broker refusing a trade — it is the MetaTrader5 Python
+extension refusing the *call*, before anything reaches Eightcap. The payload has
+been checked and every value is already an exact `int`, `float` or `str`, so
+what is left is the calling convention itself, and that varies between builds of
+the package.
+
+This asks the installed one directly. It uses `order_check`, which validates a
+request against the account and returns margin and balance figures — it never
+places, modifies or closes anything, so it is safe to run against the live
+account.
+
+    python scripts/probe_order_api.py
+    python scripts/probe_order_api.py --symbol XAUUSD
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from dotenv import load_dotenv
+
+from config.loader import load_credentials, load_settings, terminal_path_from_env
+from core.mt5_codes import OrderTime, OrderType, TradeAction
+from core.mt5_connector import MT5Connector
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--symbol", default="EURUSD.i")
+    args = parser.parse_args(argv)
+
+    load_dotenv(ROOT / "config" / ".env", override=False)
+    settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml")
+    connector = MT5Connector(
+        settings.mt5,
+        load_credentials(required=False),
+        terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
+    )
+    try:
+        account = connector.connect()
+        mt5 = connector.mt5
+        print(f"\nMetaTrader5 package: {getattr(mt5, '__version__', 'unknown')}")
+        print(f"account {account.login} @ {account.server}, equity {account.equity:.2f}\n")
+
+        spec = connector.spec(args.symbol)
+        tick = connector.tick(args.symbol)
+        price = tick.ask
+        # A stop far enough away that the request is valid on its own merits;
+        # this probe is about the call, not about whether the setup is good.
+        stop = spec.normalize_price(price - spec.pip_size * 50)
+
+        payload = {
+            "action": int(TradeAction.DEAL),
+            "symbol": args.symbol,
+            "volume": float(spec.volume_min),
+            "type": int(OrderType.BUY),
+            "price": float(price),
+            "sl": float(stop),
+            "tp": 0.0,
+            "deviation": 10,
+            "magic": int(settings.system.magic_number),
+            "comment": "probe",
+            "type_time": int(OrderTime.GTC),
+            "type_filling": int(spec.preferred_filling()),
+        }
+        print(
+            f"{args.symbol}: min volume {spec.volume_min}, step {spec.volume_step}, "
+            f"digits {spec.digits}, stops_level {spec.stops_level}, "
+            f"filling mask {spec.filling_mode_mask} -> {spec.preferred_filling().name}"
+        )
+        print(
+            f"probe request: volume {payload['volume']}, price {payload['price']}, "
+            f"sl {payload['sl']}\n"
+        )
+
+        for label, call in (
+            ("order_check(request)      ", lambda: mt5.order_check(payload)),
+            ("order_check(**request)    ", lambda: mt5.order_check(**payload)),
+        ):
+            try:
+                result = call()
+            except Exception as exc:  # noqa: BLE001 - the point is to see what breaks
+                print(f"  {label} raised {type(exc).__name__}: {exc}")
+                continue
+            if result is None:
+                print(f"  {label} returned None, last_error={mt5.last_error()}")
+            else:
+                print(
+                    f"  {label} OK  retcode={getattr(result, 'retcode', '?')} "
+                    f"comment={getattr(result, 'comment', '')!r} "
+                    f"margin={getattr(result, 'margin', '?')}"
+                )
+        print(
+            "\nWhichever line says OK is the convention this build wants. A retcode of 0"
+            "\nmeans the request itself is valid and only the call was wrong.\n"
+        )
+    finally:
+        connector.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
