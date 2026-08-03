@@ -189,6 +189,7 @@ class Recorder:
         entry_price: float,
         equity_before: float,
         opened_at: datetime | None = None,
+        entry_state: str = "OPEN",
     ) -> int:
         """Record an opened trade and return its id.
 
@@ -196,14 +197,18 @@ class Recorder:
         difference is slippage and is recorded separately on the order attempt.
         Using the requested price here would quietly flatter every R
         calculation for the life of the account.
+
+        `entry_state` is OPEN for a confirmed position. `record_entry_intent`
+        below uses PENDING to write the row *before* the order is sent.
         """
         now = opened_at or self.clock.now()
         cursor = self.journal.conn.execute(
             """
             INSERT INTO trades (
                 cycle_pk, ticket, magic, symbol, direction, volume, entry_price, sl, tp,
-                risk_money, risk_pct, sl_distance_pips, planned_rr, opened_at, equity_before
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                risk_money, risk_pct, sl_distance_pips, planned_rr, opened_at, equity_before,
+                entry_state
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 cycle_pk,
@@ -221,13 +226,14 @@ class Recorder:
                 sizing.reward_risk,
                 iso(now),
                 equity_before,
+                entry_state,
             ),
         )
         trade_id = int(cursor.lastrowid or 0)
         log.info(
-            "trade opened",
+            "trade opened" if entry_state == "OPEN" else "entry intent recorded",
             extra={
-                "event": "journal_trade_open",
+                "event": "journal_trade_open" if entry_state == "OPEN" else "journal_entry_intent",
                 "trade_id": trade_id,
                 "ticket": ticket,
                 "symbol": sizing.symbol,
@@ -237,6 +243,35 @@ class Recorder:
                 "risk_pct": round(sizing.actual_risk_pct, 4),
             },
         )
+        return trade_id
+
+    def record_entry_intent(
+        self,
+        *,
+        cycle_pk: int | None,
+        sizing: SizingResult,
+        equity_before: float,
+    ) -> int:
+        """Write down what is about to be sent, before sending it.
+
+        This is the durable half of closing the crash window. The row exists
+        with everything except the ticket, so if the process dies between
+        `order_send` and the confirmation the plan is still on disk and the
+        resulting position can be recognised rather than liquidated.
+
+        Committed immediately and deliberately: an intent still sitting in an
+        uncommitted transaction when the power goes out is not an intent, and
+        the whole point is to survive exactly that.
+        """
+        trade_id = self.record_trade_open(
+            cycle_pk=cycle_pk,
+            sizing=sizing,
+            ticket=None,
+            entry_price=sizing.entry,
+            equity_before=equity_before,
+            entry_state="PENDING",
+        )
+        self.journal.conn.commit()
         return trade_id
 
     def record_trade_close(
