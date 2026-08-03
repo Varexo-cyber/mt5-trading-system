@@ -141,3 +141,32 @@ ai:
   minimum_confidence: 0.55
   timeout_seconds: 60
   fail_closed: true
+
+# No cap on how many trades a good day may produce.
+#
+# The counter was never the thing protecting this account. At 2% risk against
+# micro_live's 4% daily stop the day halts after the second loser, so on a bad
+# day the count never gets a say — the loss limit has already stopped
+# everything. The only day a six-trade cap ever bit was a day that was going
+# well, which is exactly the day it should not.
+#
+# What still bounds an uncapped day, none of it changed: 2% fixed risk per
+# trade, the 4% daily stop, the 6% weekly stop, the 15% drawdown breaker, two
+# concurrent positions maximum, and the posture that raises the entry bar and
+# shortens the leash after losses. The setups also still have to survive every
+# filter and Claude's veto, which is what makes "more trades" mean "more good
+# trades" rather than "more trades".
+risk:
+  max_trades_per_day: 0
+  max_trades_per_week: 0
+
+modes:
+  micro_live:
+    max_risk_per_trade_pct: 2.0
+    max_sl_pips: 30
+    max_trades_per_day: 0
+    daily_loss_limit_pct: 4.0
+    max_concurrent_positions: 2
+    max_journal_detail: true
+    min_equity: 50
+    max_equity: 500

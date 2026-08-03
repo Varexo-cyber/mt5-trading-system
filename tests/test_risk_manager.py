@@ -14,7 +14,7 @@ import yaml
 from config.loader import DEFAULT_CONFIG_PATH, load_settings
 from config.schema import Settings
 from core.clock import SimulatedClock
-from core.errors import ForbiddenStrategyError
+from core.errors import ConfigError, ForbiddenStrategyError
 from core.instrument import InstrumentSpec
 from core.types import AccountSnapshot, Direction, Position
 from infra.killswitch import KillSwitch
@@ -562,3 +562,142 @@ def _record_losses(
 ) -> None:
     for _ in range(count):
         _record_trade(journal, clock, settings, spec, pnl=-100.0)
+
+
+class TestUnlimitedTradeCount:
+    """A count of zero removes the cap, and nothing else.
+
+    The counter was never the binding constraint: at 1% risk against a 3% daily
+    stop the day halts after the third loser, long before six trades. The only
+    day a count cap ever stopped was one that was going well.
+    """
+
+    def _recorder(self, journal: Journal, clock: SimulatedClock, settings: Settings) -> Recorder:
+        return Recorder(journal, clock, settings)
+
+    def _log_trades(
+        self,
+        journal: Journal,
+        clock: SimulatedClock,
+        settings: Settings,
+        spec: InstrumentSpec,
+        count: int,
+    ) -> None:
+        sizing = PositionSizer(settings).size(
+            spec=spec,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.08500,
+            sl=1.08300,
+            tp=1.09100,
+        )
+        recorder = self._recorder(journal, clock, settings)
+        for ticket in range(count):
+            recorder.record_trade_open(
+                cycle_pk=None,
+                sizing=sizing,
+                ticket=2000 + ticket,
+                entry_price=1.085,
+                equity_before=10_000.0,
+            )
+
+    def test_zero_means_no_daily_cap(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        settings = settings_for(
+            tmp_path,
+            raw,
+            **{
+                "system.mode": "scaling",
+                "risk.max_trades_per_day": 0,
+                "risk.max_trades_per_week": 0,
+                "modes.scaling.max_trades_per_day": 0,
+            },
+        )
+        manager = RiskManager(settings=settings, journal=journal, clock=clock)
+        spec = InstrumentSpec.from_mt5(eurusd_spec())
+        self._log_trades(journal, clock, settings, spec, 40)
+
+        state = manager.build_state(account(10_000.0))
+
+        assert state.trades_today == 40
+        assert manager.check_can_trade(state).approved
+
+    def test_the_daily_loss_limit_still_stops_a_bad_day(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """This is the protection the count cap was standing in for."""
+        settings = settings_for(
+            tmp_path,
+            raw,
+            **{
+                "system.mode": "scaling",
+                "risk.max_trades_per_day": 0,
+                "risk.max_trades_per_week": 0,
+                "modes.scaling.max_trades_per_day": 0,
+            },
+        )
+        manager = RiskManager(settings=settings, journal=journal, clock=clock)
+        manager.build_state(account(10_000.0))  # anchors the day at 10,000
+
+        # Down 5% against a 3% daily limit.
+        state = manager.build_state(account(9_500.0))
+
+        assert manager.check_can_trade(state).reason is Reason.DAILY_LOSS_LIMIT
+
+    def test_the_position_cap_still_binds(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        settings = settings_for(
+            tmp_path,
+            raw,
+            **{
+                "system.mode": "scaling",
+                "risk.max_trades_per_day": 0,
+                "risk.max_trades_per_week": 0,
+                "modes.scaling.max_trades_per_day": 0,
+            },
+        )
+        manager = RiskManager(settings=settings, journal=journal, clock=clock)
+        held = (position("EURUSD"), position("GBPUSD"))
+
+        state = manager.build_state(account(10_000.0), held)
+
+        assert manager.check_can_trade(state).reason is Reason.MAX_POSITIONS_REACHED
+
+    def test_a_capped_mode_under_an_uncapped_global_is_still_capped(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """Removing the global cap must not silently remove a mode's own."""
+        settings = settings_for(
+            tmp_path,
+            raw,
+            **{
+                "system.mode": "scaling",
+                "risk.max_trades_per_day": 0,
+                "risk.max_trades_per_week": 0,
+                "modes.scaling.max_trades_per_day": 3,
+            },
+        )
+        manager = RiskManager(settings=settings, journal=journal, clock=clock)
+        spec = InstrumentSpec.from_mt5(eurusd_spec())
+        self._log_trades(journal, clock, settings, spec, 3)
+
+        state = manager.build_state(account(10_000.0))
+
+        assert manager.check_can_trade(state).reason is Reason.MAX_TRADES_PER_DAY
+
+    def test_a_mode_cannot_go_uncapped_under_a_capped_global(
+        self, tmp_path: Path, raw: dict[str, Any]
+    ) -> None:
+        """A mode may only ever narrow the global ceiling, never escape it."""
+        with pytest.raises(ConfigError, match=r"exceeds risk\.max_trades_per_day"):
+            settings_for(
+                tmp_path,
+                raw,
+                **{
+                    "system.mode": "scaling",
+                    "risk.max_trades_per_day": 6,
+                    "modes.scaling.max_trades_per_day": 0,
+                },
+            )
