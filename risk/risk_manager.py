@@ -27,7 +27,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from config.schema import Settings
+from config.schema import UNLIMITED_TRADES, Settings
 from core.clock import Clock
 from core.errors import ForbiddenStrategyError
 from core.instrument import InstrumentSpec
@@ -251,15 +251,19 @@ class RiskManager:
                 f"paused until the next trading day",
             )
 
+        # Zero means no cap. The counter was always the crude proxy here: the
+        # loss limits above halt a bad day long before it could bite, so the
+        # only day a count cap ever stops is one that is going well. See
+        # `UNLIMITED_TRADES` in config.schema for the full argument.
         max_week = self.settings.risk.max_trades_per_week
-        if state.trades_this_week >= max_week:
+        if max_week != UNLIMITED_TRADES and state.trades_this_week >= max_week:
             return RiskDecision.block(
                 Reason.MAX_TRADES_PER_WEEK,
                 f"{state.trades_this_week} trades this week, limit {max_week}",
             )
 
         max_day = self.settings.effective_max_trades_per_day()
-        if state.trades_today >= max_day:
+        if max_day != UNLIMITED_TRADES and state.trades_today >= max_day:
             return RiskDecision.block(
                 Reason.MAX_TRADES_PER_DAY,
                 f"{state.trades_today} trades today, limit {max_day}",

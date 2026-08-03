@@ -238,14 +238,31 @@ class ForbiddenPractices(Base):
     trade_without_stop_loss: Literal[False] = False
 
 
+#: `max_trades_per_day` / `max_trades_per_week` set to this mean "no cap".
+#:
+#: Safe because the count was never the binding constraint. At 2% risk against a
+#: 3% daily loss limit the day halts after the second loser, so on a *bad* day
+#: the counter never gets a say — the loss limit has already stopped everything.
+#: The only day a count cap ever bites is a day that is going well, which is
+#: precisely the day it should not.
+#:
+#: What still bounds an uncapped day, all of it unchanged: the daily and weekly
+#: loss limits, the 15% drawdown breaker, the maximum concurrent positions, the
+#: fixed risk per trade, and the posture that raises the entry bar after losses.
+#: Removing the counter removes a crude proxy, not a protection.
+UNLIMITED_TRADES = 0
+
+
 class RiskConfig(Base):
     risk_per_trade_pct: Pct = 1.0
     #: Ceiling the sizer will never exceed regardless of setup quality.
     max_risk_per_trade_pct: Pct = 1.0
 
     max_concurrent_positions: int = Field(default=2, ge=1, le=10)
-    max_trades_per_day: int = Field(default=3, ge=1, le=50)
-    max_trades_per_week: int = Field(default=10, ge=1, le=200)
+    #: Trades a day, or 0 for no cap. See `UNLIMITED_TRADES` below for why 0 is
+    #: a defensible setting and not a hole in the risk model.
+    max_trades_per_day: int = Field(default=3, ge=0, le=50)
+    max_trades_per_week: int = Field(default=10, ge=0, le=200)
 
     #: All stated as POSITIVE percentages of equity; the manager applies sign.
     daily_loss_limit_pct: Pct = 3.0
@@ -285,7 +302,8 @@ class RiskConfig(Base):
             raise ValueError("weekly loss limit must be >= daily loss limit")
         if self.max_drawdown_circuit_breaker_pct <= self.weekly_loss_limit_pct:
             raise ValueError("circuit breaker must sit above the weekly loss limit")
-        if self.max_trades_per_week < self.max_trades_per_day:
+        capped = UNLIMITED_TRADES not in (self.max_trades_per_week, self.max_trades_per_day)
+        if capped and self.max_trades_per_week < self.max_trades_per_day:
             raise ValueError("max_trades_per_week must be >= max_trades_per_day")
         return self
 
@@ -307,7 +325,8 @@ class ModeLimits(Base):
 
     max_risk_per_trade_pct: Pct
     max_sl_pips: float = Field(gt=0)
-    max_trades_per_day: int = Field(ge=1)
+    #: 0 means no cap; see UNLIMITED_TRADES.
+    max_trades_per_day: int = Field(ge=0)
     daily_loss_limit_pct: Pct
     max_concurrent_positions: int = Field(ge=1)
     #: Log every returncode, price, slippage and latency. Costly, and the whole
@@ -706,10 +725,16 @@ class Settings(Base):
                     f"({limits.max_risk_per_trade_pct}%) exceeds the global ceiling "
                     f"risk.max_risk_per_trade_pct ({self.risk.max_risk_per_trade_pct}%)"
                 )
-            if limits.max_trades_per_day > self.risk.max_trades_per_day:
+            # An uncapped global ceiling cannot be exceeded by anything, and a
+            # mode asking for no cap under a capped global still has to obey it.
+            if self.risk.max_trades_per_day != UNLIMITED_TRADES and (
+                limits.max_trades_per_day == UNLIMITED_TRADES
+                or limits.max_trades_per_day > self.risk.max_trades_per_day
+            ):
                 raise ValueError(
-                    f"modes.{name}.max_trades_per_day ({limits.max_trades_per_day}) "
-                    f"exceeds risk.max_trades_per_day ({self.risk.max_trades_per_day})"
+                    f"modes.{name}.max_trades_per_day "
+                    f"({limits.max_trades_per_day or 'unlimited'}) exceeds "
+                    f"risk.max_trades_per_day ({self.risk.max_trades_per_day})"
                 )
             if limits.max_concurrent_positions > self.risk.max_concurrent_positions:
                 raise ValueError(
