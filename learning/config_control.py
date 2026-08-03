@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml
 
 from config.loader import load_settings
+from infra.atomic import write_json_atomic
 
 
 def file_hash(path: Path) -> str:
@@ -123,9 +124,7 @@ class ShadowRecorder:
         state["last_seen_at"] = now.astimezone(UTC).isoformat()
         state["decisions"] = int(state.get("decisions", 0)) + 1
         state["different_decisions"] = int(state.get("different_decisions", 0)) + int(different)
-        temporary = state_path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        temporary.replace(state_path)
+        write_json_atomic(state_path, state)
         with (self.directory / "decisions.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(
                 json.dumps(

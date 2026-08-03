@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from infra.atomic import write_json_atomic
 from scanner.universe import ScanBatch
 
 MAX_RECENT_INSPECTIONS = 500
@@ -82,10 +83,7 @@ class ScanActivityLedger:
             return {}
 
     def _save(self, payload: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        temporary.replace(self.path)
+        write_json_atomic(self.path, payload)
 
 
 def read_scan_activity(path: Path) -> dict[str, Any]:

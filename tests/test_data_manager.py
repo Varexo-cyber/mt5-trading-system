@@ -228,6 +228,56 @@ class TestValidation:
         )
         assert market_closed_overlap(sunday_open, friday_close) == timedelta()
 
+    def test_an_overnight_close_is_not_a_dead_feed(self, data_config: DataConfig) -> None:
+        """Regression: BMED, a Milan share, was declared a disconnected feed.
+
+        "newest closed bar closed 14:25:02 ago in trading time, budget
+        12:00:00" — a share shuts overnight, so on H4 its newest bar is
+        routinely more than twelve hours old. The budget came from the timeframe
+        alone, which assumes bars arrive back to back. That is spot FX, not a
+        broker catalogue.
+        """
+        monday = datetime(2026, 8, 3, 8, 25, tzinfo=UTC)
+        clock = SimulatedClock(monday)
+        config = DataConfig(
+            timeframes=("H4",), bars={"H4": 300}, min_bars_required=20, cache_ttl_seconds=20.0
+        )
+        # Three H4 bars a day on weekdays, then a sixteen-hour overnight gap.
+        times: list[datetime] = []
+        day = datetime(2026, 7, 1, tzinfo=UTC)
+        while day < monday:
+            if day.weekday() < 5:
+                times.extend(day.replace(hour=hour) for hour in (8, 12, 16))
+            day += timedelta(days=1)
+        rates = _rates_at(times)
+        manager = self._manager_returning(rates, clock, config)
+
+        assert len(manager.get_series("EURUSD", Timeframe.H4)) > 0
+
+    def test_a_share_whose_feed_died_is_still_caught(self, data_config: DataConfig) -> None:
+        """Tolerating one overnight gap must not tolerate a missing session.
+
+        Monday evening with Friday's last bar: the exchange opened and this
+        instrument produced nothing all day. That is a dead feed, and the
+        margin over the overnight gap has to be narrow enough to say so.
+        """
+        monday_evening = datetime(2026, 8, 3, 18, 0, tzinfo=UTC)
+        clock = SimulatedClock(monday_evening)
+        config = DataConfig(
+            timeframes=("H4",), bars={"H4": 300}, min_bars_required=20, cache_ttl_seconds=20.0
+        )
+        times: list[datetime] = []
+        day = datetime(2026, 7, 1, tzinfo=UTC)
+        while day <= datetime(2026, 7, 31, tzinfo=UTC):  # last bar is Friday's
+            if day.weekday() < 5:
+                times.extend(day.replace(hour=hour) for hour in (8, 12, 16))
+            day += timedelta(days=1)
+        rates = _rates_at(times)
+        manager = self._manager_returning(rates, clock, config)
+
+        with pytest.raises(StaleDataError, match="disconnected"):
+            manager.get_series("EURUSD", Timeframe.H4)
+
     def test_excessive_intraweek_gaps_are_refused(
         self, clock: SimulatedClock, data_config: DataConfig
     ) -> None:
@@ -295,3 +345,21 @@ class TestExpectedBars:
 
     def test_reversed_range_is_zero(self) -> None:
         assert expected_bars_between(NOW, NOW - timedelta(hours=1), Timeframe.H1) == 0
+
+
+def _rates_at(times: list[datetime]) -> np.ndarray:
+    """Well-formed bars at exactly these open times, for session-shaped series."""
+    dtype = [
+        ("time", "i8"),
+        ("open", "f8"),
+        ("high", "f8"),
+        ("low", "f8"),
+        ("close", "f8"),
+        ("tick_volume", "u8"),
+        ("spread", "i4"),
+        ("real_volume", "u8"),
+    ]
+    rows = [
+        (int(moment.timestamp()), 10.0, 10.2, 9.8, 10.1, 500, 12, 0) for moment in sorted(times)
+    ]
+    return np.array(rows, dtype=dtype)

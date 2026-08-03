@@ -259,7 +259,26 @@ class JarvisRunner:
         deep = 0
         for candidate in batch.candidates:
             deep += 1
-            if self._process_candidate(candidate.symbol, account, tuple(positions)):
+            try:
+                traded = self._process_candidate(candidate.symbol, account, tuple(positions))
+            except Exception:
+                # One symbol must never end the run. The catalogue is 850
+                # instruments of wildly different shapes and any of them can
+                # surprise the analysis; the loop's job is to keep managing the
+                # account, not to be perfect about every candidate.
+                #
+                # This is not hypothetical. A dashboard held scan_activity.json
+                # open, the atomic replace was denied, and the exception came
+                # out of the *skip-recording* path — so a failed telemetry write
+                # about a market being skipped killed the whole service and left
+                # open positions unmanaged. The write is safe now; this is the
+                # backstop that should have been here anyway.
+                log.exception(
+                    "candidate failed; continuing with the rest of the batch",
+                    extra={"event": "candidate_error", "symbol": candidate.symbol},
+                )
+                continue
+            if traded:
                 opened += 1
                 account = self.broker.account()
                 positions = self.broker.positions(magic=self.settings.system.magic_number)

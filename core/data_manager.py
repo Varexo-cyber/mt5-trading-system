@@ -262,10 +262,21 @@ class DataManager:
         budget is really asking is "how much *trading* time passed without new
         data", which is why the closed window is discounted.
 
+        The budget also has to come from the instrument, not from the timeframe
+        alone. `stale_after_bars * tf.duration` assumes bars arrive back to back,
+        which is true of spot FX and false of everything with a session. BMED —
+        a Milan share — closes overnight, so its newest H4 bar was legitimately
+        14 hours old at 08:25 against a 12-hour budget, and the whole instrument
+        was declared a dead feed. The instrument's own recent bar spacing says
+        what "recent" means for it: the ninetieth percentile captures its normal
+        overnight gap, and the budget is whichever is larger.
+
         This does not weaken disconnection detection. A dead terminal is caught
         by the short timeframes in the same context — on a Monday morning the
         newest M15 bar should be minutes old, and if it is Friday's the
-        discounted age still blows through a 45-minute budget by hours.
+        discounted age still blows through its budget by hours. And a feed that
+        stops mid-session produces an age far beyond a gap the instrument has
+        ever shown, because the percentile is measured from its own history.
         """
         now = self.clock.now()
         if is_market_closed(now):
@@ -277,7 +288,14 @@ class DataManager:
 
         elapsed = now - closed_at
         age = elapsed - market_closed_overlap(closed_at, now)
-        budget = tf.duration * self.config.stale_after_bars
+        # A quarter more than the instrument's normal overnight gap. The margin
+        # is deliberately narrow and was calibrated against the real case: on a
+        # 16-hour overnight close, 1.25 passes a healthy Monday morning at 11:25
+        # of trading age and still catches a feed that missed all of Monday at
+        # 21:00. At 1.5 the missed session slips through; applying
+        # `stale_after_bars` to the gap would give a Milan share a two-day
+        # budget, which is not a staleness check any more.
+        budget = max(tf.duration * self.config.stale_after_bars, _typical_gap(df) * 1.25)
         if age > budget:
             raise StaleDataError(
                 f"{symbol} {tf}: newest closed bar closed {age} ago in trading time "
@@ -365,6 +383,25 @@ def atr(df: pd.DataFrame, period: int = 14) -> float:
     for tr in true_range[period:]:
         value = (value * (period - 1) + float(tr)) / period
     return value
+
+
+def _typical_gap(df: pd.DataFrame) -> timedelta:
+    """The largest spacing this instrument routinely shows between bars.
+
+    The ninetieth percentile rather than the maximum: the maximum is the
+    weekend, which is already discounted separately, while the ninetieth
+    catches the once-a-day overnight close that a share or a future has and
+    spot FX does not.
+    """
+    if len(df) < 10:
+        return timedelta(0)
+    gaps = df.index.to_series().diff().dropna()
+    # Exclude weekend-sized gaps; `market_closed_overlap` already handles those,
+    # and letting them in here would inflate the budget by two days.
+    intraweek = gaps[gaps < pd.Timedelta(days=2)]
+    if intraweek.empty:
+        return timedelta(0)
+    return intraweek.quantile(0.90).to_pytimedelta()
 
 
 def _missing_bars(df: pd.DataFrame, tf: Timeframe) -> float:
