@@ -1457,15 +1457,25 @@ class JarvisRunner:
         breakdown = ", ".join(
             f"{n} {stage}" for stage, n in sorted(stages.items(), key=lambda kv: -kv[1])
         )
+        # What happened to the ones that got the *deep* analysis. Without this
+        # the line said "62 analysed, 0 opened" and stopped, which is the one
+        # question an operator has and the one it did not answer. Five hours of
+        # that reads exactly like a broken system and exactly like a correct
+        # one, and the two need opposite responses.
+        deep_reasons = self._deep_rejection_counts(summary.started_at)
+        deep_breakdown = ", ".join(
+            f"{n} {reason}" for reason, n in sorted(deep_reasons.items(), key=lambda kv: -kv[1])[:4]
+        )
         log.info(
-            "cycle: %d/%d scanned, %d eligible, %d analysed, %d opened, %.0fs%s",
+            "cycle: %d/%d scanned, %d eligible, %d analysed, %d opened, %.0fs%s%s",
             summary.inspected,
             summary.universe_size,
             summary.inspected - summary.rejected,
             summary.deep_analysed,
             summary.trades_opened,
             elapsed,
-            f" | rejected: {breakdown}" if breakdown else "",
+            f" | prescan: {breakdown}" if breakdown else "",
+            f" | analysed: {deep_breakdown}" if deep_breakdown else "",
             extra={
                 "event": "cycle_complete",
                 "inspected": summary.inspected,
@@ -1474,11 +1484,29 @@ class JarvisRunner:
                 "rejected": summary.rejected,
                 "rejected_by_stage": stages,
                 "deep_analysed": summary.deep_analysed,
+                "deep_rejections": deep_reasons,
                 "trades_opened": summary.trades_opened,
                 "seconds": round(elapsed, 1),
                 "next_cursor": summary.next_cursor,
             },
         )
+
+    def _deep_rejection_counts(self, since: datetime) -> dict[str, int]:
+        """Reasons the deeply-analysed candidates were refused, this cycle.
+
+        Read back from the journal rather than accumulated in memory, because
+        the journal is where the decisions actually land and a counter that
+        disagreed with it would be worse than none.
+        """
+        try:
+            rows = self.journal.query(
+                "SELECT reason, COUNT(*) AS n FROM analysis_cycles "
+                "WHERE ts >= ? AND decision != 'TRADE' GROUP BY reason",
+                (since.isoformat(),),
+            )
+        except Exception:  # noqa: BLE001 - a reporting query must never end a cycle
+            return {}
+        return {str(row["reason"]): int(row["n"]) for row in rows}
 
     def _save_heartbeat(self, summary: CycleSummary) -> None:
         path = self.root / "runtime" / "heartbeat.json"
