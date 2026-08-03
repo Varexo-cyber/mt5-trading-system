@@ -74,13 +74,19 @@ class DataManager:
         key = (symbol, tf)
 
         cached = self._cache.get(key)
-        if (
-            cached is not None
-            and not force_refresh
-            and len(cached.series) >= bars
-            and self._cache_age(cached) < self.config.cache_ttl_seconds
-        ):
-            return cached.series
+        if cached is not None and len(cached.series) >= bars:
+            fresh_enough = self._cache_age(cached) < self.config.cache_ttl_seconds
+            if fresh_enough and not force_refresh:
+                return cached.series
+            # Even a forced refresh is pointless when no new bar can have closed
+            # since the cache was filled. A weekly bar closes once a week; a
+            # daily one once a day. Refetching 400 weekly bars for every symbol
+            # on every cycle cannot return anything different, and with seven
+            # timeframes across a full catalogue that waste was most of the
+            # cycle: eight minutes, of which the higher timeframes contributed
+            # nothing but I/O.
+            if not self._bar_closed_since(cached, tf):
+                return cached.series
 
         series = self._fetch(symbol, tf, bars)
         self._cache[key] = _CacheEntry(series=series, fetched_at=self.clock.now())
@@ -302,6 +308,20 @@ class DataManager:
                 f"({elapsed} wall clock), budget {budget}. "
                 f"The terminal is likely disconnected from the broker's data feed."
             )
+
+    def _bar_closed_since(self, entry: _CacheEntry, tf: Timeframe) -> bool:
+        """Could a newer closed bar exist than the one this cache entry holds?
+
+        The cached series already ends at the newest bar that had closed when it
+        was fetched. The next one closes exactly one bar-duration later, so if
+        that moment is still in the future the broker has nothing newer to give.
+
+        Refusing the refetch is safe in the direction that matters: it can only
+        return data that is already the newest available, never older. It cannot
+        introduce look-ahead either, because it never reveals an unclosed bar.
+        """
+        next_close = entry.series.last_bar_time + tf.duration * 2
+        return self.clock.now() >= next_close
 
     def _cache_age(self, entry: _CacheEntry) -> float:
         return (self.clock.now() - entry.fetched_at).total_seconds()
