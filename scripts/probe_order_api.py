@@ -35,6 +35,11 @@ from core.mt5_connector import MT5Connector
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", default="EURUSD.i")
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="actually place one minimum-size order after the checks pass. REAL MONEY.",
+    )
     args = parser.parse_args(argv)
 
     load_dotenv(ROOT / "config" / ".env", override=False)
@@ -136,10 +141,39 @@ def main(argv: list[str] | None = None) -> int:
                     f"comment={getattr(result, 'comment', '')!r} "
                     f"margin={getattr(result, 'margin', '?')}"
                 )
-        print(
-            "\nWhichever line says OK is the convention this build wants. A retcode of 0"
-            "\nmeans the request itself is valid and only the call was wrong.\n"
-        )
+        if not args.send:
+            print(
+                "\nEverything above can pass while order_send still fails, because"
+                "\norder_check only validates — it never asks to trade. Re-run with"
+                "\n  --send   to place ONE order of the minimum size with real money"
+                "\nand see exactly what order_send returns.\n"
+            )
+            return 0
+
+        print("\n--send given: placing ONE order of the minimum size with REAL MONEY.")
+        answer = input(f"Type the symbol '{args.symbol}' to confirm: ").strip()
+        if answer != args.symbol:
+            print("Not confirmed. Nothing was sent.\n")
+            return 1
+
+        before = mt5.last_error()
+        result = mt5.order_send(real_payload)
+        after = mt5.last_error()
+        print(f"\n  last_error before : {before}")
+        print(f"  order_send returned: {result}")
+        print(f"  last_error after  : {after}")
+        if result is None:
+            print(
+                "\nNothing came back. Since order_check passed on this exact request,"
+                "\nthe request is not the problem and the two error readings above say"
+                "\nwhether order_send failed or simply read back a stale message.\n"
+            )
+        else:
+            print(f"\n  retcode {result.retcode}: {result.comment}")
+            if result.retcode in (10008, 10009):
+                print("  ORDER PLACED. Check the Positions tab.\n")
+            else:
+                print("  Refused by the broker, and now with a real code to act on.\n")
     finally:
         connector.shutdown()
     return 0
