@@ -255,18 +255,40 @@ class DataManager:
     def _check_staleness(self, symbol: str, tf: Timeframe, df: pd.DataFrame) -> None:
         """Reject data whose newest closed bar is too old to act on.
 
-        Skipped while the FX market is closed — a stale D1 bar at 03:00 on a
-        Sunday is expected, not a fault.
+        Age is counted from the moment the bar **closed**, and the weekend is
+        subtracted. Both matter, and getting either wrong rejects the entire
+        universe on a Monday morning while the feed is perfectly healthy.
+
+        A bar is stamped with its *open* time, so a D1 bar carries information
+        up to 24 hours newer than its timestamp suggests. Measuring from the
+        stamp charges a full extra bar of age to every timeframe.
+
+        And no data arrives between Friday 21:00 and Sunday 22:00 UTC, so wall
+        clock is the wrong unit: on Monday the newest closed D1 bar is Friday's,
+        which is not stale, it is the most recent bar that exists. What the
+        budget is really asking is "how much *trading* time passed without new
+        data", which is why the closed window is discounted.
+
+        This does not weaken disconnection detection. A dead terminal is caught
+        by the short timeframes in the same context — on a Monday morning the
+        newest M15 bar should be minutes old, and if it is Friday's the
+        discounted age still blows through a 45-minute budget by hours.
         """
         now = self.clock.now()
         if is_market_closed(now):
             return
 
-        age = now - df.index[-1].to_pydatetime()
+        closed_at = df.index[-1].to_pydatetime() + tf.duration
+        if now <= closed_at:
+            return
+
+        elapsed = now - closed_at
+        age = elapsed - market_closed_overlap(closed_at, now)
         budget = tf.duration * self.config.stale_after_bars
         if age > budget:
             raise StaleDataError(
-                f"{symbol} {tf}: newest closed bar is {age} old, budget {budget}. "
+                f"{symbol} {tf}: newest closed bar closed {age} ago in trading time "
+                f"({elapsed} wall clock), budget {budget}. "
                 f"The terminal is likely disconnected from the broker's data feed."
             )
 
@@ -290,6 +312,39 @@ def is_market_closed(moment: datetime) -> bool:
     if weekday == 4 and moment.hour >= 21:  # Friday evening
         return True
     return bool(weekday == 6 and moment.hour < 22)  # Sunday before the open
+
+
+#: Friday 21:00 UTC to Sunday 22:00 UTC — the same window `is_market_closed`
+#: describes, as a duration.
+_WEEKEND_CLOSURE = timedelta(hours=49)
+
+
+def market_closed_overlap(start: datetime, end: datetime) -> timedelta:
+    """How much of `[start, end]` fell inside the weekend closure.
+
+    Staleness budgets are expressed in bar durations, which only pass while the
+    market is open. Charging a timeframe for the weekend makes every Monday
+    look like a data outage.
+
+    Same approximation as `is_market_closed`, and the same reason: the
+    authoritative session rules live in `filters/session_filter.py`, and a
+    second precise implementation here would be a second source of truth.
+    """
+    start = start.astimezone(UTC)
+    end = end.astimezone(UTC)
+    if end <= start:
+        return timedelta()
+
+    total = timedelta()
+    # Step back far enough to catch a closure that began before `start`.
+    cursor = (start - _WEEKEND_CLOSURE).replace(hour=0, minute=0, second=0, microsecond=0)
+    while cursor <= end:
+        if cursor.weekday() == 4:  # Friday
+            closure_start = cursor.replace(hour=21)
+            overlap = min(end, closure_start + _WEEKEND_CLOSURE) - max(start, closure_start)
+            total += max(timedelta(), overlap)
+        cursor += timedelta(days=1)
+    return total
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> float:

@@ -15,6 +15,7 @@ from core.data_manager import (
     atr,
     expected_bars_between,
     is_market_closed,
+    market_closed_overlap,
 )
 from core.errors import DataIntegrityError, InsufficientDataError, StaleDataError
 from core.mt5_connector import MT5Connector
@@ -177,6 +178,55 @@ class TestValidation:
         manager = self._manager_returning(rates, clock, data_config)
         series = manager.get_series("EURUSD", Timeframe.H1)
         assert len(series) > 0
+
+    def test_mondays_newest_daily_bar_is_not_stale(self, data_config: DataConfig) -> None:
+        """Regression: every market was rejected on the first live Monday.
+
+        A bar is stamped with its *open* time, so a D1 bar carries information a
+        full day newer than its stamp. Add the weekend, and Friday's daily bar
+        measured 3d10h on Monday morning against a 3-day budget — the whole
+        universe came back DATA_UNAVAILABLE while the feed was perfectly fine.
+        """
+        monday = datetime(2026, 8, 3, 7, 37, 48, tzinfo=UTC)
+        clock = SimulatedClock(monday)
+        # The last closed D1 bar opens Friday 00:00 broker time (UTC+3).
+        last_open = datetime(2026, 7, 30, 21, 0, tzinfo=UTC)
+        rates = synthetic_rates(300, Timeframe.D1.mt5_value, end=last_open)
+        manager = self._manager_returning(rates, clock, data_config)
+
+        assert len(manager.get_series("EURUSD", Timeframe.D1)) > 0
+
+    def test_a_dead_terminal_on_monday_is_still_caught(self, data_config: DataConfig) -> None:
+        """Discounting the weekend must not hide a feed that stopped on Friday."""
+        monday = datetime(2026, 8, 3, 7, 37, 48, tzinfo=UTC)
+        clock = SimulatedClock(monday)
+        last_open = datetime(2026, 7, 31, 20, 0, tzinfo=UTC)  # Friday, hours before the close
+        rates = synthetic_rates(300, Timeframe.H1.mt5_value, end=last_open)
+        manager = self._manager_returning(rates, clock, data_config)
+
+        with pytest.raises(StaleDataError, match="disconnected"):
+            manager.get_series("EURUSD", Timeframe.H1)
+
+    def test_weekend_overlap_measures_the_closed_window(self) -> None:
+        friday_close = datetime(2026, 7, 31, 21, 0, tzinfo=UTC)
+        sunday_open = datetime(2026, 8, 2, 22, 0, tzinfo=UTC)
+
+        # The whole closure, from a point before it to a point after it.
+        assert market_closed_overlap(
+            friday_close - timedelta(hours=2), sunday_open + timedelta(hours=2)
+        ) == timedelta(hours=49)
+        # Monday morning: only the part of the weekend that has already passed.
+        assert market_closed_overlap(
+            friday_close, datetime(2026, 8, 3, 7, 37, 48, tzinfo=UTC)
+        ) == timedelta(days=2, hours=1)
+        # A window entirely inside the trading week touches no closure.
+        assert (
+            market_closed_overlap(
+                datetime(2026, 8, 4, 8, 0, tzinfo=UTC), datetime(2026, 8, 5, 8, 0, tzinfo=UTC)
+            )
+            == timedelta()
+        )
+        assert market_closed_overlap(sunday_open, friday_close) == timedelta()
 
     def test_excessive_intraweek_gaps_are_refused(
         self, clock: SimulatedClock, data_config: DataConfig
