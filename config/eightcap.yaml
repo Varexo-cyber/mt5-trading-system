@@ -94,6 +94,11 @@ ai:
   enabled: true
   provider: anthropic
   anthropic_model: claude-sonnet-5
-  minimum_confidence: 0.65
+  # An approval below this is silently converted into a veto, which is how a
+  # run of seventy-four vetoes happened: Claude was answering 0.60-0.62 against
+  # a 0.65 bar, so even the setups it judged sound were flipped. 0.55 is the
+  # level the prompt now defines as "I would not take this", which is the only
+  # number this threshold should mean.
+  minimum_confidence: 0.55
   timeout_seconds: 60
   fail_closed: true
