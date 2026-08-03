@@ -9,6 +9,7 @@ from pathlib import Path
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
 from infra.logging import setup_logging
+from runner.profiles import PROFILES, apply_profile
 from runner.service import JarvisRunner, OperationMode
 
 ROOT = Path(__file__).resolve().parent
@@ -20,12 +21,19 @@ def parse_args() -> argparse.Namespace:
         "--operation", choices=[mode.value for mode in OperationMode], default="monitor"
     )
     parser.add_argument("--once", action="store_true", help="Run one bounded scan cycle")
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILES),
+        help="; ".join(f"{name}: {p.description}" for name, p in sorted(PROFILES.items())),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml")
+    if args.profile:
+        settings = apply_profile(settings, args.profile)
     setup_logging(
         level=settings.logging.level,
         log_dir=ROOT / settings.logging.directory,
@@ -40,6 +48,13 @@ def main() -> int:
         load_credentials(required=False),
         terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
     )
+    if args.profile:
+        profile = PROFILES[args.profile]
+        print(
+            f"profile '{profile.name}': {profile.description}\n"
+            f"  markets  : {', '.join(profile.symbols_only or profile.asset_classes) or 'all'}\n"
+            f"  positions: {settings.effective_max_positions()}"
+        )
     runner = JarvisRunner(connector, settings, ROOT, OperationMode(args.operation))
     pid_path = ROOT / "runtime" / "jarvis.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)
