@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from infra.atomic import write_json_atomic
+
 
 class OperationLedger:
     """Append-only-ish session ledger that survives orderly exits and crashes."""
@@ -85,7 +87,4 @@ class OperationLedger:
             return {"sessions": []}
 
     def _save(self, payload: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(self.path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        temporary.replace(self.path)
+        write_json_atomic(self.path, payload)

@@ -20,6 +20,7 @@ from core.types import (
     SymbolDescriptor,
     Tick,
 )
+from infra.atomic import write_json_atomic
 
 
 class PaperBroker:
@@ -362,6 +363,7 @@ class PaperBroker:
                 for position in self._closed.values()
             ],
         }
-        temporary = self.state_path.with_suffix(self.state_path.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        temporary.replace(self.state_path)
+        # required: this is the paper account's balance and open positions,
+        # not a display artefact. Losing it silently would mean the next cycle
+        # reconciles against a stale book.
+        write_json_atomic(self.state_path, payload, required=True)

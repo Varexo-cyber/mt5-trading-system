@@ -9,6 +9,7 @@ from pathlib import Path
 
 from config.schema import Settings
 from core.types import AccountSnapshot, TradingMode
+from infra.atomic import write_json_atomic
 
 EXPERIMENTAL_LIVE_FILENAME = "EXPERIMENTAL_LIVE.json"
 EXPERIMENTAL_LIVE_PHRASE = "BEVESTIG EXPERIMENTEEL LIVE"
@@ -74,10 +75,9 @@ class ExperimentalLiveContract:
             raise RuntimeError("EXPERIMENTAL_LIVE_CONTRACT_INVALID") from exc
 
     def write(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
-        temporary.replace(path)
+        # required: without this file experimental live refuses to start, so a
+        # silently dropped write would look like the arming never happened.
+        write_json_atomic(path, asdict(self), required=True)
 
     @property
     def equity_floor(self) -> float:
