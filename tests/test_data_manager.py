@@ -86,15 +86,52 @@ class TestCaching:
         manager.get_series("EURUSD", Timeframe.H1)
         assert sum(1 for name, _ in fake.calls if name == "copy_rates_from_pos") == count
 
-    def test_cache_expires(self, manager: DataManager, clock: SimulatedClock) -> None:
+    def _fetches(self, manager: DataManager) -> int:
         fake = manager.connector._mt5
         assert isinstance(fake, FakeMT5)
-        manager.get_series("EURUSD", Timeframe.H1)
-        count = sum(1 for name, _ in fake.calls if name == "copy_rates_from_pos")
+        return sum(1 for name, _ in fake.calls if name == "copy_rates_from_pos")
 
-        clock.advance(timedelta(seconds=60))
+    def test_cache_expires_once_a_new_bar_has_closed(
+        self, manager: DataManager, clock: SimulatedClock
+    ) -> None:
         manager.get_series("EURUSD", Timeframe.H1)
-        assert sum(1 for name, _ in fake.calls if name == "copy_rates_from_pos") > count
+        before = self._fetches(manager)
+
+        clock.advance(timedelta(hours=2))
+        manager.get_series("EURUSD", Timeframe.H1)
+
+        assert self._fetches(manager) > before
+
+    def test_a_refetch_is_skipped_while_no_new_bar_can_exist(
+        self, manager: DataManager, clock: SimulatedClock
+    ) -> None:
+        """A forced refresh still cannot conjure a bar that has not closed.
+
+        With seven timeframes across a full catalogue this was most of the cycle
+        time: eight minutes per pass, much of it refetching four hundred weekly
+        bars per symbol that could not possibly have changed since the previous
+        pass a few minutes earlier.
+        """
+        manager.get_series("EURUSD", Timeframe.H1, force_refresh=True)
+        before = self._fetches(manager)
+
+        clock.advance(timedelta(minutes=1))
+        manager.get_series("EURUSD", Timeframe.H1, force_refresh=True)
+
+        assert self._fetches(manager) == before
+
+    def test_a_forced_refresh_still_happens_when_a_bar_has_closed(
+        self, manager: DataManager, clock: SimulatedClock
+    ) -> None:
+        """Skipping must never mean serving data the broker has moved past."""
+        manager.get_series("EURUSD", Timeframe.M15, force_refresh=True)
+        before = self._fetches(manager)
+
+        clock.advance(timedelta(minutes=45))
+        series = manager.get_series("EURUSD", Timeframe.M15, force_refresh=True)
+
+        assert self._fetches(manager) > before
+        assert series.last_bar_time + Timeframe.M15.duration <= clock.now()
 
     def test_invalidate_drops_one_symbol_only(self, manager: DataManager) -> None:
         manager.get_series("EURUSD", Timeframe.H1)
