@@ -216,13 +216,23 @@ filters:
       index: 10.0
       metal: 10.0
       commodity: 20.0
+    # How old a quote may be before the instrument is treated as shut. These
+    # were written for majors, which tick several times a second, and a live
+    # scan showed the cost: USDTRY was refused with a 35-second-old quote and a
+    # 0.72 bps spread — an open, perfectly tradeable market thrown out for
+    # ticking less often than EURUSD. Liquidity varies by orders of magnitude
+    # across a catalogue and quiet is not the same as closed.
+    #
+    # The numbers below still separate the two easily: every genuinely shut
+    # market in that scan was hours or days stale (Australian shares at 3.3
+    # hours, US shares at 2.5 days), nowhere near these limits.
     max_tick_age_seconds:
-      forex: 30
-      crypto: 30
-      stock: 120
-      index: 30
-      metal: 30
-      commodity: 60
+      forex: 180
+      crypto: 180
+      stock: 300
+      index: 180
+      metal: 180
+      commodity: 300
     absolute_max_pips:              # backstop until the baseline is learned
       EURUSD: 2.0
       GBPUSD: 3.0
