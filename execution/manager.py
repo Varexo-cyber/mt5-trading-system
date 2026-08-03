@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -54,12 +54,17 @@ class PositionManager:
                 )
                 continue
             if self.journal.open_trade_by_ticket(position.ticket) is None:
+                adopted = self._adopt(position)
+                if adopted is not None:
+                    events.append(adopted)
+                    continue
                 result = self.broker.close_position(position)
                 events.append(
                     ManagementEvent(
                         position.ticket,
                         "ORPHAN_CLOSE",
-                        "strategy-magic position was absent from journal",
+                        "strategy-magic position was absent from journal and matched no "
+                        "recorded entry intent",
                         result.filled_price,
                         position.profit + position.swap,
                     )
@@ -213,6 +218,57 @@ class PositionManager:
                             )
                         )
         return events
+
+    def _adopt(self, position: Position) -> ManagementEvent | None:
+        """Match an unexplained position to the intent that created it.
+
+        The only positions eligible are ones this system planned: same magic
+        (already filtered upstream), same symbol, direction and volume as an
+        intent written shortly before, and no ticket recorded against it. That
+        combination is a crash between sending and confirming, and closing it
+        destroys a trade the system correctly decided to take.
+
+        Anything else stays an orphan and is closed. A position opened by hand
+        in the terminal, or by another strategy sharing the magic, has no stop
+        the risk layer chose and no plan behind it, and adopting it would mean
+        managing a trade nobody sized.
+
+        `adoption_window_minutes` bounds how stale an intent may be. A position
+        cannot predate its own intent, and one left over from days ago is far
+        more likely to be a rejected order whose abandonment was itself lost
+        than a match for what is on the screen now.
+        """
+        window = timedelta(minutes=self.settings.trade_management.adoption_window_minutes)
+        spec = self.broker.spec(position.symbol)
+        trade_id = self.journal.claim_pending_entry(
+            symbol=position.symbol,
+            direction=position.direction.name,
+            volume=position.volume,
+            ticket=position.ticket,
+            entry_price=position.price_open,
+            # Half a step: the broker fills in whole steps, so anything inside
+            # this is the same lot size carrying float error.
+            volume_tolerance=spec.volume_step / 2,
+            since=position.opened_at - window,
+            opened_at=position.opened_at,
+        )
+        if trade_id is None:
+            return None
+        log.warning(
+            "adopted a position that was live at the broker but unrecorded",
+            extra={
+                "event": "position_adopted",
+                "ticket": position.ticket,
+                "trade_id": trade_id,
+                "symbol": position.symbol,
+            },
+        )
+        return ManagementEvent(
+            position.ticket,
+            "ADOPTED",
+            f"matched to recorded entry intent #{trade_id}; the journal row lost its "
+            f"ticket to a crash between sending the order and confirming it",
+        )
 
     def apply_supervision(self, position: Position, verdict: Supervision) -> ManagementEvent | None:
         """Execute a supervisor's verdict, after re-proving it reduces risk.

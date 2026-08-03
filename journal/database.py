@@ -36,7 +36,7 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
@@ -225,6 +225,26 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "CREATE INDEX idx_spread_symbol_hour ON spread_observations(symbol, hour_utc)",
         "CREATE INDEX idx_spread_ts ON spread_observations(ts)",
     ),
+    3: (
+        # Entry intent, written *before* the order is sent.
+        #
+        # There was a window between `order_send` returning a ticket and the
+        # journal row being inserted. A crash inside it left a real position at
+        # the broker the journal had never heard of, and on restart
+        # reconciliation could only read that as an orphan and close it — a
+        # correctly sized, AI-approved trade destroyed by a power cut, with the
+        # loss booked and no record of why the position had ever existed.
+        #
+        # `entry_state` closes it. The row is written as PENDING before the
+        # order goes out and promoted to OPEN once the ticket is known, so a
+        # position found without a journal entry can be matched back to the
+        # intent that created it instead of being liquidated.
+        #
+        # Existing rows default to OPEN: every trade already in the journal got
+        # there by completing the old path, so OPEN is the truthful value.
+        "ALTER TABLE trades ADD COLUMN entry_state TEXT NOT NULL DEFAULT 'OPEN'",
+        "CREATE INDEX idx_trades_entry_state ON trades(entry_state)",
+    ),
 }
 
 
@@ -397,11 +417,111 @@ class Journal:
         ).fetchone()
 
     def open_trades(self) -> list[sqlite3.Row]:
+        """Trades believed to be live at the broker.
+
+        Excludes PENDING rows deliberately. A pending row is an intent whose
+        order may never have reached the broker, and reconciliation reads this
+        list as "the journal says these should exist" — a never-sent intent in
+        there would be reported as a position the broker has lost, which halts
+        new risk on a phantom.
+        """
         return list(
             self.conn.execute(
-                "SELECT * FROM trades WHERE closed_at IS NULL ORDER BY opened_at"
+                "SELECT * FROM trades WHERE closed_at IS NULL AND entry_state = 'OPEN' "
+                "ORDER BY opened_at"
             ).fetchall()
         )
+
+    def pending_entries(self, since: datetime | None = None) -> list[sqlite3.Row]:
+        """Intents written before an order was sent, oldest first."""
+        if since is None:
+            return list(
+                self.conn.execute(
+                    "SELECT * FROM trades WHERE entry_state = 'PENDING' AND closed_at IS NULL "
+                    "ORDER BY opened_at"
+                ).fetchall()
+            )
+        return list(
+            self.conn.execute(
+                "SELECT * FROM trades WHERE entry_state = 'PENDING' AND closed_at IS NULL "
+                "AND opened_at >= ? ORDER BY opened_at",
+                (iso(since),),
+            ).fetchall()
+        )
+
+    def claim_pending_entry(
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        volume: float,
+        ticket: int,
+        entry_price: float,
+        volume_tolerance: float,
+        since: datetime | None = None,
+        opened_at: datetime | None = None,
+    ) -> int | None:
+        """Bind an unexplained broker position to the intent that created it.
+
+        Matched on what the broker can actually confirm — symbol, direction and
+        volume — because the ticket is precisely the thing the crash lost. The
+        entry price is not matched on: the fill differs from the intent by
+        slippage, which is the normal case rather than a mismatch.
+
+        `since` bounds how far back an intent may be claimed. Without it a
+        pending row from last week could adopt a position opened by hand this
+        morning, which would attach real money to the wrong plan.
+
+        Returns the trade id on success, None when nothing matches — and the
+        caller must treat None as "still an orphan", not as "adopted".
+        """
+        rows = self.pending_entries(since)
+        for row in rows:
+            if str(row["symbol"]) != symbol or str(row["direction"]) != direction:
+                continue
+            if abs(float(row["volume"]) - volume) > volume_tolerance:
+                continue
+            trade_id = int(row["id"])
+            self.conn.execute(
+                "UPDATE trades SET ticket = ?, entry_price = ?, entry_state = 'OPEN', "
+                "opened_at = ? WHERE id = ?",
+                (ticket, entry_price, iso(opened_at or self.clock.now()), trade_id),
+            )
+            self.conn.commit()
+            return trade_id
+        return None
+
+    def promote_pending_entry(
+        self,
+        trade_id: int,
+        *,
+        ticket: int,
+        entry_price: float,
+        opened_at: datetime | None = None,
+    ) -> None:
+        """Mark an intent as a live trade once the broker has confirmed it."""
+        self.conn.execute(
+            "UPDATE trades SET ticket = ?, entry_price = ?, entry_state = 'OPEN', opened_at = ? "
+            "WHERE id = ?",
+            (ticket, entry_price, iso(opened_at or self.clock.now()), trade_id),
+        )
+        self.conn.commit()
+
+    def abandon_pending_entry(self, trade_id: int, reason: str) -> None:
+        """Retire an intent whose order never became a position.
+
+        Closed rather than deleted. A rejected entry is evidence — a run of them
+        is how a broker-side problem becomes visible — and deleting the row
+        would also orphan the `order_attempts` record that explains the refusal.
+        `pnl_money` is zeroed rather than left NULL so it never reads as an
+        unresolved trade in the reporting queries.
+        """
+        self.conn.execute(
+            "UPDATE trades SET entry_state = 'ABANDONED', closed_at = ?, exit_reason = ?, "
+            "pnl_money = 0.0, pnl_r = 0.0 WHERE id = ?",
+            (iso(self.clock.now()), reason[:200], trade_id),
+        )
+        self.conn.commit()
 
     def management_action_exists(self, ticket: int, actions: tuple[str, ...]) -> bool:
         if not actions:

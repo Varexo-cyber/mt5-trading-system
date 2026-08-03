@@ -580,6 +580,18 @@ class TradeManagementConfig(Base):
     #: this interval is roughly eight reviews an hour.
     supervision_interval_minutes: float = Field(default=15.0, ge=0.0, le=240.0)
 
+    #: How far back an unrecorded broker position may reach to claim a matching
+    #: entry intent, in minutes. Beyond this it is treated as an orphan and
+    #: closed.
+    #:
+    #: Ten minutes is generous for what it covers: the gap between `order_send`
+    #: returning and the journal row committing is milliseconds, and the window
+    #: only has to survive a restart. Making it long would let a stale intent
+    #: adopt an unrelated position opened by hand — attaching real money to the
+    #: wrong plan, which is worse than closing a position that should have
+    #: lived.
+    adoption_window_minutes: float = Field(default=10.0, ge=0.0, le=1440.0)
+
 
 # --------------------------------------------------------------- journal ---
 

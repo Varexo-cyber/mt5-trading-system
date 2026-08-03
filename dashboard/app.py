@@ -187,6 +187,53 @@ def render_live_scanner() -> None:
 """)
 
 
+def render_recent_adoptions() -> None:
+    """Say when a position was recovered rather than closed after a crash.
+
+    Adoption is the right outcome but it is not a normal one, and it happening
+    silently would hide the fact that the process died mid-entry. The operator
+    should know a restart cost them nothing — and equally, that a restart
+    happened at all.
+    """
+    database = ROOT / settings.journal.database_path
+    if not database.exists():
+        return
+    try:
+        import sqlite3
+
+        with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT a.ts, a.note, t.symbol, t.ticket FROM management_actions a "
+                "JOIN trades t ON t.id = a.trade_id WHERE a.action = 'ADOPTED' "
+                "ORDER BY a.id DESC LIMIT 5"
+            ).fetchall()
+            pending = conn.execute(
+                "SELECT symbol, direction, volume, opened_at FROM trades "
+                "WHERE entry_state = 'PENDING' AND closed_at IS NULL ORDER BY opened_at"
+            ).fetchall()
+    except sqlite3.Error:
+        # A locked or half-migrated journal must not take the panel down; the
+        # positions below are the part that matters.
+        return
+
+    for row in pending:
+        st.warning(
+            f"Openstaande order-intentie: {row['symbol']} {row['direction']} "
+            f"{row['volume']:g} lots ({row['opened_at']}). Als de broker deze positie "
+            "wél heeft geopend, adopteert Jarvis hem bij de volgende cyclus."
+        )
+    if rows:
+        with st.expander(f"Herstelde posities na een crash ({len(rows)})"):
+            st.caption(
+                "Deze posities stonden bij de broker open zonder journaalregel, en zijn "
+                "gekoppeld aan de order-intentie die ze had aangemaakt in plaats van "
+                "gesloten te worden."
+            )
+            for row in rows:
+                st.markdown(f"- `{row['ts']}` **{row['symbol']}** #{row['ticket']} — {row['note']}")
+
+
 @st.fragment(run_every="2s")
 def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
     """Live open positions with per-position control.
@@ -205,6 +252,8 @@ def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
     notice = st.session_state.pop("position_notice", None)
     if notice:
         (st.success if notice[0] else st.error)(notice[1])
+
+    render_recent_adoptions()
 
     if not positions:
         st.success("No open positions.")

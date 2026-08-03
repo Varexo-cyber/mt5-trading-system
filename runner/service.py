@@ -86,6 +86,38 @@ class OperationMode(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class AnalysedCandidate:
+    """A setup the engine has already judged, waiting its turn to be acted on.
+
+    Carries its own `context` so the execution phase does not refetch seven
+    timeframes it already has. That makes the queue slightly stale by the time
+    the last entry is reached, which is correct for the *chart* — closed bars do
+    not change — and deliberately not relied on for anything else: the tick,
+    the account, the open positions and every risk gate are re-read at
+    execution time.
+    """
+
+    symbol: str
+    cycle_id: str
+    idea: TradeIdea
+    context: MarketContext
+
+    @property
+    def conviction(self) -> float:
+        """How strongly the engine believes this one, for ranking only.
+
+        Score times confidence, because the two say different things: a high
+        score from modules that are individually unsure is not the same claim as
+        a moderate score they all agree on, and multiplying is the honest way to
+        say a weakness in either weakens the whole.
+
+        Never a gate. `score_threshold` decides what is tradeable; this only
+        decides what is looked at first.
+        """
+        return self.idea.score * self.idea.confidence
+
+
+@dataclass(frozen=True, slots=True)
 class CycleSummary:
     started_at: datetime
     finished_at: datetime
@@ -291,7 +323,6 @@ class JarvisRunner:
         self.scan_activity.record_batch(batch, started_at, self.operation.value)
         self.cursor = batch.next_cursor
         opened = 0
-        deep = 0
 
         # Ask first whether a trade is possible at all. This was only checked
         # *after* one opened, so with the maximum positions already running the
@@ -319,10 +350,28 @@ class JarvisRunner:
                 batch.universe_size,
             )
 
-        for candidate in batch.candidates:
-            deep += 1
+        # Analyse everything first, then act on the strongest.
+        #
+        # The loop used to take candidates in scanner order and stop as soon as
+        # the position slots were full, which meant the account's two slots went
+        # to whichever acceptable setup happened to be scanned first. With ~200
+        # markets analysed per cycle and two slots, "acceptable and early" is a
+        # much weaker filter than "best available", and the difference is not
+        # subtle: the scanner's cheap pre-rank is a trend/activity heuristic
+        # that knows nothing about whether the setup is any good.
+        #
+        # So the chart work — which is the same work either way — happens for
+        # every candidate before any of it is acted on, and the queue is sorted
+        # by the engine's own conviction. Everything downstream (risk, filters,
+        # sizing, the AI review, the order) then runs in that order, so the
+        # scarce slots and the paid reviews go to the best ideas available.
+        analysed = self._analyse_batch(batch, account)
+        # Every candidate now gets the full chart analysis, so this is the
+        # honest count of deep work done — not the number that survived it.
+        deep = len(batch.candidates)
+        for candidate in analysed:
             try:
-                traded = self._process_candidate(candidate.symbol, account, tuple(positions))
+                traded = self._process_candidate(candidate, account, tuple(positions))
             except Exception:
                 # One symbol must never end the run. The catalogue is 850
                 # instruments of wildly different shapes and any of them can
@@ -360,7 +409,46 @@ class JarvisRunner:
         self.execution_reports.maybe_generate(self.clock.now())
         return summary
 
-    def _process_candidate(self, symbol: str, account, positions) -> bool:  # type: ignore[no-untyped-def]
+    def _analyse_batch(self, batch: ScanBatch, account) -> list[AnalysedCandidate]:  # type: ignore[no-untyped-def]
+        """Judge every candidate, then return the survivors strongest first.
+
+        Only the parts of the decision that do not depend on evolving state
+        happen here: read the charts, score the setup, and check it against the
+        standing refusals. Everything that can change as trades open — risk
+        gates, filters, sizing, margin — is deliberately left to the execution
+        phase, so a candidate ranked third is checked against the account as it
+        stands when its turn comes, not as it stood at the top of the cycle.
+        """
+        analysed: list[AnalysedCandidate] = []
+        for candidate in batch.candidates:
+            try:
+                item = self._analyse_candidate(candidate.symbol, account)
+            except Exception:
+                log.exception(
+                    "candidate analysis failed; continuing with the rest of the batch",
+                    extra={"event": "candidate_error", "symbol": candidate.symbol},
+                )
+                continue
+            if item is not None:
+                analysed.append(item)
+        analysed.sort(key=lambda item: item.conviction, reverse=True)
+        if analysed:
+            log.info(
+                "ranked %d tradeable setups by conviction",
+                len(analysed),
+                extra={
+                    "event": "conviction_ranking",
+                    "candidates": len(analysed),
+                    "best": [
+                        f"{item.symbol} {item.idea.direction.name if item.idea.direction else '?'}"
+                        f" {item.conviction:.1f}"
+                        for item in analysed[:5]
+                    ],
+                },
+            )
+        return analysed
+
+    def _analyse_candidate(self, symbol: str, account) -> AnalysedCandidate | None:  # type: ignore[no-untyped-def]
         cycle_id = str(uuid.uuid4())
         try:
             context = self.data.get_context(symbol, force_refresh=True)
@@ -370,7 +458,7 @@ class JarvisRunner:
                 self.shadow.record(symbol, idea, candidate, self.clock.now())
         except (TradingSystemError, ValueError) as exc:
             self._record_skip(cycle_id, symbol, account.equity, Reason.DATA_UNAVAILABLE, str(exc))
-            return False
+            return None
         if not idea.approved or idea.direction is None:
             self._record_skip(
                 cycle_id,
@@ -380,7 +468,7 @@ class JarvisRunner:
                 idea.reason,
                 signals=list(idea.signals),
             )
-            return False
+            return None
 
         # Before anything else costs money or time: has this exact proposal
         # already been refused? The gate sits here, ahead of the risk, filter
@@ -403,7 +491,15 @@ class JarvisRunner:
                     "ai_confidence": remembered.confidence,
                 },
             )
-            return False
+            return None
+        return AnalysedCandidate(symbol, cycle_id, idea, context)
+
+    def _process_candidate(self, candidate: AnalysedCandidate, account, positions) -> bool:  # type: ignore[no-untyped-def]
+        symbol = candidate.symbol
+        cycle_id = candidate.cycle_id
+        idea = candidate.idea
+        context = candidate.context
+        assert idea.direction is not None  # _analyse_candidate rejects a None direction
 
         spec = self.broker.spec(symbol)
         state = self.risk.build_state(account, positions)
@@ -634,8 +730,25 @@ class JarvisRunner:
                 "jarvis-exp-live" if self.operation is OperationMode.EXPERIMENTAL_LIVE else "jarvis"
             ),
         )
+        # Write the plan down before sending it. Between `order_send` returning
+        # and the journal row landing there was a window in which a crash left a
+        # real position the journal had never heard of — and on restart
+        # reconciliation reads exactly that as an orphan and closes it. A
+        # correctly sized, AI-approved trade could be destroyed by a power cut,
+        # with the loss booked and no record of why the position existed.
+        #
+        # With the intent on disk first, that same position can be matched back
+        # to the plan that created it. See `PositionManager.reconcile`.
+        trade_id = self.recorder.record_entry_intent(
+            cycle_pk=cycle_pk,
+            sizing=sizing,
+            equity_before=account.equity,
+        )
         result = self.broker.order_send(request, spec)
         if not result.ok:
+            self.journal.abandon_pending_entry(
+                trade_id, f"entry rejected: {result.retcode_name} {result.comment}"
+            )
             self.scan_activity.record_deep_decision(
                 symbol,
                 "ORDER_REJECTED",
@@ -648,12 +761,10 @@ class JarvisRunner:
             )
             self.alerts.send(f"Order rejected: {symbol} {result.retcode_name} {result.comment}")
             return False
-        trade_id = self.recorder.record_trade_open(
-            cycle_pk=cycle_pk,
-            sizing=sizing,
+        self.journal.promote_pending_entry(
+            trade_id,
             ticket=result.position_ticket,
             entry_price=result.filled_price,
-            equity_before=account.equity,
         )
         self.recorder.record_order_attempt(
             trade_id=trade_id, kind="ENTRY", symbol=symbol, result=result
