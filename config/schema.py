@@ -102,6 +102,13 @@ class DataConfig(Base):
     )
     #: Minimum closed bars before a timeframe is considered usable at all.
     min_bars_required: int = Field(default=200, ge=20)
+    #: Per-timeframe override. 200 bars is a sensible floor for an indicator on
+    #: an intraday series and an unreasonable demand on a weekly one: it asks
+    #: for four years of history, which a broker simply does not carry for most
+    #: share CFDs. COFFEE offered 81 weekly bars, STLAM and SPM 77, and all
+    #: three were discarded as having no data at all rather than as having
+    #: enough for the timeframes that actually drive the decision.
+    min_bars_by_timeframe: dict[str, int] = Field(default_factory=dict)
     #: A timeframe is stale if its newest closed bar is older than
     #: `stale_after_bars` * bar duration. Weekend gaps are handled separately.
     stale_after_bars: float = Field(default=3.0, ge=1.0)
@@ -116,12 +123,14 @@ class DataConfig(Base):
         missing = [tf for tf in self.timeframes if tf not in self.bars]
         if missing:
             raise ValueError(f"data.bars has no entry for timeframe(s): {missing}")
-        too_few = {tf: n for tf, n in self.bars.items() if n < self.min_bars_required}
+        too_few = {tf: n for tf, n in self.bars.items() if n < self.minimum_bars_for(tf)}
         if too_few:
-            raise ValueError(
-                f"data.bars below min_bars_required={self.min_bars_required}: {too_few}"
-            )
+            raise ValueError(f"data.bars below the minimum for that timeframe: {too_few}")
         return self
+
+    def minimum_bars_for(self, timeframe: str) -> int:
+        """Closed bars a timeframe must supply before it is considered usable."""
+        return self.min_bars_by_timeframe.get(timeframe, self.min_bars_required)
 
 
 class InstrumentsConfig(Base):
