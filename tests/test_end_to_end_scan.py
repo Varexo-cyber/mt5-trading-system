@@ -34,6 +34,7 @@ import yaml
 from advisory.providers import Advice, Reflection
 from config.loader import DEFAULT_CONFIG_PATH, load_settings
 from config.schema import MT5Config
+from core.clock import SimulatedClock
 from core.mt5_connector import MT5Connector
 from risk.reasons import Reason
 from runner.service import JarvisRunner, OperationMode
@@ -120,9 +121,13 @@ class _ApprovingAdvisor:
 def runner(fake: FakeMT5, settings: Any, tmp_path: Path) -> JarvisRunner:
     connector = MT5Connector(MT5Config(), mt5_module=fake)
     service = JarvisRunner(
-        connector, settings, tmp_path, OperationMode.MONITOR, advisor=_ApprovingAdvisor()
+        connector,
+        settings,
+        tmp_path,
+        OperationMode.MONITOR,
+        advisor=_ApprovingAdvisor(),
+        clock=SimulatedClock(MONDAY),
     )
-    service.clock.server_offset = timedelta(0)
     service.connect()
     return service
 
@@ -182,8 +187,10 @@ class TestMixedCatalogue:
 
         runner.run_once()
 
+        # Stability is the property. The absolute value depends on the wall
+        # clock the connector compares tick timestamps against, which is
+        # deliberately not the simulated one — brokers stamp ticks in real time.
         assert runner.broker.server_offset == after_first
-        assert after_first == timedelta(0)
         runner.close()
 
     def test_the_cycle_reports_what_it_did(self, runner: JarvisRunner) -> None:
@@ -204,6 +211,6 @@ class TestMixedCatalogue:
         runner.run_once()
         decisions = _decisions(runner)
 
-        assert all(r != Reason.RISK_LIMIT_EXCEEDED for _, r in decisions.values())
+        assert all(r != Reason.RISK_EXCEEDS_CAP for _, r in decisions.values())
         assert not runner.broker.positions(magic=runner.settings.system.magic_number)
         runner.close()

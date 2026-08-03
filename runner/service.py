@@ -28,7 +28,7 @@ from analysis import (
 )
 from config.schema import Settings
 from core.broker import Broker
-from core.clock import LiveClock
+from core.clock import Clock, LiveClock
 from core.data_manager import DataManager
 from core.errors import TradingSystemError
 from core.startup import run_startup_guard
@@ -94,6 +94,7 @@ class JarvisRunner:
         root: Path,
         operation: OperationMode = OperationMode.MONITOR,
         advisor: Advisor | None = None,
+        clock: Clock | None = None,
     ) -> None:
         self.root = root
         self.operation = operation
@@ -104,7 +105,11 @@ class JarvisRunner:
             if operation is OperationMode.PAPER
             else market
         )
-        self.clock = LiveClock()
+        # Injectable so a whole cycle can be exercised at a chosen moment. This
+        # was the last hardcoded LiveClock, and while it stood no end-to-end
+        # test could place itself on, say, a Monday morning — which is exactly
+        # when the interesting failures happen.
+        self.clock: Clock = clock or LiveClock()
         self.journal = Journal(
             root / self.settings.journal.database_path,
             self.clock,

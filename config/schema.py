@@ -459,6 +459,16 @@ class ConfluenceConfig(Base):
     #: Paper/backtest may research every module. Live execution is restricted
     #: to this independently validated subset; empty means live entries block.
     live_enabled_modules: tuple[str, ...] = ()
+
+    #: Lower timeframes checked for entry timing once a direction is chosen.
+    #: The bias comes from H4/H1; these decide whether *now* is the moment. An
+    #: empty tuple disables the check.
+    entry_timing_timeframes: tuple[str, ...] = ("M15", "M5")
+    #: Closed bars of lower-timeframe movement considered.
+    entry_timing_lookback: int = Field(default=6, ge=2, le=50)
+    #: Adverse movement, in ATR, that blocks the entry. A flat lower timeframe
+    #: is never an objection; only a move materially against the direction is.
+    entry_timing_max_adverse_atr: float = Field(default=0.50, gt=0.0, le=5.0)
     weights: dict[str, float] = Field(
         default_factory=lambda: {
             "market_structure": 1.0,

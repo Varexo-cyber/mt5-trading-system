@@ -390,8 +390,12 @@ def synthetic_rates(
     minutes = _minutes_for(timeframe)
     step = timedelta(minutes=minutes)
     last_open = (end or datetime.now(UTC)).replace(second=0, microsecond=0)
-    # Align to the timeframe grid so bar boundaries are realistic.
-    aligned = last_open - timedelta(minutes=last_open.minute % minutes)
+    # Align to the timeframe grid *measured from midnight*, which is what a
+    # broker actually serves. Aligning to the current minute instead produced a
+    # grid that drifted with the call time, so H4 bars landed at 03:00/07:00 on
+    # one run and 04:00/08:00 on the next and day boundaries fell inside a bar.
+    since_midnight = last_open.hour * 60 + last_open.minute
+    aligned = last_open - timedelta(minutes=since_midnight % minutes)
 
     times = _bar_times(aligned, step, count, session, intraday=minutes < 1440)
 

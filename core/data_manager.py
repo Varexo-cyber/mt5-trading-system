@@ -325,6 +325,12 @@ def is_market_closed(moment: datetime) -> bool:
     return bool(weekday == 6 and moment.hour < 22)  # Sunday before the open
 
 
+#: A gap width counted as the instrument's schedule rather than missing data
+#: once it recurs on at least this share of the days in the window. Half is
+#: comfortably above "happened a few times" and comfortably below "every
+#: trading day", which is what a session break actually does.
+_STRUCTURAL_GAP_SHARE = 0.5
+
 #: Friday 21:00 UTC to Sunday 22:00 UTC — the same window `is_market_closed`
 #: describes, as a duration.
 _WEEKEND_CLOSURE = timedelta(hours=49)
@@ -405,41 +411,53 @@ def _typical_gap(df: pd.DataFrame) -> timedelta:
 
 
 def _missing_bars(df: pd.DataFrame, tf: Timeframe) -> float:
-    """Bars absent from a series, judged against the instrument's own session.
+    """Bars absent from a series, judged against the instrument's own rhythm.
 
-    The previous rule assumed every instrument trades like spot FX: continuous
-    for 24 hours, five days a week, so any intraweek gap larger than one bar was
-    a hole in the feed. That is true for EURUSD and false for most of a broker
-    catalogue. WHEAT breaks for about five hours a day, a London share trades
-    eight hours out of twenty-four, and an index future has its own daily halt.
-    Measured that way, WHEAT H1 reported 415 bars "missing" — 20.8% against a 2%
-    limit — and every one of them was the market being shut. Whole asset classes
-    were rejected as corrupt data.
+    **A gap that recurs is structure; a gap that happens once is loss.** That is
+    the whole rule, and it is the only one that survived contact with a real
+    catalogue.
 
-    So the instrument is compared with itself. Bars are grouped by date and the
-    median day sets the expectation; a day short of it is missing that many
-    bars. A daily session break costs nothing, because every day has the same
-    break. A feed that genuinely dropped an hour still shows up as one short
-    day, which is what the check is for.
+    Two earlier attempts failed for instructive reasons. Assuming FX — anything
+    wider than one bar is a hole — made WHEAT H1 report 415 missing bars, 20.8%
+    against a 2% limit, every one of them the market being shut; whole asset
+    classes came back as corrupt data. Grouping by calendar date and comparing
+    against the median day then broke on sessions that straddle midnight, which
+    split one trading day across two dates and produced a run of short "days".
+    And a high percentile of gap widths cannot work either: a daily break is one
+    gap in nineteen on H1 and one in two hundred on M5, so no fixed quantile
+    catches it on both.
 
-    The first and last dates are excluded: both are partial by construction —
-    the window simply starts and ends mid-session.
+    Recurrence has none of those problems. A session break appears once per
+    trading day, at the same width every time. A dropped bar appears once. So
+    widths that show up on a large share of the days in the window are the
+    instrument's schedule and cost nothing; everything else is counted.
     """
     if tf.duration >= timedelta(days=1):
-        # Daily and above: one bar per trading day, so a short "day" is not a
-        # meaningful idea. Absent dates are holidays, not defects.
+        # Daily and above: absent days are holidays, not defects.
         return 0.0
 
-    per_day = df.groupby(df.index.date).size()
-    if len(per_day) < 3:
+    step = tf.duration
+    gaps = df.index.to_series().diff().dropna()
+    # Weekends are structure too, and `market_closed_overlap` already owns them.
+    intraweek = gaps[gaps < pd.Timedelta(days=2)]
+    oversized = intraweek[intraweek > pd.Timedelta(step)]
+    if oversized.empty:
         return 0.0
 
-    full_days = per_day.iloc[1:-1]
-    if full_days.empty:
-        return 0.0
+    days = max(len(set(df.index.date)), 1)
+    # Round to the timeframe so two bars of the same break count as one width.
+    widths = (oversized / pd.Timedelta(step)).round()
+    recurrence = widths.value_counts()
+    structural = {
+        width for width, count in recurrence.items() if count >= _STRUCTURAL_GAP_SHARE * days
+    }
 
-    typical = float(full_days.median())
-    return float((typical - full_days).clip(lower=0).sum())
+    missing = 0.0
+    for width, count in recurrence.items():
+        if width in structural:
+            continue
+        missing += float((width - 1) * count)
+    return missing
 
 
 def expected_bars_between(start: datetime, end: datetime, tf: Timeframe) -> int:
