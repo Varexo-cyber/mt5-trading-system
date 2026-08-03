@@ -372,4 +372,9 @@ class TestTradeFrequency:
         assert settings.instruments.universe_mode == "affordable"
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
         assert settings.ai.anthropic_model == "claude-sonnet-5"
-        assert settings.scanner.deep_candidates == 20
+        # Large enough to cover everything the cheap scan lets through on a full
+        # broker catalogue, rather than a top-N slice of it.
+        assert settings.scanner.deep_candidates >= 200
+        # One module plus Claude. Two modules cannot agree in practice: the two
+        # heaviest look for opposite market states.
+        assert settings.analysis.confluence.minimum_directional_modules == 1

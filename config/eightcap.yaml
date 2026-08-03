@@ -22,7 +22,19 @@ instruments:
 
 scanner:
   batch_size: null        # rank the entire catalogue every cycle
-  deep_candidates: 20     # full multi-timeframe analysis on the top 20
+
+  # Every market that survives the cheap scan gets the full multi-timeframe
+  # analysis, not a top-20 slice of it. The cheap scan already threw out
+  # everything untradeable — shut exchange, stale quote, spread over the limit,
+  # too little history. What remains is roughly 180 live markets, and ranking
+  # them by trend strength before analysing them was deciding which setups are
+  # worth looking at using a cruder measure than the analysis itself.
+  #
+  # A cycle over the whole catalogue took one second. There is no budget being
+  # protected here. If cycle time climbs into the tens of seconds on a slow
+  # terminal, lower this rather than the batch size — the log line reports both
+  # the count and the duration.
+  deep_candidates: 400
 
 analysis:
   confluence:

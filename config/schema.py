@@ -540,18 +540,27 @@ class MonitoringConfig(Base):
 class ScannerConfig(Base):
     """How much of the broker catalogue is inspected per cycle.
 
-    The cheap ranking pass covers the whole catalogue; only the top
+    The cheap ranking pass covers the whole catalogue; the top
     ``deep_candidates`` get full multi-timeframe analysis, and only what
-    survives every deterministic gate reaches the AI reviewer. That staging is
-    what keeps a 800-symbol catalogue affordable in both latency and API cost —
-    deep-analysing everything would take minutes per cycle and reviewing
-    everything with an LLM would cost more than the account is worth.
+    survives every deterministic gate reaches the AI reviewer.
+
+    The staging exists to bound API cost, not analysis. Deep analysis is local
+    pandas over bars already fetched and cached — a full catalogue pass measured
+    one second. The LLM is the expensive stage, and it is protected by the
+    deterministic gates downstream, which reject the overwhelming majority
+    before a single token is spent. So ``deep_candidates`` can reasonably cover
+    everything the cheap scan let through; ranking is only a way to decide what
+    to drop when it cannot.
     """
 
     #: Symbols cheaply ranked per cycle. None = the whole catalogue.
     batch_size: int | None = Field(default=None, ge=1)
-    #: Top-ranked symbols promoted to full analysis each cycle.
-    deep_candidates: int = Field(default=12, ge=1, le=100)
+    #: Top-ranked symbols promoted to full analysis each cycle. The ceiling is
+    #: the size of a large broker catalogue, so "analyse everything the cheap
+    #: scan let through" is expressible. The old limit of 100 made that
+    #: impossible to configure, which is a policy decision that does not belong
+    #: in a schema bound.
+    deep_candidates: int = Field(default=12, ge=1, le=2000)
 
 
 class AIConfig(Base):

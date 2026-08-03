@@ -269,7 +269,7 @@ class JarvisRunner:
         self._save_cursor()
         summary = self._summary(started_at, batch, deep, opened)
         self._save_heartbeat(summary)
-        self._log_cycle(summary)
+        self._log_cycle(summary, batch)
         self.operation_ledger.cycle(
             summary.finished_at,
             trades_opened=summary.trades_opened,
@@ -894,7 +894,7 @@ class JarvisRunner:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"cursor": self.cursor}), encoding="utf-8")
 
-    def _log_cycle(self, summary: CycleSummary) -> None:
+    def _log_cycle(self, summary: CycleSummary, batch: ScanBatch) -> None:
         """One line per cycle, so the console shows the system is alive.
 
         There was no such line. The only thing reaching the console during a
@@ -902,21 +902,37 @@ class JarvisRunner:
         fixed the process looked frozen — a full-catalogue pass takes minutes
         and printed nothing at all until it opened a trade, which on a EUR 100
         account may be never. Silence and a hang have to look different.
+
+        The rejection breakdown is here because "659 rejected" invites exactly
+        one question and answers none of it. Six hundred instruments refused
+        because their exchange is shut at 08:15 UTC is the system working;
+        six hundred refused on spread is a misconfigured limit. Those look
+        identical in a bare count and need opposite responses.
         """
         elapsed = (summary.finished_at - summary.started_at).total_seconds()
+        stages: dict[str, int] = {}
+        for row in batch.inspections:
+            if row.status == "REJECTED":
+                stages[row.stage] = stages.get(row.stage, 0) + 1
+        breakdown = ", ".join(
+            f"{n} {stage}" for stage, n in sorted(stages.items(), key=lambda kv: -kv[1])
+        )
         log.info(
-            "cycle: %d/%d scanned, %d rejected, %d analysed, %d opened, %.0fs",
+            "cycle: %d/%d scanned, %d eligible, %d analysed, %d opened, %.0fs%s",
             summary.inspected,
             summary.universe_size,
-            summary.rejected,
+            summary.inspected - summary.rejected,
             summary.deep_analysed,
             summary.trades_opened,
             elapsed,
+            f" | rejected: {breakdown}" if breakdown else "",
             extra={
                 "event": "cycle_complete",
                 "inspected": summary.inspected,
                 "universe_size": summary.universe_size,
+                "eligible": summary.inspected - summary.rejected,
                 "rejected": summary.rejected,
+                "rejected_by_stage": stages,
                 "deep_analysed": summary.deep_analysed,
                 "trades_opened": summary.trades_opened,
                 "seconds": round(elapsed, 1),
