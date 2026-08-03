@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 import yaml
 
-from advisory.providers import Advice, Reflection
+from advisory.providers import Advice, Reflection, Supervision
 from config.loader import DEFAULT_CONFIG_PATH, load_settings
 from config.schema import MT5Config
 from core.clock import SimulatedClock
@@ -115,6 +115,9 @@ class _ApprovingAdvisor:
 
     def reflect(self, *_args: object, **_kwargs: object) -> Reflection:
         return Reflection("test", provider="fake")
+
+    def supervise(self, *_args: object, **_kwargs: object) -> Supervision:
+        return Supervision("hold", "test", provider="fake")
 
 
 @pytest.fixture

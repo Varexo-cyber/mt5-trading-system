@@ -7,11 +7,15 @@ from datetime import datetime
 
 import pandas as pd
 
+from advisory.providers import Supervision
 from config.schema import Settings
 from core.broker import Broker
 from core.types import Direction, Position, Timeframe
 from filters.news_filter import NewsFilter
+from infra.logging import get_logger
 from journal.database import Journal
+
+log = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +213,140 @@ class PositionManager:
                             )
                         )
         return events
+
+    def apply_supervision(self, position: Position, verdict: Supervision) -> ManagementEvent | None:
+        """Execute a supervisor's verdict, after re-proving it reduces risk.
+
+        The verdict was formed against a snapshot; by the time it arrives the
+        market has moved. So the guard runs here, against the position and the
+        price as they are right now, and not where the question was asked. A
+        verdict that no longer de-risks is dropped and logged rather than
+        clamped into something the adviser did not say — silently "fixing" a
+        stop into a valid one would execute a decision nobody made.
+
+        The mechanical rules in `manage` have already run this cycle and their
+        results stand. This layer can only move things further in the
+        protective direction, never undo them.
+        """
+        if verdict.action == "hold":
+            return None
+        spec = self.broker.spec(position.symbol)
+        tick = self.broker.tick(position.symbol)
+        sign = int(position.direction)
+        price = tick.bid if position.direction is Direction.LONG else tick.ask
+        if not verdict.is_risk_reducing(
+            direction_sign=sign,
+            current_sl=position.sl,
+            current_tp=position.tp,
+            price_now=price,
+        ):
+            log.warning(
+                "supervisor verdict refused: it would not reduce risk",
+                extra={
+                    "event": "supervision_refused",
+                    "ticket": position.ticket,
+                    "action": verdict.action,
+                    "symbol": position.symbol,
+                },
+            )
+            return ManagementEvent(
+                position.ticket,
+                "AI_SUPERVISION_REFUSED",
+                f"{verdict.action} rejected: would not reduce risk ({verdict.reason})"[:400],
+            )
+
+        risk = abs(position.price_open - position.sl) if position.sl else 0.0
+        r_now = ((price - position.price_open) * sign / risk) if risk else None
+
+        if verdict.action == "close":
+            result = self.broker.close_position(position)
+            if not result.ok:
+                return ManagementEvent(
+                    position.ticket,
+                    "AI_EXIT_REJECTED",
+                    f"broker rejected AI exit: {result.retcode_name}",
+                )
+            closed = self.broker.closed_position(position.ticket)
+            return ManagementEvent(
+                position.ticket,
+                "AI_CLOSE" if closed is not None else "AI_CLOSE_SENT",
+                verdict.reason[:400],
+                closed.exit_price if closed is not None else result.filled_price,
+                closed.pnl_money if closed is not None else position.profit + position.swap,
+                closed.closed_at if closed is not None else None,
+                r_at_action=r_now,
+            )
+
+        if verdict.action == "partial_close":
+            fraction = verdict.close_fraction or 0.0
+            close_volume = spec.round_volume_down(position.volume * fraction)
+            remaining = spec.round_volume_down(position.volume - close_volume)
+            if close_volume < spec.volume_min or remaining < spec.volume_min:
+                # At 0.01 lots there is no such thing as half a position. Saying
+                # so is more useful than silently doing nothing, and closing the
+                # whole thing instead would be a different decision.
+                return ManagementEvent(
+                    position.ticket,
+                    "AI_PARTIAL_INFEASIBLE",
+                    f"cannot split {position.volume:g} lots at the {spec.volume_min:g} minimum",
+                )
+            result = self.broker.close_position(position, close_volume)
+            if not result.ok:
+                return ManagementEvent(
+                    position.ticket,
+                    "AI_EXIT_REJECTED",
+                    f"broker rejected AI partial: {result.retcode_name}",
+                )
+            return ManagementEvent(
+                position.ticket,
+                "AI_PARTIAL_CLOSE",
+                verdict.reason[:400],
+                exit_price=result.filled_price,
+                volume_closed=result.filled_volume,
+                remaining_volume=remaining,
+                r_at_action=r_now,
+            )
+
+        if verdict.action == "tighten_stop":
+            assert verdict.stop_loss is not None  # is_risk_reducing proved it
+            result = self.broker.modify_stops(
+                position,
+                sl=spec.normalize_price(verdict.stop_loss),
+                tp=position.tp,
+            )
+            if not result.ok:
+                return ManagementEvent(
+                    position.ticket,
+                    "AI_MODIFY_REJECTED",
+                    f"broker rejected AI stop: {result.retcode_name}",
+                )
+            return ManagementEvent(
+                position.ticket,
+                "AI_TIGHTEN_STOP",
+                verdict.reason[:400],
+                r_at_action=r_now,
+            )
+
+        if verdict.action == "pull_target_in":
+            assert verdict.take_profit is not None  # is_risk_reducing proved it
+            result = self.broker.modify_stops(
+                position,
+                sl=position.sl,
+                tp=spec.normalize_price(verdict.take_profit),
+            )
+            if not result.ok:
+                return ManagementEvent(
+                    position.ticket,
+                    "AI_MODIFY_REJECTED",
+                    f"broker rejected AI target: {result.retcode_name}",
+                )
+            return ManagementEvent(
+                position.ticket,
+                "AI_PULL_TARGET_IN",
+                verdict.reason[:400],
+                r_at_action=r_now,
+            )
+        return None
 
     def manage_news(
         self, positions: list[Position], news_filter: NewsFilter
