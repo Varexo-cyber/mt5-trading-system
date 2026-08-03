@@ -60,12 +60,16 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
-#: Consecutive observations required before believing the broker's timezone
-#: moved *backwards*. A real shift is a DST change: one hour, permanent, and it
-#: will be reported by every subsequent tick. A stale quote from a closed
-#: exchange also looks like a backwards shift, but the next fresh tick
-#: contradicts it.
-_OFFSET_DECREASE_CONFIRMATIONS = 20
+#: How long the broker-time offset is held without being reconfirmed by a tick
+#: that agrees with it. During market hours some symbol quotes every few
+#: seconds, so the real offset is reconfirmed constantly and a lower reading
+#: from a closed exchange never takes hold. Only a genuine timezone change (DST)
+#: stops the reconfirmation, and then the offset re-baselines after this long.
+_OFFSET_MAX_AGE = timedelta(minutes=15)
+
+#: Slow MT5 calls are counted and reported at most this often, not one line per
+#: call. A full-catalogue scan on a slow terminal produces hundreds.
+_SLOW_CALL_SUMMARY_SECONDS = 60.0
 
 
 def import_mt5() -> ModuleType:
@@ -122,8 +126,10 @@ class MT5Connector:
         self._spec_cache: dict[str, InstrumentSpec] = {}
         self._selected: set[str] = set()
         self._server_offset = timedelta(0)
-        self._offset_established = False
-        self._offset_decrease_votes = 0
+        self._offset_confirmed_at: datetime | None = None
+        self._slow_calls = 0
+        self._slow_call_ms = 0.0
+        self._slow_call_reported_at = time.monotonic()
         self._last_error: tuple[int, str] | None = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -540,21 +546,26 @@ class MT5Connector:
         Rounded to whole hours: the real offset is always a whole number of
         hours, and rounding removes the tick's own latency from the estimate.
 
-        **The freshest tick wins, and a decrease has to be earned.** This runs
-        on every tick of every symbol, and a scan of the whole catalogue reads
-        instruments whose exchange is shut. A stale quote makes the broker look
-        *earlier* than it is, so it produces a smaller delta — and if it happens
-        to be a whole number of hours old it sails through the residual filter
-        and looks exactly like a timezone. The result was an offset flapping
-        many times a second between the real value and whatever the most
-        recently read closed market implied, which silently moved every session
-        boundary and day rollover that depends on it.
+        **The offset is the maximum over a recent window, not the last reading.**
+        This runs on every tick of every symbol, and a scan of the whole
+        catalogue reads instruments whose exchange is shut. A stale quote makes
+        the broker look *earlier* than it is, so it yields a smaller delta — and
+        if it happens to be a whole number of hours old it sails through the
+        residual filter and is indistinguishable from a timezone. Taking the
+        last reading made the offset flap between the real value and whatever
+        the most recently read closed market implied, which silently moved every
+        session boundary and day rollover that depends on it.
 
-        No tick can arrive from the future, so among ticks read at the same
-        moment the largest delta is the freshest one. An increase is therefore
-        adopted immediately. A decrease is only real when the broker changes
-        timezone (DST, ±1h, permanent), so it must be confirmed by several
-        consecutive observations before it is believed.
+        No tick can arrive from the future, so a fresh quote always produces the
+        largest delta and a stale one can never beat it. Holding the maximum is
+        therefore exactly "trust the freshest symbol", with no need to know in
+        advance which symbol that is.
+
+        The window is what lets the value ever come down. A DST change stops the
+        old maximum from being reconfirmed; once it ages out, the next reading
+        re-baselines. Counting consecutive lower readings instead does not work
+        here — during a scan there are hundreds of closed markets in a row, so
+        any threshold is reached by stale data alone.
         """
         delta = server_time - datetime.now(UTC)
         hours = round(delta.total_seconds() / 3600.0)
@@ -567,42 +578,31 @@ class MT5Connector:
             return
 
         offset = timedelta(hours=hours)
+        now = datetime.now(UTC)
+        confirmed_at = self._offset_confirmed_at
+        expired = confirmed_at is None or now - confirmed_at > _OFFSET_MAX_AGE
+
         if offset == self._server_offset:
-            self._offset_decrease_votes = 0
+            self._offset_confirmed_at = now
+            return
+        if offset < self._server_offset and not expired:
             return
 
-        if offset > self._server_offset:
-            established = self._offset_established
-            self._server_offset = offset
-            self._offset_established = True
-            self._offset_decrease_votes = 0
-            log.info(
-                "broker server time offset %s",
-                "updated" if established else "established",
-                extra={"event": "server_offset", "offset_hours": hours},
-            )
-            return
-
-        # Smaller than what we hold: either a stale quote or a real DST shift.
-        self._offset_decrease_votes += 1
-        if self._offset_decrease_votes < _OFFSET_DECREASE_CONFIRMATIONS:
-            log.debug(
-                "ignoring a smaller server offset pending confirmation",
-                extra={
-                    "event": "server_offset_unconfirmed",
-                    "candidate_hours": hours,
-                    "held_hours": self._server_offset.total_seconds() / 3600.0,
-                    "votes": self._offset_decrease_votes,
-                },
-            )
-            return
-
-        log.info(
-            "broker server time offset moved back",
-            extra={"event": "server_offset", "offset_hours": hours},
-        )
+        previous = self._server_offset
         self._server_offset = offset
-        self._offset_decrease_votes = 0
+        self._offset_confirmed_at = now
+        log.info(
+            (
+                "broker server time offset established"
+                if confirmed_at is None
+                else "broker server time offset changed"
+            ),
+            extra={
+                "event": "server_offset",
+                "offset_hours": hours,
+                "previous_hours": previous.total_seconds() / 3600.0,
+            },
+        )
 
     # -- market data --------------------------------------------------------
 
@@ -949,10 +949,27 @@ class MT5Connector:
         result = func(*args, **kwargs)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if elapsed_ms > self.config.slow_call_warn_ms:
-            log.warning(
-                "slow MT5 call",
-                extra={"event": "mt5_slow_call", "function": function, "ms": round(elapsed_ms, 1)},
-            )
+            self._slow_calls += 1
+            self._slow_call_ms += elapsed_ms
+            # Summarised rather than printed per call. Scanning a full broker
+            # catalogue makes thousands of calls and a slow terminal makes many
+            # of them slow, which buries every other line in the console. The
+            # count is the signal; one instance never was.
+            now = time.monotonic()
+            if now - self._slow_call_reported_at >= _SLOW_CALL_SUMMARY_SECONDS:
+                log.warning(
+                    "slow MT5 calls",
+                    extra={
+                        "event": "mt5_slow_call",
+                        "count": self._slow_calls,
+                        "window_seconds": round(now - self._slow_call_reported_at, 1),
+                        "average_ms": round(self._slow_call_ms / self._slow_calls, 1),
+                        "last_function": function,
+                    },
+                )
+                self._slow_calls = 0
+                self._slow_call_ms = 0.0
+                self._slow_call_reported_at = now
         return result
 
     def _last_error_tuple(self) -> tuple[int, str]:
