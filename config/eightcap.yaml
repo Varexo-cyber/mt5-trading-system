@@ -51,6 +51,24 @@ data:
     M5: 2000
     M1: 1200      # ~20 hours; entry-timing context, not a history for analysis
 
+  # 200 closed bars is a fair floor for an intraday indicator and an absurd one
+  # on a weekly series: it demands four years of history that a broker does not
+  # carry for most share CFDs. COFFEE offered 81 weekly bars, STLAM and SPM 77,
+  # and all three were thrown out as having no data at all — losing the six
+  # timeframes that actually drive the decision over the one that only sets
+  # background context.
+  min_bars_by_timeframe:
+    W1: 50
+    D1: 120
+
+  # A London share left 43 bars "missing" out of 2000 — 2.2% against a 2.0%
+  # limit. The recurrence rule already forgives the nightly close; what remains
+  # is auction periods, half-days and holidays, which every exchange-traded
+  # instrument has and spot FX does not. Two percent was a number chosen for a
+  # market that trades continuously. Five still catches a feed that dropped a
+  # session, which is what the check is for.
+  max_gap_fraction: 0.05
+
 scanner:
   batch_size: null        # rank the entire catalogue every cycle
 

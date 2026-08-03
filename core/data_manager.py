@@ -70,7 +70,7 @@ class DataManager:
     ) -> Series:
         """Closed bars for one symbol/timeframe, validated and cached."""
         tf = Timeframe.parse(timeframe)
-        bars = count or self.config.bars.get(tf.value, self.config.min_bars_required)
+        bars = count or self.config.bars.get(tf.value, self.config.minimum_bars_for(tf.value))
         key = (symbol, tf)
 
         cached = self._cache.get(key)
@@ -127,10 +127,11 @@ class DataManager:
         df = self._to_frame(raw)
         df = self._drop_forming_bar(df, tf)
 
-        if len(df) < self.config.min_bars_required:
+        required = self.config.minimum_bars_for(tf.value)
+        if len(df) < required:
             raise InsufficientDataError(
                 f"{symbol} {tf}: {len(df)} closed bars available, "
-                f"{self.config.min_bars_required} required. The broker may not offer "
+                f"{required} required. The broker may not offer "
                 f"this much history for this symbol/timeframe."
             )
 
