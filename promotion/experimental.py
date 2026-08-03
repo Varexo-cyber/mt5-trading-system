@@ -102,15 +102,36 @@ class ExperimentalLiveContract:
         if account.is_demo:
             failures.append("connected account is demo")
         if abs(self.risk_per_trade_pct - EXPERIMENTAL_RISK_PER_TRADE_PCT) > 1e-9:
-            failures.append("contract risk must be exactly 1%")
+            # The numbers, not a hardcoded sentence. This said "exactly 1%"
+            # after the constant moved to 2%, so the message named a figure
+            # nothing in the system used any more and gave the operator no way
+            # to see which of the two values was actually wrong.
+            failures.append(
+                f"contract was armed at {self.risk_per_trade_pct:.2f}% but this build "
+                f"requires {EXPERIMENTAL_RISK_PER_TRADE_PCT:.2f}% — re-arm with "
+                f"--risk-percent {EXPERIMENTAL_RISK_PER_TRADE_PCT:g}"
+            )
         if abs(self.max_drawdown_pct - EXPERIMENTAL_MAX_DRAWDOWN_PCT) > 1e-9:
-            failures.append("contract drawdown must be exactly 15%")
+            failures.append(
+                f"contract drawdown is {self.max_drawdown_pct:.2f}% but this build "
+                f"requires {EXPERIMENTAL_MAX_DRAWDOWN_PCT:.2f}%"
+            )
         if abs(settings.effective_risk_pct() - self.risk_per_trade_pct) > 1e-9:
-            failures.append("effective risk is not exactly 1%")
+            failures.append(
+                f"effective risk resolves to {settings.effective_risk_pct():.2f}% but the "
+                f"contract binds it to {self.risk_per_trade_pct:.2f}%"
+            )
         if settings.effective_max_risk_pct() > self.risk_per_trade_pct + 1e-9:
-            failures.append("effective risk ceiling exceeds 1%")
+            failures.append(
+                f"effective risk ceiling is {settings.effective_max_risk_pct():.2f}%, above "
+                f"the contract's {self.risk_per_trade_pct:.2f}%"
+            )
         if settings.risk.max_drawdown_circuit_breaker_pct > self.max_drawdown_pct + 1e-9:
-            failures.append("configured drawdown breaker exceeds 15%")
+            failures.append(
+                f"configured drawdown breaker is "
+                f"{settings.risk.max_drawdown_circuit_breaker_pct:.2f}%, above the "
+                f"contract's {self.max_drawdown_pct:.2f}%"
+            )
         if account.equity < settings.active_limits.min_equity:
             failures.append("equity is below the micro-live minimum")
         maximum = settings.active_limits.max_equity
