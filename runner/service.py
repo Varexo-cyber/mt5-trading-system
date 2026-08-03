@@ -269,6 +269,33 @@ class JarvisRunner:
         self.cursor = batch.next_cursor
         opened = 0
         deep = 0
+
+        # Ask first whether a trade is possible at all. This was only checked
+        # *after* one opened, so with the maximum positions already running the
+        # loop still walked every candidate, sized it, and paid Claude to review
+        # a trade that could not be placed no matter what the answer was. The
+        # money and the seconds were spent on a question already settled.
+        permission = self.risk.check_can_trade(state)
+        if not permission.approved:
+            log.info(
+                "not taking new risk this cycle: %s",
+                permission.reason,
+                extra={
+                    "event": "cycle_no_new_risk",
+                    "reason": str(permission.reason),
+                    "detail": permission.detail,
+                    "open_positions": len(positions),
+                },
+            )
+            batch = ScanBatch(
+                (),
+                batch.inspections,
+                batch.inspected,
+                batch.rejected,
+                batch.next_cursor,
+                batch.universe_size,
+            )
+
         for candidate in batch.candidates:
             deep += 1
             try:

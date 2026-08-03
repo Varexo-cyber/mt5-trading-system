@@ -709,8 +709,16 @@ class MT5Connector:
                 time.sleep(self.config.order_retry_delay_ms / 1000.0)
 
         assert last is not None  # loop runs at least once
+        # The reason belongs in the message, not only in the structured extra.
+        # A console showing a bare "order rejected" every cycle says the system
+        # is broken without saying how, and the one fact that would fix it —
+        # what the broker actually objected to — was sitting in a log file
+        # nobody was reading.
         log.error(
-            "order rejected",
+            "order rejected: %s (%s) %s",
+            last.retcode_name,
+            last.retcode,
+            last.comment or "no broker comment",
             extra={
                 "event": "order_rejected",
                 "symbol": request.symbol,
@@ -718,6 +726,9 @@ class MT5Connector:
                 "retcode_name": last.retcode_name,
                 "broker_comment": last.comment,
                 "attempts": attempts,
+                "volume": request.volume,
+                "sl": request.sl,
+                "tp": request.tp,
             },
         )
         return last

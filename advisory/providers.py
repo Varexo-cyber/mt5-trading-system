@@ -543,6 +543,15 @@ usual uncertainty, which is what most tradeable setups look like; below 0.55 you
 it. Do not anchor around 0.6 for everything. If you approve, your confidence must reflect that
 you would take the trade.
 
+AND DO NOT OVERCORRECT. Being told not to nitpick is not permission to wave everything through.
+This account can hold two positions at a time, so an approval spends a scarce slot, and an
+approval you would not defend is worse than a veto because it costs money rather than an
+opportunity. Approving nine of the last ten is as broken as vetoing seventy-four in a row: both
+mean the review is not reading the evidence, only applying a mood. Some setups genuinely are bad,
+and those still deserve a clear veto — a stop that sits inside recent noise, a target that needs
+the market to break a level it has already failed at twice, a trend that only exists on one
+timeframe while the others range. Say no to those plainly.
+
 Hard filters, risk limits and sizing have already run and are not yours to reconsider. You may not
 propose a different trade, or change volume, stop, target or risk. Never infer missing data."""
 
