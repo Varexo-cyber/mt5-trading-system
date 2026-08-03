@@ -421,3 +421,31 @@ def test_a_populated_mapping_in_an_overlay_still_merges(tmp_path: Path) -> None:
     floors = settings.instruments.min_equity_for_symbol
     assert floors["XAUUSD"] == 250.0
     assert "US30" in floors, "keys not mentioned in the overlay must survive"
+
+
+def test_asset_classes_narrow_the_catalogue_without_changing_judgement(tmp_path: Path) -> None:
+    """Choosing which markets to look at is a horizon decision, not a quality one.
+
+    The stop is 1.5 ATR and the target twice that, so in market hours every
+    class reaches its target in about the same time. A London share is open 42
+    hours a week against FX's 120, so the same setup takes roughly six calendar
+    days instead of two — and with two position slots that is half the account's
+    capacity held for a week.
+    """
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(
+        yaml.safe_dump({"instruments": {"asset_classes": ["forex", "metal"]}}), encoding="utf-8"
+    )
+    settings = load_settings(overlay=overlay, env_overrides=False)
+
+    assert settings.instruments.asset_classes == ("forex", "metal")
+
+
+def test_an_unknown_asset_class_is_rejected_at_load(tmp_path: Path) -> None:
+    """A typo must not silently scan nothing at all."""
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(
+        yaml.safe_dump({"instruments": {"asset_classes": ["forex", "stonks"]}}), encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="stonks"):
+        load_settings(overlay=overlay, env_overrides=False)
