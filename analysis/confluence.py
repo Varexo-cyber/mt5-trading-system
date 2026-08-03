@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from config.schema import ConfluenceConfig
@@ -103,7 +104,9 @@ class ConfluenceEngine:
         risk = abs(entry - stop)
         if risk <= 0:
             return self._reject(ctx, signals, "could not construct a positive stop distance")
-        target = entry + risk * self.config.target_r_multiple * int(direction)
+        target, target_note = self._reachable_target(ctx, entry, risk, direction)
+        if target is None:
+            return self._reject(ctx, signals, target_note)
         return TradeIdea(
             symbol=ctx.symbol,
             approved=True,
@@ -116,6 +119,65 @@ class ConfluenceEngine:
             reason=f"{len(agreeing)} modules agree ({agreement:.0%})",
             signals=signals,
         )
+
+    def _reachable_target(
+        self, ctx: MarketContext, entry: float, risk: float, direction: Direction
+    ) -> tuple[float | None, str]:
+        """Place the target where this market actually goes, not where R says.
+
+        `entry + 2R` is arithmetic. It never asks whether the instrument travels
+        that far, so a slow market gets a target it reaches once a month and the
+        trade becomes, in practice, a bet on the stop not being hit — the reward
+        half of the reward-to-risk never arrives.
+
+        So the distance is also measured against the instrument's own history:
+        how far it has moved in the proposed direction within `horizon_bars`,
+        taken at a percentile rather than a maximum so one violent week does not
+        set the expectation. The target is the smaller of the two.
+
+        A floor protects the other side. Shrinking the target indefinitely would
+        buy a high hit rate with trades that cannot pay for their own spread, so
+        below `minimum_r` the setup is rejected outright rather than sized down
+        into something not worth taking.
+        """
+        config = self.config
+        planned = risk * config.target_r_multiple
+        signal = ctx.series.get(Timeframe.H1)
+        if signal is None or len(signal.df) < config.target_horizon_bars * 3:
+            return entry + planned * int(direction), "no history to bound the target"
+
+        frame = signal.df.tail(400)
+        closes = frame["close"].to_numpy()
+        extremes = (frame["high"] if direction is Direction.LONG else frame["low"]).to_numpy()
+        horizon = config.target_horizon_bars
+        windows = len(closes) - horizon
+        if windows <= 0:
+            return entry + planned * int(direction), "no history to bound the target"
+
+        # Favourable excursion: how far price ran our way from each starting bar.
+        runs = [
+            (
+                extremes[start + 1 : start + 1 + horizon].max() - closes[start]
+                if direction is Direction.LONG
+                else closes[start] - extremes[start + 1 : start + 1 + horizon].min()
+            )
+            for start in range(windows)
+        ]
+        typical = float(np.quantile(runs, config.target_reach_quantile))
+
+        if typical <= 0:
+            return None, "this market has not moved in this direction over the horizon"
+
+        distance = min(planned, typical)
+        achieved_r = distance / risk
+        if achieved_r < config.minimum_r_multiple:
+            return None, (
+                f"a reachable target is only {achieved_r:.2f}R — this market travels "
+                f"{typical:.5f} in {horizon} bars against a {risk:.5f} stop, below the "
+                f"{config.minimum_r_multiple:.2f}R minimum"
+            )
+        note = "planned" if distance >= planned else f"trimmed to {achieved_r:.2f}R"
+        return entry + distance * int(direction), note
 
     def _entry_timing_conflict(self, ctx: MarketContext, direction: Direction) -> str | None:
         """Refuse an entry the immediate price action is moving against.
