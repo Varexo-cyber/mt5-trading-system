@@ -125,7 +125,23 @@ class PositionManager:
                     )
         return events
 
-    def manage(self, positions: list[Position], now: datetime) -> list[ManagementEvent]:
+    def manage(
+        self,
+        positions: list[Position],
+        now: datetime,
+        patience: float = 1.0,
+    ) -> list[ManagementEvent]:
+        """Apply the mechanical rules to every open position.
+
+        `patience` scales only the stalled-trade timeout, and only downward —
+        see `risk.posture`. After a run of losses a trade that is going nowhere
+        gets less rope, because what recovers a drawdown is having the slot and
+        the capital free for the next good setup, not sitting in a dead trade.
+        Clamped here as well as at the source: a value above 1.0 would grant
+        *extra* patience in a drawdown, which is the exact inversion this is
+        meant to prevent.
+        """
+        patience = min(1.0, max(0.1, patience))
         events: list[ManagementEvent] = []
         config = self.settings.trade_management
         for position in positions:
@@ -140,9 +156,12 @@ class PositionManager:
             price = tick.bid if position.direction is Direction.LONG else tick.ask
             r_now = (price - position.price_open) * int(position.direction) / risk
             age_hours = (now - position.opened_at).total_seconds() / 3600.0
+            deadline = (
+                config.time_exit_hours * patience if config.time_exit_hours is not None else None
+            )
             if (
-                config.time_exit_hours is not None
-                and age_hours >= config.time_exit_hours
+                deadline is not None
+                and age_hours >= deadline
                 and abs(r_now) < config.time_exit_min_abs_r
             ):
                 result = self.broker.close_position(position)
@@ -150,7 +169,8 @@ class PositionManager:
                     ManagementEvent(
                         position.ticket,
                         "TIME_EXIT",
-                        f"{age_hours:.1f}h, {r_now:.2f}R",
+                        f"{age_hours:.1f}h, {r_now:.2f}R"
+                        + (f" (drawdown posture: {deadline:.1f}h limit)" if patience < 1.0 else ""),
                         result.filled_price,
                         position.profit + position.swap,
                     )

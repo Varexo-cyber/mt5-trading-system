@@ -62,6 +62,7 @@ from reporting.daily_report import DailyReportGenerator
 from reporting.execution_report import ExecutionReportGenerator
 from reporting.weekly_report import WeeklyReportGenerator
 from risk.position_sizer import PositionSizer
+from risk.posture import PostureAssessment, assess
 from risk.reasons import Reason
 from risk.risk_manager import RiskManager
 from scanner.universe import ScanBatch, UniverseScanner
@@ -189,6 +190,8 @@ class JarvisRunner:
         # ticket -> when the supervisor last looked at it, so an open position
         # is reconsidered on a sane cadence rather than every thirty seconds.
         self._supervised_at: dict[int, datetime] = {}
+        # Recomputed every cycle; STEADY until the first one runs.
+        self.posture: PostureAssessment = assess(consecutive_losses=0, equity=1.0, equity_peak=1.0)
 
     def connect(self) -> None:
         account = self.broker.connect()
@@ -295,7 +298,31 @@ class JarvisRunner:
         if news_filter is not None:
             self._record_management(self.manager.manage_news(positions, news_filter))
             positions = self.broker.positions(magic=self.settings.system.magic_number)
-        self._record_management(self.manager.manage(positions, self.clock.now()))
+        # How the account should be carrying itself, given the last few trades.
+        # Only ever tightens: less patience with a stalled trade, a higher bar
+        # for a new one. Never larger size — see risk/posture.py.
+        interim = self.risk.build_state(account, positions)
+        self.posture = assess(
+            consecutive_losses=interim.consecutive_losses,
+            equity=interim.equity,
+            equity_peak=interim.equity_peak,
+        )
+        if self.posture.is_stressed:
+            log.warning(
+                "trading posture is %s",
+                self.posture.posture.value,
+                extra={
+                    "event": "posture",
+                    "posture": self.posture.posture.value,
+                    "consecutive_losses": self.posture.consecutive_losses,
+                    "drawdown_pct": round(self.posture.drawdown_pct, 2),
+                    "patience": self.posture.patience_multiplier,
+                    "entry_bar_bonus": self.posture.entry_bar_bonus,
+                },
+            )
+        self._record_management(
+            self.manager.manage(positions, self.clock.now(), self.posture.patience_multiplier)
+        )
         positions = self.broker.positions(magic=self.settings.system.magic_number)
         # The mechanical rules have had their say; now the judgement layer. It
         # runs after them deliberately — break-even and the ATR trail are
@@ -369,9 +396,11 @@ class JarvisRunner:
         # Every candidate now gets the full chart analysis, so this is the
         # honest count of deep work done — not the number that survived it.
         deep = len(batch.candidates)
-        for candidate in analysed:
+        for rank, candidate in enumerate(analysed, start=1):
             try:
-                traded = self._process_candidate(candidate, account, tuple(positions))
+                traded = self._process_candidate(
+                    candidate, account, tuple(positions), rank=rank, of=len(analysed)
+                )
             except Exception:
                 # One symbol must never end the run. The catalogue is 850
                 # instruments of wildly different shapes and any of them can
@@ -432,6 +461,28 @@ class JarvisRunner:
             if item is not None:
                 analysed.append(item)
         analysed.sort(key=lambda item: item.conviction, reverse=True)
+        # In a drawdown, demand more before a setup is worth a slot at all.
+        # This raises the bar; nothing anywhere lowers it, and nothing here
+        # touches position size.
+        bonus = self.posture.entry_bar_bonus
+        if bonus > 0 and analysed:
+            floor = self.settings.analysis.confluence.score_threshold + bonus
+            kept = [item for item in analysed if item.idea.score >= floor]
+            if len(kept) < len(analysed):
+                log.info(
+                    "drawdown posture raised the entry bar to %.1f; %d of %d setups clear it",
+                    floor,
+                    len(kept),
+                    len(analysed),
+                    extra={
+                        "event": "posture_entry_bar",
+                        "posture": self.posture.posture.value,
+                        "floor": floor,
+                        "kept": len(kept),
+                        "dropped": len(analysed) - len(kept),
+                    },
+                )
+            analysed = kept
         if analysed:
             log.info(
                 "ranked %d tradeable setups by conviction",
@@ -494,7 +545,15 @@ class JarvisRunner:
             return None
         return AnalysedCandidate(symbol, cycle_id, idea, context)
 
-    def _process_candidate(self, candidate: AnalysedCandidate, account, positions) -> bool:  # type: ignore[no-untyped-def]
+    def _process_candidate(  # type: ignore[no-untyped-def]
+        self,
+        candidate: AnalysedCandidate,
+        account,
+        positions,
+        *,
+        rank: int = 1,
+        of: int = 1,
+    ) -> bool:
         symbol = candidate.symbol
         cycle_id = candidate.cycle_id
         idea = candidate.idea
@@ -591,11 +650,26 @@ class JarvisRunner:
                 else None
             ),
         }
-        briefing = (
-            self.memory.briefing(symbol, idea.direction.name)
-            if self.memory.has_evidence()
-            else None
-        )
+        # What the reviewer cannot see from one chart: where this setup placed
+        # among everything analysed this cycle, and how the account is carrying
+        # itself. Both change the answer legitimately — the best of 187 deserves
+        # a different reading from the 40th, and a drawdown is a reason to want
+        # more from a setup, never a reason to want it bigger.
+        briefing: dict[str, object] = {
+            "standing_this_cycle": {
+                "rank": rank,
+                "of_tradeable_setups": of,
+                "conviction": round(candidate.conviction, 1),
+                "note": (
+                    "Rank 1 means the engine rated this the strongest setup it found across "
+                    "the whole catalogue this cycle. That is a reason to read it carefully, "
+                    "not a reason to approve it — the best of a weak field is still weak."
+                ),
+            },
+            "account_posture": self.posture.brief(),
+        }
+        if self.memory.has_evidence():
+            briefing["learned_so_far"] = self.memory.briefing(symbol, idea.direction.name)
         request_payload = build_review_payload(idea, context, proposal, briefing)
         try:
             self.ai_ledger.append(
@@ -961,6 +1035,7 @@ class JarvisRunner:
                 {
                     "operation": self.operation.value,
                     "account_currency": self.broker.account().currency,
+                    "account_posture": self.posture.brief(),
                     "learned_so_far": self.memory.briefing(
                         position.symbol, position.direction.name
                     ),
@@ -1419,6 +1494,7 @@ class JarvisRunner:
                     "trades_opened": summary.trades_opened,
                     "next_cursor": summary.next_cursor,
                     "universe_size": summary.universe_size,
+                    "posture": self.posture.brief(),
                 },
                 indent=2,
             ),

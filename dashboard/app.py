@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import os
@@ -30,7 +31,7 @@ from config.loader import PACKAGE_ROOT, load_credentials, load_settings, termina
 from core.instrument import AssetClass
 from core.mt5_connector import MT5Connector
 from core.types import Direction, Timeframe
-from dashboard.ai_exchange import pair_ai_reviews, supervision_rows
+from dashboard.ai_exchange import pair_ai_reviews, read_posture, supervision_rows
 from dashboard.position_control import PositionControl
 from dashboard.service import (
     PROFILE_TIMEFRAMES,
@@ -234,21 +235,33 @@ def render_recent_adoptions() -> None:
                 st.markdown(f"- `{row['ts']}` **{row['symbol']}** #{row['ticket']} — {row['note']}")
 
 
-@st.fragment(run_every="2s")
+@st.fragment(run_every="1s")
 def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
     """Live open positions with per-position control.
 
-    A two-second fragment rather than a whole-page refresh: this is the one
+    A one-second fragment rather than a whole-page refresh: this is the one
     panel where the numbers are money moving in real time, and re-running the
     entire dashboard that often would re-fetch the catalogue and every chart.
     The fragment re-reads only what it draws.
 
-    Every control here can be exercised while Jarvis is running. The two do not
+    Everything shown is pulled fresh from the terminal on each pass — the
+    position list, the account, and a tick per symbol. Nothing here is cached
+    or carried over from the page load, because a stale P&L on a live position
+    is worse than no P&L: it invites a decision based on a price that has
+    already moved.
+
+    Every control can be exercised while Jarvis is running. The two do not
     conflict — MT5 is the single source of truth for what is open, so a stop the
     operator moves is simply the stop the engine sees on its next cycle.
     """
     control = PositionControl(connector, settings)
     positions = service.positions()
+    # Re-read the account too. Equity moves with every tick on an open
+    # position, and it is what the risk preview below is measured against.
+    with contextlib.suppress(Exception):
+        # A momentary terminal hiccup must not blank the panel; the previous
+        # account snapshot is a second old and still usable.
+        account = service.connect()
     notice = st.session_state.pop("position_notice", None)
     if notice:
         (st.success if notice[0] else st.error)(notice[1])
@@ -267,10 +280,11 @@ def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
     c.metric("Total lots", f"{exposure:g}")
 
     st.caption(
-        "Ververst iedere 2 seconden. SL/TP aanpassen en sluiten kan terwijl Jarvis draait — "
-        "MT5 is de bron van waarheid, dus Jarvis ziet je wijziging bij de volgende cyclus. "
-        "Een SL strakker zetten mag altijd; ruimer zetten wordt geweigerd zodra het risico "
-        f"boven {settings.effective_max_risk_pct():.2f}% van je equity uitkomt."
+        f"Live, ververst iedere seconde · {datetime.now(UTC):%H:%M:%S} UTC. SL/TP aanpassen en "
+        "sluiten kan terwijl Jarvis draait — MT5 is de bron van waarheid, dus Jarvis ziet je "
+        "wijziging bij de volgende cyclus. Een SL strakker zetten mag altijd; ruimer zetten "
+        f"wordt geweigerd zodra het risico boven {settings.effective_max_risk_pct():.2f}% van "
+        "je equity uitkomt."
     )
 
     for position in positions:
@@ -291,6 +305,20 @@ def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
             f"{account.currency}" + (f" · {r_now:+.2f}R" if r_now is not None else "")
         )
         with st.expander(header, expanded=len(positions) <= 3):
+            # Where price sits between the stop and the target, right now. The
+            # number that matters on a live trade is not the price, it is how
+            # much room is left in each direction.
+            if price and position.sl and position.tp:
+                span = abs(position.tp - position.sl)
+                travelled = abs(price - position.sl)
+                if span > 0:
+                    st.progress(
+                        min(1.0, max(0.0, travelled / span)),
+                        text=(
+                            f"stop {abs(price - position.sl):.5g} weg  ·  "
+                            f"target {abs(position.tp - price):.5g} weg"
+                        ),
+                    )
             cols = st.columns(5)
             cols[0].metric("Entry", f"{position.price_open:g}")
             cols[1].metric("Now", f"{price:g}" if price else "—")
@@ -426,6 +454,19 @@ def render_learning() -> None:
     a.metric("Afgesloten trades geleerd", brief["closed_trades_recorded"])
     b.metric("Cumulatief resultaat", f"{brief['cumulative_r']:+.2f}R")
     c.metric("Actieve veto's", len(vetoes.active(now)))
+
+    stance = read_posture(ROOT / "runtime" / "heartbeat.json")
+    if stance and stance.get("posture") != "steady":
+        st.warning(
+            f"**Houding: {str(stance['posture']).upper()}** — "
+            f"{stance.get('consecutive_losses', 0)} verliezen op rij, "
+            f"{stance.get('drawdown_from_peak_pct', 0):.1f}% onder de piek. "
+            "Verliezende posities worden sneller gesloten en de lat voor een nieuwe trade "
+            "ligt hoger. De positiegrootte verandert niet — die staat vast en gaat na "
+            "verlies nooit omhoog."
+        )
+    elif stance:
+        st.success("Houding: STEADY — normale werking, geen verliesreeks of drawdown.")
 
     st.markdown("**Lessen uit eigen trades** — gaan mee in elk volgend verzoek aan Claude.")
     lessons = brief["lessons"]
