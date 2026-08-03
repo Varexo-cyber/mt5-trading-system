@@ -367,17 +367,36 @@ class RiskManager:
                 f"position — forbidden; close it instead"
             )
 
-        # Recovery sizing: risk may never go UP after a loss. Compared against
-        # the previous trade's actual risk, because that is what "increased the
-        # bet after losing" means in practice.
-        if state.consecutive_losses > 0 and state.last_trade_risk_pct is not None:
-            previous = state.last_trade_risk_pct
-            if sizing.intended_risk_pct > previous + 1e-9:
-                raise ForbiddenStrategyError(
-                    f"{sizing.symbol}: risk would rise from {previous:.3f}% to "
-                    f"{sizing.intended_risk_pct:.3f}% after {state.consecutive_losses} "
-                    f"consecutive losses — martingale / recovery sizing is forbidden"
-                )
+        # Recovery sizing: the risk *decision* may never go up after a loss.
+        #
+        # This compared the new trade's intended risk against the previous
+        # trade's ACTUAL risk, and those are not the same quantity. The sizer
+        # rounds volume down to the broker's step, so on a EUR 100 account the
+        # actual risk of any trade lands wherever 0.01 lots happens to put it —
+        # 1.44% on one symbol, 1.9% on the next, purely from lot granularity.
+        # Every candidate after a loss was then refused as martingale:
+        # "risk would rise from 1.440% to 2.000%", when nothing had risen at all
+        # and the configured risk had not moved.
+        #
+        # What the rule protects against is a deliberate increase after losing,
+        # and that decision is `intended_risk_pct` — the configured risk with
+        # the losing-streak multiplier already applied. Comparing it against
+        # what this risk manager sanctioned catches exactly that, and is immune
+        # to lot rounding because both sides are decisions rather than outcomes.
+        sanctioned = self.settings.effective_risk_pct() * self.risk_multiplier(state)
+        if sizing.intended_risk_pct > sanctioned + 1e-9:
+            raise ForbiddenStrategyError(
+                f"{sizing.symbol}: sizing intends {sizing.intended_risk_pct:.3f}% but "
+                f"{sanctioned:.3f}% is sanctioned after {state.consecutive_losses} "
+                f"consecutive losses — martingale / recovery sizing is forbidden"
+            )
+        # And an execution may never exceed the decision behind it.
+        if sizing.actual_risk_pct > sizing.intended_risk_pct + 1e-9:
+            raise ForbiddenStrategyError(
+                f"{sizing.symbol}: {sizing.volume} lots risks "
+                f"{sizing.actual_risk_pct:.3f}%, above the intended "
+                f"{sizing.intended_risk_pct:.3f}% — rounding must never size up"
+            )
 
     # -- circuit breaker ---------------------------------------------------
 
