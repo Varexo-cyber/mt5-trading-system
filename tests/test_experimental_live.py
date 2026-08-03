@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from advisory import Advice, Reflection
+from advisory.providers import Supervision
 from config.loader import load_settings
 from config.schema import MT5Config
 from core.mt5_connector import MT5Connector
@@ -26,6 +27,9 @@ class ApprovingAdvisor:
 
     def reflect(self, _outcome):  # type: ignore[no-untyped-def]
         return Reflection("test reflection", provider="test")
+
+    def supervise(self, _state):  # type: ignore[no-untyped-def]
+        return Supervision("hold", "test supervisor holds", provider="test")
 
 
 def account(

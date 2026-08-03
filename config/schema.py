@@ -569,6 +569,17 @@ class TradeManagementConfig(Base):
     time_exit_hours: float | None = Field(default=24.0, gt=0.0)
     time_exit_min_abs_r: float = Field(default=0.3, ge=0.0)
 
+    #: How often the AI supervisor reconsiders each open position, in minutes.
+    #: Zero switches it off and leaves the mechanical rules above as the whole
+    #: management policy.
+    #:
+    #: Fifteen minutes is a deliberate middle. Asked every cycle the adviser
+    #: reacts to noise and pays spread for the privilege; asked hourly it can
+    #: watch a thesis break and do nothing about it for fifty minutes. This is
+    #: also the dominant ongoing cost once positions are open: two positions at
+    #: this interval is roughly eight reviews an hour.
+    supervision_interval_minutes: float = Field(default=15.0, ge=0.0, le=240.0)
+
 
 # --------------------------------------------------------------- journal ---
 

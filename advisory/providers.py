@@ -63,15 +63,100 @@ class Reflection:
         return asdict(self)
 
 
+#: What a supervisor is allowed to do to a position that is already open,
+#: ordered from least to most protective. Every one of these reduces exposure
+#: or banks profit; there is deliberately no "widen the stop", no "add to the
+#: position" and no "reverse" — see `Supervision.is_risk_reducing` for why that
+#: is enforced rather than merely documented.
+#:
+#: The order is load-bearing: `ConsensusAdvisor.supervise` resolves disagreement
+#: by taking the highest-indexed answer. A tightened stop still leaves full size
+#: exposed to a gap, which is why banking part of the position outranks it.
+SUPERVISION_ACTIONS = ("hold", "pull_target_in", "tighten_stop", "partial_close", "close")
+
+
+@dataclass(frozen=True, slots=True)
+class Supervision:
+    """A verdict on one *open* position, restricted to de-risking moves.
+
+    Pre-trade review answers "should this be opened". This answers "should this
+    stay open, and on what terms" — the question a human actually spends their
+    day on, and the one the system previously answered with nothing but a fixed
+    break-even rule and an ATR trail.
+
+    The action vocabulary is closed and every member reduces risk. That is the
+    whole safety argument: an adviser that can be wrong is given a set of moves
+    where being wrong costs an exit that was not needed, never an exposure that
+    should not exist. `is_risk_reducing` re-checks the concrete prices against
+    the live position before anything is sent, because the vocabulary alone
+    cannot stop "tighten_stop" carrying a stop that is actually further away.
+    """
+
+    action: str = "hold"
+    reason: str = ""
+    confidence: float = 0.0
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    close_fraction: float | None = None
+    provider: str = "disabled"
+    model: str = ""
+    request_id: str = ""
+    error: str = ""
+
+    def safe_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+    def is_risk_reducing(
+        self,
+        *,
+        direction_sign: int,
+        current_sl: float,
+        current_tp: float,
+        price_now: float,
+    ) -> bool:
+        """Whether this verdict can only shrink exposure on this position.
+
+        Called immediately before execution with the position as it stands now,
+        not as it stood when the question was asked. A stop that was an
+        improvement thirty seconds ago can be on the wrong side of price by the
+        time the answer arrives, and sending it would either be rejected by the
+        broker or — worse — accepted as a stop behind the market.
+        """
+        if self.action in {"hold", "close", "partial_close"}:
+            return True
+        if self.action == "tighten_stop":
+            if self.stop_loss is None:
+                return False
+            # Closer to price in the direction of the trade, and not already
+            # through it: a stop on the far side of the current price is an
+            # instant market exit dressed up as a stop move.
+            moved_up = (self.stop_loss - current_sl) * direction_sign > 0
+            still_behind = (price_now - self.stop_loss) * direction_sign > 0
+            return moved_up and still_behind
+        if self.action == "pull_target_in":
+            if self.take_profit is None:
+                return False
+            # Nearer than the existing target and still ahead of price. Pushing
+            # a target further out is how a winning trade becomes a losing one,
+            # so it is refused regardless of the argument attached to it.
+            nearer = (current_tp - self.take_profit) * direction_sign > 0
+            ahead = (self.take_profit - price_now) * direction_sign > 0
+            return nearer and ahead
+        return False
+
+
 class Advisor(Protocol):
     def review(
         self,
         idea: TradeIdea,
         context: MarketContext,
         proposal: Mapping[str, object] | None = None,
+        memory: Mapping[str, object] | None = None,
     ) -> Advice: ...
 
     def reflect(self, outcome: Mapping[str, object]) -> Reflection: ...
+
+    def supervise(self, position_state: Mapping[str, object]) -> Supervision: ...
 
 
 class DisabledAdvisor:
@@ -80,11 +165,19 @@ class DisabledAdvisor:
         _idea: TradeIdea,
         _context: MarketContext,
         _proposal: Mapping[str, object] | None = None,
+        _memory: Mapping[str, object] | None = None,
     ) -> Advice:
         return Advice(True, 1.0, "AI advisory disabled", provider="disabled")
 
     def reflect(self, _outcome: Mapping[str, object]) -> Reflection:
         return Reflection("AI advisory disabled", provider="disabled")
+
+    def supervise(self, _position_state: Mapping[str, object]) -> Supervision:
+        # "hold" and not "close": with the adviser switched off the mechanical
+        # rules in PositionManager are the whole management policy, and they
+        # are sound on their own. Closing here would mean disabling the adviser
+        # silently liquidates the book.
+        return Supervision("hold", "AI advisory disabled", provider="disabled")
 
 
 class OpenAIAdvisor:
@@ -100,12 +193,13 @@ class OpenAIAdvisor:
         idea: TradeIdea,
         context: MarketContext,
         proposal: Mapping[str, object] | None = None,
+        memory: Mapping[str, object] | None = None,
     ) -> Advice:
         try:
             response = self.client.responses.create(
                 model=self.model,
                 instructions=_REVIEW_INSTRUCTIONS,
-                input=_dumps(build_review_payload(idea, context, proposal)),
+                input=_dumps(build_review_payload(idea, context, proposal, memory)),
                 text={
                     "format": {
                         "type": "json_schema",
@@ -124,6 +218,30 @@ class OpenAIAdvisor:
             )
         except Exception as exc:  # noqa: BLE001 - an unavailable adviser must veto, not crash
             return _failed_advice("openai", self.model, exc)
+
+    def supervise(self, position_state: Mapping[str, object]) -> Supervision:
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                instructions=_SUPERVISION_INSTRUCTIONS,
+                input=_dumps({"open_position": dict(position_state)}),
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "position_supervision",
+                        "strict": True,
+                        "schema": _SUPERVISION_SCHEMA,
+                    }
+                },
+            )
+            return _parse_supervision(
+                response.output_text,
+                "openai",
+                self.model,
+                getattr(response, "_request_id", "") or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreachable adviser must not touch the book
+            return _failed_supervision("openai", self.model, _safe_error(exc))
 
     def reflect(self, outcome: Mapping[str, object]) -> Reflection:
         try:
@@ -169,6 +287,7 @@ class AnthropicAdvisor:
         idea: TradeIdea,
         context: MarketContext,
         proposal: Mapping[str, object] | None = None,
+        memory: Mapping[str, object] | None = None,
     ) -> Advice:
         try:
             message = self.client.messages.create(
@@ -188,7 +307,9 @@ class AnthropicAdvisor:
                         "content": _dumps(
                             {
                                 "schema": _REVIEW_SCHEMA,
-                                "trade_candidate": build_review_payload(idea, context, proposal),
+                                "trade_candidate": build_review_payload(
+                                    idea, context, proposal, memory
+                                ),
                             }
                         ),
                     }
@@ -268,6 +389,45 @@ class AnthropicAdvisor:
         except Exception as exc:  # noqa: BLE001 - trade is already closed; retain the failure only
             return _failed_reflection("anthropic", self.model, exc)
 
+    def supervise(self, position_state: Mapping[str, object]) -> Supervision:
+        try:
+            message = self.client.messages.create(
+                model=self.model,
+                max_tokens=_MAX_TOKENS,
+                system=_SUPERVISION_INSTRUCTIONS
+                + " Return only one JSON object matching the schema.",
+                output_config={
+                    "effort": _EFFORT,
+                    "format": {
+                        "type": "json_schema",
+                        "schema": _anthropic_schema(_SUPERVISION_SCHEMA),
+                    },
+                },
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _dumps(
+                            {
+                                "schema": _SUPERVISION_SCHEMA,
+                                "open_position": dict(position_state),
+                            }
+                        ),
+                    }
+                ],
+            )
+            request_id = getattr(message, "_request_id", "") or ""
+            stop_reason = getattr(message, "stop_reason", "") or "unknown"
+            if stop_reason != "end_turn":
+                return _failed_supervision(
+                    "anthropic", self.model, f"incomplete_response:{stop_reason}"
+                )
+            text = "".join(
+                block.text for block in message.content if getattr(block, "type", "") == "text"
+            )
+            return _parse_supervision(text, "anthropic", self.model, request_id)
+        except Exception as exc:  # noqa: BLE001 - an unreachable adviser must not touch the book
+            return _failed_supervision("anthropic", self.model, _safe_error(exc))
+
 
 class ConsensusAdvisor:
     def __init__(self, advisors: list[Advisor]) -> None:
@@ -278,8 +438,9 @@ class ConsensusAdvisor:
         idea: TradeIdea,
         context: MarketContext,
         proposal: Mapping[str, object] | None = None,
+        memory: Mapping[str, object] | None = None,
     ) -> Advice:
-        answers = [advisor.review(idea, context, proposal) for advisor in self.advisors]
+        answers = [advisor.review(idea, context, proposal, memory) for advisor in self.advisors]
         approved = bool(answers) and all(answer.approved for answer in answers)
         confidence = min((answer.confidence for answer in answers), default=0.0)
         return Advice(
@@ -297,6 +458,32 @@ class ConsensusAdvisor:
             " | ".join(answer.summary for answer in answers),
             tuple(lesson for answer in answers for lesson in answer.lessons),
             tuple(flag for answer in answers for flag in answer.process_flags),
+            "consensus",
+            error=" | ".join(answer.error for answer in answers if answer.error),
+        )
+
+    def supervise(self, position_state: Mapping[str, object]) -> Supervision:
+        """The most protective answer wins.
+
+        Unanimity is the right rule for opening a trade, because there the
+        cautious answer is "do not". Here every available action is already
+        cautious, so requiring agreement would mean the *least* protective
+        adviser decides — one saying "close" and one saying "hold" would hold.
+        Taking the strongest de-risking answer keeps the fail-safe direction
+        pointing the same way it does everywhere else in the system.
+        """
+        answers = [advisor.supervise(position_state) for advisor in self.advisors]
+        if not answers:
+            return Supervision("hold", "no advisers configured", provider="consensus")
+        ranked = sorted(answers, key=lambda answer: SUPERVISION_ACTIONS.index(answer.action))
+        strongest = ranked[-1]
+        return Supervision(
+            strongest.action,
+            " | ".join(answer.reason for answer in answers if answer.reason),
+            strongest.confidence,
+            strongest.stop_loss,
+            strongest.take_profit,
+            strongest.close_fraction,
             "consensus",
             error=" | ".join(answer.error for answer in answers if answer.error),
         )
@@ -379,6 +566,7 @@ def build_review_payload(
     idea: TradeIdea,
     context: MarketContext,
     proposal: Mapping[str, object] | None,
+    memory: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Return the exact secret-free trade candidate sent to an AI reviewer.
 
@@ -454,7 +642,7 @@ def build_review_payload(
             ),
         }
 
-    return {
+    payload: dict[str, object] = {
         "symbol": idea.symbol,
         "direction": idea.direction.name if idea.direction else None,
         "score": idea.score,
@@ -468,6 +656,89 @@ def build_review_payload(
         "decision_tick": tick,
         "executable_proposal": dict(proposal or {}),
         "rule": "Veto or approve only. Never change size, stop, target, risk, or hard filters.",
+    }
+    # Only present once the account has actually taught it something. An empty
+    # "here is what you have learned" block is worse than none: it invites the
+    # reviewer to invent significance from nothing.
+    if memory is not None:
+        payload["learned_so_far"] = memory
+    return payload
+
+
+def build_supervision_payload(
+    position: Any,
+    context: MarketContext,
+    extra: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Return the secret-free state of one open position for the supervisor.
+
+    Same chart depth as the pre-trade review, for the same reason: the question
+    "has the thesis broken" cannot be answered from a P&L number. What differs
+    is the framing — the numbers here are all relative to the position (R
+    multiple, age, distance to stop and target in ATR) because that is what the
+    decision turns on, not the absolute price.
+    """
+    timeframes: dict[str, object] = {}
+    for timeframe, series in context.series.items():
+        frame = series.df
+        count = _BARS_SENT.get(timeframe.value, _BARS_SENT_DEFAULT)
+        recent = frame.tail(count)
+        timeframes[timeframe.value] = {
+            "closed_bars": [
+                {
+                    "t": (index.to_pydatetime() if hasattr(index, "to_pydatetime") else index)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "o": round(float(row["open"]), 6),
+                    "h": round(float(row["high"]), 6),
+                    "l": round(float(row["low"]), 6),
+                    "c": round(float(row["close"]), 6),
+                    "v": int(row.get("tick_volume", 0)),
+                }
+                for index, row in recent.iterrows()
+            ],
+            "atr14": round(_atr(frame), 6),
+            "range_high": round(float(recent["high"].max()), 6),
+            "range_low": round(float(recent["low"].min()), 6),
+            "last_closed_bar": series.last_bar_time.isoformat(),
+        }
+
+    sign = int(position.direction)
+    price = 0.0
+    if context.tick is not None:
+        price = context.tick.bid if sign > 0 else context.tick.ask
+    risk = abs(position.price_open - position.sl) if position.sl else 0.0
+    r_now = ((price - position.price_open) * sign / risk) if (risk and price) else None
+    signal = context.series.get(Timeframe.H1)
+    atr = _atr(signal.df) if signal is not None else 0.0
+
+    return {
+        "symbol": position.symbol,
+        "direction": position.direction.name,
+        "ticket": position.ticket,
+        "volume_lots": position.volume,
+        "entry_price": position.price_open,
+        "current_stop": position.sl,
+        "current_target": position.tp,
+        "price_now": price,
+        "unrealised_money": round(position.profit + position.swap, 2),
+        "unrealised_r": round(r_now, 2) if r_now is not None else None,
+        "initial_risk_distance": round(risk, 6),
+        "distance_to_stop_in_atr": (
+            round(abs(price - position.sl) / atr, 2) if atr and price and position.sl else None
+        ),
+        "distance_to_target_in_atr": (
+            round(abs(position.tp - price) / atr, 2) if atr and price and position.tp else None
+        ),
+        "opened_at": position.opened_at.isoformat(),
+        "age_hours": round((context.now - position.opened_at).total_seconds() / 3600.0, 2),
+        "h1_atr14": round(atr, 6),
+        "timeframes": timeframes,
+        "context": dict(extra or {}),
+        "rule": (
+            "You may only hold, tighten the stop, pull the target in, close part, or close all. "
+            "Widening a stop, extending a target, adding size and reversing are all refused."
+        ),
     }
 
 
@@ -535,6 +806,76 @@ def _parse_reflection(text: str, provider: str, model: str, request_id: str) -> 
             request_id=request_id,
             error="invalid_response",
         )
+
+
+def _parse_supervision(text: str, provider: str, model: str, request_id: str) -> Supervision:
+    try:
+        payload = json.loads(text.strip())
+        action = str(payload["action"]).strip()
+        if action not in SUPERVISION_ACTIONS:
+            raise ValueError(f"unknown action {action!r}")  # noqa: TRY301
+        confidence = float(payload["confidence"])
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence outside [0, 1]")  # noqa: TRY301
+        reason = str(payload["reason"]).strip()
+        if not reason:
+            raise ValueError("reason is empty")  # noqa: TRY301
+        fraction = _optional_float(payload.get("close_fraction"))
+        if action == "partial_close" and not (fraction and 0.0 < fraction < 1.0):
+            # A partial close without a usable fraction is not a partial close.
+            # Downgrading to "hold" rather than guessing keeps a malformed reply
+            # from silently becoming a full exit.
+            raise ValueError("partial_close needs a fraction in (0, 1)")  # noqa: TRY301
+        return Supervision(
+            action,
+            reason,
+            confidence,
+            _optional_float(payload.get("stop_loss")),
+            _optional_float(payload.get("take_profit")),
+            fraction,
+            provider,
+            model,
+            request_id,
+        )
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return _failed_supervision(provider, model, "invalid_response", request_id)
+
+
+def _optional_float(value: object) -> float | None:
+    """Coerce a nullable numeric field, treating unusable values as absent.
+
+    The schema permits null so the model can say "this field does not apply to
+    my action". A zero means the same thing here — MT5 uses 0.0 for "no stop"
+    and "no target" — so it is folded into absent rather than executed as a
+    price.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return None if number == 0.0 else number
+
+
+def _failed_supervision(provider: str, model: str, error: str, request_id: str = "") -> Supervision:
+    """Fail to `hold` — the opposite direction from the pre-trade adviser.
+
+    `review` fails closed to a veto because there the safe answer is "do not
+    open". Here the position already exists and the mechanical rules in
+    PositionManager are still running on it, so the safe answer is "change
+    nothing". Failing to `close` would mean an expired API key liquidates the
+    book, and failing to any price-bearing action would mean acting on a number
+    that was never received.
+    """
+    return Supervision(
+        "hold",
+        f"{provider} supervision unavailable; mechanical management continues",
+        provider=provider,
+        model=model,
+        request_id=request_id,
+        error=error,
+    )
 
 
 def _failed_advice(provider: str, model: str, exc: Exception) -> Advice:
@@ -698,6 +1039,17 @@ Two symptoms of not doing this, both observed and both to be avoided:
   information and cannot rank anything. If ten setups in a row all come back 0.67, the scale is
   not being used. Genuinely ordinary setups differ from each other; say so with the number.
 
+USE WHAT THIS ACCOUNT HAS ALREADY LEARNED. When `learned_so_far` is present it holds lessons
+drawn from this account's own closed trades, its realised record on this exact symbol and
+direction, and how often this proposal has been refused before. It is evidence, and it is the
+only thing in the payload that is not visible in the charts.
+
+Weigh it honestly in both directions. Four losing longs on this instrument is a reason to want
+more from the setup than usual, not an automatic veto — but if the same lesson keeps arriving
+("stops on this symbol sit inside the noise", "afternoon entries here reverse"), and this
+proposal has that shape, say so and decline. Equally, a symbol with a good record does not earn a
+lower bar. An instrument with no history is neutral, not suspect.
+
 Hard filters, risk limits and sizing have already run and are not yours to reconsider. You may not
 propose a different trade, or change volume, stop, target or risk. Never infer missing data."""
 
@@ -705,6 +1057,83 @@ _REFLECTION_INSTRUCTIONS = """Review one closed trade as a process auditor. Sepa
 from decision quality. Identify evidence-supported lessons and process flags only. Never recommend
 raising risk, martingale, averaging down, grid trading, or changing production parameters. This
 reflection is logged for research and cannot directly modify the trading system."""
+
+_SUPERVISION_INSTRUCTIONS = """You are managing a real open position on a small live account. It
+is already on. The question is not whether it should have been taken — that is settled — but what
+to do with it right now.
+
+WHAT YOU CAN DO. Exactly five things, and every one of them reduces exposure:
+
+- hold: leave it entirely alone. The default, and the right answer most of the time.
+- tighten_stop: move the stop closer to price in the direction of the trade. Give `stop_loss`.
+- pull_target_in: move the target nearer so it actually gets hit. Give `take_profit`.
+- partial_close: bank some of it and let the rest run. Give `close_fraction` between 0 and 1.
+- close: exit the whole thing now.
+
+You cannot widen a stop, push a target further out, add to the position, or reverse it. Those are
+rejected before execution, so proposing one wastes the turn. If your honest view is "this should
+be bigger" or "the stop needs more room", the answer available to you is hold.
+
+WHAT YOU ARE GIVEN. The position with its entry, current stop and target, live price, unrealised
+P&L in account currency and in R, how long it has been open, and closed bars on every timeframe
+from the weekly down to the one-minute with each frame's ATR. The bars are what changed since the
+trade was opened. Read them.
+
+HOW TO THINK ABOUT IT — this is the part that matters. A good trade manager is not a stop-loss
+calculator, and is not looking for reasons to fiddle. Ask:
+
+1. Is the reason this trade was opened still true? If the structure that justified it has broken
+   — the trend line gone, the level reclaimed, the sweep failed — the trade is over regardless of
+   what the P&L says. Close it. A position held only because it is not yet at its stop is a
+   position with no thesis.
+2. Is it going nowhere? A trade that has sat near entry for many hours in a tightening range is
+   costing spread and swap and occupying a slot on a two-position account. That is a reason to
+   close, and it is a better reason than most.
+3. Is there meaningful profit that the market is starting to take back? Then bank it — partial
+   or full. Profit given back is the most common way a decent trade becomes a bad one.
+4. Is it running well with the structure intact? Then HOLD, and specifically do not tighten the
+   stop into the noise. Strangling a winner is the single most expensive habit in trade
+   management. A trade at 1.5R with the trend intact and its stop already at break-even does not
+   need you to do anything. Say hold.
+
+DO NOT ACT FOR THE SAKE OF ACTING. You will be asked about the same position many times, and
+answering "hold" repeatedly is correct behaviour, not a failure to contribute. Every intervention
+has a cost — spread on the exit, a slot freed too early, a stop that gets clipped by noise it
+would otherwise have survived. Only act when you can name the specific thing in the bars that
+changed. "Price is a bit lower than it was" is not that thing.
+
+BE DECISIVE WHEN IT IS WARRANTED. The mirror-image failure is holding a position whose thesis is
+plainly dead because closing feels like admitting the entry was wrong. It was not wrong; it was a
+probability that did not come in. When the structure is broken, close it and say why in one line.
+
+CONFIDENCE. How sure you are that this action beats holding. If you answer hold, it is how sure
+you are that no intervention is needed. Below 0.55 on a non-hold action, prefer hold — you are
+not confident enough to justify the cost of acting.
+
+Give `reason` as one or two plain sentences naming the concrete evidence. It is written to the
+trade journal and read back later, so "M15 lost the rising trendline it had held for 14 bars and
+closed below the prior swing low" is useful and "momentum weakening" is not."""
+
+_SUPERVISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": list(SUPERVISION_ACTIONS)},
+        "reason": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "stop_loss": {"type": ["number", "null"]},
+        "take_profit": {"type": ["number", "null"]},
+        "close_fraction": {"type": ["number", "null"]},
+    },
+    "required": [
+        "action",
+        "reason",
+        "confidence",
+        "stop_loss",
+        "take_profit",
+        "close_fraction",
+    ],
+    "additionalProperties": False,
+}
 
 _REVIEW_SCHEMA = {
     "type": "object",

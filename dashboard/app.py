@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from importlib import invalidate_caches
 from pathlib import Path
 
@@ -24,11 +25,13 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from advisory import read_recent_reviews
+from advisory.veto_memory import VetoMemory
 from config.loader import PACKAGE_ROOT, load_credentials, load_settings, terminal_path_from_env
 from core.instrument import AssetClass
 from core.mt5_connector import MT5Connector
-from core.types import Timeframe
-from dashboard.ai_exchange import pair_ai_reviews
+from core.types import Direction, Timeframe
+from dashboard.ai_exchange import pair_ai_reviews, supervision_rows
+from dashboard.position_control import PositionControl
 from dashboard.service import (
     PROFILE_TIMEFRAMES,
     DashboardService,
@@ -36,6 +39,7 @@ from dashboard.service import (
     load_paper_snapshot,
 )
 from infra.killswitch import KillSwitch
+from learning.memory import TradingMemory
 from monitoring.scan_activity import read_scan_activity
 from promotion.experimental import (
     ExperimentalLiveContract,
@@ -181,6 +185,280 @@ def render_live_scanner() -> None:
 9. Stuur alleen bij alle groene poorten een order naar MT5/Eightcap.
 10. Beheer daarna SL, break-even, trailing/exit en schrijf alles in het journaal.
 """)
+
+
+@st.fragment(run_every="2s")
+def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
+    """Live open positions with per-position control.
+
+    A two-second fragment rather than a whole-page refresh: this is the one
+    panel where the numbers are money moving in real time, and re-running the
+    entire dashboard that often would re-fetch the catalogue and every chart.
+    The fragment re-reads only what it draws.
+
+    Every control here can be exercised while Jarvis is running. The two do not
+    conflict — MT5 is the single source of truth for what is open, so a stop the
+    operator moves is simply the stop the engine sees on its next cycle.
+    """
+    control = PositionControl(connector, settings)
+    positions = service.positions()
+    notice = st.session_state.pop("position_notice", None)
+    if notice:
+        (st.success if notice[0] else st.error)(notice[1])
+
+    if not positions:
+        st.success("No open positions.")
+        return
+
+    total = sum(p.profit + p.swap for p in positions)
+    exposure = sum(p.volume for p in positions)
+    a, b, c = st.columns(3)
+    a.metric("Open positions", len(positions))
+    b.metric("Floating P&L", f"{total:+.2f} {account.currency}")
+    c.metric("Total lots", f"{exposure:g}")
+
+    st.caption(
+        "Ververst iedere 2 seconden. SL/TP aanpassen en sluiten kan terwijl Jarvis draait — "
+        "MT5 is de bron van waarheid, dus Jarvis ziet je wijziging bij de volgende cyclus. "
+        "Een SL strakker zetten mag altijd; ruimer zetten wordt geweigerd zodra het risico "
+        f"boven {settings.effective_max_risk_pct():.2f}% van je equity uitkomt."
+    )
+
+    for position in positions:
+        tick = service.tick(position.symbol)
+        price = 0.0
+        if tick is not None:
+            price = tick.bid if position.direction is Direction.LONG else tick.ask
+        pnl = position.profit + position.swap
+        risk = abs(position.price_open - position.sl) if position.sl else 0.0
+        r_now = (
+            ((price - position.price_open) * int(position.direction) / risk)
+            if (risk and price)
+            else None
+        )
+        header = (
+            f"{'🟢' if pnl >= 0 else '🔴'} #{position.ticket} · {position.symbol} · "
+            f"{position.direction.name} {position.volume:g} lots · {pnl:+.2f} "
+            f"{account.currency}" + (f" · {r_now:+.2f}R" if r_now is not None else "")
+        )
+        with st.expander(header, expanded=len(positions) <= 3):
+            cols = st.columns(5)
+            cols[0].metric("Entry", f"{position.price_open:g}")
+            cols[1].metric("Now", f"{price:g}" if price else "—")
+            cols[2].metric("Stop", f"{position.sl:g}" if position.sl else "NONE")
+            cols[3].metric("Target", f"{position.tp:g}" if position.tp else "none")
+            cols[4].metric("Age", _age(position.opened_at))
+
+            if not position.has_stop:
+                st.error(
+                    "This position has no stop loss. Jarvis closes an unprotected position "
+                    "on its next cycle; set one here if you want to keep it."
+                )
+
+            spec = service.spec(position.symbol)
+            step = 10.0**-spec.digits
+            edit, act = st.columns([3, 2])
+            with edit, st.form(f"modify-{position.ticket}"):
+                st.markdown("**Stop en target aanpassen**")
+                new_sl = st.number_input(
+                    "Stop loss",
+                    value=float(position.sl),
+                    step=step,
+                    format=f"%.{spec.digits}f",
+                    key=f"sl-{position.ticket}",
+                )
+                new_tp = st.number_input(
+                    "Take profit (0 = geen)",
+                    value=float(position.tp),
+                    step=step,
+                    format=f"%.{spec.digits}f",
+                    key=f"tp-{position.ticket}",
+                )
+                preview = control.preview_stop(position, new_sl, account.equity)
+                if not preview.valid or not preview.permitted:
+                    st.warning(preview.detail)
+                else:
+                    st.caption(preview.detail)
+                if st.form_submit_button("Wijzig SL/TP", width="stretch"):
+                    outcome = control.modify(position, sl=new_sl, tp=new_tp, equity=account.equity)
+                    st.session_state["position_notice"] = (outcome.ok, outcome.message)
+                    st.rerun(scope="fragment")
+
+            with act:
+                st.markdown("**Sluiten**")
+                if st.button(
+                    f"Sluit #{position.ticket} volledig",
+                    key=f"close-{position.ticket}",
+                    width="stretch",
+                    type="primary",
+                ):
+                    outcome = control.close(position)
+                    st.session_state["position_notice"] = (outcome.ok, outcome.message)
+                    st.rerun(scope="fragment")
+                half = spec.round_volume_down(position.volume / 2)
+                if half >= spec.volume_min and position.volume - half >= spec.volume_min:
+                    if st.button(
+                        f"Sluit de helft ({half:g} lots)",
+                        key=f"half-{position.ticket}",
+                        width="stretch",
+                    ):
+                        outcome = control.close(position, half)
+                        st.session_state["position_notice"] = (outcome.ok, outcome.message)
+                        st.rerun(scope="fragment")
+                else:
+                    st.caption(
+                        f"Deels sluiten kan niet: {position.volume:g} lots is niet te splitsen "
+                        f"boven het minimum van {spec.volume_min:g}."
+                    )
+                in_profit = (
+                    bool(position.sl)
+                    and bool(price)
+                    and (price - position.price_open) * int(position.direction) > 0
+                )
+                if in_profit and st.button(
+                    "Stop naar break-even",
+                    key=f"be-{position.ticket}",
+                    width="stretch",
+                ):
+                    outcome = control.modify(
+                        position,
+                        sl=position.price_open,
+                        tp=position.tp,
+                        equity=account.equity,
+                    )
+                    st.session_state["position_notice"] = (outcome.ok, outcome.message)
+                    st.rerun(scope="fragment")
+
+    st.divider()
+    with st.expander("Alles sluiten"):
+        st.warning(
+            "Dit sluit iedere open positie op dit account. Het is géén STOP: Jarvis blijft "
+            "draaien en mag daarna nieuwe trades openen. Gebruik de Control-tab als je het "
+            "systeem echt wilt stilzetten."
+        )
+        confirmed = (
+            st.text_input("Typ SLUIT ALLES om te bevestigen", key="close-all-confirm").strip()
+            == "SLUIT ALLES"
+        )
+        if confirmed and st.button("Sluit alle posities", type="primary"):
+            results = control.close_all(positions)
+            failed = [item for item in results if not item.ok]
+            st.session_state["position_notice"] = (
+                not failed,
+                " | ".join(item.message for item in results) or "Niets te sluiten.",
+            )
+            st.rerun(scope="fragment")
+
+
+def _age(opened_at) -> str:  # type: ignore[no-untyped-def]
+    seconds = max(0.0, (datetime.now(UTC) - opened_at).total_seconds())
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
+@st.fragment(run_every="5s")
+def render_learning() -> None:
+    """What the account has taught itself, and what it is currently refusing.
+
+    Both of these used to be invisible. Lessons were paid for and discarded, and
+    a suppressed veto looked identical to a market that simply produced no
+    signal — so "why has it not looked at SPX500 for an hour" had no answer
+    anywhere in the interface.
+    """
+    memory = TradingMemory(ROOT / "runtime" / "trading_memory.json")
+    vetoes = VetoMemory(ROOT / "runtime" / "veto_memory.json")
+    now = datetime.now(UTC)
+    brief = memory.briefing()
+
+    a, b, c = st.columns(3)
+    a.metric("Afgesloten trades geleerd", brief["closed_trades_recorded"])
+    b.metric("Cumulatief resultaat", f"{brief['cumulative_r']:+.2f}R")
+    c.metric("Actieve veto's", len(vetoes.active(now)))
+
+    st.markdown("**Lessen uit eigen trades** — gaan mee in elk volgend verzoek aan Claude.")
+    lessons = brief["lessons"]
+    if lessons:
+        for lesson in lessons:
+            st.markdown(f"- {lesson}")
+    else:
+        st.info(
+            "Nog geen lessen. Deze verschijnen zodra er trades zijn afgesloten en Claude "
+            "die heeft geëvalueerd."
+        )
+
+    worst = brief["worst_performing"]
+    if worst:
+        st.markdown("**Slechtst presterende markten**")
+        for line in worst:
+            st.markdown(f"- {line}")
+
+    st.markdown("**Wat nu geweigerd blijft** — deze worden niet opnieuw naar Claude gestuurd.")
+    active = vetoes.active(now)
+    if active:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Markt": record.symbol,
+                        "Richting": record.direction,
+                        "Keer geweigerd": record.repeats,
+                        "Confidence": record.confidence,
+                        "Stil tot (UTC)": record.suppress_until,
+                        "Reden": record.thesis,
+                    }
+                    for record in active
+                ]
+            ),
+            hide_index=True,
+            width="stretch",
+            column_config={"Confidence": st.column_config.NumberColumn(format="%.2f")},
+        )
+    else:
+        st.success("Geen enkele markt staat op dit moment op de geweigerd-lijst.")
+
+
+@st.fragment(run_every="3s")
+def render_supervision() -> None:
+    """Claude's decisions about positions that are already open."""
+    rows = supervision_rows(read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl", limit=400))
+    if not rows:
+        st.info(
+            "Nog geen beheerbeslissingen. Zodra er een positie openstaat beoordeelt Claude "
+            f"die iedere {settings.trade_management.supervision_interval_minutes:g} minuten "
+            "en kan hij hem strakker zetten, deels sluiten of helemaal sluiten."
+        )
+        return
+    acted = [row for row in rows if row["action"] not in {"hold", "?"}]
+    a, b, c = st.columns(3)
+    a.metric("Beoordelingen", len(rows))
+    b.metric("Ingegrepen", len(acted))
+    c.metric("Vastgehouden", len(rows) - len(acted))
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Tijd (UTC)": row["at"],
+                    "Ticket": row["ticket"],
+                    "Markt": row["symbol"],
+                    "Richting": row["direction"],
+                    "Actie": row["action"],
+                    "Confidence": row["confidence"],
+                    "Duur (ms)": row["latency_ms"],
+                    "Claude zegt": row["reason"],
+                }
+                for row in rows
+            ]
+        ),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Confidence": st.column_config.NumberColumn(format="%.2f"),
+            "Duur (ms)": st.column_config.NumberColumn(format="%.1f"),
+        },
+    )
 
 
 @st.fragment(run_every="3s")
@@ -460,12 +738,30 @@ try:
         render_live_scanner()
 
     with ai_tab:
-        st.subheader("Wat Jarvis aan Claude geeft en wat Claude antwoordt")
-        st.warning(
-            "Dit is een transparante veto-laag, geen chat die iedere marktcheck betaalt. "
-            "Claude kan een voorstel alleen goedkeuren of blokkeren."
+        entry_view, manage_view, learn_view = st.tabs(
+            ["Instapbeoordeling", "Beheer van open posities", "Wat het systeem heeft geleerd"]
         )
-        render_ai_exchange()
+        with entry_view:
+            st.subheader("Wat Jarvis aan Claude geeft en wat Claude antwoordt")
+            st.warning(
+                "Dit is een transparante veto-laag, geen chat die iedere marktcheck betaalt. "
+                "Claude kan een voorstel alleen goedkeuren of blokkeren. Een setup die één "
+                "keer is geweigerd wordt niet opnieuw gestuurd zolang hij niet wezenlijk "
+                "verandert — zie het derde tabblad."
+            )
+            render_ai_exchange()
+        with manage_view:
+            st.subheader("Claude beheert de open posities")
+            st.info(
+                "Bij een openstaande positie mag Claude vijf dingen: vasthouden, de stop "
+                "strakker zetten, het target dichterbij halen, deels sluiten of helemaal "
+                "sluiten. Een stop ruimer zetten, het target verder weg leggen, bijkopen of "
+                "omdraaien wordt geweigerd voordat het de broker bereikt."
+            )
+            render_supervision()
+        with learn_view:
+            st.subheader("Wat dit account zichzelf heeft geleerd")
+            render_learning()
 
     with charts_tab:
         if not frames:
@@ -494,30 +790,8 @@ try:
             st.plotly_chart(figure, width="stretch")
 
     with positions_tab:
-        st.subheader("Broker positions")
-        if not positions:
-            st.success("No open positions.")
-        else:
-            st.dataframe(
-                pd.DataFrame(
-                    [
-                        {
-                            "ticket": p.ticket,
-                            "symbol": p.symbol,
-                            "side": p.direction.name,
-                            "lots": p.volume,
-                            "open": p.price_open,
-                            "sl": p.sl,
-                            "tp": p.tp,
-                            "pnl": p.profit + p.swap,
-                            "opened_utc": p.opened_at,
-                        }
-                        for p in positions
-                    ]
-                ),
-                width="stretch",
-                hide_index=True,
-            )
+        render_live_positions(account)
+        st.divider()
         st.subheader("Paper positions")
         if paper is None or not paper.positions:
             st.info("No simulated positions.")

@@ -52,3 +52,34 @@ def pair_ai_reviews(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]
                 exchange["status"] = "VETO"
         paired.append(exchange)
     return paired
+
+
+def supervision_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]]:
+    """Extract the open-position management stream, newest first.
+
+    Kept separate from `pair_ai_reviews` because it is a different question with
+    a different shape: those rows are a request paired with a verdict on whether
+    to open, these are one self-contained record of what was decided about a
+    position that is already running.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("event") != "position_supervision":
+            continue
+        decision = row.get("decision")
+        decision = decision if isinstance(decision, Mapping) else {}
+        out.append(
+            {
+                "at": row.get("timestamp"),
+                "ticket": row.get("ticket"),
+                "symbol": row.get("symbol"),
+                "direction": row.get("direction"),
+                "action": decision.get("action", "?"),
+                "confidence": decision.get("confidence"),
+                "reason": decision.get("reason") or decision.get("error"),
+                "latency_ms": row.get("latency_ms"),
+                "error": decision.get("error", ""),
+            }
+        )
+    out.reverse()
+    return out

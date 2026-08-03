@@ -10,13 +10,17 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
+import pandas as pd
+
 from advisory import (
     Advice,
     Advisor,
     AIReviewLedger,
     DisabledAdvisor,
+    VetoMemory,
     build_advisor,
     build_review_payload,
+    build_supervision_payload,
 )
 from analysis import (
     ConfluenceEngine,
@@ -43,6 +47,7 @@ from infra.logging import get_logger
 from journal.database import Journal
 from journal.recorder import CycleContext, Recorder
 from learning.config_control import ShadowRecorder
+from learning.memory import TradingMemory
 from main import build_filter_chain
 from monitoring.alerts import AlertSender
 from monitoring.operation_ledger import OperationLedger
@@ -145,6 +150,13 @@ class JarvisRunner:
         self.experimental_contract: ExperimentalLiveContract | None = None
         # (symbol, direction, fastest-timeframe bar close) -> the verdict given.
         self._review_cache: dict[tuple[str, str, datetime], Advice] = {}
+        # Refusals outlive the bar they were given on; see advisory/veto_memory.
+        self.veto_memory = VetoMemory(root / "runtime" / "veto_memory.json")
+        # What the account has taught itself, fed back into every review.
+        self.memory = TradingMemory(root / "runtime" / "trading_memory.json")
+        # ticket -> when the supervisor last looked at it, so an open position
+        # is reconsidered on a sane cadence rather than every thirty seconds.
+        self._supervised_at: dict[int, datetime] = {}
 
     def connect(self) -> None:
         account = self.broker.connect()
@@ -252,6 +264,13 @@ class JarvisRunner:
             self._record_management(self.manager.manage_news(positions, news_filter))
             positions = self.broker.positions(magic=self.settings.system.magic_number)
         self._record_management(self.manager.manage(positions, self.clock.now()))
+        positions = self.broker.positions(magic=self.settings.system.magic_number)
+        # The mechanical rules have had their say; now the judgement layer. It
+        # runs after them deliberately — break-even and the ATR trail are
+        # cheap, deterministic and always correct to apply, so they should not
+        # wait on an API call, and the supervisor sees the position in the state
+        # those rules left it.
+        self._supervise_positions(positions)
         positions = self.broker.positions(magic=self.settings.system.magic_number)
         state = self.risk.build_state(account, positions)
         if self.risk.circuit_breaker_tripped(state):
@@ -363,6 +382,29 @@ class JarvisRunner:
             )
             return False
 
+        # Before anything else costs money or time: has this exact proposal
+        # already been refused? The gate sits here, ahead of the risk, filter
+        # and sizing work, because none of that changes the answer — a setup
+        # Claude declined is not going to be talked into by a fresh margin
+        # calculation, and re-running it only produces another identical row in
+        # the dashboard's AI ledger.
+        remembered = self._remembered_veto(idea)
+        if remembered is not None:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AI_VETO,
+                remembered.describe(self.clock.now()),
+                signals=list(idea.signals),
+                extra={
+                    "ai_veto_remembered": True,
+                    "ai_veto_repeats": remembered.repeats,
+                    "ai_confidence": remembered.confidence,
+                },
+            )
+            return False
+
         spec = self.broker.spec(symbol)
         state = self.risk.build_state(account, positions)
         risk_decision = self.risk.evaluate(state, symbol, spec)
@@ -453,7 +495,12 @@ class JarvisRunner:
                 else None
             ),
         }
-        request_payload = build_review_payload(idea, context, proposal)
+        briefing = (
+            self.memory.briefing(symbol, idea.direction.name)
+            if self.memory.has_evidence()
+            else None
+        )
+        request_payload = build_review_payload(idea, context, proposal, briefing)
         try:
             self.ai_ledger.append(
                 "pretrade_request",
@@ -489,7 +536,7 @@ class JarvisRunner:
                     provider="monitor",
                 )
                 if self.operation is OperationMode.MONITOR
-                else self._reviewed(idea, context, proposal)
+                else self._reviewed(idea, context, proposal, briefing)
             )
             ai_latency_ms = round((time.monotonic() - ai_started) * 1000, 1)
             try:
@@ -522,6 +569,14 @@ class JarvisRunner:
             "ai_error": advice.error,
         }
         if not advice.approved:
+            # Remember it, so the next cycle does not buy this answer again.
+            # Only a real verdict is worth remembering: a transport failure is
+            # a veto by the fail-closed rule, but it says nothing about the
+            # setup, and silencing a symbol for ninety minutes because of one
+            # timeout would let a brief outage blank out the catalogue.
+            if not advice.error:
+                self._remember_veto(idea, context, advice)
+                self.memory.record_veto(symbol, idea.direction.name, self.clock.now())
             self._record_skip(
                 cycle_id,
                 symbol,
@@ -532,6 +587,8 @@ class JarvisRunner:
                 extra={**filter_data, **ai_data},
             )
             return False
+        # Approved: whatever was held against this symbol no longer stands.
+        self.veto_memory.clear(symbol, idea.direction.name)
 
         cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
@@ -741,11 +798,157 @@ class JarvisRunner:
                 + "; ".join(f"{item.name}" for item in failures[:6])
             )
 
+    def _supervise_positions(self, positions) -> None:  # type: ignore[no-untyped-def]
+        """Let the adviser manage what is already open, on a bounded cadence.
+
+        The account previously had a strategist and no manager. Something
+        decided what to open, and from that moment the position was handed to
+        three fixed numbers — break even at 1R, partial at 2R, trail by ATR —
+        which cannot tell a trend that is still intact from one that broke
+        twenty minutes ago. Both look identical to a rule that only reads the
+        R multiple.
+
+        Rate-limited rather than run every loop, and the reason is not only
+        cost. At a thirty-second interval an adviser asked continuously will
+        eventually talk itself into acting on noise, and each intervention
+        costs real spread. Once every `supervision_interval_minutes` is roughly
+        how often a human glances at an open trade, which is the behaviour
+        being modelled.
+        """
+        if isinstance(self.advisor, DisabledAdvisor) or self.operation is OperationMode.MONITOR:
+            return
+        interval = self.settings.trade_management.supervision_interval_minutes
+        if interval <= 0:
+            return
+        now = self.clock.now()
+        live = {position.ticket for position in positions}
+        # Forget tickets that have closed, or the map grows for the life of the
+        # process and starts throttling a ticket the broker has reused.
+        self._supervised_at = {
+            ticket: when for ticket, when in self._supervised_at.items() if ticket in live
+        }
+        for position in positions:
+            last = self._supervised_at.get(position.ticket)
+            if last is not None and (now - last).total_seconds() < interval * 60:
+                continue
+            try:
+                context = self.data.get_context(position.symbol)
+            except (TradingSystemError, ValueError) as exc:
+                log.warning(
+                    "no context for supervision; mechanical rules continue",
+                    extra={
+                        "event": "supervision_no_context",
+                        "ticket": position.ticket,
+                        "symbol": position.symbol,
+                        "reason": str(exc),
+                    },
+                )
+                continue
+            payload = build_supervision_payload(
+                position,
+                context,
+                {
+                    "operation": self.operation.value,
+                    "account_currency": self.broker.account().currency,
+                    "learned_so_far": self.memory.briefing(
+                        position.symbol, position.direction.name
+                    ),
+                },
+            )
+            self._supervised_at[position.ticket] = now
+            started = time.monotonic()
+            verdict = self.advisor.supervise(payload)
+            latency_ms = round((time.monotonic() - started) * 1000, 1)
+            try:
+                self.ai_ledger.append(
+                    "position_supervision",
+                    {
+                        "ticket": position.ticket,
+                        "symbol": position.symbol,
+                        "direction": position.direction.name,
+                        "latency_ms": latency_ms,
+                        "request": payload,
+                        "decision": verdict.safe_dict(),
+                    },
+                )
+            except OSError:
+                log.exception(
+                    "failed to persist supervision audit",
+                    extra={"event": "supervision_audit_failed", "ticket": position.ticket},
+                )
+                # No audit, no action. Every other decision in this system is
+                # reconstructable from the ledger and this one must be too.
+                continue
+            if verdict.action == "hold":
+                continue
+            event = self.manager.apply_supervision(position, verdict)
+            if event is not None:
+                self._record_management([event])
+
+    def _remembered_veto(self, idea: TradeIdea):  # type: ignore[no-untyped-def]
+        """The standing refusal covering this proposal, if there is one.
+
+        Takes no context: the lookup is by the proposal's own shape, and the
+        ATR scale it is compared against was recorded with the refusal rather
+        than recomputed now. Using today's ATR would let a volatility spike
+        silently widen the tolerance.
+        """
+        if idea.direction is None or self.operation is OperationMode.MONITOR:
+            return None
+        return self.veto_memory.recall(
+            idea.symbol,
+            idea.direction.name,
+            idea.entry,
+            idea.stop_loss,
+            self.clock.now(),
+        )
+
+    def _remember_veto(self, idea: TradeIdea, context: MarketContext, advice: Advice) -> None:
+        """File a refusal against the shape of the proposal that earned it."""
+        if idea.direction is None:
+            return
+        self.veto_memory.remember(
+            idea.symbol,
+            idea.direction.name,
+            entry=idea.entry,
+            stop=idea.stop_loss,
+            atr=self._signal_atr(context),
+            thesis=advice.thesis,
+            confidence=advice.confidence,
+            now=self.clock.now(),
+        )
+
+    @staticmethod
+    def _signal_atr(context: MarketContext) -> float:
+        """ATR of the signal timeframe, the yardstick for "materially changed".
+
+        Zero when the frame is missing rather than a guessed constant: the
+        memory treats a zero as "compare exactly", which errs toward asking
+        again. Erring the other way would silence a symbol on a scale nobody
+        chose.
+        """
+        series = context.series.get(_REVIEW_TIMEFRAME)
+        if series is None or len(series.df) < 15:
+            return 0.0
+        frame = series.df
+        previous = frame["close"].shift(1)
+        ranges = pd.concat(
+            [
+                frame["high"] - frame["low"],
+                (frame["high"] - previous).abs(),
+                (frame["low"] - previous).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        value = ranges.tail(14).mean()
+        return 0.0 if pd.isna(value) else float(value)
+
     def _reviewed(
         self,
         idea: TradeIdea,
         context: MarketContext,
         proposal: dict[str, object],
+        memory: dict[str, object] | None = None,
     ) -> Advice:
         """Ask Claude, unless the identical setup was already answered.
 
@@ -784,7 +987,7 @@ class JarvisRunner:
                 )
                 return cached
 
-        advice = self.advisor.review(idea, context, proposal)
+        advice = self.advisor.review(idea, context, proposal, memory)
         if key is not None:
             if len(self._review_cache) >= _REVIEW_CACHE_ENTRIES:
                 # Oldest first; insertion order is chronological.
@@ -885,9 +1088,19 @@ class JarvisRunner:
         exit_reason: str,
         closed_at: datetime | None,
     ) -> None:
+        risk_money = float(row["risk_money"])
+        # The realised result goes into the memory whether or not an adviser is
+        # configured. It is the account's own arithmetic, not an opinion, and
+        # it is the part of the record that matters most: switching the adviser
+        # off should not blind the system to its own P&L.
+        self.memory.record_outcome(
+            str(row["symbol"]),
+            str(row["direction"]),
+            pnl_money / risk_money if risk_money > 0 else 0.0,
+            self.clock.now(),
+        )
         if isinstance(self.advisor, DisabledAdvisor):
             return
-        risk_money = float(row["risk_money"])
         outcome = {
             "trade_id": int(row["id"]),
             "ticket": int(row["ticket"]) if row["ticket"] is not None else None,
@@ -908,6 +1121,12 @@ class JarvisRunner:
             "closed_at": closed_at.isoformat() if closed_at is not None else None,
         }
         reflection = self.advisor.reflect(outcome)
+        # This is the step that was missing. The reflection used to be written
+        # to a file nothing read, so every lesson was paid for once and then
+        # discarded; folding it into the memory is what makes the next review
+        # start from more than zero.
+        if not reflection.error and reflection.lessons:
+            self.memory.record_reflection(outcome, reflection.lessons, self.clock.now())
         try:
             self.ai_ledger.append(
                 "posttrade_reflection",
