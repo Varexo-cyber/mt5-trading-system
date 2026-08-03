@@ -492,6 +492,18 @@ class ConfluenceConfig(Base):
     minimum_directional_modules: int = Field(default=2, ge=1, le=10)
     minimum_agreement_ratio: float = Field(default=0.60, ge=0.5, le=1.0)
     target_r_multiple: float = Field(default=2.0, ge=1.0, le=10.0)
+    #: The target is also bounded by how far this instrument actually travels.
+    #: `entry + 2R` is arithmetic and never asks whether the market goes there;
+    #: a slow instrument gets a target it reaches once a month, and the trade
+    #: becomes a bet on the stop not being hit.
+    target_horizon_bars: int = Field(default=24, ge=4, le=200)
+    #: Percentile of favourable excursion over that horizon. Not the maximum —
+    #: one violent week should not set the expectation for every trade.
+    target_reach_quantile: float = Field(default=0.70, ge=0.5, le=0.99)
+    #: Below this, the setup is rejected instead of sized down. Shrinking the
+    #: target indefinitely buys a high hit rate with trades that cannot pay for
+    #: their own spread.
+    minimum_r_multiple: float = Field(default=1.0, ge=0.5, le=5.0)
     atr_stop_multiple: float = Field(default=1.5, gt=0.0, le=10.0)
     #: Paper/backtest may research every module. Live execution is restricted
     #: to this independently validated subset; empty means live entries block.

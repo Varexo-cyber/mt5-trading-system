@@ -20,9 +20,12 @@ class StubModule:
         return self.signal
 
 
-def context() -> MarketContext:
+def context(step: float = 0.0006) -> MarketContext:
+    """A rising H1 series. `step` is the move per bar, which decides whether a
+    2R target is reachable — the engine now bounds the target by what this
+    market actually travels, so the fixture has to have a speed."""
     index = pd.date_range("2026-01-01", periods=100, freq="1h", tz=UTC)
-    close = pd.Series([1.10 + index * 0.0001 for index in range(100)], index=index)
+    close = pd.Series([1.10 + i * step for i in range(100)], index=index)
     frame = pd.DataFrame(
         {
             "open": close - 0.00005,
@@ -68,6 +71,29 @@ def test_paper_builds_structural_trade_idea() -> None:
     assert idea.direction is not None and idea.direction.name == "LONG"
     assert idea.stop_loss < idea.entry < idea.take_profit
     assert (idea.take_profit - idea.entry) / (idea.entry - idea.stop_loss) == 2.0
+
+
+def test_a_target_the_market_never_reaches_is_trimmed_or_refused() -> None:
+    """`entry + 2R` is arithmetic; it never asks whether the market goes there.
+
+    On a slow instrument that produced a target reached about once a month, so
+    the trade was really a bet on the stop not being hit and the reward half of
+    the reward-to-risk never arrived. The distance is now also measured against
+    the instrument's own favourable excursion over the horizon.
+    """
+    slow = ConfluenceEngine(modules(), config()).evaluate(context(step=0.00002), TradingMode.PAPER)
+
+    assert not slow.approved
+    assert "reachable target" in slow.reason
+
+
+def test_a_trimmed_target_still_clears_the_minimum() -> None:
+    """Between the two bounds the target shrinks rather than being refused."""
+    idea = ConfluenceEngine(modules(), config()).evaluate(context(step=0.00025), TradingMode.PAPER)
+
+    if idea.approved:
+        achieved = (idea.take_profit - idea.entry) / (idea.entry - idea.stop_loss)
+        assert config().minimum_r_multiple <= achieved <= config().target_r_multiple
 
 
 def test_live_blocks_when_no_module_is_validated() -> None:
