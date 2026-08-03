@@ -50,6 +50,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nMetaTrader5 package: {getattr(mt5, '__version__', 'unknown')}")
         print(f"account {account.login} @ {account.server}, equity {account.equity:.2f}\n")
 
+        # order_check validates a request; order_send additionally requires
+        # permission to trade programmatically. If these are not all True the
+        # request is fine and the terminal still refuses to send it, which is
+        # exactly the shape of the failure being chased: no result, no retcode,
+        # nothing ever reaching the broker.
+        terminal = mt5.terminal_info()
+        info = mt5.account_info()
+        print("permission to send orders")
+        print(f"  terminal AutoTrading button   : {getattr(terminal, 'trade_allowed', '?')}")
+        print(f"  account allows trading        : {getattr(info, 'trade_allowed', '?')}")
+        print(f"  account allows expert/API     : {getattr(info, 'trade_expert', '?')}")
+        print(f"  terminal connected            : {getattr(terminal, 'connected', '?')}")
+        print()
+
         spec = connector.spec(args.symbol)
         tick = connector.tick(args.symbol)
         price = tick.ask
@@ -81,9 +95,33 @@ def main(argv: list[str] | None = None) -> int:
             f"sl {payload['sl']}\n"
         )
 
+        # The runner does not build the dict by hand — it goes through
+        # _build_deal_payload. Checking that exact object rules out a difference
+        # between what this probe sends and what production sends.
+        from core.types import Direction, OrderRequest
+
+        real_request = OrderRequest(
+            symbol=args.symbol,
+            direction=Direction.LONG,
+            volume=float(spec.volume_min),
+            sl=float(stop),
+            tp=0.0,
+            reference_price=float(price),
+            deviation_points=settings.mt5.deviation_points,
+            magic=settings.system.magic_number,
+            comment="jarvis-exp-live",
+        )
+        real_payload = connector._build_deal_payload(real_request, spec, price)
+        differences = {
+            key: (payload.get(key), value)
+            for key, value in real_payload.items()
+            if payload.get(key) != value or type(payload.get(key)) is not type(value)
+        }
+        print(f"production payload differs from the probe's in: {differences or 'nothing'}\n")
+
         for label, call in (
-            ("order_check(request)      ", lambda: mt5.order_check(payload)),
-            ("order_check(**request)    ", lambda: mt5.order_check(**payload)),
+            ("order_check(probe payload)     ", lambda: mt5.order_check(payload)),
+            ("order_check(production payload)", lambda: mt5.order_check(real_payload)),
         ):
             try:
                 result = call()
