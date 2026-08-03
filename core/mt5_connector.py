@@ -664,9 +664,35 @@ class MT5Connector:
             price = tick.ask if request.direction is Direction.LONG else tick.bid
             payload = self._build_deal_payload(request, spec, price)
 
+            # `last_error()` is global and sticky: it holds whatever the most
+            # recent failing call set, from anywhere. Sixty rejections reported
+            # "[-2] Unnamed arguments not allowed" with a null retcode, and
+            # order_check accepts this exact payload — so that error may well
+            # have been left behind by an earlier, unrelated call and simply
+            # read back here. Sampling it either side of the send is the only
+            # way to tell a real order_send failure from a stale message.
+            before = self._last_error_tuple()
             started = time.perf_counter()
             raw = self._call("order_send", payload)
             latency_ms = (time.perf_counter() - started) * 1000.0
+            if raw is None:
+                after = self._last_error_tuple()
+                log.error(
+                    "order_send returned nothing: before=%s after=%s",
+                    before,
+                    after,
+                    extra={
+                        "event": "order_send_no_result",
+                        "symbol": request.symbol,
+                        "error_before_send": list(before),
+                        "error_after_send": list(after),
+                        "payload_types": {k: type(v).__name__ for k, v in payload.items()},
+                        "payload": {
+                            k: (v if isinstance(v, str | int | float) else str(v))
+                            for k, v in payload.items()
+                        },
+                    },
+                )
 
             last = self._to_order_result(
                 raw=raw,
