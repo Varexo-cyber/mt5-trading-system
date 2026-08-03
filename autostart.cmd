@@ -1,5 +1,9 @@
 @echo off
-setlocal
+rem Delayed expansion is required: %VAR% inside a parenthesised block is
+rem substituted when the block is *parsed*, which is before the `set /p` in it
+rem has run. Without this the confirmation always compared an empty string and
+rem answering "yes" correctly still cancelled.
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 rem Registering a logon task needs administrator rights. Re-launch elevated
@@ -29,8 +33,8 @@ echo    [2] experimental_live  - REAL MONEY on the bound account
 echo.
 set "MODE="
 set /p CHOICE="Type 1 or 2 and press Enter: "
-if "%CHOICE%"=="1" set "MODE=paper"
-if "%CHOICE%"=="2" set "MODE=experimental_live"
+if "!CHOICE!"=="1" set "MODE=paper"
+if "!CHOICE!"=="2" set "MODE=experimental_live"
 if not defined MODE (
   echo.
   echo  Nothing chosen. No tasks installed.
@@ -39,13 +43,11 @@ if not defined MODE (
   exit /b 1
 )
 
-if "%MODE%"=="experimental_live" (
+if "!MODE!"=="experimental_live" (
   if not exist "runtime\EXPERIMENTAL_LIVE.json" (
     echo.
-    echo  No experimental-live contract found. Arm it first:
-    echo    .venv-live\Scripts\python.exe scripts\arm_experimental_live.py ^
---account YOURACCOUNT --risk-percent 1 --drawdown-percent 15 ^
---confirm "BEVESTIG EXPERIMENTEEL LIVE"
+    echo  No experimental-live contract found. Arm it first with
+    echo  scripts\arm_experimental_live.py, then run this again.
     echo.
     pause
     exit /b 1
@@ -54,7 +56,7 @@ if "%MODE%"=="experimental_live" (
   echo  This will trade REAL MONEY every time you log in to Windows.
   set "CONFIRM="
   set /p CONFIRM="Type yes to continue: "
-  if /i not "%CONFIRM%"=="yes" (
+  if /i not "!CONFIRM!"=="yes" (
     echo.
     echo  Cancelled. No tasks installed.
     echo.
@@ -81,11 +83,11 @@ if not defined MT5 (
   pause
   exit /b 1
 )
-echo  Found: %MT5%
+echo  Found: !MT5!
 
 echo.
 echo  Installing the scheduled tasks...
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\install_autostart_paper.ps1" -TradingOperation "%MODE%" -Mt5Path "%MT5%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\install_autostart_paper.ps1" -TradingOperation "!MODE!" -Mt5Path "!MT5!"
 if errorlevel 1 (
   echo.
   echo  INSTALL FAILED. No changes were made that will start anything.
@@ -96,7 +98,7 @@ if errorlevel 1 (
 
 echo.
 echo  ============================================
-echo   Done. Mode: %MODE%
+echo   Done. Mode: !MODE!
 echo  ============================================
 echo.
 echo  It starts by itself the next time you log in to Windows.

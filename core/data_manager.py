@@ -224,14 +224,7 @@ class DataManager:
         if len(df) < 3 or tf in (Timeframe.W1, Timeframe.MN1):
             return
 
-        deltas = df.index.to_series().diff().dropna()
-        step = tf.duration
-        # A weekend on an FX feed shows up as a ~48-65h gap on intraday
-        # timeframes; anything at or above 2 days is treated as a session break.
-        session_break = pd.Timedelta(days=2)
-        intraweek = deltas[deltas < session_break]
-        missing_bars = ((intraweek - step) / step).clip(lower=0).sum()
-
+        missing_bars = _missing_bars(df, tf)
         expected = max(len(df) - 1, 1)
         fraction = float(missing_bars) / expected
         if fraction > self.config.max_gap_fraction:
@@ -372,6 +365,44 @@ def atr(df: pd.DataFrame, period: int = 14) -> float:
     for tr in true_range[period:]:
         value = (value * (period - 1) + float(tr)) / period
     return value
+
+
+def _missing_bars(df: pd.DataFrame, tf: Timeframe) -> float:
+    """Bars absent from a series, judged against the instrument's own session.
+
+    The previous rule assumed every instrument trades like spot FX: continuous
+    for 24 hours, five days a week, so any intraweek gap larger than one bar was
+    a hole in the feed. That is true for EURUSD and false for most of a broker
+    catalogue. WHEAT breaks for about five hours a day, a London share trades
+    eight hours out of twenty-four, and an index future has its own daily halt.
+    Measured that way, WHEAT H1 reported 415 bars "missing" — 20.8% against a 2%
+    limit — and every one of them was the market being shut. Whole asset classes
+    were rejected as corrupt data.
+
+    So the instrument is compared with itself. Bars are grouped by date and the
+    median day sets the expectation; a day short of it is missing that many
+    bars. A daily session break costs nothing, because every day has the same
+    break. A feed that genuinely dropped an hour still shows up as one short
+    day, which is what the check is for.
+
+    The first and last dates are excluded: both are partial by construction —
+    the window simply starts and ends mid-session.
+    """
+    if tf.duration >= timedelta(days=1):
+        # Daily and above: one bar per trading day, so a short "day" is not a
+        # meaningful idea. Absent dates are holidays, not defects.
+        return 0.0
+
+    per_day = df.groupby(df.index.date).size()
+    if len(per_day) < 3:
+        return 0.0
+
+    full_days = per_day.iloc[1:-1]
+    if full_days.empty:
+        return 0.0
+
+    typical = float(full_days.median())
+    return float((typical - full_days).clip(lower=0).sum())
 
 
 def expected_bars_between(start: datetime, end: datetime, tf: Timeframe) -> int:

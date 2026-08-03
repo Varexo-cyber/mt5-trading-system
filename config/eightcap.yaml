@@ -26,6 +26,18 @@ scanner:
 
 analysis:
   confluence:
+    # Measured, not guessed: fed a textbook uptrend, every symbol came back
+    # NO_SIGNAL — "too few independent directional modules". Three modules carry
+    # weight, and two of them look for opposite things. `trend_momentum` wants
+    # continuation; `liquidity_sweep` wants a failed break that closes back
+    # inside. A market cannot usually be both, so the second vote almost never
+    # arrives and the system analyses forever without ever acting.
+    #
+    # The second opinion is Claude instead. It sees the same closed bars and the
+    # exact executable proposal, it can only veto, and it is fail-closed — no
+    # answer means no trade. One module plus an independent reviewer is a real
+    # agreement; two modules that cannot fire together is not.
+    minimum_directional_modules: 1
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
     # lists exactly what is still missing, and the runner alerts on it at every

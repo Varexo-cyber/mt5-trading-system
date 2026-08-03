@@ -155,7 +155,7 @@ class JarvisRunner:
             margin_estimator=self.broker.estimate_margin,
         )
         self.filters = build_filter_chain(self.broker, self.settings, self.journal, self.clock)
-        self.scanner = UniverseScanner(self.broker, self.settings)
+        self.scanner = UniverseScanner(self.broker, self.settings, self.clock)
         self.manager = PositionManager(self.broker, self.journal, self.settings)
         self.alerts = AlertSender(self.settings.monitoring)
         self.reports = DailyReportGenerator(

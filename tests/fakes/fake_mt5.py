@@ -143,6 +143,16 @@ class FakeMT5:
     #: synthetic bar is the one that clock would consider still forming.
     now: datetime | None = None
 
+    #: Symbol -> (open hour, close hour) in UTC. Absent means 24-hour trading.
+    #: A broker catalogue is mostly *not* spot FX: a share trades eight hours a
+    #: day, a grain future halts for several. Bars are generated accordingly so
+    #: the gap and staleness checks meet the shape of data they really see.
+    session_hours: dict[str, tuple[int, int]] = field(default_factory=dict)
+    #: Symbol -> how far behind `now` its last tick is. A closed exchange keeps
+    #: serving its final quote, which is what dragged the server-time offset
+    #: around in production.
+    tick_age: dict[str, timedelta] = field(default_factory=dict)
+
     calls: list[tuple[str, tuple[Any, ...]]] = field(default_factory=list)
     orders_sent: list[dict[str, Any]] = field(default_factory=list)
     positions: list[SimpleNamespace] = field(default_factory=list)
@@ -237,9 +247,8 @@ class FakeMT5:
             self.error = (-10002, "Unknown symbol")
             return None
         bid, ask = quote
-        return SimpleNamespace(
-            time=int(self._now().timestamp()), bid=bid, ask=ask, last=0.0, volume=0
-        )
+        moment = self._now() - self.tick_age.get(symbol, timedelta(0))
+        return SimpleNamespace(time=int(moment.timestamp()), bid=bid, ask=ask, last=0.0, volume=0)
 
     # -- rates ------------------------------------------------------------
 
@@ -250,7 +259,13 @@ class FakeMT5:
         if symbol not in self.specs:
             self.error = (-10002, "Unknown symbol")
             return None
-        return synthetic_rates(count, timeframe, base_price=self.quotes[symbol][0], end=self._now())
+        return synthetic_rates(
+            count,
+            timeframe,
+            base_price=self.quotes[symbol][0],
+            end=self._now(),
+            session=self.session_hours.get(symbol),
+        )
 
     def copy_rates_range(
         self, symbol: str, timeframe: int, start: datetime, end: datetime
@@ -322,19 +337,63 @@ def _minutes_for(timeframe: int) -> int:
     return 60
 
 
+def _bar_times(
+    last_open: datetime,
+    step: timedelta,
+    count: int,
+    session: tuple[int, int] | None,
+    *,
+    intraday: bool,
+) -> list[datetime]:
+    """Walk back from `last_open`, skipping closures, until `count` bars exist."""
+    times: list[datetime] = []
+    cursor = last_open
+    # Bounded so a bad session definition fails the test rather than hanging.
+    for _ in range(count * 24):
+        if _bar_is_in_session(cursor, session, intraday=intraday):
+            times.append(cursor)
+            if len(times) == count:
+                break
+        cursor -= step
+    times.reverse()
+    return times
+
+
+def _bar_is_in_session(
+    moment: datetime, session: tuple[int, int] | None, *, intraday: bool
+) -> bool:
+    if moment.weekday() >= 5:  # Saturday, Sunday
+        return False
+    if session is None or not intraday:
+        return True
+    opens, closes = session
+    return opens <= moment.hour < closes
+
+
 def synthetic_rates(
-    count: int, timeframe: int, base_price: float = 1.085, end: datetime | None = None
+    count: int,
+    timeframe: int,
+    base_price: float = 1.085,
+    end: datetime | None = None,
+    session: tuple[int, int] | None = None,
 ) -> np.ndarray:
     """Deterministic, well-formed OHLCV bars ending at the current forming bar.
 
     Prices follow a fixed pseudo-random walk (seeded) so tests are reproducible
     and never flake on a lucky or unlucky sequence.
+
+    `session` is `(open_hour, close_hour)` in UTC for instruments that do not
+    trade around the clock. Weekends are always skipped. Without it the series
+    is continuous, which describes spot FX and almost nothing else in a broker
+    catalogue.
     """
     minutes = _minutes_for(timeframe)
     step = timedelta(minutes=minutes)
     last_open = (end or datetime.now(UTC)).replace(second=0, microsecond=0)
     # Align to the timeframe grid so bar boundaries are realistic.
     aligned = last_open - timedelta(minutes=last_open.minute % minutes)
+
+    times = _bar_times(aligned, step, count, session, intraday=minutes < 1440)
 
     rng = np.random.default_rng(seed=42)
     steps = rng.normal(0.0, base_price * 0.0005, size=count)
@@ -356,7 +415,7 @@ def synthetic_rates(
     ]
     rows = []
     for i in range(count):
-        bar_open = aligned - step * (count - 1 - i)
+        bar_open = times[i]
         rows.append(
             (
                 int(bar_open.timestamp()),
