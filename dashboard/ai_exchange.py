@@ -54,6 +54,23 @@ def pair_ai_reviews(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]
     return paired
 
 
+def read_posture(path: Any) -> dict[str, Any]:
+    """The trading posture the last cycle recorded, or empty if unknown.
+
+    Read from the heartbeat rather than recomputed, so the dashboard reports
+    what the trader actually acted on rather than a second opinion that could
+    disagree with it.
+    """
+    import json
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, AttributeError):
+        return {}
+    stance = payload.get("posture") if isinstance(payload, Mapping) else None
+    return dict(stance) if isinstance(stance, Mapping) else {}
+
+
 def supervision_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]]:
     """Extract the open-position management stream, newest first.
 
