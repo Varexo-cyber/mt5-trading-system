@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -409,7 +410,7 @@ class TestForbiddenPractices:
         with pytest.raises(ForbiddenStrategyError, match="hedge"):
             manager.assert_not_forbidden(sizing, state)
 
-    def test_increasing_risk_after_a_loss_is_forbidden(
+    def test_sizing_above_what_the_loss_streak_allows_is_forbidden(
         self,
         manager: RiskManager,
         journal: Journal,
@@ -417,11 +418,39 @@ class TestForbiddenPractices:
         settings: Settings,
         spec: InstrumentSpec,
     ) -> None:
+        """The decision is what may not rise, and this is a raised decision."""
         _record_trade(journal, clock, settings, spec, pnl=-100.0, risk_pct=0.5)
         state = manager.build_state(account(10_000.0))
-        sizing = self._sizing(settings, spec)  # 1.0% > the previous 0.5%
+        sanctioned = settings.effective_risk_pct() * manager.risk_multiplier(state)
+        inflated = replace(self._sizing(settings, spec), intended_risk_pct=sanctioned * 1.5)
+
         with pytest.raises(ForbiddenStrategyError, match="martingale / recovery"):
-            manager.assert_not_forbidden(sizing, state)
+            manager.assert_not_forbidden(inflated, state)
+
+    def test_lot_rounding_on_the_previous_trade_is_not_martingale(
+        self,
+        manager: RiskManager,
+        journal: Journal,
+        clock: SimulatedClock,
+        settings: Settings,
+        spec: InstrumentSpec,
+    ) -> None:
+        """Regression: every candidate after a loss was refused as martingale.
+
+        The check compared the new trade's *intended* risk against the previous
+        trade's *actual* risk, which are different quantities. Volume rounds
+        down to the broker's step, so on a small account the realised risk lands
+        wherever 0.01 lots happens to put it — 1.44% here, something else on the
+        next symbol. Production read that as "risk would rise from 1.440% to
+        2.000%" and blocked everything, while the configured risk had not moved
+        at all.
+        """
+        _record_trade(journal, clock, settings, spec, pnl=-100.0, risk_pct=0.72)
+        state = manager.build_state(account(10_000.0))
+        sizing = self._sizing(settings, spec)
+
+        assert sizing.intended_risk_pct > 0.72, "fixture must reproduce the reported shape"
+        manager.assert_not_forbidden(sizing, state)  # must not raise
 
     def test_same_risk_after_a_loss_is_allowed(
         self,
