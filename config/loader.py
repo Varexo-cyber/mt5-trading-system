@@ -126,11 +126,18 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
 
     Lists are replaced rather than concatenated on purpose: a whitelist you
     meant to shrink must not silently grow.
+
+    An **explicitly empty mapping replaces too**, for the same reason. Recursing
+    into `{}` visits no keys and so changes nothing, which meant an overlay
+    saying `min_equity_for_symbol: {}` — plainly "there are no equity floors" —
+    left every inherited floor in place and silently did nothing. Nobody writes
+    an empty mapping to mean "no change"; they omit the key. Writing one can
+    only mean "clear this", so that is what it does.
     """
     merged = dict(base)
     for key, value in overlay.items():
         current = merged.get(key)
-        if isinstance(current, dict) and isinstance(value, dict):
+        if isinstance(current, dict) and isinstance(value, dict) and value:
             merged[key] = _deep_merge(current, value)
         else:
             merged[key] = value

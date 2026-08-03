@@ -378,3 +378,46 @@ class TestTradeFrequency:
         # One module plus Claude. Two modules cannot agree in practice: the two
         # heaviest look for opposite market states.
         assert settings.analysis.confluence.minimum_directional_modules == 1
+        # Gold, silver and the indices are analysed like everything else. The
+        # position sizer decides what EUR 100 can express; a hand-written floor
+        # refused them before anyone measured the actual setup.
+        assert settings.instruments.min_equity_for_symbol == {}
+        for symbol in ("XAUUSD", "US30", "BTCUSD"):
+            allowed, reason = settings.symbol_allowed_at_equity(symbol, 100.0)
+            assert allowed, f"{symbol} blocked: {reason}"
+        # The full ladder, weekly down to one minute.
+        assert set(settings.data.timeframes) >= {"W1", "D1", "H4", "H1", "M15", "M5", "M1"}
+
+
+def test_an_empty_mapping_in_an_overlay_clears_the_inherited_one(tmp_path: Path) -> None:
+    """Regression: `min_equity_for_symbol: {}` silently did nothing.
+
+    A recursive merge visits no keys inside an empty mapping, so an overlay that
+    plainly says "there are no equity floors" left every inherited floor
+    standing and gold stayed blocked. Nobody writes `{}` to mean "no change" —
+    they omit the key — so it can only mean "clear this".
+    """
+    base = yaml.safe_load(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    assert base["instruments"]["min_equity_for_symbol"], "fixture assumes the base has floors"
+
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(
+        yaml.safe_dump({"instruments": {"min_equity_for_symbol": {}}}), encoding="utf-8"
+    )
+    settings = load_settings(overlay=overlay, env_overrides=False)
+
+    assert settings.instruments.min_equity_for_symbol == {}
+
+
+def test_a_populated_mapping_in_an_overlay_still_merges(tmp_path: Path) -> None:
+    """Clearing on empty must not turn every partial override into a wipe."""
+    overlay = tmp_path / "overlay.yaml"
+    overlay.write_text(
+        yaml.safe_dump({"instruments": {"min_equity_for_symbol": {"XAUUSD": 250}}}),
+        encoding="utf-8",
+    )
+    settings = load_settings(overlay=overlay, env_overrides=False)
+
+    floors = settings.instruments.min_equity_for_symbol
+    assert floors["XAUUSD"] == 250.0
+    assert "US30" in floors, "keys not mentioned in the overlay must survive"

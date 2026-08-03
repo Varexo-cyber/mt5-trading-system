@@ -20,6 +20,37 @@ instruments:
   universe_mode: affordable
   blocklist: []
 
+  # No hand-written equity floors. They were a guess at what a small account
+  # can afford — gold at EUR 500, indices at EUR 2000 — and a guess made before
+  # the position sizer existed. The sizer measures it exactly, per symbol, at
+  # the current equity and the setup's real stop, and skips anything it cannot
+  # express as TRADE_SKIPPED_UNDERCAPITALIZED.
+  #
+  # Keeping both meant XAUUSD was refused before anyone checked whether this
+  # particular setup fitted, purely because the account is under an arbitrary
+  # threshold. Gold is now analysed like everything else and skipped only when
+  # the arithmetic actually says no.
+  min_equity_for_symbol: {}
+
+data:
+  # The full ladder, weekly down to one minute. The higher frames set bias, the
+  # lower ones are what Claude reads for entry timing — and it uses them: two of
+  # the first twelve vetoes were "M15/M5 price action is falling into the entry,
+  # directly opposing the long". M1 and W1 extend that in both directions.
+  #
+  # Each timeframe costs one fetch per symbol per cycle. At 184 eligible markets
+  # the five-frame cycle measured 240s; watch the `cycle:` line after this and
+  # drop M1 first if it becomes uncomfortable.
+  timeframes: [W1, D1, H4, H1, M15, M5, M1]
+  bars:
+    W1: 400
+    D1: 750
+    H4: 1500
+    H1: 2000
+    M15: 2000
+    M5: 2000
+    M1: 1200      # ~20 hours; entry-timing context, not a history for analysis
+
 scanner:
   batch_size: null        # rank the entire catalogue every cycle
 

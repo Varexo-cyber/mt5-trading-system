@@ -77,6 +77,10 @@ class ConfluenceEngine:
         if score < self.config.score_threshold:
             return self._reject(ctx, signals, f"confluence score {score:.1f} below threshold")
 
+        adverse = self._entry_timing_conflict(ctx, direction)
+        if adverse is not None:
+            return self._reject(ctx, signals, adverse)
+
         entry = ctx.tick.ask if direction is Direction.LONG else ctx.tick.bid
         frame = ctx.series[Timeframe.H1].df
         atr = self._atr(frame)
@@ -112,6 +116,46 @@ class ConfluenceEngine:
             reason=f"{len(agreeing)} modules agree ({agreement:.0%})",
             signals=signals,
         )
+
+    def _entry_timing_conflict(self, ctx: MarketContext, direction: Direction) -> str | None:
+        """Refuse an entry the immediate price action is moving against.
+
+        The engine went straight from an H4/H1 bias to an entry at the current
+        ask, with nothing between. The plan was always "higher timeframe bias,
+        middle timeframe zone, lower timeframe timing" and the timing step did
+        not exist, so a long was proposed at whatever price happened to be
+        printing — including while the last hour was selling into it.
+
+        Claude caught exactly this and nothing else. Eleven of the first twelve
+        reviews were vetoes, and the recurring sentence was "lower-timeframe
+        (M15/M5) price action is falling into the entry, directly opposing the
+        long". Encoding that here is cheaper than paying for the same finding
+        once per candidate, and it is a real gate rather than a stricter
+        threshold: it rejects on evidence that contradicts the setup, not on the
+        setup being merely unremarkable.
+
+        Deliberately one-sided. It never *creates* a signal, and a flat lower
+        timeframe is not an objection — only a move materially against the
+        proposed direction is.
+        """
+        for timeframe in self.config.entry_timing_timeframes:
+            series = ctx.series.get(Timeframe(timeframe))
+            if series is None or len(series.df) < 20:
+                continue
+            frame = series.df
+            atr = self._atr(frame)
+            if atr <= 0:
+                continue
+            bars = self.config.entry_timing_lookback
+            move = float(frame["close"].iloc[-1]) - float(frame["close"].iloc[-1 - bars])
+            adverse_atr = -(move * int(direction)) / atr
+            if adverse_atr > self.config.entry_timing_max_adverse_atr:
+                return (
+                    f"{timeframe} price is moving against the {direction.name.lower()}: "
+                    f"{adverse_atr:.2f} ATR adverse over the last {bars} closed bars, "
+                    f"limit {self.config.entry_timing_max_adverse_atr:.2f}"
+                )
+        return None
 
     @staticmethod
     def _atr(frame: pd.DataFrame, period: int = 14) -> float:

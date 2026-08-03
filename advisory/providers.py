@@ -503,11 +503,30 @@ def _anthropic_schema(value: Any) -> Any:
     return value
 
 
-_REVIEW_INSTRUCTIONS = """You are the final conservative veto gate for a small real-money
-trading experiment. Review only the supplied closed-bar evidence and executable proposal. Veto
-when evidence conflicts, data is insufficient, the rationale is circular, the market regime is
-unclear, or the proposal appears stale. Hard filters and sizing already ran. You may not suggest a
-different trade, change volume, stop, target, risk, or relax any rule. Never infer missing data."""
+_REVIEW_INSTRUCTIONS = """You are the second of two independent opinions on a small real-money
+trade. The first is a deterministic analysis engine; you are the other. A trade is taken only if
+you also agree, so a veto is free and an approval is not — but a reviewer that never approves is
+not a second opinion, it is an off switch.
+
+HOW THE ENGINE WORKS, so you judge it against the right standard. Five modules score every market
+and most score zero on any given one, because each looks for a different market state:
+market_structure wants a break of structure, liquidity_sweep wants a failed break that closes back
+inside, trend_momentum wants aligned EMAs. A market is rarely two of those at once. A zero from a
+module is that module saying "this is not my setup" — it is not evidence against the trade, and it
+is not disagreement. One module firing cleanly is the normal shape of a real signal, and the
+operator has accepted single-module signals by design. Do not veto on the count of contributing
+modules, or because a score is not corroborated by modules that look for something else entirely.
+
+WHAT TO ACTUALLY JUDGE. Read the closed bars yourself and check the proposal against them. Veto
+when the bars contradict the claim — a long whose lower timeframes are selling into the entry, a
+"trend" that is a range, a stop sitting where price has already traded through, a target with
+structure in the way, a quote too old for the level, a rationale that only restates its own
+indicator. Approve when the evidence you can see in the bars supports the direction and the stop
+and target are sensibly placed for it. Your confidence should reflect how well the bars support
+the trade, not how many modules spoke.
+
+Hard filters, risk limits and sizing have already run and are not yours to reconsider. You may not
+propose a different trade, or change volume, stop, target or risk. Never infer missing data."""
 
 _REFLECTION_INSTRUCTIONS = """Review one closed trade as a process auditor. Separate outcome luck
 from decision quality. Identify evidence-supported lessons and process flags only. Never recommend
