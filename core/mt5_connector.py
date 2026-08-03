@@ -60,6 +60,13 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
+#: Consecutive observations required before believing the broker's timezone
+#: moved *backwards*. A real shift is a DST change: one hour, permanent, and it
+#: will be reported by every subsequent tick. A stale quote from a closed
+#: exchange also looks like a backwards shift, but the next fresh tick
+#: contradicts it.
+_OFFSET_DECREASE_CONFIRMATIONS = 20
+
 
 def import_mt5() -> ModuleType:
     """Import the MetaTrader5 package, with a message that explains the failure.
@@ -115,6 +122,8 @@ class MT5Connector:
         self._spec_cache: dict[str, InstrumentSpec] = {}
         self._selected: set[str] = set()
         self._server_offset = timedelta(0)
+        self._offset_established = False
+        self._offset_decrease_votes = 0
         self._last_error: tuple[int, str] | None = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -530,6 +539,22 @@ class MT5Connector:
 
         Rounded to whole hours: the real offset is always a whole number of
         hours, and rounding removes the tick's own latency from the estimate.
+
+        **The freshest tick wins, and a decrease has to be earned.** This runs
+        on every tick of every symbol, and a scan of the whole catalogue reads
+        instruments whose exchange is shut. A stale quote makes the broker look
+        *earlier* than it is, so it produces a smaller delta — and if it happens
+        to be a whole number of hours old it sails through the residual filter
+        and looks exactly like a timezone. The result was an offset flapping
+        many times a second between the real value and whatever the most
+        recently read closed market implied, which silently moved every session
+        boundary and day rollover that depends on it.
+
+        No tick can arrive from the future, so among ticks read at the same
+        moment the largest delta is the freshest one. An increase is therefore
+        adopted immediately. A decrease is only real when the broker changes
+        timezone (DST, ±1h, permanent), so it must be confirmed by several
+        consecutive observations before it is believed.
         """
         delta = server_time - datetime.now(UTC)
         hours = round(delta.total_seconds() / 3600.0)
@@ -540,13 +565,44 @@ class MT5Connector:
         # tick lands very close to a whole-hour difference from UTC.
         if abs(hours) > 14 or residual_seconds > 300:
             return
+
         offset = timedelta(hours=hours)
-        if offset != self._server_offset:
+        if offset == self._server_offset:
+            self._offset_decrease_votes = 0
+            return
+
+        if offset > self._server_offset:
+            established = self._offset_established
+            self._server_offset = offset
+            self._offset_established = True
+            self._offset_decrease_votes = 0
             log.info(
-                "broker server time offset updated",
+                "broker server time offset %s",
+                "updated" if established else "established",
                 extra={"event": "server_offset", "offset_hours": hours},
             )
-            self._server_offset = offset
+            return
+
+        # Smaller than what we hold: either a stale quote or a real DST shift.
+        self._offset_decrease_votes += 1
+        if self._offset_decrease_votes < _OFFSET_DECREASE_CONFIRMATIONS:
+            log.debug(
+                "ignoring a smaller server offset pending confirmation",
+                extra={
+                    "event": "server_offset_unconfirmed",
+                    "candidate_hours": hours,
+                    "held_hours": self._server_offset.total_seconds() / 3600.0,
+                    "votes": self._offset_decrease_votes,
+                },
+            )
+            return
+
+        log.info(
+            "broker server time offset moved back",
+            extra={"event": "server_offset", "offset_hours": hours},
+        )
+        self._server_offset = offset
+        self._offset_decrease_votes = 0
 
     # -- market data --------------------------------------------------------
 

@@ -159,6 +159,48 @@ class TestSymbols:
 
         assert connector.server_offset == timedelta(0)
 
+    def test_a_closed_exchange_does_not_drag_the_offset_around(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        """Regression: the offset flapped many times a second during a full scan.
+
+        Scanning the whole catalogue reads instruments whose exchange is shut.
+        A quote exactly a few whole hours stale passes the residual filter and
+        is indistinguishable from a timezone, so the offset oscillated between
+        the real value and whatever the last closed market implied — silently
+        moving every session boundary that depends on it.
+        """
+        fake.now = datetime.now(UTC) + timedelta(hours=3)  # broker runs at UTC+3
+        connector.connect()
+        connector.tick("EURUSD")
+        assert connector.server_offset == timedelta(hours=3)
+
+        # A stock whose exchange closed two hours ago, then a fresh FX quote,
+        # alternating the way a scan interleaves them.
+        for _ in range(5):
+            fake.now = datetime.now(UTC) + timedelta(hours=1)
+            connector.tick("EURUSD")
+            assert connector.server_offset == timedelta(hours=3)
+
+            fake.now = datetime.now(UTC) + timedelta(hours=3)
+            connector.tick("EURUSD")
+            assert connector.server_offset == timedelta(hours=3)
+
+    def test_a_sustained_move_backwards_is_eventually_believed(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        """A DST change really does move the broker back an hour, permanently."""
+        fake.now = datetime.now(UTC) + timedelta(hours=3)
+        connector.connect()
+        connector.tick("EURUSD")
+        assert connector.server_offset == timedelta(hours=3)
+
+        fake.now = datetime.now(UTC) + timedelta(hours=2)
+        for _ in range(50):
+            connector.tick("EURUSD")
+
+        assert connector.server_offset == timedelta(hours=2)
+
 
 class TestOrderExecution:
     def _request(self, **overrides: object) -> OrderRequest:
