@@ -33,7 +33,7 @@ from core.clock import Clock, LiveClock
 from core.data_manager import DataManager
 from core.errors import TradingSystemError
 from core.startup import run_startup_guard
-from core.types import AccountSnapshot, MarketContext, OrderRequest, TradingMode
+from core.types import AccountSnapshot, MarketContext, OrderRequest, Timeframe, TradingMode
 from execution.manager import PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
@@ -62,6 +62,10 @@ from risk.risk_manager import RiskManager
 from scanner.universe import ScanBatch, UniverseScanner
 
 log = get_logger(__name__)
+
+#: The timeframe a review is tied to. H1 is where the weighted modules read
+#: their structure, so it is what defines "the same setup".
+_REVIEW_TIMEFRAME = Timeframe.H1
 
 #: AI verdicts retained. One per symbol and direction per bar of the fastest
 #: timeframe, so a few hundred covers a full catalogue for several bars.
@@ -791,11 +795,24 @@ class JarvisRunner:
     def _review_key(
         self, idea: TradeIdea, context: MarketContext
     ) -> tuple[str, str, datetime] | None:
-        """Symbol, direction and the close of the fastest timeframe analysed."""
+        """Symbol, direction, and the close of the timeframe the signal lives on.
+
+        Keyed on the *fastest* timeframe first, which was wrong: with M1 in the
+        ladder a new bar closes every sixty seconds, so the cache expired every
+        minute and the same instrument went back to Claude four times in three
+        minutes with the same verdict. The one-minute bar is entry-timing
+        context; it is not what the setup is made of.
+
+        The signal timeframe is. While no new bar has closed on it the setup is
+        the same setup, and re-asking buys a re-worded copy of an answer already
+        held.
+        """
         if idea.direction is None or not context.series:
             return None
-        fastest = min(context.series, key=lambda tf: tf.duration)
-        return (idea.symbol, idea.direction.name, context.series[fastest].last_bar_time)
+        series = context.series.get(_REVIEW_TIMEFRAME)
+        if series is None:
+            series = context.series[min(context.series, key=lambda tf: tf.duration)]
+        return (idea.symbol, idea.direction.name, series.last_bar_time)
 
     def _report_feasibility(self, account: AccountSnapshot) -> None:
         """Log what this equity can actually express, before the first cycle.
