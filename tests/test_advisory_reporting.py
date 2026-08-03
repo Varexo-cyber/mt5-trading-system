@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -92,10 +92,15 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     request_text = str(captured["messages"])
     assert "unit-test-secret" not in request_text
     assert "actual_risk_pct" in request_text
-    assert request_text.count("tick_volume") == 3
     assert safe_payload["symbol"] == "EURUSD"
     assert safe_payload["executable_proposal"] == {"actual_risk_pct": 1.0}
-    assert len(safe_payload["timeframes"]["H1"]["closed_bars"]) == 3
+    # Enough chart to read. Three bars per timeframe left the reviewer nothing
+    # but the engine's own summary to restate, which is what every early answer
+    # did — it could not see a level being run into or judge whether the target
+    # was somewhere this market goes.
+    assert len(safe_payload["timeframes"]["H1"]["closed_bars"]) == len(frame)
+    assert safe_payload["timeframes"]["H1"]["atr14"] > 0
+    assert "range_high" in safe_payload["timeframes"]["H1"]
     output_config = captured["output_config"]
     assert isinstance(output_config, dict)
     assert output_config["format"]["type"] == "json_schema"
@@ -302,3 +307,44 @@ def test_weekly_and_execution_reports_state_insufficient_sample(tmp_path: Path) 
     assert weekly_pdf.read_bytes().startswith(b"%PDF")
     assert "No order attempts" in execution.read_text(encoding="utf-8")
     journal.close()
+
+
+def test_the_reviewer_is_told_whether_the_target_is_ever_reached() -> None:
+    """A target is not realistic because the arithmetic says so.
+
+    The engine places it at twice the stop with no reference to whether the
+    market ever travels that far. Measured against the instrument's own recent
+    history, the reviewer can see that a target needing six days of one-way
+    movement is not a target, whatever the risk-reward ratio reads.
+    """
+    index = pd.date_range("2026-01-01", periods=300, freq="h", tz="UTC")
+    step = pd.Series(range(300), index=index) * 0.0001
+    frame = pd.DataFrame(
+        {
+            "open": 1.0 + step,
+            "high": 1.0006 + step,
+            "low": 0.9994 + step,
+            "close": 1.0 + step,
+            "tick_volume": 100,
+        },
+        index=index,
+    )
+    now = index[-1].to_pydatetime() + timedelta(hours=1)
+    context = MarketContext(
+        "EURUSD",
+        now,
+        {Timeframe.H1: Series("EURUSD", Timeframe.H1, frame, now)},
+        Tick("EURUSD", now, 1.0299, 1.0300),
+    )
+    near = TradeIdea("EURUSD", True, Direction.LONG, 70, 0.8, 1.03, 1.0288, 1.0324, "x", ())
+    far = TradeIdea("EURUSD", True, Direction.LONG, 70, 0.8, 1.03, 1.0288, 1.30, "x", ())
+
+    reachable = build_review_payload(near, context, None)["target_realism"]
+    unreachable = build_review_payload(far, context, None)["target_realism"]
+
+    assert reachable["target_in_atr"] < unreachable["target_in_atr"]
+    assert (
+        reachable["history"]["moved_up_that_far_pct"]
+        > unreachable["history"]["moved_up_that_far_pct"]
+    )
+    assert unreachable["history"]["moved_up_that_far_pct"] == 0.0

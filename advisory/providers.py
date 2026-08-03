@@ -8,9 +8,11 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
+import pandas as pd
+
 from analysis.confluence import TradeIdea
 from config.schema import AIConfig
-from core.types import MarketContext
+from core.types import MarketContext, Timeframe
 
 # Claude Sonnet 5 and the Opus 4.7+ family reject `temperature`, `top_p` and
 # `top_k` outright, and run adaptive thinking whenever `thinking` is omitted.
@@ -316,32 +318,105 @@ def build_advisor(config: AIConfig) -> Advisor:
         ) from exc
 
 
+#: Closed bars sent per timeframe. Three was the original figure and it made
+#: the review impossible: nobody can judge whether a target is reachable, or
+#: whether price is running into a level, from three candles. The higher frames
+#: need fewer bars to show structure; the lower ones are where the entry lives.
+_BARS_SENT = {"MN1": 12, "W1": 20, "D1": 40, "H4": 60, "H1": 80, "M15": 80, "M5": 60, "M1": 60}
+_BARS_SENT_DEFAULT = 40
+
+
+def _atr(frame: Any, period: int = 14) -> float:
+    """Wilder-style ATR over the last `period` bars, in price units."""
+    if len(frame) < 2:
+        return 0.0
+    previous = frame["close"].shift(1)
+    ranges = pd.concat(
+        [
+            frame["high"] - frame["low"],
+            (frame["high"] - previous).abs(),
+            (frame["low"] - previous).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    value = ranges.tail(period).mean()
+    return 0.0 if pd.isna(value) else float(value)
+
+
+def _reachability(frame: Any, distance: float, bars_ahead: int) -> dict[str, object]:
+    """How often this market has actually travelled `distance` in `bars_ahead`.
+
+    A target is not realistic because the risk-reward arithmetic says so; it is
+    realistic if this instrument routinely moves that far in that time. The
+    engine sets the target at twice the stop with no reference to whether the
+    market ever goes there, which is how a share ends up with a target it needs
+    six calendar days to reach. Measured from its own recent history, the
+    reviewer can see that instead of guessing.
+    """
+    closes = frame["close"].to_numpy()
+    highs = frame["high"].to_numpy()
+    lows = frame["low"].to_numpy()
+    windows = len(closes) - bars_ahead
+    if windows <= 0 or distance <= 0:
+        return {"windows_examined": 0}
+
+    up = down = 0
+    for start in range(windows):
+        ahead = slice(start + 1, start + 1 + bars_ahead)
+        if highs[ahead].max() - closes[start] >= distance:
+            up += 1
+        if closes[start] - lows[ahead].min() >= distance:
+            down += 1
+    return {
+        "windows_examined": windows,
+        "bars_ahead": bars_ahead,
+        "moved_up_that_far_pct": round(100.0 * up / windows, 1),
+        "moved_down_that_far_pct": round(100.0 * down / windows, 1),
+    }
+
+
 def build_review_payload(
     idea: TradeIdea,
     context: MarketContext,
     proposal: Mapping[str, object] | None,
 ) -> dict[str, object]:
-    """Return the exact secret-free trade candidate sent to an AI reviewer."""
+    """Return the exact secret-free trade candidate sent to an AI reviewer.
+
+    Carries enough of each chart to actually be read. The original three bars
+    per timeframe left the reviewer nothing to work from but the engine's own
+    summary, so every answer restated the module's reasoning back — it could
+    not see whether price was running into a level, or whether the target was
+    somewhere this market ever goes.
+    """
     timeframes: dict[str, object] = {}
     for timeframe, series in context.series.items():
-        bars: list[dict[str, object]] = []
-        for index, row in series.df.tail(3).iterrows():
-            timestamp = index.to_pydatetime() if hasattr(index, "to_pydatetime") else index
-            bars.append(
-                {
-                    "time": timestamp.isoformat(),
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "tick_volume": int(row.get("tick_volume", 0)),
-                }
-            )
+        frame = series.df
+        count = _BARS_SENT.get(timeframe.value, _BARS_SENT_DEFAULT)
+        recent = frame.tail(count)
+        bars = [
+            {
+                "t": (index.to_pydatetime() if hasattr(index, "to_pydatetime") else index)
+                .isoformat()
+                .replace("+00:00", "Z"),
+                "o": round(float(row["open"]), 6),
+                "h": round(float(row["high"]), 6),
+                "l": round(float(row["low"]), 6),
+                "c": round(float(row["close"]), 6),
+                "v": int(row.get("tick_volume", 0)),
+            }
+            for index, row in recent.iterrows()
+        ]
+        atr = _atr(frame)
         timeframes[timeframe.value] = {
             "closed_bars": bars,
-            "sample_size": len(series),
+            "bars_sent": len(bars),
+            "history_available": len(series),
             "last_closed_bar": series.last_bar_time.isoformat(),
+            "atr14": round(atr, 6),
+            "range_high": round(float(recent["high"].max()), 6),
+            "range_low": round(float(recent["low"].min()), 6),
         }
+
     tick = None
     if context.tick is not None:
         tick = {
@@ -350,6 +425,35 @@ def build_review_payload(
             "ask": context.tick.ask,
             "spread": context.tick.spread,
         }
+
+    # Is this target somewhere the market goes? Answered from its own history
+    # rather than from the risk-reward ratio that produced it.
+    target_check: dict[str, object] = {}
+    signal = context.series.get(Timeframe.H1)
+    if signal is not None and idea.entry:
+        atr = _atr(signal.df)
+        stop_distance = abs(idea.entry - idea.stop_loss) if idea.stop_loss else 0.0
+        target_distance = abs(idea.take_profit - idea.entry) if idea.take_profit else 0.0
+        target_check = {
+            "timeframe": "H1",
+            "atr14": round(atr, 6),
+            "stop_distance": round(stop_distance, 6),
+            "target_distance": round(target_distance, 6),
+            "stop_in_atr": round(stop_distance / atr, 2) if atr else None,
+            "target_in_atr": round(target_distance / atr, 2) if atr else None,
+            "spread_as_pct_of_stop": (
+                round(100.0 * context.tick.spread / stop_distance, 1)
+                if context.tick is not None and stop_distance
+                else None
+            ),
+            "history": _reachability(signal.df.tail(400), target_distance, bars_ahead=24),
+            "note": (
+                "history: of every 24-hour window in the last 400 H1 bars, the share that "
+                "travelled at least the target distance. A low number means this target is "
+                "rarely reached in a day on this instrument, whatever the risk-reward says."
+            ),
+        }
+
     return {
         "symbol": idea.symbol,
         "direction": idea.direction.name if idea.direction else None,
@@ -358,6 +462,7 @@ def build_review_payload(
         "entry": idea.entry,
         "stop_loss": idea.stop_loss,
         "take_profit": idea.take_profit,
+        "target_realism": target_check,
         "modules": [asdict(signal) for signal in idea.signals],
         "timeframes": timeframes,
         "decision_tick": tick,
@@ -516,6 +621,21 @@ module is that module saying "this is not my setup" — it is not evidence again
 is not disagreement. One module firing cleanly is the normal shape of a real signal, and the
 operator has accepted single-module signals by design. Do not veto on the count of contributing
 modules, or because a score is not corroborated by modules that look for something else entirely.
+
+YOU HAVE THE CHARTS. Every timeframe from the weekly down to the one-minute arrives as closed
+OHLC bars — dozens per frame, not a summary — with each frame's ATR and its high and low over
+that window. Read them. The higher frames say whether there is a trend and where the structure
+is; H1 and M15 say whether the entry sits at a sensible place in it; M5 and M1 say whether price
+is moving toward the entry or away from it right now. An answer that could have been written from
+the module scores alone means the bars went unread.
+
+JUDGE THE STOP AND THE TARGET AS PLACEMENTS. `target_realism` gives you the stop and target in
+ATR, the spread as a percentage of the stop, and — measured from this instrument's own recent
+history — how often it has actually travelled the target distance within a day. The engine sets
+the target at twice the stop by arithmetic; it never checks whether the market goes there. If
+that percentage is low the target is decorative, and the trade is really a bet on the stop not
+being hit. Veto a stop sitting inside ordinary noise, a stop or target on the wrong side of an
+obvious level in the bars you were given, and a spread eating a large share of the stop.
 
 WHAT TO ACTUALLY JUDGE. Read the closed bars yourself and check the proposal against them. Veto
 when the bars CONTRADICT the claim — a long whose lower timeframes are selling into the entry, a
