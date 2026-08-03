@@ -26,13 +26,14 @@ from analysis import (
     TrendMomentum,
     VolatilityRegime,
 )
+from analysis.confluence import TradeIdea
 from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
 from core.data_manager import DataManager
 from core.errors import TradingSystemError
 from core.startup import run_startup_guard
-from core.types import AccountSnapshot, OrderRequest, TradingMode
+from core.types import AccountSnapshot, MarketContext, OrderRequest, TradingMode
 from execution.manager import PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
@@ -61,6 +62,10 @@ from risk.risk_manager import RiskManager
 from scanner.universe import ScanBatch, UniverseScanner
 
 log = get_logger(__name__)
+
+#: AI verdicts retained. One per symbol and direction per bar of the fastest
+#: timeframe, so a few hundred covers a full catalogue for several bars.
+_REVIEW_CACHE_ENTRIES = 500
 
 
 class OperationMode(StrEnum):
@@ -134,6 +139,8 @@ class JarvisRunner:
         self.operation_ledger = OperationLedger(root / "runtime" / "operation_history.json")
         self.scan_activity = ScanActivityLedger(root / "runtime" / "scan_activity.json")
         self.experimental_contract: ExperimentalLiveContract | None = None
+        # (symbol, direction, fastest-timeframe bar close) -> the verdict given.
+        self._review_cache: dict[tuple[str, str, datetime], Advice] = {}
 
     def connect(self) -> None:
         account = self.broker.connect()
@@ -451,7 +458,7 @@ class JarvisRunner:
                     provider="monitor",
                 )
                 if self.operation is OperationMode.MONITOR
-                else self.advisor.review(idea, context, proposal)
+                else self._reviewed(idea, context, proposal)
             )
             ai_latency_ms = round((time.monotonic() - ai_started) * 1000, 1)
             try:
@@ -702,6 +709,66 @@ class JarvisRunner:
                 f"still failing. This is real money on unvalidated evidence: "
                 + "; ".join(f"{item.name}" for item in failures[:6])
             )
+
+    def _reviewed(
+        self,
+        idea: TradeIdea,
+        context: MarketContext,
+        proposal: dict[str, object],
+    ) -> Advice:
+        """Ask Claude, unless the identical setup was already answered.
+
+        The scanner ranks the catalogue the same way every cycle, so the same
+        instrument tends to come top repeatedly. Without a memory that meant
+        asking about a setup that had not changed once every loop interval: one
+        live session sent EURCAD 74 times in twenty minutes, thirty seconds
+        apart, and was vetoed 74 times for the same stated reason. Each of those
+        was a paid call of eight to thirteen seconds spent re-deriving an answer
+        already on file.
+
+        The verdict is a function of the evidence, and the evidence is closed
+        bars. So the key is the symbol, the direction, and the close time of the
+        fastest analysed timeframe: while no new bar has closed there is
+        genuinely nothing new to judge, and the moment one does the question is
+        legitimately different and gets asked again.
+
+        Deliberately not keyed on the tick. Price moves continuously and a
+        review that expired on every tick would expire always, which is the
+        behaviour being fixed. A stale entry is not a risk here either — the
+        deterministic gates re-run in full on every cycle regardless, and this
+        only ever replays a veto or an approval of an unchanged setup.
+        """
+        key = self._review_key(idea, context)
+        if key is not None:
+            cached = self._review_cache.get(key)
+            if cached is not None:
+                log.info(
+                    "reusing the AI verdict for an unchanged setup",
+                    extra={
+                        "event": "ai_review_reused",
+                        "symbol": idea.symbol,
+                        "direction": idea.direction.name if idea.direction else None,
+                        "approved": cached.approved,
+                    },
+                )
+                return cached
+
+        advice = self.advisor.review(idea, context, proposal)
+        if key is not None:
+            if len(self._review_cache) >= _REVIEW_CACHE_ENTRIES:
+                # Oldest first; insertion order is chronological.
+                del self._review_cache[next(iter(self._review_cache))]
+            self._review_cache[key] = advice
+        return advice
+
+    def _review_key(
+        self, idea: TradeIdea, context: MarketContext
+    ) -> tuple[str, str, datetime] | None:
+        """Symbol, direction and the close of the fastest timeframe analysed."""
+        if idea.direction is None or not context.series:
+            return None
+        fastest = min(context.series, key=lambda tf: tf.duration)
+        return (idea.symbol, idea.direction.name, context.series[fastest].last_bar_time)
 
     def _report_feasibility(self, account: AccountSnapshot) -> None:
         """Log what this equity can actually express, before the first cycle.

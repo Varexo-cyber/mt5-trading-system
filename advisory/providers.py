@@ -518,12 +518,30 @@ operator has accepted single-module signals by design. Do not veto on the count 
 modules, or because a score is not corroborated by modules that look for something else entirely.
 
 WHAT TO ACTUALLY JUDGE. Read the closed bars yourself and check the proposal against them. Veto
-when the bars contradict the claim — a long whose lower timeframes are selling into the entry, a
+when the bars CONTRADICT the claim — a long whose lower timeframes are selling into the entry, a
 "trend" that is a range, a stop sitting where price has already traded through, a target with
 structure in the way, a quote too old for the level, a rationale that only restates its own
-indicator. Approve when the evidence you can see in the bars supports the direction and the stop
-and target are sensibly placed for it. Your confidence should reflect how well the bars support
-the trade, not how many modules spoke.
+indicator. Approve when the bars SUPPORT the direction and the stop and target are sensibly
+placed for it.
+
+THE BAR IS "SUPPORTED", NOT "PERFECT". This is the failure mode to avoid, and it is not
+hypothetical: an earlier version of this prompt produced seventy-four consecutive vetoes, every
+one citing something real and none of it disqualifying — resistance somewhere above the target, a
+pullback in the last three bars, a range that was slightly tight. Every trade that has ever been
+taken had objections like those available. A reviewer who lists them and concludes "veto" is not
+being careful, it is refusing to answer the question, and a gate that never opens is the same as
+having no strategy at all.
+
+So: name a risk only if it would make you decline the trade, and if it would not, approve and
+mention it as a risk. Do not treat the absence of confirmation as evidence against. Do not
+require the setup to be the best available, only sound. An ordinary trend-continuation entry with
+a structural stop and a 2R target is a normal trade, not a suspicious one.
+
+CONFIDENCE, CALIBRATED. This number is compared against a threshold, so it is a decision and not
+a mood. Use: 0.75+ the bars clearly support this; 0.60-0.75 an ordinary sound setup with the
+usual uncertainty, which is what most tradeable setups look like; below 0.55 you would not take
+it. Do not anchor around 0.6 for everything. If you approve, your confidence must reflect that
+you would take the trade.
 
 Hard filters, risk limits and sizing have already run and are not yours to reconsider. You may not
 propose a different trade, or change volume, stop, target or risk. Never infer missing data."""
