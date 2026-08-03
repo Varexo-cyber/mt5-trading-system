@@ -983,7 +983,14 @@ class MT5Connector:
         """Invoke an mt5 function, timing it and clearing stale error state."""
         func = getattr(self.mt5, function)
         started = time.perf_counter()
-        result = func(*args, **kwargs)
+        # `func(*args, **kwargs)` hands the C extension a keyword mapping even
+        # when kwargs is empty, and `order_send` rejects the presence of one
+        # outright — literally "[-2] Unnamed arguments not allowed". Sixty
+        # orders died there: the request was valid (order_check returned
+        # retcode 0), the permissions were in place, and the same payload
+        # placed a real trade when called as `mt5.order_send(payload)` without
+        # the empty mapping. Only pass kwargs when there are some.
+        result = func(*args, **kwargs) if kwargs else func(*args)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if elapsed_ms > self.config.slow_call_warn_ms:
             self._slow_calls += 1

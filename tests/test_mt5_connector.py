@@ -477,3 +477,34 @@ class TestOrderRequestValidation:
                 tp=1.08900,
                 reference_price=1.08500,
             )
+
+
+def test_a_call_without_keywords_passes_no_keyword_mapping() -> None:
+    """Regression: sixty orders died on an empty `**kwargs`.
+
+    `func(*args, **kwargs)` hands the C extension a keyword mapping even when
+    kwargs is empty, and MetaTrader5's `order_send` rejects the presence of one
+    outright — "[-2] Unnamed arguments not allowed". The request was valid the
+    whole time: order_check returned retcode 0 on the identical payload, and
+    calling `mt5.order_send(payload)` directly placed a real trade.
+    """
+    seen: dict[str, object] = {}
+
+    class Strict:
+        def order_send(self, *args: object, **kwargs: object) -> str:
+            if kwargs:
+                raise TypeError("Unnamed arguments not allowed")
+            seen["args"] = args
+            return "sent"
+
+        def history_deals_get(self, *args: object, **kwargs: object) -> str:
+            seen["kwargs"] = kwargs
+            return "history"
+
+    connector = MT5Connector(MT5Config(), mt5_module=Strict())  # type: ignore[arg-type]
+
+    assert connector._call("order_send", {"symbol": "EURUSD"}) == "sent"
+    assert seen["args"] == ({"symbol": "EURUSD"},)
+    # Calls that genuinely need keywords must still get them.
+    assert connector._call("history_deals_get", position=7) == "history"
+    assert seen["kwargs"] == {"position": 7}
