@@ -186,18 +186,42 @@ class TestSymbols:
             connector.tick("EURUSD")
             assert connector.server_offset == timedelta(hours=3)
 
-    def test_a_sustained_move_backwards_is_eventually_believed(
+    def test_repetition_alone_never_drags_the_offset_down(
         self, connector: MT5Connector, fake: FakeMT5
     ) -> None:
-        """A DST change really does move the broker back an hour, permanently."""
+        """Volume of stale quotes must not be mistaken for evidence.
+
+        This is what a full scan looks like: hundreds of closed markets in a
+        row. Any rule that counts consecutive lower readings is satisfied by
+        stale data alone, which is why the offset is held by time instead.
+        """
+        fake.now = datetime.now(UTC) + timedelta(hours=3)
+        connector.connect()
+        connector.tick("EURUSD")
+
+        fake.now = datetime.now(UTC) + timedelta(hours=2)
+        for _ in range(200):
+            connector.tick("EURUSD")
+
+        assert connector.server_offset == timedelta(hours=3)
+
+    def test_an_unconfirmed_offset_expires_so_dst_can_take_effect(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        """A DST change really does move the broker back an hour, permanently.
+
+        What distinguishes it from a stale quote is not how often it is seen but
+        that nothing agrees with the old value any more.
+        """
         fake.now = datetime.now(UTC) + timedelta(hours=3)
         connector.connect()
         connector.tick("EURUSD")
         assert connector.server_offset == timedelta(hours=3)
 
+        # Nothing has reconfirmed +3 for longer than the hold window.
+        connector._offset_confirmed_at = datetime.now(UTC) - timedelta(minutes=20)
         fake.now = datetime.now(UTC) + timedelta(hours=2)
-        for _ in range(50):
-            connector.tick("EURUSD")
+        connector.tick("EURUSD")
 
         assert connector.server_offset == timedelta(hours=2)
 

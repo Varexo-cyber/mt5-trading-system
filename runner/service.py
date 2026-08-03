@@ -269,6 +269,7 @@ class JarvisRunner:
         self._save_cursor()
         summary = self._summary(started_at, batch, deep, opened)
         self._save_heartbeat(summary)
+        self._log_cycle(summary)
         self.operation_ledger.cycle(
             summary.finished_at,
             trades_opened=summary.trades_opened,
@@ -892,6 +893,36 @@ class JarvisRunner:
         path = self.root / "runtime" / "runner_state.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"cursor": self.cursor}), encoding="utf-8")
+
+    def _log_cycle(self, summary: CycleSummary) -> None:
+        """One line per cycle, so the console shows the system is alive.
+
+        There was no such line. The only thing reaching the console during a
+        scan was an accidental burst of connector warnings, and once those were
+        fixed the process looked frozen — a full-catalogue pass takes minutes
+        and printed nothing at all until it opened a trade, which on a EUR 100
+        account may be never. Silence and a hang have to look different.
+        """
+        elapsed = (summary.finished_at - summary.started_at).total_seconds()
+        log.info(
+            "cycle: %d/%d scanned, %d rejected, %d analysed, %d opened, %.0fs",
+            summary.inspected,
+            summary.universe_size,
+            summary.rejected,
+            summary.deep_analysed,
+            summary.trades_opened,
+            elapsed,
+            extra={
+                "event": "cycle_complete",
+                "inspected": summary.inspected,
+                "universe_size": summary.universe_size,
+                "rejected": summary.rejected,
+                "deep_analysed": summary.deep_analysed,
+                "trades_opened": summary.trades_opened,
+                "seconds": round(elapsed, 1),
+                "next_cursor": summary.next_cursor,
+            },
+        )
 
     def _save_heartbeat(self, summary: CycleSummary) -> None:
         path = self.root / "runtime" / "heartbeat.json"
