@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -31,11 +32,24 @@ class ManagementEvent:
     r_at_action: float | None = None
 
 
+#: How long a computed ATR stays usable, in seconds.
+#:
+#: The guard calls `manage` about once a second, and an H1 ATR recomputed at
+#: that rate is sixty broker round-trips and sixty DataFrames an hour to watch
+#: a number move in the fourth decimal. It is an average of fourteen hourly
+#: bars: within a minute it cannot have meaningfully changed.
+ATR_CACHE_SECONDS = 60.0
+
+
 class PositionManager:
     def __init__(self, broker: Broker, journal: Journal, settings: Settings) -> None:
         self.broker = broker
         self.journal = journal
         self.settings = settings
+        # symbol+period -> (monotonic deadline, value). Deliberately monotonic
+        # rather than wall-clock: a simulated or rewound clock must not be able
+        # to hold a stale ATR alive forever.
+        self._atr_cache: dict[tuple[str, int], tuple[float, float]] = {}
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -155,6 +169,11 @@ class PositionManager:
             tick = self.broker.tick(position.symbol)
             price = tick.bid if position.direction is Direction.LONG else tick.ask
             r_now = (price - position.price_open) * int(position.direction) / risk
+            peak_r = self._record_excursion(int(row["id"]), r_now, float(row["mfe_r"] or 0.0))
+            giveback = self._giveback_exit(position, r_now, peak_r)
+            if giveback is not None:
+                events.append(giveback)
+                continue
             age_hours = (now - position.opened_at).total_seconds() / 3600.0
             deadline = (
                 config.time_exit_hours * patience if config.time_exit_hours is not None else None
@@ -238,6 +257,47 @@ class PositionManager:
                             )
                         )
         return events
+
+    def _record_excursion(self, trade_id: int, r_now: float, recorded_peak: float) -> float:
+        """Ratchet how far the trade has run, and return the peak so far.
+
+        The columns existed and nothing ever wrote to them, so every postmortem
+        reported MAE and MFE as unknown and the give-back rule below had no
+        memory to work from. Persisted rather than held in the process because
+        a restart must not hand a trade a fresh peak — the whole point is that
+        we remember it was up.
+        """
+        self.journal.update_excursions(trade_id, mae_r=min(0.0, r_now), mfe_r=max(0.0, r_now))
+        return max(recorded_peak, r_now)
+
+    def _giveback_exit(
+        self, position: Position, r_now: float, peak_r: float
+    ) -> ManagementEvent | None:
+        """Take what is left when a trade hands back most of its gain.
+
+        The stop and the trail both measure from price and neither one knows
+        the trade was ever ahead, so a run to 1.6R that fully retraces inside a
+        single cycle looked exactly like a trade that never moved. This is the
+        reflex a person has and the machine did not.
+        """
+        config = self.settings.trade_management
+        arm, fraction = config.giveback_arm_r, config.giveback_fraction
+        if arm <= 0 or fraction <= 0 or peak_r < arm:
+            return None
+        floor = peak_r * (1.0 - fraction)
+        if r_now > floor:
+            return None
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "GIVEBACK_EXIT",
+            f"peaked at {peak_r:.2f}R, back to {r_now:.2f}R",
+            result.filled_price,
+            position.profit + position.swap,
+            r_at_action=r_now,
+        )
 
     def _adopt(self, position: Position) -> ManagementEvent | None:
         """Match an unexplained position to the intent that created it.
@@ -495,6 +555,16 @@ class PositionManager:
         return events
 
     def _atr(self, symbol: str, period: int = 14) -> float:
+        key = (symbol, period)
+        cached = self._atr_cache.get(key)
+        now = time.monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        value = self._compute_atr(symbol, period)
+        self._atr_cache[key] = (now + ATR_CACHE_SECONDS, value)
+        return value
+
+    def _compute_atr(self, symbol: str, period: int = 14) -> float:
         raw = self.broker.copy_rates(symbol, Timeframe.H1.mt5_value, period + 2)
         frame = pd.DataFrame(raw)
         previous = frame["close"].shift(1)

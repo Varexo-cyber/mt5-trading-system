@@ -47,7 +47,7 @@ from core.data_manager import DataManager
 from core.errors import TradingSystemError
 from core.startup import run_startup_guard
 from core.types import AccountSnapshot, MarketContext, OrderRequest, Timeframe, TradingMode
-from execution.manager import PositionManager
+from execution.manager import ManagementEvent, PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
 from filters.news_filter import NewsFilter
@@ -279,10 +279,65 @@ class JarvisRunner:
                     continue
                 started = time.monotonic()
                 self.run_once()
-                elapsed = time.monotonic() - started
-                time.sleep(max(0.0, self.settings.system.loop_interval_seconds - elapsed))
+                # The gap between cycles is not idle time — it is the time open
+                # money spends unwatched. Spend it watching.
+                self._guard_until(started + self.settings.system.loop_interval_seconds)
         finally:
             self.close()
+
+    def _guard_until(self, deadline: float) -> None:
+        """Watch open positions until the next full cycle is due.
+
+        A cycle scans the whole catalogue and can take most of a minute. Before
+        this, management ran once per cycle, so a trade could run to 1.6R and
+        give all of it back between two consecutive looks — the rules were
+        right and simply were not being asked often enough.
+
+        Only the mechanical rules run here: break-even, the trail, the
+        give-back exit. No scan, no sizing, no adviser. That is what makes a
+        one-second cadence affordable — the adviser stays on its own interval
+        and its cost is unchanged by anything in this loop.
+        """
+        interval = self.settings.system.guard_interval_seconds
+        if interval <= 0:
+            time.sleep(max(0.0, deadline - time.monotonic()))
+            return
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(interval, remaining))
+            if self.kill_switch.is_engaged():
+                # The full cycle handles the flattening; returning early gets
+                # us there now rather than after the rest of the interval.
+                return
+            self.guard_tick()
+
+    def guard_tick(self) -> list[ManagementEvent]:
+        """One cheap pass over open positions. Never opens anything.
+
+        Failures are swallowed deliberately. This runs between cycles on a
+        best-effort basis; a dropped tick or a momentary IPC hiccup must not
+        take the service down, and the next full cycle re-does everything this
+        does with its own error handling.
+        """
+        try:
+            self.broker.ensure_connected()
+            positions = self.broker.positions(magic=self.settings.system.magic_number)
+            if not positions:
+                return []
+            events = self.manager.manage(
+                positions, self.clock.now(), self.posture.patience_multiplier
+            )
+            self._record_management(events)
+            return events
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning(
+                "guard tick failed: %s",
+                exc,
+                extra={"event": "guard_tick_failed", "error": type(exc).__name__},
+            )
+            return []
 
     def run_once(
         self, *, batch_size: int | None = None, deep_candidates: int | None = None

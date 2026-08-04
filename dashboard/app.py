@@ -36,7 +36,7 @@ from dashboard.ai_exchange import (
     read_posture,
     supervision_rows,
 )
-from dashboard.ledger import as_rows, day_start, summarise, week_start
+from dashboard.ledger import as_rows, day_start, recent_management, summarise, week_start
 from dashboard.position_control import PositionControl
 from dashboard.service import (
     PROFILE_TIMEFRAMES,
@@ -309,6 +309,30 @@ def render_trade_history() -> None:
     endings = frame["Hoe het eindigde"].value_counts().rename_axis("Einde").reset_index(name="n")
     if len(endings) > 1:
         st.bar_chart(endings, x="Einde", y="n")
+
+
+@st.fragment(run_every="2s")
+def render_management_log() -> None:
+    """Every stop move, trail and protective exit the guard has made.
+
+    The guard runs roughly once a second between cycles. Without this panel it
+    is indistinguishable from a system doing nothing — and "is it actually
+    watching my positions" is the question this whole layer exists to answer.
+    """
+    rows = recent_management(ROOT / settings.journal.database_path, limit=40)
+    st.subheader("Wat Jarvis met de posities heeft gedaan")
+    if not rows:
+        st.caption(
+            "Nog geen beheeracties. Deze verschijnen zodra een positie break-even bereikt, "
+            "de stop wordt meegetrokken, of winst wordt veiliggesteld."
+        )
+        return
+    st.dataframe(
+        pd.DataFrame(rows),
+        hide_index=True,
+        width="stretch",
+        column_config={"R": st.column_config.NumberColumn(format="%.2f")},
+    )
 
 
 def render_recent_adoptions() -> None:
@@ -1034,6 +1058,8 @@ try:
 
     with positions_tab:
         render_live_positions(account)
+        st.divider()
+        render_management_log()
         st.divider()
         render_trade_history()
         st.divider()

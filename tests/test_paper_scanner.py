@@ -84,14 +84,27 @@ def test_paper_closed_position_survives_crash_window(tmp_path: Path) -> None:
 
 def test_partial_close_is_persistent_and_recoverable(tmp_path: Path) -> None:
     class JournalStub:
+        """Enough journal for the manager, including the excursion ratchet.
+
+        `mfe_r` is real state here rather than a constant: the give-back rule
+        reads it back on the next pass, and a stub that always returned zero
+        would quietly disable it in every test that uses this double.
+        """
+
+        def __init__(self) -> None:
+            self.peak_r = 0.0
+
         def open_trade_by_ticket(self, ticket: int):  # type: ignore[no-untyped-def]
-            return {"ticket": ticket, "sl": 1.083, "volume": 0.10}
+            return {"id": 1, "ticket": ticket, "sl": 1.083, "volume": 0.10, "mfe_r": self.peak_r}
 
         def open_trades(self):  # type: ignore[no-untyped-def]
             return []
 
         def management_action_exists(self, _ticket, _actions):  # type: ignore[no-untyped-def]
             return False
+
+        def update_excursions(self, _trade_id, *, mae_r, mfe_r):  # type: ignore[no-untyped-def]
+            self.peak_r = max(self.peak_r, mfe_r)
 
     fake = FakeMT5(now=datetime.now(UTC))
     paper = PaperBroker(connector(fake), tmp_path / "paper.json")

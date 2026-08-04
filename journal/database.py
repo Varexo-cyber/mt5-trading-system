@@ -565,6 +565,25 @@ class Journal:
         ).fetchone()
         return row is not None
 
+    def update_excursions(self, trade_id: int, *, mae_r: float, mfe_r: float) -> None:
+        """Ratchet MAE/MFE while a trade is open.
+
+        Only ever moves outward (`MIN`/`MAX`), so a late retrace cannot erase
+        the fact that the trade was once 2R in profit — which is exactly what
+        the give-back rule needs to remember, and what a postmortem needs to
+        tell a trade that was never right from one that was right and given
+        back.
+        """
+        self.conn.execute(
+            """
+            UPDATE trades SET
+                mae_r = MIN(COALESCE(mae_r, 0.0), ?),
+                mfe_r = MAX(COALESCE(mfe_r, 0.0), ?)
+            WHERE id = ?
+            """,
+            (mae_r, mfe_r, trade_id),
+        )
+
     def update_open_trade_volume(self, ticket: int, volume: float) -> None:
         self.conn.execute(
             "UPDATE trades SET volume = ? WHERE ticket = ? AND closed_at IS NULL",

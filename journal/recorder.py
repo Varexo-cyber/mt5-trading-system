@@ -341,20 +341,13 @@ class Recorder:
         )
 
     def update_excursions(self, trade_id: int, *, mae_r: float, mfe_r: float) -> None:
-        """Ratchet MAE/MFE while a trade is open.
+        """Ratchet MAE/MFE while a trade is open. See `Journal.update_excursions`.
 
-        Only ever moves outward (`MIN`/`MAX`), so a late retrace cannot erase
-        the fact that the trade was once 2R in profit.
+        A passthrough because the position manager holds a `Journal` and not a
+        `Recorder`; two copies of the same UPDATE would eventually disagree
+        about which direction each column ratchets.
         """
-        self.journal.conn.execute(
-            """
-            UPDATE trades SET
-                mae_r = MIN(COALESCE(mae_r, 0.0), ?),
-                mfe_r = MAX(COALESCE(mfe_r, 0.0), ?)
-            WHERE id = ?
-            """,
-            (mae_r, mfe_r, trade_id),
-        )
+        self.journal.update_excursions(trade_id, mae_r=mae_r, mfe_r=mfe_r)
 
     # -- executions and management ----------------------------------------
 
