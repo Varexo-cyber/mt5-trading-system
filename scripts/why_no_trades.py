@@ -151,7 +151,20 @@ def main(argv: list[str] | None = None) -> int:
                     "the threshold is set above what this engine produces."
                 )
         else:
-            print("\n  No setup scored above zero at all — no module is firing on any market.")
+            # Distinguish "the modules saw nothing" from "the column is empty".
+            # Skip rows carried no score until recently, so this branch fired
+            # and announced that nothing was firing while the detail text on
+            # the very same rows read "confluence score 41.9 below threshold".
+            # A diagnostic that contradicts itself is worse than none.
+            scored_in_text = sum(1 for row in rows if "confluence score" in str(row["detail"]))
+            if scored_in_text:
+                print(
+                    f"\n  {scored_in_text} decisions name a score in their detail text but the "
+                    "score column is empty.\n  Those rows predate the score being recorded on "
+                    "skips; read the detail lines above instead."
+                )
+            else:
+                print("\n  No setup scored above zero at all — no module fired on any market.")
 
     for reason in counts:
         if reason not in _EXPECTED and reason != "OK" and reason in _ADVICE:

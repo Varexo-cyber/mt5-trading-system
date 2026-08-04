@@ -76,11 +76,13 @@ class ConfluenceEngine:
         )
         confidence = sum(signal.confidence * weight for signal, weight in agreeing) / denominator
         if score < self.config.score_threshold:
-            return self._reject(ctx, signals, f"confluence score {score:.1f} below threshold")
+            return self._reject(
+                ctx, signals, f"confluence score {score:.1f} below threshold", score, confidence
+            )
 
         adverse = self._entry_timing_conflict(ctx, direction)
         if adverse is not None:
-            return self._reject(ctx, signals, adverse)
+            return self._reject(ctx, signals, adverse, score, confidence)
 
         entry = ctx.tick.ask if direction is Direction.LONG else ctx.tick.bid
         frame = ctx.series[Timeframe.H1].df
@@ -103,10 +105,12 @@ class ConfluenceEngine:
             stop = entry - atr * self.config.atr_stop_multiple * int(direction)
         risk = abs(entry - stop)
         if risk <= 0:
-            return self._reject(ctx, signals, "could not construct a positive stop distance")
+            return self._reject(
+                ctx, signals, "could not construct a positive stop distance", score, confidence
+            )
         target, target_note = self._reachable_target(ctx, entry, risk, direction)
         if target is None:
-            return self._reject(ctx, signals, target_note)
+            return self._reject(ctx, signals, target_note, score, confidence)
         return TradeIdea(
             symbol=ctx.symbol,
             approved=True,
@@ -233,5 +237,19 @@ class ConfluenceEngine:
         return float(tr.rolling(period).mean().iloc[-1])
 
     @staticmethod
-    def _reject(ctx: MarketContext, signals: tuple[Signal, ...], reason: str) -> TradeIdea:
-        return TradeIdea(ctx.symbol, False, None, 0.0, 0.0, 0.0, 0.0, 0.0, reason, signals)
+    def _reject(
+        ctx: MarketContext,
+        signals: tuple[Signal, ...],
+        reason: str,
+        score: float = 0.0,
+        confidence: float = 0.0,
+    ) -> TradeIdea:
+        """A rejected idea, carrying the score it reached where one was computed.
+
+        Returning a flat zero threw away the only number that distinguishes
+        "the modules saw nothing" from "the modules saw something and the
+        threshold is out of reach". Both land in the journal as NO_SIGNAL, and
+        with the score blanked the two are indistinguishable — which is exactly
+        the question an operator asks after a day with no trades.
+        """
+        return TradeIdea(ctx.symbol, False, None, score, confidence, 0.0, 0.0, 0.0, reason, signals)

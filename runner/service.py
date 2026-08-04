@@ -911,12 +911,22 @@ class JarvisRunner:
         *,
         signals=None,  # type: ignore[no-untyped-def]
         extra=None,  # type: ignore[no-untyped-def]
+        total_score: float | None = None,
     ) -> int:
+        # The score belongs on the skip row, not only on the trade row. Without
+        # it "why is nothing trading" cannot be answered from the journal: the
+        # reason column says NO_SIGNAL and the number that would show whether
+        # the threshold is merely strict or outright unreachable is missing.
+        # The diagnostic read the empty column and reported "no setup scored
+        # above zero at all" while the detail text on the same rows said
+        # "confluence score 41.9 below threshold".
         cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
             context=CycleContext(symbol, equity, extra=extra),
             reason=reason,
             detail=detail,
+            total_score=total_score,
+            score_threshold=self.settings.analysis.confluence.score_threshold,
             signals=signals,
             weights=self.settings.analysis.confluence.weights,
         )

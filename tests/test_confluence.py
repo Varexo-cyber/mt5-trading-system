@@ -151,3 +151,72 @@ def test_weighted_modules_are_documented() -> None:
             continue
         assert (root / "docs" / "hypotheses" / f"{module}.md").exists(), module
         assert (root / "docs" / "modules" / f"{module}.md").exists(), module
+
+
+class TestRejectionCarriesItsScore:
+    """A rejected idea must report the score it reached, not a flat zero.
+
+    Blanking it made "the modules saw nothing" and "the modules saw something
+    and the threshold is out of reach" indistinguishable in the journal — both
+    land as NO_SIGNAL — which is precisely the question asked after a day with
+    no trades. Twelve hours of live decisions could not answer it.
+    """
+
+    def test_a_below_threshold_score_is_reported(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        from analysis.confluence import ConfluenceEngine
+        from config.loader import load_settings
+        from core.types import Signal
+
+        class _Fires:
+            name = "trend_momentum"
+
+            def analyze(self, ctx):  # type: ignore[no-untyped-def]
+                return Signal(
+                    module="trend_momentum",
+                    score=65.0,
+                    confidence=0.5,  # 65 * 0.5 = 32.5, under any sane threshold
+                    reasoning="test",
+                    invalidation_price=1.0,
+                )
+
+        settings = load_settings(env_overrides=False)
+        config = settings.analysis.confluence.model_copy(
+            update={"score_threshold": 55.0, "minimum_directional_modules": 1}
+        )
+        engine = ConfluenceEngine([_Fires()], config)
+        idea = engine.evaluate(_context(), settings.system.mode)
+
+        assert not idea.approved
+        assert "below threshold" in idea.reason
+        assert idea.score > 0.0, "the score reached must survive the rejection"
+        assert idea.confidence > 0.0
+
+
+def _context():  # type: ignore[no-untyped-def]
+    """A minimal context with enough H1 history for the engine to score."""
+    from datetime import UTC, datetime
+
+    import numpy as np
+    import pandas as pd
+
+    from core.types import MarketContext, Series, Tick, Timeframe
+
+    now = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
+    closes = np.linspace(1.10, 1.11, 200)
+    index = pd.date_range(end=now, periods=200, freq=Timeframe.H1.duration, tz=UTC)
+    frame = pd.DataFrame(
+        {
+            "open": closes,
+            "high": closes + 0.0005,
+            "low": closes - 0.0005,
+            "close": closes,
+            "tick_volume": np.full(200, 100),
+        },
+        index=index,
+    )
+    return MarketContext(
+        symbol="EURUSD",
+        now=now,
+        series={Timeframe.H1: Series("EURUSD", Timeframe.H1, frame, now)},
+        tick=Tick(symbol="EURUSD", time=now, bid=1.1100, ask=1.1101),
+    )
