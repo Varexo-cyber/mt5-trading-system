@@ -201,6 +201,9 @@ class JarvisRunner:
         # ticket -> when the supervisor last looked at it, so an open position
         # is reconsidered on a sane cadence rather than every thirty seconds.
         self._supervised_at: dict[int, datetime] = {}
+        # Why new risk is refused, if it is. Empty means trading is permitted.
+        self.blocked_reason = ""
+        self.blocked_detail = ""
         # Recomputed every cycle; STEADY until the first one runs.
         self.posture: PostureAssessment = assess(consecutive_losses=0, equity=1.0, equity_peak=1.0)
 
@@ -368,10 +371,18 @@ class JarvisRunner:
         # a trade that could not be placed no matter what the answer was. The
         # money and the seconds were spent on a question already settled.
         permission = self.risk.check_can_trade(state)
+        # Recorded, not merely logged. A halt is the single most important fact
+        # about a running system and it was visible only as one INFO line among
+        # hundreds scrolling past — so a correctly halted account and a broken
+        # one looked identical, and the dashboard showed a busy scanner next to
+        # "0 analysed" with no explanation anywhere.
+        self.blocked_reason = "" if permission.approved else str(permission.reason)
+        self.blocked_detail = "" if permission.approved else permission.detail
         if not permission.approved:
-            log.info(
-                "not taking new risk this cycle: %s",
+            log.warning(
+                "NEW RISK HALTED: %s - %s",
                 permission.reason,
+                permission.detail,
                 extra={
                     "event": "cycle_no_new_risk",
                     "reason": str(permission.reason),
@@ -1645,6 +1656,8 @@ class JarvisRunner:
                     "next_cursor": summary.next_cursor,
                     "universe_size": summary.universe_size,
                     "posture": self.posture.brief(),
+                    "blocked_reason": self.blocked_reason,
+                    "blocked_detail": self.blocked_detail,
                 },
                 indent=2,
             ),

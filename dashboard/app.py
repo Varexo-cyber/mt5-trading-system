@@ -31,7 +31,12 @@ from config.loader import PACKAGE_ROOT, load_credentials, load_settings, termina
 from core.instrument import AssetClass
 from core.mt5_connector import MT5Connector
 from core.types import Direction, Timeframe
-from dashboard.ai_exchange import pair_ai_reviews, read_posture, supervision_rows
+from dashboard.ai_exchange import (
+    pair_ai_reviews,
+    read_block_reason,
+    read_posture,
+    supervision_rows,
+)
 from dashboard.position_control import PositionControl
 from dashboard.service import (
     PROFILE_TIMEFRAMES,
@@ -103,11 +108,22 @@ def render_live_scanner() -> None:
         f"Automatische update iedere 5 seconden · scannerstand: {state.get('operation', 'off')} · "
         f"laatst bijgewerkt: {state.get('updated_at', 'onbekend')}"
     )
+    # Repeated here as well as at the top of the page, because this is the tab
+    # an operator opens to ask "is it doing anything" and the counters alone
+    # cannot answer it: a fully halted system scans exactly as busily as a
+    # working one.
+    halted = read_block_reason(ROOT / "runtime" / "heartbeat.json")
+    if halted:
+        st.error(
+            f"**Er wordt niets diep geanalyseerd: {halted['reason']}**\n\n"
+            f"{halted['detail']}\n\nDe scan hieronder loopt gewoon door — het is de "
+            "vervolgstap die wordt overgeslagen zolang er toch niet gehandeld mag worden."
+        )
     st.info(
         "Iedere cyclus screent de volledige ondersteunde Eightcap-catalogus. "
         "De doeltijd tussen cycli is 30 seconden, maar een volledige scan kan langer duren; "
-        "dan begint de volgende cyclus zodra MT5 klaar is. Alleen de vijf beste markten "
-        "krijgen daarna de zware multi-timeframeanalyse."
+        "dan begint de volgende cyclus zodra MT5 klaar is. Alleen de best gerangschikte "
+        "markten krijgen daarna de zware multi-timeframeanalyse."
     )
 
     view = st.segmented_control(
@@ -756,6 +772,34 @@ try:
         )
     elif kill_switch.is_engaged():
         st.warning("Jarvis is OFF because the durable hard STOP is engaged.")
+
+    # Why no new trades, at the top of the page rather than in one log line.
+    #
+    # A halted account and a broken one look identical from here: the scanner
+    # keeps counting, the cycle log keeps scrolling, and every candidate shows
+    # "0 analysed" with no reason given anywhere in the interface. That is the
+    # state this deck exists to make legible, and it was the one thing it did
+    # not show.
+    blocked = str(heartbeat.get("blocked_reason", "") or "")
+    if running and blocked:
+        detail = str(heartbeat.get("blocked_detail", "") or "")
+        st.error(
+            f"**GEEN NIEUWE TRADES — {blocked}**\n\n{detail}\n\n"
+            "Jarvis draait en scant nog volledig, en beheert bestaande posities gewoon door. "
+            "Hij opent alleen niets nieuws zolang dit geldt. Daarom staat er 0 diep "
+            "geanalyseerd: de analyse wordt overgeslagen zodra vaststaat dat er toch niet "
+            "gehandeld mag worden."
+        )
+    stance = dict(heartbeat.get("posture") or {}) if running else {}
+    if stance and stance.get("posture") not in {None, "steady"}:
+        st.warning(
+            f"**Houding: {str(stance['posture']).upper()}** — "
+            f"{stance.get('consecutive_losses', 0)} verliezen op rij, "
+            f"{stance.get('drawdown_from_peak_pct', 0):.1f}% onder de piek. "
+            f"Per cyclus wordt alleen de beste {stance.get('candidates_allowed', 1)} setup "
+            "opgepakt en verliezende posities worden sneller gesloten. De positiegrootte "
+            "verandert niet."
+        )
 
     overview_tab, scanner_tab, ai_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
         [
