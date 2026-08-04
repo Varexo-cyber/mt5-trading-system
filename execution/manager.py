@@ -9,8 +9,10 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from advisory.providers import Supervision
+from analysis.position_health import PositionHealth, assess_position
 from config.schema import Settings
 from core.broker import Broker
+from core.data_manager import DataManager
 from core.types import Direction, Position, Timeframe
 from filters.news_filter import NewsFilter
 from infra.logging import get_logger
@@ -40,6 +42,14 @@ class ManagementEvent:
 #: bars: within a minute it cannot have meaningfully changed.
 ATR_CACHE_SECONDS = 60.0
 
+#: How long recent bars stay usable, in seconds.
+#:
+#: Much shorter than the ATR's, because shape is what the health readers work
+#: on and a structure break is something we want to see within seconds of it
+#: happening. The immediate price reaction never comes from here — that is the
+#: tick, which is read fresh every pass.
+BAR_CACHE_SECONDS = 3.0
+
 
 class PositionManager:
     def __init__(self, broker: Broker, journal: Journal, settings: Settings) -> None:
@@ -50,6 +60,11 @@ class PositionManager:
         # rather than wall-clock: a simulated or rewound clock must not be able
         # to hold a stale ATR alive forever.
         self._atr_cache: dict[tuple[str, int], tuple[float, float]] = {}
+        self._bar_cache: dict[tuple[str, str, int], tuple[float, pd.DataFrame | None]] = {}
+        #: The most recent health reading per ticket. Read by the supervisor, so
+        #: Claude sees what the fast layer has been watching rather than only a
+        #: snapshot of the moment it happened to be asked, and by the deck.
+        self.last_health: dict[int, PositionHealth] = {}
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -175,6 +190,17 @@ class PositionManager:
                 events.append(giveback)
                 continue
             age_hours = (now - position.opened_at).total_seconds() / 3600.0
+            # How the trade is actually behaving, not just what R it is at.
+            # Runs before the slower rules because a broken thesis outranks
+            # every one of them: there is no point trailing a stop on a trade
+            # we have already decided to leave.
+            health = self._read_health(position, r_now, age_hours * 60.0, risk, tick)
+            self.last_health[position.ticket] = health
+            reacted = self._act_on_health(position, health, r_now, risk)
+            if reacted is not None:
+                events.append(reacted)
+                if reacted.exit_price is not None:
+                    continue
             deadline = (
                 config.time_exit_hours * patience if config.time_exit_hours is not None else None
             )
@@ -257,6 +283,94 @@ class PositionManager:
                             )
                         )
         return events
+
+    def _bars(self, symbol: str, timeframe: Timeframe, count: int) -> pd.DataFrame | None:
+        """Recent bars, cached briefly so a per-second pass stays cheap.
+
+        The TTL is short rather than absent because the forming bar does move
+        tick by tick — but the immediate price reaction comes from the tick,
+        which is never cached. What is cached is shape, and shape does not
+        change meaningfully inside a few seconds on any of these timeframes.
+        """
+        key = (symbol, timeframe.value, count)
+        cached = self._bar_cache.get(key)
+        now = time.monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        frame: pd.DataFrame | None
+        try:
+            # The shared builder, not a local `pd.DataFrame(...)`: the structure
+            # reader needs the time index, and a second almost-right conversion
+            # here is how the two would drift apart.
+            raw = self.broker.copy_rates(symbol, timeframe.mt5_value, count)
+            frame = DataManager._to_frame(raw)
+        except Exception:  # noqa: BLE001 - no bars is a reason to stay quiet, not to crash
+            frame = None
+        if frame is not None and frame.empty:
+            frame = None
+        self._bar_cache[key] = (now + BAR_CACHE_SECONDS, frame)
+        return frame
+
+    def _read_health(
+        self, position: Position, r_now: float, age_minutes: float, risk: float, tick
+    ) -> PositionHealth:  # type: ignore[no-untyped-def]
+        config = self.settings.trade_management
+        if not config.health_enabled:
+            return PositionHealth("healthy", 0.0, "hold", (), "health reading disabled")
+        return assess_position(
+            sign=int(position.direction),
+            r_now=r_now,
+            age_minutes=age_minutes,
+            fast=self._bars(position.symbol, Timeframe.M1, config.health_fast_bars),
+            structure=self._bars(position.symbol, Timeframe.M5, config.health_structure_bars),
+            spread=getattr(tick, "spread", 0.0),
+            risk=risk,
+            secure_at_r=config.health_secure_at_r,
+            tighten_at_r=config.health_tighten_at_r,
+        )
+
+    def _act_on_health(
+        self, position: Position, health: PositionHealth, r_now: float, risk: float
+    ) -> ManagementEvent | None:
+        """Carry out the one thing the reading permits, and nothing more.
+
+        `secure` and `exit` both close; they are kept apart because the journal
+        reason is the only record of *why*, and "banked a profit as it turned"
+        and "cut it before it got worse" are different lessons to learn from.
+        """
+        if health.action == "hold":
+            return None
+        if health.action in ("secure", "exit"):
+            result = self.broker.close_position(position)
+            if not result.ok:
+                return None
+            return ManagementEvent(
+                position.ticket,
+                "HEALTH_SECURE" if health.action == "secure" else "HEALTH_EXIT",
+                f"{health.reason} at {r_now:.2f}R",
+                result.filled_price,
+                position.profit + position.swap,
+                r_at_action=r_now,
+            )
+        # tighten: pull the stop to just inside what the trade is currently
+        # worth. Never past price, and never a widening — a reading this weak
+        # has not earned the right to close anything, only to risk less.
+        locked = position.price_open + risk * r_now * 0.5 * int(position.direction)
+        improves = (position.direction is Direction.LONG and locked > position.sl) or (
+            position.direction is Direction.SHORT and locked < position.sl
+        )
+        if not improves:
+            return None
+        spec = self.broker.spec(position.symbol)
+        result = self.broker.modify_stops(position, sl=spec.normalize_price(locked), tp=position.tp)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "HEALTH_TIGHTEN",
+            f"{health.reason} at {r_now:.2f}R",
+            r_at_action=r_now,
+        )
 
     def _record_excursion(self, trade_id: int, r_now: float, recorded_peak: float) -> float:
         """Ratchet how far the trade has run, and return the peak so far.

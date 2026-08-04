@@ -590,6 +590,19 @@ class ConfluenceConfig(Base):
     #: their own spread.
     minimum_r_multiple: float = Field(default=1.0, ge=0.5, le=5.0)
     atr_stop_multiple: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: Spread ceiling as a fraction of this trade's own stop distance.
+    #:
+    #: A different question from the spread filter's, which asks whether the
+    #: spread is unusual for this instrument at this hour. After 21:00 the
+    #: answer to that is no — the evening spread *is* the evening baseline — and
+    #: the trade is waved through while the stop has not widened to match. At
+    #: 0.20 a 10-pip stop tolerates 2 pips of spread and no more.
+    #:
+    #: Looser than the playbooks' 0.15 because those are scalps, where the
+    #: spread is paid against a much smaller target. Set to 0.5 to effectively
+    #: disable; the field cannot be turned off entirely, because a trade that
+    #: cannot pay its own spread is not a trade.
+    max_spread_share_of_stop: float = Field(default=0.20, gt=0.0, le=0.5)
     #: Paper/backtest may research every module. Live execution is restricted
     #: to this independently validated subset; empty means live entries block.
     live_enabled_modules: tuple[str, ...] = ()
@@ -668,6 +681,28 @@ class TradeManagementConfig(Base):
     #: than a loss.
     giveback_arm_r: float = Field(default=1.0, ge=0.0)
     giveback_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    #: The per-second read of how an open trade is actually behaving — has the
+    #: structure broken, has momentum turned, is it running against us, has the
+    #: spread blown out. See `analysis/position_health.py`.
+    #:
+    #: The mechanical rules above all look at one number, R, which says nothing
+    #: about why. Two trades at +0.4R — one grinding toward target, one with the
+    #: market falling away underneath it — are the same number and opposite
+    #: situations, and without this the fast layer could not tell them apart.
+    #:
+    #: It can only ever reduce risk, and it needs two independent signals
+    #: agreeing before it may close anything.
+    health_enabled: bool = True
+    #: Bars of the fast timeframe (M1) for momentum and the adverse run.
+    health_fast_bars: int = Field(default=40, ge=10, le=500)
+    #: Bars of the slower timeframe (M5) for the structure read. A swing on M1
+    #: is noise wearing the word "structure".
+    health_structure_bars: int = Field(default=60, ge=20, le=500)
+    #: At or above this R, a deteriorating trade is banked rather than cut.
+    health_secure_at_r: float = Field(default=0.5, ge=0.0)
+    #: At or above this R, a single warning tightens the stop instead.
+    health_tighten_at_r: float = Field(default=0.2, ge=0.0)
 
     #: Close a position that has gone nowhere. Dead capital still carries risk.
     time_exit_hours: float | None = Field(default=24.0, gt=0.0)

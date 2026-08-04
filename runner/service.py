@@ -51,6 +51,7 @@ from execution.manager import ManagementEvent, PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
 from filters.news_filter import NewsFilter
+from infra.atomic import write_json_atomic
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger
 from journal.database import Journal
@@ -77,6 +78,17 @@ from risk.risk_manager import RiskManager
 from scanner.universe import ScanBatch, UniverseScanner
 
 log = get_logger(__name__)
+
+#: What is reported for a position the fast layer has not read yet — one opened
+#: seconds ago, or one whose bars could not be fetched. Deliberately not
+#: "healthy": "we looked and it is fine" and "we have not looked" are different
+#: claims, and only one of them is true here.
+_UNKNOWN_HEALTH: dict[str, object] = {
+    "verdict": "unknown",
+    "severity": 0.0,
+    "action": "hold",
+    "signals": [],
+}
 
 #: The timeframe a review is tied to. H1 is where the weighted modules read
 #: their structure, so it is what defines "the same setup".
@@ -198,6 +210,9 @@ class JarvisRunner:
         self.veto_memory = VetoMemory(root / "runtime" / "veto_memory.json")
         # What the account has taught itself, fed back into every review.
         self.memory = TradingMemory(root / "runtime" / "trading_memory.json")
+        # The fast layer's live read, published for the deck. The manager holds
+        # it in memory; the dashboard is a separate process and cannot see that.
+        self.health_file = root / "runtime" / "position_health.json"
         # ticket -> when the supervisor last looked at it, so an open position
         # is reconsidered on a sane cadence rather than every thirty seconds.
         self._supervised_at: dict[int, datetime] = {}
@@ -330,6 +345,7 @@ class JarvisRunner:
                 positions, self.clock.now(), self.posture.patience_multiplier
             )
             self._record_management(events)
+            self._publish_health(positions)
             return events
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning(
@@ -693,6 +709,32 @@ class JarvisRunner:
                 account.equity,
                 filter_verdict.reason,
                 filter_verdict.detail,
+                signals=list(idea.signals),
+                extra=filter_data,
+            )
+            return False
+
+        # Can this trade afford its own spread? Asked before sizing, because it
+        # is the cheapest gate here and it fails most often in the evening.
+        #
+        # The spread filter above asks a different question — is the spread
+        # unusual for this instrument at this hour — and after 21:00 the answer
+        # is no, it is perfectly normal, because the baseline it learned is
+        # itself an evening baseline. Meanwhile the stop did not widen. A 2-pip
+        # spread against a 6-pip stop means the trade opens a third of the way
+        # to being wrong and must clear the spread twice to earn anything, and
+        # no amount of edge in the setup survives that. The playbooks already
+        # refused on this; the confluence path did not, which is where the
+        # evening stop-outs were coming from.
+        affordable, share = self._spread_is_affordable(context, idea.entry, idea.stop_loss)
+        if not affordable:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.SPREAD_EATS_THE_STOP,
+                f"spread is {share:.0%} of the {abs(idea.entry - idea.stop_loss):.5g} stop, "
+                f"above the {self.settings.analysis.confluence.max_spread_share_of_stop:.0%} limit",
                 signals=list(idea.signals),
                 extra=filter_data,
             )
@@ -1157,6 +1199,11 @@ class JarvisRunner:
                     "learned_so_far": self.memory.briefing(
                         position.symbol, position.direction.name
                     ),
+                    # What the per-second layer has been seeing. Without this
+                    # the adviser judges a snapshot of the moment it happened
+                    # to be asked and cannot know the trade has been bleeding
+                    # for ten minutes — the fast layer watched all of it.
+                    "mechanical_health": self._health_brief(position.ticket),
                 },
             )
             self._supervised_at[position.ticket] = now
@@ -1188,6 +1235,49 @@ class JarvisRunner:
             event = self.manager.apply_supervision(position, verdict)
             if event is not None:
                 self._record_management([event])
+
+    def _publish_health(self, positions) -> None:  # type: ignore[no-untyped-def]
+        """Write the current read to disk for the deck to pick up.
+
+        The manager keeps this in memory and the dashboard is a different
+        process, so without a file the operator's answer to "what does the
+        system think of my open trade right now" is a fifteen-minute-old
+        supervisor entry. Best-effort: a failed write costs a panel, and
+        nothing here is state anyone recovers from.
+        """
+        payload = {
+            "recorded_at": self.clock.now().isoformat(),
+            "positions": [
+                {
+                    "ticket": position.ticket,
+                    "symbol": position.symbol,
+                    "direction": position.direction.name,
+                    **self._health_brief(position.ticket),
+                }
+                for position in positions
+            ],
+        }
+        write_json_atomic(self.health_file, payload)
+
+    def _spread_is_affordable(
+        self, context: MarketContext, entry: float, stop: float
+    ) -> tuple[bool, float]:
+        """Is the current spread a tolerable share of this trade's stop?
+
+        Fails closed on a missing tick or a zero-width stop: both mean the
+        question cannot be answered, and an unanswerable cost question is not a
+        reason to pay it.
+        """
+        risk = abs(entry - stop)
+        if context.tick is None or risk <= 0:
+            return False, 1.0
+        share = context.tick.spread / risk
+        return share <= self.settings.analysis.confluence.max_spread_share_of_stop, share
+
+    def _health_brief(self, ticket: int) -> dict[str, object]:
+        """The fast layer's current read, for the adviser's payload."""
+        health = self.manager.last_health.get(ticket)
+        return health.summary() if health is not None else dict(_UNKNOWN_HEALTH)
 
     def _build_playbooks(self) -> PlaybookEngine | None:
         """Assemble the short-horizon theories, or None when they are off."""

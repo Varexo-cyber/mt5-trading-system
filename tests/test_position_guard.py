@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from config.loader import load_settings
-from core.types import Direction, Position, Tick
+from core.types import Direction, Position, Tick, Timeframe
 from execution.manager import ATR_CACHE_SECONDS, ManagementEvent, PositionManager
 
 NOW = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
@@ -47,9 +47,16 @@ class BrokerStub:
 
     price: float = ENTRY
     atr: float = 1.0
-    rate_calls: int = 0
+    spread: float = 0.0
+    rate_calls: dict[int, int] = field(default_factory=dict)
     closed: list[tuple[int, float | None]] = field(default_factory=list)
     modified: list[float] = field(default_factory=list)
+
+    @property
+    def atr_calls(self) -> int:
+        """Only the H1 fetches. The health readers pull M1 and M5 on their own
+        much shorter TTL, so a single total would conflate two caches."""
+        return self.rate_calls.get(Timeframe.H1.mt5_value, 0)
 
     def tick(self, symbol: str) -> Tick:
         return Tick(symbol=symbol, bid=self.price, ask=self.price, time=NOW)
@@ -71,12 +78,24 @@ class BrokerStub:
         del broker
         return Spec()
 
-    def copy_rates(self, _symbol, _timeframe, count):  # type: ignore[no-untyped-def]
-        self.rate_calls += 1
-        # A flat series whose true range is exactly `atr` on every bar.
+    def copy_rates(self, _symbol, timeframe, count):  # type: ignore[no-untyped-def]
+        self.rate_calls[timeframe] = self.rate_calls.get(timeframe, 0) + 1
+        # A flat series whose true range is exactly `atr` on every bar, and
+        # which is deliberately featureless: no swings, no drift, so the health
+        # readers stay silent and these tests keep measuring what they name.
+        base = int(datetime(2026, 8, 4, 0, 0, tzinfo=UTC).timestamp())
         return [
-            {"high": 100.0 + self.atr, "low": 100.0, "close": 100.0, "open": 100.0}
-            for _ in range(count)
+            {
+                "time": base + index * 60,
+                "high": 100.0 + self.atr,
+                "low": 100.0,
+                "close": 100.0,
+                "open": 100.0,
+                "tick_volume": 1,
+                "spread": 0,
+                "real_volume": 0,
+            }
+            for index in range(count)
         ]
 
     def close_position(self, position: Position, volume: float | None = None) -> OrderResult:
@@ -292,7 +311,7 @@ def test_the_atr_is_not_refetched_on_every_pass() -> None:
     for _ in range(20):
         manager.manage([position()], NOW)
 
-    assert broker.rate_calls == 1
+    assert broker.atr_calls == 1
 
 
 def test_the_cache_expires() -> None:
@@ -308,7 +327,7 @@ def test_the_cache_expires() -> None:
     }
     manager.manage([position()], NOW)
 
-    assert broker.rate_calls == 2
+    assert broker.atr_calls == 2
 
 
 def test_the_cache_is_keyed_per_symbol() -> None:
@@ -321,7 +340,7 @@ def test_the_cache_is_keyed_per_symbol() -> None:
     manager.manage([position()], NOW)
     manager.manage([replace(position(), symbol="XAUUSD")], NOW)
 
-    assert broker.rate_calls == 2
+    assert broker.atr_calls == 2
 
 
 def test_the_cache_uses_a_monotonic_deadline() -> None:

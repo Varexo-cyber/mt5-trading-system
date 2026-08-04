@@ -15,6 +15,7 @@ system is performing.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -231,6 +232,54 @@ ACTION_LABELS = {
     "ORPHAN_CLOSE": "onbekende positie gesloten",
     "EMERGENCY_CLOSE": "noodsluiting, geen stop",
 }
+
+
+#: How the fast layer's verdict reads on the deck, and how urgent it looks.
+HEALTH_LABELS = {
+    "healthy": ("gezond", "✅"),
+    "watch": ("in de gaten houden", "👀"),
+    "deteriorating": ("verslechtert", "⚠️"),
+    "broken": ("thesis gebroken", "🚨"),
+    "unknown": ("nog niet gelezen", "…"),
+}
+
+
+def live_health(path: Path) -> dict[int, dict[str, Any]]:
+    """The per-second read, keyed by ticket, as the runner last published it.
+
+    Returns an empty map when the file is missing or unreadable — the runner may
+    simply not be running, and an empty panel is the honest rendering of that.
+    """
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        entries = payload.get("positions", [])
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(entries, list):
+        return {}
+    return {
+        int(entry["ticket"]): entry
+        for entry in entries
+        if isinstance(entry, dict) and "ticket" in entry
+    }
+
+
+def health_caption(entry: dict[str, Any] | None) -> str:
+    """One line an operator can read at a glance, signals included."""
+    if not entry:
+        return "…  geen live oordeel (draait Jarvis?)"
+    label, icon = HEALTH_LABELS.get(str(entry.get("verdict")), (str(entry.get("verdict")), "•"))
+    parts = [f"{icon}  **{label}**"]
+    action = str(entry.get("action", "hold"))
+    if action != "hold":
+        parts.append(
+            {"tighten": "stop aantrekken", "secure": "winst pakken", "exit": "eruit"}[action]
+        )
+    for signal in entry.get("signals", []) or []:
+        parts.append(str(signal.get("detail", "")))
+    return "  ·  ".join(part for part in parts if part)
 
 
 def recent_management(path: Path, limit: int = 25) -> list[dict[str, Any]]:

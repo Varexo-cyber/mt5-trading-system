@@ -36,7 +36,15 @@ from dashboard.ai_exchange import (
     read_posture,
     supervision_rows,
 )
-from dashboard.ledger import as_rows, day_start, recent_management, summarise, week_start
+from dashboard.ledger import (
+    as_rows,
+    day_start,
+    health_caption,
+    live_health,
+    recent_management,
+    summarise,
+    week_start,
+)
 from dashboard.position_control import PositionControl
 from dashboard.service import (
     PROFILE_TIMEFRAMES,
@@ -444,6 +452,11 @@ def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
         "je equity uitkomt."
     )
 
+    # What the per-second layer currently thinks of each trade. Published by
+    # the runner because it lives in a different process; an empty map here
+    # means Jarvis is not running, which is worth showing rather than hiding.
+    verdicts = live_health(ROOT / "runtime" / "position_health.json")
+
     for position in positions:
         tick = service.tick(position.symbol)
         price = 0.0
@@ -462,6 +475,7 @@ def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
             f"{account.currency}" + (f" · {r_now:+.2f}R" if r_now is not None else "")
         )
         with st.expander(header, expanded=len(positions) <= 3):
+            st.markdown(health_caption(verdicts.get(position.ticket)))
             # Where price sits between the stop and the target, right now. The
             # number that matters on a live trade is not the price, it is how
             # much room is left in each direction.

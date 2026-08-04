@@ -56,6 +56,13 @@ class Reason(StrEnum):
     MARKET_CLOSED = "MARKET_CLOSED"
     STALE_QUOTE = "STALE_QUOTE"
     SPREAD_TOO_WIDE = "SPREAD_TOO_WIDE"
+    #: The spread is too large a share of *this trade's own stop*, which is a
+    #: different question from whether the spread is unusual. In the evening a
+    #: spread can be entirely typical for the hour — so the hour-of-day baseline
+    #: passes it — and still eat a third of a small stop. That trade starts a
+    #: third of the way to being wrong and has to clear the spread twice before
+    #: it earns anything.
+    SPREAD_EATS_THE_STOP = "SPREAD_EATS_THE_STOP"
     #: A second position that would double the same underlying currency risk.
     CORRELATED_EXPOSURE = "CORRELATED_EXPOSURE"
 
