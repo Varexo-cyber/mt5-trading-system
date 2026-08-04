@@ -1,0 +1,271 @@
+"""The closed-trade view the deck was missing.
+
+Everything the operator judges the system by — what today cost, which stop was
+hit, whether this week is up — is read off this module. A quiet arithmetic bug
+here does not crash anything; it just reports a losing week as a flat one, so
+the numbers are asserted rather than eyeballed.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from dashboard.ledger import (
+    closed_trades,
+    day_start,
+    starting_equity,
+    summarise,
+    week_start,
+)
+from journal.database import Journal, iso
+
+# A Tuesday afternoon, comfortably inside a trading day and week.
+NOW = datetime(2026, 8, 4, 14, 30, tzinfo=UTC)
+
+
+@pytest.fixture
+def database(tmp_path) -> Path:  # type: ignore[no-untyped-def]
+    """A real journal at the current schema, not a hand-rolled table.
+
+    Building the schema by hand would let the ledger's SELECT drift away from
+    the columns the system actually writes and still pass.
+    """
+    from core.clock import SimulatedClock
+
+    path = tmp_path / "trading.db"
+    Journal(path, SimulatedClock(NOW)).open().close()
+    return path
+
+
+def write_trade(
+    path: Path,
+    *,
+    ticket: int,
+    symbol: str = "EURUSD",
+    pnl: float = 0.0,
+    closed_at: datetime = NOW,
+    exit_reason: str = "SL_HIT",
+    entry_state: str = "OPEN",
+    pnl_r: float | None = None,
+    risk_money: float = 2.0,
+) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO trades (ticket, symbol, direction, volume, entry_price, sl, tp, "
+            "risk_money, risk_pct, sl_distance_pips, opened_at, closed_at, exit_price, "
+            "exit_reason, pnl_money, pnl_r, equity_before, entry_state) "
+            "VALUES (?, ?, 'LONG', 0.01, 1.1, 1.09, 1.12, ?, 2.0, 10.0, ?, ?, 1.11, ?, ?, ?, "
+            "100.0, ?)",
+            (
+                ticket,
+                symbol,
+                risk_money,
+                # `iso`, not `.isoformat()`: the journal always writes
+                # microseconds, and a fixture that does not would let a
+                # timestamp-format mismatch pass unnoticed.
+                iso(closed_at - timedelta(hours=1)),
+                iso(closed_at),
+                exit_reason,
+                pnl,
+                pnl_r,
+                entry_state,
+            ),
+        )
+
+
+# ------------------------------------------------------------- boundaries ---
+
+
+def test_the_day_starts_at_the_fx_rollover() -> None:
+    """Not midnight. A day measured differently than the risk limits measure it
+    would disagree with them every evening between 21:00 and 00:00."""
+    assert day_start(NOW) == datetime(2026, 8, 3, 21, 0, tzinfo=UTC)
+
+
+def test_an_evening_after_the_rollover_belongs_to_the_next_day() -> None:
+    evening = datetime(2026, 8, 4, 22, 15, tzinfo=UTC)
+    assert day_start(evening) == datetime(2026, 8, 4, 21, 0, tzinfo=UTC)
+
+
+def test_the_week_opens_on_sunday_evening() -> None:
+    """Sunday 2 August 21:00 opens the week containing Tuesday the 4th."""
+    assert week_start(NOW) == datetime(2026, 8, 2, 21, 0, tzinfo=UTC)
+
+
+def test_sunday_evening_is_already_the_new_week() -> None:
+    sunday_night = datetime(2026, 8, 9, 22, 0, tzinfo=UTC)
+    assert week_start(sunday_night) == datetime(2026, 8, 9, 21, 0, tzinfo=UTC)
+
+
+# ----------------------------------------------------------------- reading ---
+
+
+def test_a_missing_database_reads_as_no_trades(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Before the first run there is no file. The deck must render anyway."""
+    assert closed_trades(tmp_path / "nothing.db", day_start(NOW)) == []
+    assert starting_equity(tmp_path / "nothing.db", "DAY", day_start(NOW)) is None
+
+
+def test_open_positions_are_not_history(database: Path) -> None:
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "INSERT INTO trades (ticket, symbol, direction, volume, entry_price, sl, tp, "
+            "risk_money, risk_pct, sl_distance_pips, opened_at, equity_before) "
+            "VALUES (1, 'EURUSD', 'LONG', 0.01, 1.1, 1.09, 1.12, 2.0, 2.0, 10.0, ?, 100.0)",
+            (iso(NOW),),
+        )
+    assert closed_trades(database, day_start(NOW)) == []
+
+
+def test_trades_before_the_boundary_are_yesterday(database: Path) -> None:
+    write_trade(database, ticket=1, closed_at=NOW - timedelta(days=2))
+    write_trade(database, ticket=2, closed_at=NOW)
+    tickets = [trade.ticket for trade in closed_trades(database, day_start(NOW))]
+    assert tickets == [2]
+
+
+def test_abandoned_entries_are_not_losses(database: Path) -> None:
+    """An entry the broker refused never held risk.
+
+    Counting it would report a loss that never happened and drag the win rate
+    down for a trade that was never placed.
+    """
+    write_trade(database, ticket=1, pnl=0.0, entry_state="ABANDONED", exit_reason="rejected")
+    write_trade(database, ticket=2, pnl=1.5, exit_reason="TP_HIT")
+    trades = closed_trades(database, day_start(NOW))
+    assert [trade.ticket for trade in trades] == [2]
+
+
+def test_newest_first(database: Path) -> None:
+    write_trade(database, ticket=1, closed_at=NOW - timedelta(hours=3))
+    write_trade(database, ticket=2, closed_at=NOW - timedelta(hours=1))
+    assert [t.ticket for t in closed_trades(database, day_start(NOW))] == [2, 1]
+
+
+# ------------------------------------------------------------------- R unit ---
+
+
+def test_r_is_derived_when_the_column_is_empty(database: Path) -> None:
+    """R stays comparable as the account grows; a blank one makes a losing week
+    look like a quiet one."""
+    write_trade(database, ticket=1, pnl=-2.0, pnl_r=None, risk_money=2.0)
+    (trade,) = closed_trades(database, day_start(NOW))
+    assert trade.pnl_r == pytest.approx(-1.0)
+
+
+def test_a_recorded_r_is_trusted_over_the_derivation(database: Path) -> None:
+    """Partial closes and scaled exits make money/risk the wrong sum; when the
+    system wrote an R, that is the real one."""
+    write_trade(database, ticket=1, pnl=3.0, pnl_r=0.8, risk_money=2.0)
+    (trade,) = closed_trades(database, day_start(NOW))
+    assert trade.pnl_r == pytest.approx(0.8)
+
+
+def test_no_risk_recorded_leaves_r_blank_rather_than_infinite(database: Path) -> None:
+    write_trade(database, ticket=1, pnl=1.0, pnl_r=None, risk_money=0.0)
+    (trade,) = closed_trades(database, day_start(NOW))
+    assert trade.pnl_r is None
+
+
+# ------------------------------------------------------------------ outcome ---
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        ("SL_HIT", "stop loss geraakt"),
+        ("TP_HIT", "target geraakt"),
+        ("AI_EXIT", "Claude sloot hem"),
+        ("TIME_EXIT", "te lang niets gedaan"),
+        ("NEWS_FLATTEN", "nieuwsblokkade"),
+        ("PARTIAL_CLOSE", "deels gesloten"),
+        ("ORPHAN_CLOSE", "noodsluiting"),
+    ],
+)
+def test_exit_reasons_read_as_plain_language(database: Path, reason: str, expected: str) -> None:
+    write_trade(database, ticket=1, exit_reason=reason)
+    (trade,) = closed_trades(database, day_start(NOW))
+    assert trade.outcome == expected
+
+
+def test_an_unlabelled_exit_shows_its_own_token(database: Path) -> None:
+    """Flattening the unknown into "gesloten" would hide any exit path nobody
+    has named yet — exactly the one worth noticing."""
+    write_trade(database, ticket=1, exit_reason="BROKER_MARGIN_CALL")
+    (trade,) = closed_trades(database, day_start(NOW))
+    assert trade.outcome == "BROKER_MARGIN_CALL"
+
+
+# ------------------------------------------------------------------ summary ---
+
+
+def test_the_summary_adds_up(database: Path) -> None:
+    write_trade(database, ticket=1, pnl=3.11, pnl_r=1.5, symbol="EURJPY", exit_reason="TP_HIT")
+    write_trade(database, ticket=2, pnl=-1.77, pnl_r=-1.0, symbol="AUDJPY")
+    write_trade(database, ticket=3, pnl=1.15, pnl_r=0.5, symbol="US2000", exit_reason="AI_EXIT")
+
+    summary = summarise(database, "Vandaag", day_start(NOW), "DAY", day_start(NOW))
+
+    assert len(summary.trades) == 3
+    assert summary.realised == pytest.approx(2.49)
+    assert summary.wins == 2
+    assert summary.losses == 1
+    assert summary.win_rate == pytest.approx(2 / 3)
+    assert summary.total_r == pytest.approx(1.0)
+    assert summary.best is not None and summary.best.symbol == "EURJPY"
+    assert summary.worst is not None and summary.worst.symbol == "AUDJPY"
+
+
+def test_a_breakeven_close_counts_as_a_loss_not_a_win(database: Path) -> None:
+    """Zero is not profit. Calling it a win would inflate the win rate with
+    trades that paid nothing — which is precisely what break-even stops
+    produce, so the distortion would grow as management improves.
+    """
+    write_trade(database, ticket=1, pnl=0.0, exit_reason="SL_HIT")
+    summary = summarise(database, "Vandaag", day_start(NOW), "DAY", day_start(NOW))
+    assert (summary.wins, summary.losses) == (0, 1)
+
+
+def test_an_empty_period_does_not_divide_by_zero(database: Path) -> None:
+    summary = summarise(database, "Vandaag", day_start(NOW), "DAY", day_start(NOW))
+    assert summary.win_rate == 0.0
+    assert summary.realised == 0.0
+    assert summary.best is None and summary.worst is None
+
+
+def test_the_starting_equity_comes_from_the_risk_anchor(database: Path, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The same mark the daily loss limit measures against, so "we started at
+    X" on the deck cannot disagree with the number the breaker uses."""
+    from core.clock import SimulatedClock
+
+    journal = Journal(database, SimulatedClock(NOW)).open()
+    journal.set_equity_mark("DAY", day_start(NOW), 95.06)
+    journal.close()
+
+    summary = summarise(database, "Vandaag", day_start(NOW), "DAY", day_start(NOW))
+    assert summary.starting_equity == pytest.approx(95.06)
+
+
+def test_the_anchor_lookup_uses_the_journals_own_timestamp_format(database: Path) -> None:
+    """The first version formatted the key with `.isoformat()`.
+
+    The journal writes microseconds, so the exact-match lookup found nothing —
+    no error, no empty result to notice, just a deck that permanently claimed
+    it did not know what the day opened at. Pinning the encoding here is the
+    only thing that catches it, because both spellings are valid ISO-8601.
+    """
+    from core.clock import SimulatedClock
+
+    boundary = day_start(NOW)
+    journal = Journal(database, SimulatedClock(NOW)).open()
+    journal.set_equity_mark("DAY", boundary, 88.0)
+    journal.close()
+
+    with sqlite3.connect(database) as conn:
+        (stored,) = conn.execute("SELECT period_key FROM equity_marks").fetchone()
+    assert stored != boundary.isoformat(), "if these ever match, this test proves nothing"
+    assert starting_equity(database, "DAY", boundary) == pytest.approx(88.0)

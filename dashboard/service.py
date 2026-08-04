@@ -94,20 +94,42 @@ class DashboardService:
     def close(self) -> None:
         self.connector.shutdown()
 
+    def _live(self) -> None:
+        """Re-establish the terminal link before reading through it.
+
+        The deck holds one connection across a session that can run for hours,
+        and MT5 drops the IPC channel whenever the terminal restarts, updates,
+        or simply times the client out. The next read then raises
+        `[-10004] No IPC connection` — which arrived as a full Streamlit
+        traceback where the positions table should have been, on an account
+        holding real money.
+
+        `ensure_connected` already knows how to recover; nothing was calling it.
+        A dashboard read is not a trading decision, so a failure here is a
+        display problem: it must degrade to a message, never to a stack trace.
+        """
+        self.connector.ensure_connected()
+
     def account(self) -> AccountSnapshot:
-        return self.account_snapshot or self.connect()
+        self._live()
+        self.account_snapshot = self.connector.account()
+        return self.account_snapshot
 
     def positions(self) -> list[Position]:
+        self._live()
         return self.connector.positions()
 
     def symbols(self) -> list[SymbolDescriptor]:
+        self._live()
         return self.connector.symbols()
 
     def spec(self, symbol: str) -> InstrumentSpec:
+        self._live()
         return self.connector.spec(symbol)
 
     def tick(self, symbol: str) -> Tick | None:
         try:
+            self._live()
             tick = self.connector.tick(symbol)
         except TradingSystemError:
             return None
@@ -122,6 +144,7 @@ class DashboardService:
         series. A dashboard should still render Friday's chart on Saturday, so
         this method returns history and lets the UI label its age.
         """
+        self._live()
         raw = self.connector.copy_rates(symbol, timeframe.mt5_value, count + 1)
         frame = pd.DataFrame(raw)
         if frame.empty:

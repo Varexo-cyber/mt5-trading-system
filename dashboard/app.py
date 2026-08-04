@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import ctypes
 import json
 import os
@@ -37,6 +36,7 @@ from dashboard.ai_exchange import (
     read_posture,
     supervision_rows,
 )
+from dashboard.ledger import as_rows, day_start, summarise, week_start
 from dashboard.position_control import PositionControl
 from dashboard.service import (
     PROFILE_TIMEFRAMES,
@@ -204,6 +204,113 @@ def render_live_scanner() -> None:
 """)
 
 
+@st.fragment(run_every="1s")
+def render_account_header(operation: str, paper) -> None:  # type: ignore[no-untyped-def]
+    """Balance and equity, re-read from the terminal every second.
+
+    These were rendered once at page load and then frozen. Equity moves with
+    every tick on an open position, so the headline number an operator glances
+    at was arbitrarily old — it only refreshed when something else happened to
+    rerun the page. On a live account the top-line figure has to be the current
+    one or it is worse than absent.
+    """
+    try:
+        account = service.account()
+        open_count = len(service.positions())
+    except Exception:  # noqa: BLE001 - a dropped link must not blank the header
+        st.warning("Terminal even niet bereikbaar — cijfers hieronder zijn de laatst bekende.")
+        account = service.account_snapshot
+        open_count = 0
+        if account is None:
+            return
+
+    first, second, third, fourth, fifth = st.columns(5)
+    first.metric("Balance", f"{account.balance:.2f} {account.currency}")
+    floating = account.equity - account.balance
+    second.metric(
+        "Equity",
+        f"{account.equity:.2f} {account.currency}",
+        delta=f"{floating:+.2f}" if abs(floating) >= 0.005 else None,
+    )
+    third.metric("Open positions", str(open_count))
+    fourth.metric("Jarvis mode", operation)
+    fifth.metric(
+        "Paper equity",
+        f"{paper.equity:.2f} {paper.currency}" if paper is not None else "not started",
+    )
+    st.caption(f"Live · {datetime.now(UTC):%H:%M:%S} UTC")
+
+
+@st.fragment(run_every="2s")
+def render_trade_history() -> None:
+    """What today and this week actually did — the view that did not exist.
+
+    The deck showed what was open and what was being considered, and nothing
+    about what had already happened. Which stop was hit, what today cost, where
+    the day started: all of it lived only in the journal, which nobody reads
+    mid-session.
+    """
+    database = ROOT / settings.journal.database_path
+    now = datetime.now(UTC)
+    boundary = settings.risk.day_boundary_utc
+    opened_today = day_start(now, boundary)
+    opened_week = week_start(now, boundary)
+    today = summarise(database, "Vandaag", opened_today, "DAY", opened_today)
+    week = summarise(database, "Deze week", opened_week, "WEEK", opened_week)
+
+    st.subheader("Wat er vandaag en deze week is gebeurd")
+    for period in (today, week):
+        st.markdown(f"**{period.label}** — vanaf {period.started_at:%d-%m %H:%M} UTC")
+        a, b, c, d, e = st.columns(5)
+        a.metric("Trades gesloten", len(period.trades))
+        b.metric(
+            "Resultaat",
+            f"{period.realised:+.2f}",
+            delta=f"{period.total_r:+.2f}R" if period.trades else None,
+        )
+        c.metric("Gewonnen", period.wins)
+        d.metric("Verloren", period.losses)
+        e.metric("Winratio", f"{period.win_rate:.0%}" if period.trades else "—")
+        if period.starting_equity is not None:
+            st.caption(f"Begonnen met {period.starting_equity:.2f} EUR")
+        if period.trades:
+            best, worst = period.best, period.worst
+            if best is not None and worst is not None and best is not worst:
+                st.caption(
+                    f"Beste: {best.symbol} {best.pnl_money:+.2f}  ·  "
+                    f"Slechtste: {worst.symbol} {worst.pnl_money:+.2f}"
+                )
+        st.write("")
+
+    if not today.trades and not week.trades:
+        st.info(
+            "Nog geen afgesloten trades in het journaal. Posities die je zelf in de terminal "
+            "hebt geopend of gesloten staan hier niet: dit toont wat het systeem zelf heeft "
+            "gedaan, zodat je kunt beoordelen hoe *het* presteert."
+        )
+        return
+
+    st.markdown("**Alle afgesloten trades deze week**")
+    frame = pd.DataFrame(as_rows(week.trades))
+    st.dataframe(
+        frame,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Resultaat": st.column_config.NumberColumn(format="%.2f"),
+            "R": st.column_config.NumberColumn(format="%.2f"),
+            "Entry": st.column_config.NumberColumn(format="%.5f"),
+            "Exit": st.column_config.NumberColumn(format="%.5f"),
+        },
+    )
+
+    # How trades end is the fastest read on whether management is working: a
+    # wall of stop losses and a wall of targets need opposite responses.
+    endings = frame["Hoe het eindigde"].value_counts().rename_axis("Einde").reset_index(name="n")
+    if len(endings) > 1:
+        st.bar_chart(endings, x="Einde", y="n")
+
+
 def render_recent_adoptions() -> None:
     """Say when a position was recovered rather than closed after a crash.
 
@@ -271,13 +378,23 @@ def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
     operator moves is simply the stop the engine sees on its next cycle.
     """
     control = PositionControl(connector, settings)
-    positions = service.positions()
-    # Re-read the account too. Equity moves with every tick on an open
-    # position, and it is what the risk preview below is measured against.
-    with contextlib.suppress(Exception):
-        # A momentary terminal hiccup must not blank the panel; the previous
-        # account snapshot is a second old and still usable.
-        account = service.connect()
+    # A read failure here is a display problem, not a trading one, and it must
+    # look like one. MT5 drops its IPC channel whenever the terminal restarts
+    # or times the client out, and the resulting exception arrived as a full
+    # Streamlit traceback where the positions table should have been — on an
+    # account holding real money, which is the worst possible moment to be
+    # shown a stack trace instead of your positions.
+    try:
+        positions = service.positions()
+        account = service.account()
+    except Exception as exc:  # noqa: BLE001 - any read failure degrades the same way
+        st.error(
+            f"**Kan de posities nu niet uitlezen** — {type(exc).__name__}\n\n"
+            f"{exc}\n\nDit is alleen het dashboard. Jarvis heeft zijn eigen verbinding en "
+            "blijft je posities beheren. Meestal is de MT5-terminal net herstart of even "
+            "weggevallen; de volgende verversing pakt hem vanzelf weer op."
+        )
+        return
     notice = st.session_state.pop("position_notice", None)
     if notice:
         (st.success if notice[0] else st.error)(notice[1])
@@ -755,16 +872,8 @@ try:
     except RuntimeError as exc:
         experimental_error = str(exc)
     paper = load_paper_snapshot(ROOT / "runtime" / "paper_state.json")
-    first, second, third, fourth, fifth = st.columns(5)
-    first.metric("Balance", f"{account.balance:.2f} {account.currency}")
-    second.metric("Equity", f"{account.equity:.2f} {account.currency}")
-    third.metric("Open positions", str(len(positions)))
     active_operation = str(heartbeat.get("operation", "OFF")).upper() if running else "OFF"
-    fourth.metric("Jarvis mode", active_operation)
-    fifth.metric(
-        "Paper equity",
-        f"{paper.equity:.2f} {paper.currency}" if paper is not None else "not started",
-    )
+    render_account_header(active_operation, paper)
     if running and heartbeat.get("operation") == "experimental_live":
         st.error(
             f"REAL MONEY ACTIVE - account {account.login}, equity {account.equity:.2f} "
@@ -925,6 +1034,8 @@ try:
 
     with positions_tab:
         render_live_positions(account)
+        st.divider()
+        render_trade_history()
         st.divider()
         st.subheader("Paper positions")
         if paper is None or not paper.positions:
