@@ -121,6 +121,33 @@ analysis:
     # agreement; two modules that cannot fire together is not.
     minimum_directional_modules: 1
 
+    # 40, not the default 55, because 55 is unreachable here.
+    #
+    # The confluence score is a weighted mean of |module score| x confidence,
+    # so a single firing module yields its raw score discounted by how sure it
+    # is. The default 55 was calibrated for `minimum_directional_modules: 2`,
+    # where two modules average together; this overlay sets 1, because the
+    # weighted modules look for mutually exclusive states and a second vote
+    # almost never arrives. The threshold was never moved to match.
+    #
+    # What 55 demands of a lone module:
+    #   trend_momentum  (raw 65)  needs confidence 0.85 - near its 0.9 ceiling
+    #   liquidity_sweep (raw 75)  needs confidence 0.73
+    #   level_reaction  (raw 55)  is capped at 0.8, so it can never qualify
+    #
+    # And what the account actually produced over twelve hours: 2806 decisions,
+    # zero trades, scores clustering between 33 and 42 with nothing above it.
+    # The gate was not strict, it was shut.
+    #
+    # At 40, trend_momentum needs confidence 0.62 - EMA separation of roughly
+    # 0.6 ATR, which is a genuinely separated trend rather than noise - and a
+    # confirmed liquidity sweep qualifies on the strength of the pattern its
+    # own detector already required. Everything downstream is unchanged: the
+    # filters, the sizer, the margin check and Claude's veto all still run, and
+    # this threshold was never the only thing standing between a signal and an
+    # order.
+    score_threshold: 40.0
+
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
     # lists exactly what is still missing, and the runner alerts on it at every
