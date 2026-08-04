@@ -328,7 +328,7 @@ class JarvisRunner:
                     "consecutive_losses": self.posture.consecutive_losses,
                     "drawdown_pct": round(self.posture.drawdown_pct, 2),
                     "patience": self.posture.patience_multiplier,
-                    "entry_bar_bonus": self.posture.entry_bar_bonus,
+                    "candidates_allowed": self.posture.max_candidates,
                 },
             )
         self._record_management(
@@ -472,28 +472,25 @@ class JarvisRunner:
             if item is not None:
                 analysed.append(item)
         analysed.sort(key=lambda item: item.conviction, reverse=True)
-        # In a drawdown, demand more before a setup is worth a slot at all.
-        # This raises the bar; nothing anywhere lowers it, and nothing here
+        # In a drawdown, go less far down the ranked list. The candidates are
+        # already ordered by conviction, so this says "only the best few" —
+        # scale-free, and it always leaves at least one reachable. It never
         # touches position size.
-        bonus = self.posture.entry_bar_bonus
-        if bonus > 0 and analysed:
-            floor = self.settings.analysis.confluence.score_threshold + bonus
-            kept = [item for item in analysed if item.idea.score >= floor]
-            if len(kept) < len(analysed):
-                log.info(
-                    "drawdown posture raised the entry bar to %.1f; %d of %d setups clear it",
-                    floor,
-                    len(kept),
-                    len(analysed),
-                    extra={
-                        "event": "posture_entry_bar",
-                        "posture": self.posture.posture.value,
-                        "floor": floor,
-                        "kept": len(kept),
-                        "dropped": len(analysed) - len(kept),
-                    },
-                )
-            analysed = kept
+        allowed = self.posture.max_candidates
+        if allowed is not None and len(analysed) > allowed:
+            log.info(
+                "%s posture: acting on the best %d of %d setups",
+                self.posture.posture.value,
+                allowed,
+                len(analysed),
+                extra={
+                    "event": "posture_candidate_limit",
+                    "posture": self.posture.posture.value,
+                    "allowed": allowed,
+                    "dropped": len(analysed) - allowed,
+                },
+            )
+            analysed = analysed[:allowed]
         if analysed:
             log.info(
                 "ranked %d tradeable setups by conviction",
