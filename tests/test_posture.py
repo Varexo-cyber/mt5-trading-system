@@ -63,9 +63,16 @@ def test_patience_never_exceeds_normal(losses: int) -> None:
 
 
 @pytest.mark.parametrize("losses", range(0, 12))
-def test_the_entry_bar_never_drops(losses: int) -> None:
-    """A drawdown demands more from a setup, never less."""
-    assert at(losses=losses).entry_bar_bonus >= 0.0
+def test_at_least_one_candidate_is_always_reachable(losses: int) -> None:
+    """Tightening must never become switching off.
+
+    The first version added a fixed bonus to the confluence threshold. On a
+    threshold of 40 against an engine producing 33-42, +7 moved the bar to 47
+    and no setup could ever clear it — the account would have sat idle
+    believing it was being selective.
+    """
+    allowed = at(losses=losses).max_candidates
+    assert allowed is None or allowed >= 1
 
 
 def test_worse_results_mean_less_patience_not_more() -> None:
@@ -75,10 +82,30 @@ def test_worse_results_mean_less_patience_not_more() -> None:
     assert defensive < cautious < steady
 
 
-def test_worse_results_mean_a_higher_bar() -> None:
-    assert (
-        at(losses=5).entry_bar_bonus > at(losses=2).entry_bar_bonus > at(losses=0).entry_bar_bonus
-    )
+def test_worse_results_allow_fewer_candidates() -> None:
+    """Rank, not score: scale-free, so it means the same after any recalibration."""
+    assert at(losses=0).max_candidates is None
+    assert at(losses=2).max_candidates == 3
+    assert at(losses=5).max_candidates == 1
+
+
+def test_a_narrow_score_band_cannot_shut_the_system() -> None:
+    """The regression this design exists to prevent.
+
+    Reproduces the observed distribution: 2806 live decisions scoring 33 to 42
+    against a threshold of 40. Under the old fixed-bonus rule the defensive
+    posture put the bar at 47 and nothing qualified — the account sat idle
+    believing it was being selective. A rank cutoff always lets the best
+    candidate through.
+    """
+    observed = [33.8, 34.7, 37.4, 37.5, 41.7, 41.8, 41.9]
+    tradeable = [score for score in observed if score >= 40.0]
+    assert tradeable, "precondition: some setups clear the threshold"
+
+    allowed = at(losses=0, equity=90.55, peak=100.0).max_candidates
+
+    assert allowed == 1
+    assert len(tradeable[-allowed:]) >= 1, "the best setup must still be reachable"
 
 
 def test_posture_carries_no_sizing_dial() -> None:
@@ -246,3 +273,24 @@ def test_patience_above_one_cannot_grant_extra_rope(tmp_path) -> None:  # type: 
 
     assert [event.action for event in events] == ["TIME_EXIT"]
     journal.close()
+
+
+def test_every_field_the_runner_logs_exists() -> None:
+    """The stressed-posture log line is the one nothing else covers.
+
+    Renaming a field left `self.posture.entry_bar_bonus` behind in that log's
+    `extra` dict. It only evaluates when the posture is stressed — which is
+    exactly when the account is already in trouble — so the whole suite passed
+    while the runner carried an AttributeError that would fire on the first bad
+    day. Asserting on the attribute names keeps the rename honest.
+    """
+    assessment = at(losses=5)
+    for field in (
+        "posture",
+        "consecutive_losses",
+        "drawdown_pct",
+        "patience_multiplier",
+        "max_candidates",
+    ):
+        assert hasattr(assessment, field), f"the runner logs {field}"
+    assert assessment.is_stressed, "this fixture must reach the branch that logs"

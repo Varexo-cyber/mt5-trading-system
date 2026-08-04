@@ -18,8 +18,10 @@ So posture only ever moves in the protective direction:
   working gets less patience when the account is already down, because the
   thing that actually recovers a drawdown is having capital and slots free for
   the next good setup, not sitting in a dead trade hoping.
-* **The bar for a new entry goes up.** Not the size of the bet. In a drawdown
-  the system takes *better* trades, not *more* trades.
+* **Fewer entries, and only the best ones.** Not smaller ones, and not a
+  higher score bar — the candidates of a cycle are already ranked by
+  conviction, so a drawdown simply cuts how far down that list the system is
+  willing to go. In a drawdown it takes *better* trades, not *more* trades.
 * **Size never moves here.** `RiskManager.risk_multiplier` owns sizing and only
   ever reduces it. Nothing in this module can raise a lot.
 
@@ -55,8 +57,25 @@ class PostureAssessment:
     #: Multiplier on `time_exit_hours`. Below 1.0 means a stalled trade is
     #: closed sooner. Never above 1.0.
     patience_multiplier: float
-    #: Added to the confluence score a new setup must clear. Never below 0.
-    entry_bar_bonus: float
+    #: How many of the cycle's ranked candidates may be acted on. None means
+    #: all of them; 1 means only the single best setup found.
+    #:
+    #: Rank, not score, and the difference is not cosmetic. The first version
+    #: added a fixed bonus to the confluence threshold, which assumes the
+    #: threshold sits somewhere with headroom above it. It does not: the engine
+    #: produces a narrow band — 2806 live decisions ranged 33 to 42 — so a +7
+    #: bonus on a threshold of 40 moved the bar to 47 and shut the system
+    #: completely, which is not "more selective", it is off. Worse, how much a
+    #: fixed bonus bites depends entirely on where the threshold happens to sit
+    #: in the distribution, so the same number means different things after any
+    #: recalibration.
+    #:
+    #: A rank cutoff is scale-free. "Only the best setup of the cycle" means
+    #: the same thing whatever the scores look like, always leaves exactly one
+    #: candidate reachable, and is a truer statement of the intent: in a
+    #: drawdown, take the best thing available rather than everything
+    #: acceptable.
+    max_candidates: int | None
 
     @property
     def is_stressed(self) -> bool:
@@ -68,6 +87,7 @@ class PostureAssessment:
             "posture": self.posture.value,
             "consecutive_losses": self.consecutive_losses,
             "drawdown_from_peak_pct": round(self.drawdown_pct, 2),
+            "candidates_allowed": self.max_candidates or "all",
             "guidance": _GUIDANCE[self.posture],
         }
 
@@ -123,24 +143,25 @@ def assess(
     # Both dials move only one way. Clamping here rather than trusting the
     # table means a future edit that fat-fingers a number above 1.0 tightens
     # nothing instead of silently granting extra patience in a drawdown.
-    patience, bar = _DIALS[posture]
+    patience, allowed = _DIALS[posture]
     return PostureAssessment(
         posture=posture,
         consecutive_losses=consecutive_losses,
         drawdown_pct=drawdown,
         patience_multiplier=min(1.0, max(0.1, patience)),
-        entry_bar_bonus=max(0.0, bar),
+        max_candidates=None if allowed is None else max(1, allowed),
     )
 
 
-#: posture -> (patience on stalled trades, extra confluence score demanded).
+#: posture -> (patience on stalled trades, candidates of the cycle allowed).
 #:
 #: The patience numbers are the "cut losers sooner" half: at DEFENSIVE a trade
-#: that has gone nowhere is closed in 40% of the usual time. The score bonus is
-#: the "demand more from a new entry" half — it raises the bar, and there is
-#: deliberately no dial anywhere in this module that lowers it.
-_DIALS: dict[Posture, tuple[float, float]] = {
-    Posture.STEADY: (1.0, 0.0),
-    Posture.CAUTIOUS: (0.7, 3.0),
-    Posture.DEFENSIVE: (0.4, 7.0),
+#: that has gone nowhere is closed in 40% of the usual time. The candidate
+#: counts are the "demand more from a new entry" half — never fewer than one,
+#: so the system tightens rather than switching itself off, and there is
+#: deliberately no dial anywhere in this module that loosens either.
+_DIALS: dict[Posture, tuple[float, int | None]] = {
+    Posture.STEADY: (1.0, None),
+    Posture.CAUTIOUS: (0.7, 3),
+    Posture.DEFENSIVE: (0.4, 1),
 }
