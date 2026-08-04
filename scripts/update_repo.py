@@ -60,6 +60,23 @@ def main(argv: list[str] | None = None) -> int:
     here = current_branch()
     print(f"  on branch   {here} ({short('HEAD')})")
 
+    # Uncommitted edits stop a fast-forward dead, and git's own wording for it
+    # ("Please commit your changes or stash them before you merge. Aborting")
+    # scrolls past in a window full of pip output. Nothing is lost when this
+    # happens — the edits stay exactly as they are — but the update silently
+    # does not occur, which is the failure mode this whole script exists for.
+    dirty = git("status", "--porcelain").stdout.strip()
+    if dirty:
+        print("\n  There are uncommitted local changes:")
+        for line in dirty.splitlines()[:10]:
+            print(f"    {line}")
+        if len(dirty.splitlines()) > 10:
+            print(f"    ... and {len(dirty.splitlines()) - 10} more")
+        print("\n  Nothing was changed, and these edits are safe. To continue, either")
+        print("  keep them:      git stash    (then run this again, then: git stash pop)")
+        print("  or discard:     git checkout -- .")
+        return 1
+
     fetch = git("fetch", "origin", branch, "--prune")
     if fetch.returncode != 0:
         print("\n  Could not reach GitHub:")

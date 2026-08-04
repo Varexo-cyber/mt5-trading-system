@@ -48,6 +48,12 @@ def remote(tmp_path: Path) -> Path:
     git("config", "user.email", "t@t.t", cwd=path)
     git("config", "user.name", "t", cwd=path)
     (path / "first.txt").write_text("one", encoding="utf-8")
+    # Tracked, not dropped into the clone afterwards: an untracked copy makes
+    # every working tree dirty and the dirty-tree guard then fires everywhere.
+    (path / "scripts").mkdir()
+    (path / "scripts" / "update_repo.py").write_text(
+        SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     git("add", "-A", cwd=path)
     git("commit", "-qm", "first", cwd=path)
     return path
@@ -58,11 +64,6 @@ def clone(remote: Path, tmp_path: Path) -> Path:
     subprocess.run(["git", "clone", "-q", str(remote), str(path)], capture_output=True, check=True)
     git("config", "user.email", "t@t.t", cwd=path)
     git("config", "user.name", "t", cwd=path)
-    # The script lives inside the repo it updates; the clone needs it too.
-    (path / "scripts").mkdir(exist_ok=True)
-    (path / "scripts" / "update_repo.py").write_text(
-        SCRIPT.read_text(encoding="utf-8"), encoding="utf-8"
-    )
     return path
 
 
@@ -168,3 +169,24 @@ def test_a_missing_branch_is_named(remote: Path, tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 1
+
+
+def test_uncommitted_edits_stop_the_update_and_say_so(remote: Path, tmp_path: Path) -> None:
+    """git's own wording for this scrolls past in a window full of pip output.
+
+    Nothing is lost when a fast-forward is refused — the edits stay exactly as
+    they are — but the update silently does not happen, which is the failure
+    this script exists to make impossible.
+    """
+    work = clone(remote, tmp_path)
+    (work / "first.txt").write_text("edited by hand", encoding="utf-8")
+    before = head(work)
+    advance(remote)
+
+    result = run(work)
+
+    assert result.returncode == 1
+    assert "uncommitted local changes" in result.stdout
+    assert "git stash" in result.stdout
+    assert head(work) == before
+    assert (work / "first.txt").read_text(encoding="utf-8") == "edited by hand"
