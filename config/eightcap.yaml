@@ -214,12 +214,34 @@ risk:
   max_trades_per_day: 0
   max_trades_per_week: 0
 
+  # Daily and weekly loss limits off, at the operator's explicit instruction
+  # after the halt below was traced to trades the system did not place.
+  #
+  # These are pacing limits. They stop a bad period from continuing and they
+  # reset with the calendar, which is exactly why they are the loosenable ones:
+  # a day that goes wrong is paused, not ended. Switching them off means a bad
+  # day can run its full course.
+  #
+  # The backstop is unchanged and is a different kind of gate. The 15% drawdown
+  # breaker measures from the all-time equity peak, so it never resets, cannot
+  # be waited out, and reaching it closes every position and halts the system
+  # until a human restarts it. It is also bound to the armed experimental
+  # contract and cannot be edited without re-arming. On EUR 100 that floor sits
+  # at EUR 85.00.
+  #
+  # Also unchanged: 2% fixed risk per trade, two concurrent positions, the
+  # anti-martingale multiplier that halves size after three losses, the posture
+  # that takes only the single best setup per cycle while in drawdown, every
+  # filter, and Claude's veto.
+  daily_loss_limit_pct: 0
+  weekly_loss_limit_pct: 0
+
 modes:
   micro_live:
     max_risk_per_trade_pct: 2.0
     max_sl_pips: 30
     max_trades_per_day: 0
-    daily_loss_limit_pct: 4.0
+    daily_loss_limit_pct: 0
     max_concurrent_positions: 2
     max_journal_detail: true
     min_equity: 50

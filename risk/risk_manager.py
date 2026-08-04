@@ -27,7 +27,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from config.schema import UNLIMITED_TRADES, Settings
+from config.schema import NO_LOSS_LIMIT, UNLIMITED_TRADES, Settings
 from core.clock import Clock
 from core.errors import ForbiddenStrategyError
 from core.instrument import InstrumentSpec
@@ -235,8 +235,11 @@ class RiskManager:
                 f"manual restart required",
             )
 
+        # Zero disables a pacing limit. The drawdown breaker above is the
+        # backstop either way: it measures from the all-time peak rather than a
+        # period start, so it never resets and cannot be waited out.
         weekly = self.settings.risk.weekly_loss_limit_pct
-        if state.week_pnl_pct <= -weekly:
+        if weekly != NO_LOSS_LIMIT and state.week_pnl_pct <= -weekly:
             return RiskDecision.block(
                 Reason.WEEKLY_LOSS_LIMIT,
                 f"week is {state.week_pnl_pct:.2f}% down against a {weekly:.1f}% limit; "
@@ -244,7 +247,7 @@ class RiskManager:
             )
 
         daily = self.settings.effective_daily_loss_limit_pct()
-        if state.day_pnl_pct <= -daily:
+        if daily != NO_LOSS_LIMIT and state.day_pnl_pct <= -daily:
             return RiskDecision.block(
                 Reason.DAILY_LOSS_LIMIT,
                 f"day is {state.day_pnl_pct:.2f}% down against a {daily:.1f}% limit; "

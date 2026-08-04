@@ -36,7 +36,7 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
@@ -245,7 +245,38 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE trades ADD COLUMN entry_state TEXT NOT NULL DEFAULT 'OPEN'",
         "CREATE INDEX idx_trades_entry_state ON trades(entry_state)",
     ),
+    4: (
+        # Collapse the equity peak to a single row.
+        #
+        # It was keyed by the timestamp of each write, so every cycle inserted
+        # another row and `equity_peak()` took the maximum over all of them.
+        # That works, and it grows without bound: at a thirty-second loop it is
+        # roughly a million rows a year in a file the dashboard reads
+        # constantly.
+        #
+        # It also made the docstring's "monotonic by construction" untrue. The
+        # peak was monotonic only because the clock kept advancing and produced
+        # a fresh key each time; two writes landing on one key would REPLACE,
+        # and the peak could fall. A frozen clock does exactly that, which is
+        # how a test caught a 20% drawdown failing to trip the breaker.
+        #
+        # One row, updated only upward, is what the invariant actually needs.
+        # OR REPLACE, and MAX taken over every PEAK row including any existing
+        # 'all-time': the collapse can then only preserve or raise the peak, and
+        # re-running it is harmless. A plain INSERT would fail outright the
+        # moment a row under that key already exists.
+        """
+        INSERT OR REPLACE INTO equity_marks (period, period_key, equity, recorded_at)
+        SELECT 'PEAK', 'all-time', MAX(equity), MAX(recorded_at)
+        FROM equity_marks WHERE period = 'PEAK'
+        HAVING COUNT(*) > 0
+        """,
+        "DELETE FROM equity_marks WHERE period = 'PEAK' AND period_key != 'all-time'",
+    ),
 }
+
+#: The single row the all-time equity peak lives in.
+PEAK_KEY = "all-time"
 
 
 class Journal:
@@ -569,15 +600,22 @@ class Journal:
     def record_equity_peak(self, equity: float) -> float:
         """Ratchet the all-time equity peak upward and return the current value.
 
-        Monotonic by construction: the peak is the maximum over every mark ever
-        written, so a losing day cannot lower the drawdown reference and make
-        the circuit breaker quietly harder to trip.
+        Monotonic in the row itself, not merely in a MAX over many rows. The
+        earlier version keyed each write by its own timestamp, so the peak held
+        only because the clock kept advancing — two writes on one key REPLACEd,
+        and the reference could fall, quietly making the circuit breaker harder
+        to trip. It also added a row every cycle, forever.
+
+        A losing day must never lower the drawdown reference. `MAX` in the
+        upsert is what guarantees that, whatever the clock does.
         """
-        now = self.clock.now()
+        now = iso(self.clock.now())
         self.conn.execute(
-            "INSERT OR REPLACE INTO equity_marks (period, period_key, equity, recorded_at) "
-            "VALUES ('PEAK', ?, ?, ?)",
-            (iso(now), equity, iso(now)),
+            "INSERT INTO equity_marks (period, period_key, equity, recorded_at) "
+            "VALUES ('PEAK', ?, ?, ?) "
+            "ON CONFLICT(period, period_key) DO UPDATE SET "
+            "equity = MAX(equity, excluded.equity), recorded_at = excluded.recorded_at",
+            (PEAK_KEY, equity, now),
         )
         peak = self.equity_peak()
         return equity if peak is None else max(peak, equity)
