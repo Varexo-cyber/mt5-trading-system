@@ -31,6 +31,15 @@ from analysis import (
     VolatilityRegime,
 )
 from analysis.confluence import TradeIdea
+from analysis.playbooks import (
+    FadeConfig,
+    MomentumScalp,
+    Playbook,
+    PlaybookEngine,
+    PlaybookVerdict,
+    RangeFade,
+    ScalpConfig,
+)
 from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
@@ -175,6 +184,8 @@ class JarvisRunner:
         )
         self.shadow = ShadowRecorder(root)
         self.shadow_engine = self._shadow_engine()
+        self.playbook_config = self.settings.analysis.playbooks
+        self.playbooks = self._build_playbooks()
         self.advisor = advisor or build_advisor(self.settings.ai)
         self.ai_ledger = AIReviewLedger(root / "runtime" / "ai_reviews.jsonl")
         self.cursor = self._load_cursor()
@@ -510,16 +521,44 @@ class JarvisRunner:
         except (TradingSystemError, ValueError) as exc:
             self._record_skip(cycle_id, symbol, account.equity, Reason.DATA_UNAVAILABLE, str(exc))
             return None
-        if not idea.approved or idea.direction is None:
+
+        # The other theories get their own look at the same chart. The swing
+        # engine reads H1 structure; these read M5 impulse and M15 range, and
+        # they carry their own stop and target because a five-minute plan and
+        # an hourly one are different trades, not the same trade at different
+        # strengths.
+        verdict = self._playbook_verdict(context)
+        if verdict is not None and verdict.conflict and self.playbook_config.veto_on_conflict:
             self._record_skip(
                 cycle_id,
                 symbol,
                 account.equity,
                 Reason.NO_SIGNAL,
-                idea.reason,
+                verdict.note,
                 signals=list(idea.signals),
+                extra={"playbooks": verdict.summary()},
             )
             return None
+
+        if not idea.approved or idea.direction is None:
+            # The swing engine saw nothing — but a short-horizon theory may
+            # have. This is the whole point of running them: a clean M5 impulse
+            # with a 12-pip stop was previously invisible, and on a EUR 100
+            # account it is frequently the only plan whose arithmetic even works.
+            promoted = self._play_as_idea(verdict, context)
+            if promoted is not None:
+                idea = promoted
+            else:
+                self._record_skip(
+                    cycle_id,
+                    symbol,
+                    account.equity,
+                    Reason.NO_SIGNAL,
+                    idea.reason,
+                    signals=list(idea.signals),
+                    extra={"playbooks": verdict.summary()} if verdict else None,
+                )
+                return None
 
         # Before anything else costs money or time: has this exact proposal
         # already been refused? The gate sits here, ahead of the risk, filter
@@ -670,6 +709,12 @@ class JarvisRunner:
         }
         if self.memory.has_evidence():
             briefing["learned_so_far"] = self.memory.briefing(symbol, idea.direction.name)
+        # Every theory's reading of this chart, including the ones that did not
+        # win. What the losing theories saw is evidence the reviewer cannot get
+        # anywhere else, and it is the part most likely to change the answer.
+        playbooks = self._playbook_verdict(context)
+        if playbooks is not None and playbooks.plays:
+            briefing["other_theories"] = playbooks.summary()
         request_payload = build_review_payload(idea, context, proposal, briefing)
         try:
             self.ai_ledger.append(
@@ -1070,6 +1115,76 @@ class JarvisRunner:
             event = self.manager.apply_supervision(position, verdict)
             if event is not None:
                 self._record_management([event])
+
+    def _build_playbooks(self) -> PlaybookEngine | None:
+        """Assemble the short-horizon theories, or None when they are off."""
+        config = self.playbook_config
+        if not config.enabled:
+            return None
+        chosen: list[Playbook] = []
+        if config.momentum_scalp:
+            chosen.append(
+                MomentumScalp(ScalpConfig(max_spread_share_of_stop=config.max_spread_share_of_stop))
+            )
+        if config.range_fade:
+            chosen.append(
+                RangeFade(FadeConfig(max_spread_share_of_stop=config.max_spread_share_of_stop))
+            )
+        if not chosen:
+            return None
+        log.info(
+            "short-horizon playbooks active: %s",
+            ", ".join(playbook.name for playbook in chosen),
+            extra={"event": "playbooks_enabled", "playbooks": [p.name for p in chosen]},
+        )
+        return PlaybookEngine(chosen, self.settings.analysis.confluence)
+
+    def _playbook_verdict(self, context: MarketContext) -> PlaybookVerdict | None:
+        """What every short-horizon theory saw, or None when they are off."""
+        if self.playbooks is None:
+            return None
+        try:
+            return self.playbooks.evaluate(context, self.settings.mode)
+        except Exception:
+            log.exception(
+                "playbook evaluation failed",
+                extra={"event": "playbook_error", "symbol": context.symbol},
+            )
+            return None
+
+    def _play_as_idea(
+        self, verdict: PlaybookVerdict | None, context: MarketContext
+    ) -> TradeIdea | None:
+        """Turn the winning short-horizon play into a tradeable idea.
+
+        Everything downstream — risk gates, filters, the sizer, the margin
+        check, the AI review, the order — is unchanged and runs in full. The
+        play only supplies the direction, entry, stop and target; it buys no
+        exemption from anything.
+
+        The conviction floor is deliberately higher than the swing engine's
+        threshold. A short-horizon trade pays spread against a small stop, so
+        the marginal ones are not worth taking even when the pattern is real.
+        """
+        if verdict is None or verdict.best is None:
+            return None
+        play = verdict.best
+        if play.conviction < self.playbook_config.min_conviction:
+            return None
+        return TradeIdea(
+            symbol=context.symbol,
+            approved=True,
+            direction=play.direction,
+            score=play.conviction,
+            # The playbook's own confidence is folded into its conviction, so a
+            # second discount here would double-count it.
+            confidence=min(1.0, play.conviction / 100.0),
+            entry=play.entry,
+            stop_loss=play.stop_loss,
+            take_profit=play.take_profit,
+            reason=f"{play.playbook}: {play.thesis}",
+            signals=(),
+        )
 
     def _remembered_veto(self, idea: TradeIdea):  # type: ignore[no-untyped-def]
         """The standing refusal covering this proposal, if there is one.

@@ -503,6 +503,35 @@ class MarketStructureConfig(Base):
         return self
 
 
+class PlaybooksConfig(Base):
+    """Short-horizon theories that run alongside the swing engine.
+
+    Off by default. They are a different kind of trade with a different failure
+    mode — spread is charged per entry and a tight stop pays it many times over
+    a day — so enabling them is a deliberate choice, not a default.
+    """
+
+    #: Run the short-horizon playbooks at all.
+    enabled: bool = False
+    #: M5 impulse continuation. Tight stop under the impulse leg, ~1 hour.
+    momentum_scalp: bool = True
+    #: M15 range-extreme rejection targeting the midpoint, ~3 hours.
+    range_fade: bool = True
+    #: Refuse everything when two theories disagree on direction.
+    #:
+    #: On by default and it should stay on. Momentum continuation and range
+    #: reversion reading the same bars in opposite directions is not a close
+    #: call to be settled by whichever scored higher — it is a market with no
+    #: edge in either direction, and the honest answer is to stand aside.
+    veto_on_conflict: bool = True
+    #: Spread ceiling as a fraction of the stop, for every short-horizon play.
+    #: The constraint that actually binds: at 0.15 a 10-pip stop tolerates
+    #: 1.5 pips of spread and no more.
+    max_spread_share_of_stop: float = Field(default=0.15, gt=0.0, le=0.5)
+    #: A short-horizon play must beat this to be taken at all.
+    min_conviction: float = Field(default=60.0, ge=0.0, le=100.0)
+
+
 class ConfluenceConfig(Base):
     """Decision policy shared by paper, backtest and live execution."""
 
@@ -562,6 +591,7 @@ class ConfluenceConfig(Base):
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
+    playbooks: PlaybooksConfig = PlaybooksConfig()
 
 
 # ------------------------------------------------------ trade management ---

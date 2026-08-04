@@ -120,12 +120,39 @@ analysis:
     # answer means no trade. One module plus an independent reviewer is a real
     # agreement; two modules that cannot fire together is not.
     minimum_directional_modules: 1
+
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
     # lists exactly what is still missing, and the runner alerts on it at every
     # experimental-live start. This line is the deliberate, reviewable act of
     # accepting that; nothing promotes a module to live on its own any more.
     live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep]
+
+  # Short-horizon theories, alongside the swing engine rather than inside it.
+  #
+  # The swing engine reads H1 structure and produces one plan with one stop
+  # shape. A clean five-minute impulse with a twelve-pip stop was invisible to
+  # it — nothing looked at M5 for an entry, and a scalp's plan does not survive
+  # being averaged into an hourly one.
+  #
+  # This matters more on EUR 100 than it would on a larger account. At 2% risk
+  # the budget is EUR 2: a 90-pip swing stop buys 0.0077 lots and is skipped as
+  # undercapitalized, while a 12-pip scalp stop buys 0.058 lots and fits. The
+  # short-horizon plays are frequently the only ones whose arithmetic works
+  # here at all.
+  #
+  # What they cost is spread, charged per entry against a small stop, which is
+  # why `max_spread_share_of_stop` is the gate that matters and why it rejects
+  # far more setups than the pattern logic does.
+  playbooks:
+    enabled: true
+    momentum_scalp: true
+    range_fade: true
+    # Two theories reading the same bars in opposite directions is a market
+    # with no edge, not a close call to settle by score. Stand aside.
+    veto_on_conflict: true
+    max_spread_share_of_stop: 0.15
+    min_conviction: 60.0
 
 # Experimental live uses Claude as a mandatory final veto gate. The API key
 # stays in config/.env, is never committed, and is never sent to the dashboard.
