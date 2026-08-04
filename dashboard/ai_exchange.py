@@ -71,6 +71,27 @@ def read_posture(path: Any) -> dict[str, Any]:
     return dict(stance) if isinstance(stance, Mapping) else {}
 
 
+def read_block_reason(path: Any) -> dict[str, str]:
+    """Why new risk is refused, or empty when trading is permitted.
+
+    Read from the heartbeat rather than recomputed, so the deck reports the
+    decision the trader actually acted on instead of a second opinion that
+    could disagree with it.
+    """
+    import json
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    reason = str(payload.get("blocked_reason", "") or "")
+    if not reason:
+        return {}
+    return {"reason": reason, "detail": str(payload.get("blocked_detail", "") or "")}
+
+
 def supervision_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]]:
     """Extract the open-position management stream, newest first.
 
