@@ -46,6 +46,39 @@ def short(ref: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def _colliding_files(remote: str) -> list[str]:
+    """Local edits the incoming update would actually overwrite. Usually none.
+
+    Refusing on *any* dirty file was far too blunt and broke the thing it was
+    meant to protect. This repository tracks runtime artefacts the system
+    rewrites as it runs — the news-calendar cache and archive — so the working
+    tree is dirty essentially always, and a blanket check meant every future
+    update was refused for files no incoming commit touches. Untracked files
+    are even less relevant: other tools leave their own work here, and none of
+    it collides with anything.
+
+    What genuinely blocks a fast-forward is narrow: a file that is both locally
+    modified and changed by the incoming commits, or an untracked file the
+    update wants to create. So that is what is checked, and everything else is
+    left alone.
+    """
+    incoming = {
+        line.strip()
+        for line in git("diff", "--name-only", "HEAD", remote).stdout.splitlines()
+        if line.strip()
+    }
+    if not incoming:
+        return []
+    blocking: list[str] = []
+    for line in git("status", "--porcelain").stdout.splitlines():
+        if len(line) < 4:
+            continue
+        status, path = line[:2], line[3:].strip()
+        if path in incoming and (status.strip() or status == "??"):
+            blocking.append(path)
+    return sorted(blocking)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="report only; change nothing")
@@ -59,23 +92,6 @@ def main(argv: list[str] | None = None) -> int:
     branch = args.branch
     here = current_branch()
     print(f"  on branch   {here} ({short('HEAD')})")
-
-    # Uncommitted edits stop a fast-forward dead, and git's own wording for it
-    # ("Please commit your changes or stash them before you merge. Aborting")
-    # scrolls past in a window full of pip output. Nothing is lost when this
-    # happens — the edits stay exactly as they are — but the update silently
-    # does not occur, which is the failure mode this whole script exists for.
-    dirty = git("status", "--porcelain").stdout.strip()
-    if dirty:
-        print("\n  There are uncommitted local changes:")
-        for line in dirty.splitlines()[:10]:
-            print(f"    {line}")
-        if len(dirty.splitlines()) > 10:
-            print(f"    ... and {len(dirty.splitlines()) - 10} more")
-        print("\n  Nothing was changed, and these edits are safe. To continue, either")
-        print("  keep them:      git stash    (then run this again, then: git stash pop)")
-        print("  or discard:     git checkout -- .")
-        return 1
 
     fetch = git("fetch", "origin", branch, "--prune")
     if fetch.returncode != 0:
@@ -96,6 +112,18 @@ def main(argv: list[str] | None = None) -> int:
 
     behind = git("rev-list", "--count", f"HEAD..{remote}").stdout.strip() or "?"
     ahead = git("rev-list", "--count", f"{remote}..HEAD").stdout.strip() or "?"
+
+    blocking = _colliding_files(remote)
+    if blocking:
+        print("\n  These local files would be overwritten by the update:")
+        for path in blocking[:10]:
+            print(f"    {path}")
+        if len(blocking) > 10:
+            print(f"    ... and {len(blocking) - 10} more")
+        print("\n  Nothing was changed, and these edits are safe. To continue, either")
+        print("  keep them:      git stash    (then run this again, then: git stash pop)")
+        print("  or discard:     git checkout -- .")
+        return 1
 
     # On the wrong branch entirely. This is the case `git pull` hides, because
     # it answers about a branch nobody asked about.

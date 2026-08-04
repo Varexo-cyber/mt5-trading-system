@@ -171,22 +171,73 @@ def test_a_missing_branch_is_named(remote: Path, tmp_path: Path) -> None:
     assert result.returncode == 1
 
 
-def test_uncommitted_edits_stop_the_update_and_say_so(remote: Path, tmp_path: Path) -> None:
+def test_an_edit_the_update_would_overwrite_stops_it(remote: Path, tmp_path: Path) -> None:
     """git's own wording for this scrolls past in a window full of pip output.
 
-    Nothing is lost when a fast-forward is refused — the edits stay exactly as
-    they are — but the update silently does not happen, which is the failure
-    this script exists to make impossible.
+    Nothing is lost when a fast-forward is refused — the edit stays exactly as
+    it is — but the update silently does not happen, which is the failure this
+    script exists to make impossible.
     """
     work = clone(remote, tmp_path)
     (work / "first.txt").write_text("edited by hand", encoding="utf-8")
     before = head(work)
-    advance(remote)
+    # The incoming commit touches the very file that was edited locally.
+    advance(remote, "first.txt")
 
     result = run(work)
 
     assert result.returncode == 1
-    assert "uncommitted local changes" in result.stdout
+    assert "would be overwritten" in result.stdout
+    assert "first.txt" in result.stdout
     assert "git stash" in result.stdout
     assert head(work) == before
     assert (work / "first.txt").read_text(encoding="utf-8") == "edited by hand"
+
+
+def test_dirty_runtime_files_do_not_block_an_unrelated_update(remote: Path, tmp_path: Path) -> None:
+    """The blanket check broke the thing it was meant to protect.
+
+    This repository tracks artefacts the system rewrites while it runs — the
+    news-calendar cache and archive — so the working tree is dirty essentially
+    always. Refusing on any dirty file meant every future update was refused
+    for files no incoming commit touches.
+    """
+    work = clone(remote, tmp_path)
+    (work / "first.txt").write_text("runtime rewrote this", encoding="utf-8")
+    expected = advance(remote, "unrelated.txt")
+
+    result = run(work)
+
+    assert result.returncode == 0, result.stdout
+    assert head(work) == expected
+    assert (work / "first.txt").read_text(encoding="utf-8") == "runtime rewrote this"
+
+
+def test_untracked_files_from_other_tools_are_left_alone(remote: Path, tmp_path: Path) -> None:
+    """Other tools leave their own work in this tree; none of it collides."""
+    work = clone(remote, tmp_path)
+    (work / "scout.py").write_text("# written by something else", encoding="utf-8")
+    expected = advance(remote, "unrelated.txt")
+
+    result = run(work)
+
+    assert result.returncode == 0, result.stdout
+    assert head(work) == expected
+    assert (work / "scout.py").exists(), "another tool's file must survive the update"
+
+
+def test_an_untracked_file_the_update_would_create_is_reported(
+    remote: Path, tmp_path: Path
+) -> None:
+    """The one untracked case that genuinely blocks a fast-forward."""
+    work = clone(remote, tmp_path)
+    (work / "incoming.txt").write_text("mine first", encoding="utf-8")
+    before = head(work)
+    advance(remote, "incoming.txt")
+
+    result = run(work)
+
+    assert result.returncode == 1
+    assert "incoming.txt" in result.stdout
+    assert head(work) == before
+    assert (work / "incoming.txt").read_text(encoding="utf-8") == "mine first"
