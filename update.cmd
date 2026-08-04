@@ -8,22 +8,26 @@ echo   Updating the trading system from GitHub
 echo  ============================================
 echo.
 
-git pull
-if errorlevel 1 (
-  echo.
-  echo  UPDATE FAILED. Nothing was changed.
-  echo  Most common cause: local edits that conflict.
-  echo  Run "git status" to see what.
-  echo.
-  pause
-  exit /b 1
-)
-
 if not exist ".venv-live\Scripts\python.exe" (
   echo.
   echo  Missing .venv-live. Create it once with:
   echo    py -m venv .venv-live
   echo    .venv-live\Scripts\python.exe -m pip install -e ".[live,dashboard]"
+  echo.
+  pause
+  exit /b 1
+)
+
+REM Not a bare "git pull". That reports "Already up to date." whenever the
+REM current branch's upstream has nothing new - which is true, and badly
+REM misleading, when the fetch it just ran did update a different branch. It
+REM printed exactly that under a line showing new commits arriving, so an
+REM update that changed nothing announced success and everything afterwards
+REM looked broken for the wrong reason.
+".venv-live\Scripts\python.exe" scripts\update_repo.py
+if errorlevel 1 (
+  echo.
+  echo  UPDATE FAILED. Nothing was changed. The reason is above.
   echo.
   pause
   exit /b 1
