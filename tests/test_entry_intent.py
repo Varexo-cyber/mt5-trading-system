@@ -87,8 +87,14 @@ def position_from(journal: Journal, ticket: int, opened_at: datetime) -> Positio
 
 
 def test_the_migration_lands(journal: Journal) -> None:
+    """Opening a journal brings it to the current schema.
+
+    Deliberately not asserting a literal version: pinning it to 3 meant the
+    next migration failed this test for no reason other than existing, which
+    trains people to edit the number rather than read the failure.
+    """
     version = journal.scalar("SELECT MAX(version) FROM schema_version")
-    assert version == SCHEMA_VERSION == 3
+    assert version == SCHEMA_VERSION
 
 
 def test_existing_trades_default_to_open(journal: Journal, broker, clock) -> None:  # type: ignore[no-untyped-def]

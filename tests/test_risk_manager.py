@@ -701,3 +701,100 @@ class TestUnlimitedTradeCount:
                     "modes.scaling.max_trades_per_day": 0,
                 },
             )
+
+
+class TestDisabledLossLimits:
+    """Zero switches a pacing limit off. The drawdown breaker is not a pacing
+    limit and must survive it.
+
+    Turning these off is a real loosening, unlike removing the trade counter,
+    and the whole safety argument rests on what is left: a gate that measures
+    from the all-time peak, never resets, and cannot be waited out.
+    """
+
+    def _settings(self, tmp_path: Path, raw: dict[str, Any], **extra: Any) -> Settings:
+        return settings_for(
+            tmp_path,
+            raw,
+            **{
+                "system.mode": "scaling",
+                "risk.daily_loss_limit_pct": 0,
+                "risk.weekly_loss_limit_pct": 0,
+                "modes.scaling.daily_loss_limit_pct": 0,
+                **extra,
+            },
+        )
+
+    def test_a_disabled_daily_limit_does_not_halt(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        settings = self._settings(tmp_path, raw)
+        manager = RiskManager(settings=settings, journal=journal, clock=clock)
+        manager.build_state(account(10_000.0))  # anchors the day
+
+        # Down 9%, which would breach any sane daily limit.
+        state = manager.build_state(account(9_100.0))
+
+        assert manager.check_can_trade(state).approved
+
+    def test_the_drawdown_breaker_still_fires(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """The gate the whole loosening depends on."""
+        settings = self._settings(tmp_path, raw)
+        manager = RiskManager(settings=settings, journal=journal, clock=clock)
+        manager.build_state(account(10_000.0))  # sets the peak
+
+        state = manager.build_state(account(8_000.0))  # 20% below peak
+
+        assert manager.circuit_breaker_tripped(state)
+        assert manager.check_can_trade(state).reason is Reason.CIRCUIT_BREAKER
+
+    def test_a_disabled_weekly_limit_does_not_halt(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        settings = self._settings(tmp_path, raw)
+        manager = RiskManager(settings=settings, journal=journal, clock=clock)
+        manager.build_state(account(10_000.0))
+
+        state = manager.build_state(account(9_300.0))  # 7% down on the week
+
+        assert manager.check_can_trade(state).approved
+
+    def test_a_limit_left_on_still_fires(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """Disabling one must not disable the other."""
+        settings = settings_for(
+            tmp_path,
+            raw,
+            **{
+                "system.mode": "scaling",
+                "risk.daily_loss_limit_pct": 3.0,
+                "risk.weekly_loss_limit_pct": 0,
+                "modes.scaling.daily_loss_limit_pct": 3.0,
+            },
+        )
+        manager = RiskManager(settings=settings, journal=journal, clock=clock)
+        manager.build_state(account(10_000.0))
+
+        state = manager.build_state(account(9_500.0))
+
+        assert manager.check_can_trade(state).reason is Reason.DAILY_LOSS_LIMIT
+
+    def test_the_ordering_rule_is_skipped_only_where_a_limit_is_off(
+        self, tmp_path: Path, raw: dict[str, Any]
+    ) -> None:
+        """Weekly >= daily is meaningless when one of them is disabled."""
+        self._settings(tmp_path, raw)  # both off: must load
+
+        with pytest.raises(ConfigError, match="weekly loss limit"):
+            settings_for(
+                tmp_path,
+                raw,
+                **{
+                    "system.mode": "scaling",
+                    "risk.daily_loss_limit_pct": 8.0,
+                    "risk.weekly_loss_limit_pct": 5.0,
+                },
+            )

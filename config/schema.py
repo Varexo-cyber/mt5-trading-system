@@ -24,6 +24,8 @@ from core.types import TradingMode
 
 Pct = Annotated[float, Field(gt=0, le=100)]
 NonNegInt = Annotated[int, Field(ge=0)]
+#: A percentage that may also be exactly zero, where zero means "off".
+NonNegPct = Annotated[float, Field(ge=0, le=100)]
 
 
 class Base(BaseModel):
@@ -252,6 +254,22 @@ class ForbiddenPractices(Base):
 #: Removing the counter removes a crude proxy, not a protection.
 UNLIMITED_TRADES = 0
 
+#: `daily_loss_limit_pct` / `weekly_loss_limit_pct` set to this mean "no limit".
+#:
+#: These are pacing limits: they stop a bad day or week from continuing, and
+#: they reset with the calendar. Switching one off is a real loosening and is
+#: not the same class of change as removing the trade counter.
+#:
+#: What still stops the account either way is `max_drawdown_circuit_breaker_pct`,
+#: which is a different kind of gate. It measures from the all-time equity peak
+#: rather than a period start, so it never resets, it cannot be recovered by
+#: waiting for tomorrow, and reaching it closes every position and halts the
+#: system until a human restarts it. Under the experimental-live contract it is
+#: also bound to the armed figure and cannot be edited without re-arming, which
+#: is why disabling the daily limit does not leave the account unprotected — it
+#: leaves the drawdown floor as the single binding constraint.
+NO_LOSS_LIMIT = 0.0
+
 
 class RiskConfig(Base):
     risk_per_trade_pct: Pct = 1.0
@@ -265,8 +283,9 @@ class RiskConfig(Base):
     max_trades_per_week: int = Field(default=10, ge=0, le=200)
 
     #: All stated as POSITIVE percentages of equity; the manager applies sign.
-    daily_loss_limit_pct: Pct = 3.0
-    weekly_loss_limit_pct: Pct = 6.0
+    #: 0 disables the limit — see NO_LOSS_LIMIT for what remains in force.
+    daily_loss_limit_pct: NonNegPct = 3.0
+    weekly_loss_limit_pct: NonNegPct = 6.0
     #: Drawdown from the equity peak that flattens everything and halts until a
     #: human restarts the system.
     max_drawdown_circuit_breaker_pct: Pct = 15.0
@@ -298,9 +317,16 @@ class RiskConfig(Base):
                 f"risk.risk_per_trade_pct ({self.risk_per_trade_pct}%) exceeds "
                 f"max_risk_per_trade_pct ({self.max_risk_per_trade_pct}%)"
             )
-        if self.weekly_loss_limit_pct < self.daily_loss_limit_pct:
+        both_set = NO_LOSS_LIMIT not in (self.weekly_loss_limit_pct, self.daily_loss_limit_pct)
+        if both_set and self.weekly_loss_limit_pct < self.daily_loss_limit_pct:
             raise ValueError("weekly loss limit must be >= daily loss limit")
-        if self.max_drawdown_circuit_breaker_pct <= self.weekly_loss_limit_pct:
+        # The breaker is the backstop, so it must sit above any limit that can
+        # fire before it. With the weekly limit off there is nothing to order
+        # it against, and the breaker simply becomes the first thing to trip.
+        if (
+            self.weekly_loss_limit_pct != NO_LOSS_LIMIT
+            and self.max_drawdown_circuit_breaker_pct <= self.weekly_loss_limit_pct
+        ):
             raise ValueError("circuit breaker must sit above the weekly loss limit")
         capped = UNLIMITED_TRADES not in (self.max_trades_per_week, self.max_trades_per_day)
         if capped and self.max_trades_per_week < self.max_trades_per_day:
@@ -327,7 +353,8 @@ class ModeLimits(Base):
     max_sl_pips: float = Field(gt=0)
     #: 0 means no cap; see UNLIMITED_TRADES.
     max_trades_per_day: int = Field(ge=0)
-    daily_loss_limit_pct: Pct
+    #: 0 disables it; see NO_LOSS_LIMIT.
+    daily_loss_limit_pct: NonNegPct
     max_concurrent_positions: int = Field(ge=1)
     #: Log every returncode, price, slippage and latency. Costly, and the whole
     #: point of the micro-live phase.
@@ -774,7 +801,10 @@ class Settings(Base):
                 )
             # A daily stop that can never trigger before the weekly one is not
             # a daily stop; and neither may outrun the circuit breaker.
-            if limits.daily_loss_limit_pct >= self.risk.weekly_loss_limit_pct:
+            if (
+                NO_LOSS_LIMIT not in (limits.daily_loss_limit_pct, self.risk.weekly_loss_limit_pct)
+                and limits.daily_loss_limit_pct >= self.risk.weekly_loss_limit_pct
+            ):
                 raise ValueError(
                     f"modes.{name}.daily_loss_limit_pct ({limits.daily_loss_limit_pct}%) "
                     f"must stay below risk.weekly_loss_limit_pct "

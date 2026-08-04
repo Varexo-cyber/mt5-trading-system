@@ -415,3 +415,61 @@ class TestConfigSnapshot:
         payload = journal.query("SELECT config_json FROM config_snapshots")[0][0].lower()
         assert "password" not in payload
         assert "mt5_login" not in payload
+
+
+class TestEquityPeakIsGenuinelyMonotonic:
+    """The peak is the drawdown reference, so it must never fall.
+
+    It used to be keyed by the timestamp of each write, which made it monotonic
+    only because the clock kept advancing: two writes landing on one key would
+    REPLACE, and the reference could drop — quietly making the circuit breaker
+    harder to trip. It also added a row every cycle, roughly a million a year at
+    a thirty-second loop.
+    """
+
+    def test_a_loss_cannot_lower_the_peak(self, journal: Journal) -> None:
+        journal.record_equity_peak(112.0)
+        journal.record_equity_peak(90.55)
+        assert journal.equity_peak() == 112.0
+
+    def test_a_frozen_clock_cannot_lower_it_either(self, journal: Journal) -> None:
+        """The exact failure: with time standing still every write shares a key."""
+        for equity in (100.0, 112.0, 98.0, 50.0):
+            journal.record_equity_peak(equity)
+        assert journal.equity_peak() == 112.0
+
+    def test_a_new_high_still_raises_it(self, journal: Journal) -> None:
+        journal.record_equity_peak(100.0)
+        journal.record_equity_peak(130.0)
+        assert journal.equity_peak() == 130.0
+
+    def test_it_stays_one_row(self, journal: Journal) -> None:
+        """Unbounded growth in a file the dashboard reads constantly."""
+        for equity in range(100, 140):
+            journal.record_equity_peak(float(equity))
+        count = journal.conn.execute(
+            "SELECT COUNT(*) AS n FROM equity_marks WHERE period = 'PEAK'"
+        ).fetchone()["n"]
+        assert count == 1
+
+    def test_the_collapse_preserves_the_highest_legacy_row(self, tmp_path: Path) -> None:
+        """Migrating must not lose a peak recorded before the change."""
+        from core.clock import SimulatedClock
+
+        moment = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+        path = tmp_path / "legacy.db"
+        with Journal(path, SimulatedClock(moment)) as j:
+            # Write rows the old way: one per timestamp.
+            for index, equity in enumerate([100.0, 112.0, 90.55]):
+                stamp = (moment + timedelta(minutes=index)).isoformat()
+                j.conn.execute(
+                    "INSERT OR REPLACE INTO equity_marks VALUES ('PEAK', ?, ?, ?)",
+                    (stamp, equity, stamp),
+                )
+            j.conn.commit()
+            j.conn.execute("DELETE FROM equity_marks WHERE period_key = 'all-time'")
+            j.conn.commit()
+
+        # Re-opening runs the collapse over whatever is there.
+        with Journal(path, SimulatedClock(moment)) as reopened:
+            assert reopened.equity_peak() == 112.0
