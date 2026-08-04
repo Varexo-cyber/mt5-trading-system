@@ -46,6 +46,16 @@ class SystemConfig(Base):
     #: Written into every order so we can tell our positions from manual ones.
     magic_number: int = Field(ge=1, le=2_147_483_647)
     loop_interval_seconds: float = Field(gt=0, le=3600)
+    #: How often open positions are re-checked *between* full cycles, in
+    #: seconds. Zero switches the guard off and leaves management on the cycle.
+    #:
+    #: A full cycle scans the catalogue and can take the better part of a
+    #: minute; open money should not have to wait on that. The guard runs only
+    #: the mechanical rules — break-even, the trail, peak give-back — which need
+    #: nothing but a price and cost nothing but an IPC call, so they can run at
+    #: this cadence. It never calls the adviser and never opens anything, so
+    #: tightening it costs latency and nothing else.
+    guard_interval_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
     #: Filename of the manual kill switch, relative to the project root.
     kill_switch_file: str = "STOP"
     #: Refuse to start if the terminal reports a live account while the config
@@ -640,6 +650,24 @@ class TradeManagementConfig(Base):
 
     trailing_mode: Literal["atr", "structure", "none"] = "atr"
     trailing_atr_multiple: float = Field(default=2.0, gt=0.0)
+
+    #: Peak give-back protection: how far a trade must have run before the rule
+    #: arms, and how much of that peak it may hand back before we take what is
+    #: left. Zero on either field switches it off.
+    #:
+    #: This is the rule a person applies without thinking — "I was up 1.5R and
+    #: it's back to 0.6R, I'm out" — and the one the machine did not have. The
+    #: stop and the trail both measure from price; neither of them knows the
+    #: trade was ever in profit, so a spike that fully retraces inside one cycle
+    #: was invisible. Deliberately measured against the recorded peak rather
+    #: than a fresh high-water mark, so a restart cannot reset it.
+    #:
+    #: 1.0R to arm keeps it away from ordinary noise around entry, where a
+    #: half-give-back is nothing at all. Above the arming level break-even has
+    #: already banked the trade, so the worst case here is a small win rather
+    #: than a loss.
+    giveback_arm_r: float = Field(default=1.0, ge=0.0)
+    giveback_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
 
     #: Close a position that has gone nowhere. Dead capital still carries risk.
     time_exit_hours: float | None = Field(default=24.0, gt=0.0)

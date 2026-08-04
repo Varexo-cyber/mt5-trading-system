@@ -14,6 +14,9 @@ system:
   mode: backtest
   magic_number: 770101
   loop_interval_seconds: 30
+  # Open positions are re-checked this often between full cycles. A cycle
+  # scans the whole catalogue; open money should not wait on that.
+  guard_interval_seconds: 1.0
   kill_switch_file: STOP
   enforce_account_mode_match: true
 
@@ -299,6 +302,9 @@ trade_management:
   trailing_atr_multiple: 2.0
   time_exit_hours: 24.0
   time_exit_min_abs_r: 0.3
+  # Take what is left when a trade hands back half of a run of 1R or more.
+  giveback_arm_r: 1.0
+  giveback_fraction: 0.5
 
 journal:
   database_path: journal/trading.db

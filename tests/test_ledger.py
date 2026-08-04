@@ -17,6 +17,7 @@ import pytest
 from dashboard.ledger import (
     closed_trades,
     day_start,
+    recent_management,
     starting_equity,
     summarise,
     week_start,
@@ -180,6 +181,7 @@ def test_no_risk_recorded_leaves_r_blank_rather_than_infinite(database: Path) ->
         ("SL_HIT", "stop loss geraakt"),
         ("TP_HIT", "target geraakt"),
         ("AI_EXIT", "Claude sloot hem"),
+        ("GIVEBACK_EXIT", "winst veiliggesteld"),
         ("TIME_EXIT", "te lang niets gedaan"),
         ("NEWS_FLATTEN", "nieuwsblokkade"),
         ("PARTIAL_CLOSE", "deels gesloten"),
@@ -269,3 +271,48 @@ def test_the_anchor_lookup_uses_the_journals_own_timestamp_format(database: Path
         (stored,) = conn.execute("SELECT period_key FROM equity_marks").fetchone()
     assert stored != boundary.isoformat(), "if these ever match, this test proves nothing"
     assert starting_equity(database, "DAY", boundary) == pytest.approx(88.0)
+
+
+# ------------------------------------------------------- management log ---
+
+
+def write_action(
+    path: Path, *, trade_id: int, action: str, note: str = "", r: float | None = None
+) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "INSERT INTO management_actions (trade_id, ts, action, note, r_at_action) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (trade_id, iso(NOW), action, note, r),
+        )
+
+
+def test_the_management_log_reads_newest_first(database: Path) -> None:
+    write_trade(database, ticket=1)
+    write_action(database, trade_id=1, action="BREAK_EVEN")
+    write_action(database, trade_id=1, action="GIVEBACK_EXIT", r=0.7)
+
+    rows = recent_management(database)
+
+    assert [row["Wat"] for row in rows] == ["winst veiliggesteld", "stop naar break-even"]
+    assert rows[0]["R"] == pytest.approx(0.7)
+    assert rows[0]["Markt"] == "EURUSD"
+
+
+def test_an_unmapped_action_shows_its_own_token(database: Path) -> None:
+    """A newly added action must be visible the first time it fires, not hidden
+    behind a generic label nobody would question."""
+    write_trade(database, ticket=1)
+    write_action(database, trade_id=1, action="SOME_NEW_RULE")
+    assert recent_management(database)[0]["Wat"] == "SOME_NEW_RULE"
+
+
+def test_the_management_log_respects_its_limit(database: Path) -> None:
+    write_trade(database, ticket=1)
+    for _ in range(10):
+        write_action(database, trade_id=1, action="ATR_TRAIL")
+    assert len(recent_management(database, limit=4)) == 4
+
+
+def test_a_missing_database_has_no_management_log(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    assert recent_management(tmp_path / "nothing.db") == []

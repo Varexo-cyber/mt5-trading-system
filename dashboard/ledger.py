@@ -66,6 +66,8 @@ class ClosedTrade:
             return "stop loss geraakt"
         if "TP" in reason or "TAKE_PROFIT" in reason:
             return "target geraakt"
+        if "GIVEBACK" in reason:
+            return "winst veiliggesteld"
         if reason.startswith("AI_"):
             return "Claude sloot hem"
         if "TIME_EXIT" in reason:
@@ -213,6 +215,55 @@ def summarise(
         starting_equity=starting_equity(path, period, period_key),
         trades=tuple(closed_trades(path, since)),
     )
+
+
+#: Machine actions in the operator's language. Anything not listed here shows
+#: its own token rather than a shrug, so a newly added action is visible the
+#: first time it fires instead of hiding behind a generic label.
+ACTION_LABELS = {
+    "BREAK_EVEN": "stop naar break-even",
+    "ATR_TRAIL": "stop meegetrokken",
+    "PARTIAL_CLOSE": "deels afgebouwd",
+    "PARTIAL_CLOSE_RECOVERED": "deelafbouw hersteld",
+    "GIVEBACK_EXIT": "winst veiliggesteld",
+    "TIME_EXIT": "gesloten, ging nergens heen",
+    "ADOPTED": "positie geadopteerd na crash",
+    "ORPHAN_CLOSE": "onbekende positie gesloten",
+    "EMERGENCY_CLOSE": "noodsluiting, geen stop",
+}
+
+
+def recent_management(path: Path, limit: int = 25) -> list[dict[str, Any]]:
+    """What the mechanical layer has actually been doing, newest first.
+
+    The guard runs about once a second and its whole justification is that it
+    reacts between cycles. Without this the operator has no way to tell it apart
+    from a system that is doing nothing at all.
+    """
+    if not path.exists():
+        return []
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT a.ts, a.action, a.note, a.r_at_action, t.symbol, t.ticket "
+                "FROM management_actions a JOIN trades t ON t.id = a.trade_id "
+                "ORDER BY a.id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [
+        {
+            "Wanneer (UTC)": row["ts"],
+            "Markt": row["symbol"],
+            "Ticket": row["ticket"],
+            "Wat": ACTION_LABELS.get(str(row["action"]), str(row["action"])),
+            "R": row["r_at_action"],
+            "Toelichting": row["note"],
+        }
+        for row in rows
+    ]
 
 
 def as_rows(trades: Sequence[ClosedTrade]) -> list[dict[str, Any]]:
