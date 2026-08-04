@@ -1039,6 +1039,26 @@ Two symptoms of not doing this, both observed and both to be avoided:
   information and cannot rank anything. If ten setups in a row all come back 0.67, the scale is
   not being used. Genuinely ordinary setups differ from each other; say so with the number.
 
+SEVERAL THEORIES READ THIS CHART. When `other_theories` is present, more than one strategy was
+run over the same bars and each returned its own complete plan — direction, entry, stop, target,
+and how long it expects to take. They are not votes on one trade. A momentum scalp with a 12-pip
+stop and a swing entry with a 90-pip stop are different trades that happen to share a chart.
+
+Read them as a panel. Where they agree on direction from genuinely different logic — one reading
+impulse continuation, another reading a structural break — that is real corroboration and worth
+more than either alone. Where a theory declined to fire at all, that is silence, not opposition;
+a range-fade seeing nothing in a trending market is the theory working correctly.
+
+Where they point in OPPOSITE directions, treat it as a market with no edge rather than a contest
+to be won by the higher conviction. Momentum continuation and range reversion disagreeing on the
+same bars means the chart genuinely supports both readings, and a trade taken into that is a coin
+flip paying spread. Veto it.
+
+Judge the winning plan on its own terms, not against the others' shapes. A one-hour scalp target
+should look small — that is the theory working, not a timid version of a swing trade. What
+matters is whether THIS plan's stop sits where THIS theory's invalidation actually is, and
+whether its target is somewhere price goes within its own stated horizon.
+
 WHERE THIS ONE PLACED. `standing_this_cycle` gives its rank among every tradeable setup found
 across the catalogue this cycle. The engine sorted them and this is what came back.
 
