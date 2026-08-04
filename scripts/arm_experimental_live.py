@@ -23,18 +23,41 @@ from promotion.experimental import (
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--account", required=True, type=int)
-    parser.add_argument("--risk-percent", required=True, type=float)
-    parser.add_argument("--drawdown-percent", required=True, type=float)
-    parser.add_argument("--confirm", required=True)
+    parser.add_argument(
+        "--account",
+        required=True,
+        type=int,
+        help="broker login this approval is bound to; must match the connected terminal",
+    )
+    # Defaulted, not required. These may only ever equal the build's own
+    # constants — the check below rejects anything else — so demanding them on
+    # the command line was pure ceremony that could only be got wrong. It was:
+    # the documented invocation omitted two required flags and simply failed,
+    # leaving the operator unable to re-arm at all.
+    parser.add_argument("--risk-percent", type=float, default=EXPERIMENTAL_RISK_PER_TRADE_PCT)
+    parser.add_argument("--drawdown-percent", type=float, default=EXPERIMENTAL_MAX_DRAWDOWN_PCT)
+    parser.add_argument(
+        "--confirm",
+        required=True,
+        help=f"must be exactly: {EXPERIMENTAL_LIVE_PHRASE}",
+    )
     args = parser.parse_args()
 
     if args.confirm != EXPERIMENTAL_LIVE_PHRASE:
         raise RuntimeError(f"confirmation must be exactly: {EXPERIMENTAL_LIVE_PHRASE}")
+    # Name both numbers. These said "must be exactly 1%" long after the constant
+    # moved to 2%, so the message quoted a figure nothing in the system used and
+    # gave no way to see which of the two values was actually wrong.
     if abs(args.risk_percent - EXPERIMENTAL_RISK_PER_TRADE_PCT) > 1e-9:
-        raise RuntimeError("experimental risk must be exactly 1%")
+        raise RuntimeError(
+            f"--risk-percent was {args.risk_percent:g} but this build requires "
+            f"{EXPERIMENTAL_RISK_PER_TRADE_PCT:g}. Omit the flag to use the correct value."
+        )
     if abs(args.drawdown_percent - EXPERIMENTAL_MAX_DRAWDOWN_PCT) > 1e-9:
-        raise RuntimeError("experimental drawdown stop must be exactly 15%")
+        raise RuntimeError(
+            f"--drawdown-percent was {args.drawdown_percent:g} but this build requires "
+            f"{EXPERIMENTAL_MAX_DRAWDOWN_PCT:g}. Omit the flag to use the correct value."
+        )
 
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml")
     connector = MT5Connector(

@@ -45,9 +45,28 @@ if errorlevel 1 (
 )
 
 echo.
+echo  --------------------------------------------
+echo   Why it has or has not been trading
+echo  --------------------------------------------
+".venv-live\Scripts\python.exe" scripts\why_no_trades.py --hours 12
+
+echo.
+echo  --------------------------------------------
+echo   Account and experimental-live approval
+echo  --------------------------------------------
+".venv-live\Scripts\python.exe" scripts\show_account.py
+if errorlevel 1 (
+  echo  MT5 is not reachable. Fine if the terminal is closed - open it
+  echo  and run this again before starting live trading.
+)
+
+echo.
 echo  ============================================
-echo   Update complete. You can start as usual.
+echo   Update complete.
 echo  ============================================
+echo.
+echo  If the section above says re-arming is required, run:
+echo    rearm_experimental_live.cmd
 echo.
 pause
 endlocal
