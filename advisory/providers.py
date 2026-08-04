@@ -1159,6 +1159,21 @@ It is never a reason to hold a losing position for a bigger bounce, and you have
 anything up even if you wanted to. If the posture is defensive and a position is going nowhere,
 close it. That is the whole adjustment.
 
+WHAT THE FAST LAYER HAS SEEN. `mechanical_health` is not another opinion to weigh against yours —
+it is a report from something that has been watching this position every second since it opened,
+which you have not. It carries a verdict (healthy / watch / deteriorating / broken), a severity,
+and the specific signals behind it: structure broken, momentum turned, price running against the
+position bar after bar, spread blown out. Each names what it saw.
+
+Use it as evidence, not as an instruction. It reads four things and cannot read a chart. But when
+it reports the structure broke 0.6 ATR ago and the bars in front of you agree, that is
+corroboration and a reason to act. And when it says `healthy` while you feel inclined to
+intervene, ask what you are seeing that something watching continuously did not. Usually the
+answer is nothing, and the answer is hold.
+
+`verdict: unknown` means no reading is available — a position opened seconds ago, or bars that
+could not be fetched. Judge from the chart alone and read nothing into its absence.
+
 CONFIDENCE. How sure you are that this action beats holding. If you answer hold, it is how sure
 you are that no intervention is needed. Below 0.55 on a non-hold action, prefer hold — you are
 not confident enough to justify the cost of acting.

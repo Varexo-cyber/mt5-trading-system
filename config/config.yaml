@@ -275,6 +275,10 @@ analysis:
     minimum_agreement_ratio: 0.60
     target_r_multiple: 2.0
     atr_stop_multiple: 1.5
+    # A trade must be able to pay its own spread. The spread filter asks whether
+    # the spread is unusual for this hour; in the evening it is not, and the stop
+    # did not widen with it. This is the gate that catches that.
+    max_spread_share_of_stop: 0.20
     # Paper/backtest can research every module. Live stays fail-closed until a
     # module has passed the registered out-of-sample protocol.
     live_enabled_modules: []
@@ -305,6 +309,13 @@ trade_management:
   # Take what is left when a trade hands back half of a run of 1R or more.
   giveback_arm_r: 1.0
   giveback_fraction: 0.5
+  # Per-second read of how the trade is behaving (structure, momentum, adverse
+  # run, spread). Can only reduce risk, and needs two signals to close.
+  health_enabled: true
+  health_fast_bars: 40
+  health_structure_bars: 60
+  health_secure_at_r: 0.5
+  health_tighten_at_r: 0.2
 
 journal:
   database_path: journal/trading.db
