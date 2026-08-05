@@ -639,6 +639,26 @@ class JarvisRunner:
                 )
                 return None
 
+        # Do the independent methods agree? Until now the playbooks could only
+        # veto each other, so a swing engine reading H1 structure as LONG while
+        # an M5 impulse theory read the same chart as SHORT sailed straight
+        # through — the one case where two techniques genuinely contradict each
+        # other, and the clearest evidence available that the read is
+        # ambiguous. Standing aside costs a trade that was a coin flip; taking
+        # it costs the spread plus the stop, more often than not.
+        disagreement = self._method_disagreement(idea, verdict)
+        if disagreement is not None:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.METHODS_DISAGREE,
+                disagreement,
+                signals=list(idea.signals),
+                extra={"playbooks": verdict.summary()} if verdict else None,
+            )
+            return None
+
         # Before anything else costs money or time: has this exact proposal
         # already been refused? The gate sits here, ahead of the risk, filter
         # and sizing work, because none of that changes the answer — a setup
@@ -1314,6 +1334,36 @@ class JarvisRunner:
                 extra={"event": "playbook_error", "symbol": context.symbol},
             )
             return None
+
+    def _method_disagreement(self, idea: TradeIdea, verdict: PlaybookVerdict | None) -> str | None:
+        """Does an independent theory read this chart the opposite way?
+
+        Returns the sentence for the journal, or None when nothing contradicts
+        the idea. Only *opposing* plays count: a theory that stayed silent has
+        no opinion, and silence is not disagreement — most markets have no
+        short-horizon setup at any given moment, and treating that as a veto
+        would refuse nearly everything.
+
+        A play below the conviction floor is also ignored. It was not good
+        enough to trade in its own right, so it is not good enough to cancel
+        somebody else's trade either.
+        """
+        if verdict is None or not self.playbook_config.require_method_agreement:
+            return None
+        floor = self.playbook_config.min_conviction
+        opposing = [
+            play
+            for play in verdict.plays
+            if play.direction is not idea.direction and play.conviction >= floor
+        ]
+        if not opposing:
+            return None
+        names = ", ".join(f"{play.playbook} says {play.direction.name}" for play in opposing)
+        return (
+            f"methods disagree: the swing engine says {idea.direction.name} while {names}. "
+            "Two techniques reading one chart in opposite directions is not a close call to "
+            "settle by score — it is a market with no clear edge."
+        )
 
     def _play_as_idea(
         self, verdict: PlaybookVerdict | None, context: MarketContext

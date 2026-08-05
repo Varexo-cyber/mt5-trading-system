@@ -69,6 +69,10 @@ class ClosedTrade:
             return "target geraakt"
         if "GIVEBACK" in reason:
             return "winst veiliggesteld"
+        if "EVENING_FLAT" in reason:
+            return "plat vóór de avondspread"
+        if reason.startswith("HEALTH_"):
+            return "systeem zag het draaien"
         if reason.startswith("AI_"):
             return "Claude sloot hem"
         if "TIME_EXIT" in reason:
@@ -227,6 +231,10 @@ ACTION_LABELS = {
     "PARTIAL_CLOSE": "deels afgebouwd",
     "PARTIAL_CLOSE_RECOVERED": "deelafbouw hersteld",
     "GIVEBACK_EXIT": "winst veiliggesteld",
+    "EVENING_FLAT": "plat vóór de avondspread",
+    "HEALTH_TIGHTEN": "stop aangetrokken, trade verzwakt",
+    "HEALTH_SECURE": "winst gepakt, trade draaide",
+    "HEALTH_EXIT": "vroeg eruit, thesis gebroken",
     "TIME_EXIT": "gesloten, ging nergens heen",
     "ADOPTED": "positie geadopteerd na crash",
     "ORPHAN_CLOSE": "onbekende positie gesloten",
