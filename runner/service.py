@@ -1406,6 +1406,26 @@ class JarvisRunner:
         play = verdict.best
         if play.conviction < self.playbook_config.min_conviction:
             return None
+        # The higher-timeframe gate lives in the confluence engine, and a
+        # promoted play never runs through `evaluate`, so it was skipping the
+        # check entirely. Since the swing engine rejects most candidates, the
+        # plays are what actually reached the adviser — and it spent the day
+        # refusing them in exactly these words: "short entered against the
+        # dominant higher-timeframe trend: D1 and W1 both show a clean,
+        # sustained uptrend". A five-minute horizon is not a licence to trade
+        # into a multi-week one.
+        against_the_tide = self.engine.higher_timeframe_conflict(context, play.direction)
+        if against_the_tide is not None:
+            log.info(
+                "playbook play stood down: %s",
+                against_the_tide,
+                extra={
+                    "event": "play_against_the_tide",
+                    "symbol": context.symbol,
+                    "playbook": play.playbook,
+                },
+            )
+            return None
         return TradeIdea(
             symbol=context.symbol,
             approved=True,
