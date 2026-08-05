@@ -199,3 +199,27 @@ def spend_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, Any]:
         # Share of input served from cache at a tenth of the price.
         "cache_hit_rate": (read / total_in) if total_in else 0.0,
     }
+
+
+#: Operation modes that analyse and advise but can never send an order.
+#:
+#: `monitor` is the default, which is what makes this worth naming: a session
+#: started without an explicit mode looks completely healthy — markets scanned,
+#: setups analysed, verdicts returned — and cannot place a trade no matter what
+#: any of it says.
+NON_TRADING_OPERATIONS = {"monitor"}
+
+
+def read_operation(path: Any) -> str:
+    """The mode the last cycle actually ran in, from the heartbeat."""
+    import json
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, AttributeError):
+        return ""
+    return str(payload.get("operation", "") or "") if isinstance(payload, Mapping) else ""
+
+
+def cannot_trade(operation: str) -> bool:
+    return operation in NON_TRADING_OPERATIONS
