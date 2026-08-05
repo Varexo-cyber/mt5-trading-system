@@ -111,18 +111,31 @@ def main() -> int:
         # are the same overstates the remaining room by the whole drawdown so
         # far — it printed 13.24 for an account that actually had 6.54 left,
         # which is the difference between "plenty" and "one bad trade".
-        peak = _recorded_peak(settings) or account.equity
-        trips_at = peak * (1.0 - contract.max_drawdown_pct / 100.0)
-        room = account.equity - trips_at
+        floor_room = account.equity - contract.equity_floor
         print(
             f"  absolute floor    {contract.equity_floor:.2f} {contract.currency} — fixed, "
-            "re-arming never moves it\n"
-            f"  drawdown breaker  {contract.max_drawdown_pct:.1f}% below the all-time peak of "
-            f"{peak:.2f} = {trips_at:.2f} {contract.currency}\n"
-            f"  room left         {room:.2f} {contract.currency} before the breaker, "
-            f"{account.equity - contract.equity_floor:.2f} before the floor\n"
-            "  Whichever is reached first halts trading and needs a manual restart."
+            "re-arming never moves it"
         )
+        if contract.max_drawdown_pct == 0.0:
+            # Printing "0.0% below the peak" would compute a breaker at the peak
+            # itself and report negative room — which is how it read before this
+            # branch existed, and it looked like an account already past its
+            # stop rather than one with no automatic stop at all.
+            print(
+                "  drawdown breaker  OFF — nothing halts automatically on a peak-to-current\n"
+                "                    drawdown. The floor above is the only unconditional stop.\n"
+                f"  room left         {floor_room:.2f} {contract.currency} to the floor"
+            )
+        else:
+            peak = _recorded_peak(settings) or account.equity
+            trips_at = peak * (1.0 - contract.max_drawdown_pct / 100.0)
+            print(
+                f"  drawdown breaker  {contract.max_drawdown_pct:.1f}% below the all-time peak "
+                f"of {peak:.2f} = {trips_at:.2f} {contract.currency}\n"
+                f"  room left         {account.equity - trips_at:.2f} {contract.currency} before "
+                f"the breaker, {floor_room:.2f} before the floor"
+            )
+        print("  Whichever is reached first halts trading and needs a manual restart.")
     finally:
         connector.shutdown()
     return 0

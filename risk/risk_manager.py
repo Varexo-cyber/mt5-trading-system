@@ -226,8 +226,14 @@ class RiskManager:
         if state.halted:
             return RiskDecision.block(Reason.SYSTEM_HALTED, state.halt_reason)
 
-        breaker = self.settings.risk.max_drawdown_circuit_breaker_pct
-        if state.drawdown_pct >= breaker:
+        # Routed through the same predicate as the post-trade trip, not a second
+        # inline comparison. There were two of these, and switching the breaker
+        # off fixed only the one named `circuit_breaker_tripped` — this copy
+        # kept its bare `>=`, so a disabled breaker blocked every cycle at
+        # 0.0% and said "manual restart required" while doing it. One rule,
+        # one place to read it.
+        if self.circuit_breaker_tripped(state):
+            breaker = self.settings.risk.max_drawdown_circuit_breaker_pct
             return RiskDecision.block(
                 Reason.CIRCUIT_BREAKER,
                 f"drawdown {state.drawdown_pct:.2f}% from the {state.equity_peak:.2f} "
@@ -235,9 +241,11 @@ class RiskManager:
                 f"manual restart required",
             )
 
-        # Zero disables a pacing limit. The drawdown breaker above is the
-        # backstop either way: it measures from the all-time peak rather than a
-        # period start, so it never resets and cannot be waited out.
+        # Zero disables a pacing limit, the drawdown breaker included. With the
+        # breaker on it is the backstop either way: it measures from the
+        # all-time peak rather than a period start, so it never resets and
+        # cannot be waited out. With it off, the fixed capital floor in
+        # `promotion/experimental.py` is the last unconditional stop.
         weekly = self.settings.risk.weekly_loss_limit_pct
         if weekly != NO_LOSS_LIMIT and state.week_pnl_pct <= -weekly:
             return RiskDecision.block(
