@@ -302,7 +302,7 @@ analysis:
 trade_management:
   sl_atr_buffer_multiple: 0.5
   sl_atr_period: 14
-  break_even_at_r: 1.0
+  break_even_at_r: 0.6
   break_even_offset_atr: 0.1
   partial_close_at_r: 1.5
   partial_close_fraction: 0.5
@@ -311,8 +311,10 @@ trade_management:
   time_exit_hours: 24.0
   time_exit_min_abs_r: 0.3
   # Take what is left when a trade hands back half of a run of 1R or more.
-  giveback_arm_r: 1.0
+  giveback_arm_r: 0.5
   giveback_fraction: 0.5
+  # Hoeveel er terugmag ongeacht wat de gezondheidslezing zegt.
+  giveback_hard_fraction: 0.8
   # Per-second read of how the trade is behaving (structure, momentum, adverse
   # run, spread). Can only reduce risk, and needs two signals to close.
   health_enabled: true

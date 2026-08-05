@@ -49,6 +49,11 @@ class BrokerStub:
     price: float = ENTRY
     atr: float = 1.0
     spread: float = 0.0
+    #: Per-bar drift in the returned series. Zero is featureless, which reads as
+    #: `healthy`; a negative value makes the health engine see a market falling
+    #: away under a long, which is what turns the give-back from "hold" into
+    #: "bank it".
+    drift: float = 0.0
     asset_class: AssetClass = AssetClass.FOREX
     rate_calls: dict[int, int] = field(default_factory=dict)
     closed: list[tuple[int, float | None]] = field(default_factory=list)
@@ -89,10 +94,10 @@ class BrokerStub:
         return [
             {
                 "time": base + index * 60,
-                "high": 100.0 + self.atr,
-                "low": 100.0,
-                "close": 100.0,
-                "open": 100.0,
+                "high": 100.0 + self.atr + index * self.drift,
+                "low": 100.0 + index * self.drift,
+                "close": 100.0 + index * self.drift,
+                "open": 100.0 + index * self.drift,
                 "tick_volume": 1,
                 "spread": 0,
                 "real_volume": 0,
@@ -201,56 +206,99 @@ def test_the_peak_only_ratchets_upward() -> None:
 # ---------------------------------------------------------------- giveback ---
 
 
-def test_a_trade_that_hands_back_half_its_peak_is_closed() -> None:
-    broker, journal = BrokerStub(), JournalStub()
-    manager = manager_for(broker, journal, giveback_arm_r=1.0, giveback_fraction=0.5)
+#: Old enough for the health engine to have an opinion. Below `MIN_AGE_MINUTES`
+#: every reading is "healthy" by definition, which would make the give-back
+#: tests below pass for the wrong reason.
+def running(minutes: int = 60) -> Position:
+    return position(opened_at=NOW - timedelta(minutes=minutes))
 
-    at(broker, 1.6)
-    manager.manage([position()], NOW)
-    at(broker, 0.7)  # floor is 0.8
-    events = manager.manage([position()], NOW)
+
+def test_a_fading_trade_banks_what_is_left() -> None:
+    """The AUDJPY case. It peaked around 0.57R — a euro against 1.77 of risk —
+    and ended at -0.28R, because both this rule and break-even armed at 1.0R
+    and neither ever engaged."""
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
+    manager = manager_for(broker, journal)
+
+    at(broker, 0.6)
+    manager.manage([running()], NOW)
+    at(broker, 0.25)  # 58% of the gain handed back, and the drift is against us
+    events = manager.manage([running()], NOW)
 
     assert [event.action for event in events] == ["GIVEBACK_EXIT"]
-    assert "1.60R" in events[0].detail and "0.70R" in events[0].detail
     assert broker.closed == [(555, None)], "the whole position, not a partial"
 
 
-def test_a_trade_still_above_the_floor_is_left_alone() -> None:
-    broker, journal = BrokerStub(), JournalStub()
-    manager = manager_for(broker, journal, giveback_arm_r=1.0, giveback_fraction=0.5)
+def test_a_gain_below_the_arming_level_is_not_protected_yet() -> None:
+    """Some floor is unavoidable, or every trade is closed on its first tick of
+    profit."""
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
+    manager = manager_for(broker, journal, giveback_arm_r=0.5)
 
-    at(broker, 1.6)
-    manager.manage([position()], NOW)
-    at(broker, 0.9)  # floor is 0.8
-    events = manager.manage([position()], NOW)
+    at(broker, 0.3)
+    manager.manage([running()], NOW)
+    at(broker, 0.05)
+    events = manager.manage([running()], NOW)
+
+    assert not any(event.action == "GIVEBACK_EXIT" for event in events)
+
+
+def test_a_healthy_pullback_is_held_rather_than_banked() -> None:
+    """The "it goes further" case, and the reason this is a judgement rather
+    than a tripwire. Closing a live trade on a wobble pays the spread to
+    abandon a move that is still working."""
+    broker, journal = BrokerStub(), JournalStub()  # featureless: reads healthy
+    manager = manager_for(broker, journal)
+
+    at(broker, 1.0)
+    manager.manage([running()], NOW)
+    at(broker, 0.45)  # 55% back, but nothing is wrong with the move
+    events = manager.manage([running()], NOW)
 
     assert not any(event.action == "GIVEBACK_EXIT" for event in events)
     assert broker.closed == []
 
 
-def test_the_rule_does_not_arm_below_the_threshold() -> None:
-    """Around entry a half-give-back is noise, and acting on it would close
-    every trade that breathed."""
-    broker, journal = BrokerStub(), JournalStub()
-    manager = manager_for(broker, journal, giveback_arm_r=1.0, giveback_fraction=0.5)
+def test_conviction_does_not_survive_handing_back_nearly_everything() -> None:
+    """The part that is not a judgement. However intact the read, a gain that
+    has almost entirely gone is not a position worth holding — otherwise a
+    permanently healthy reading rides every winner back to entry."""
+    broker, journal = BrokerStub(), JournalStub()  # healthy throughout
+    manager = manager_for(broker, journal, giveback_hard_fraction=0.8)
+
+    at(broker, 1.0)
+    manager.manage([running()], NOW)
+    at(broker, 0.1)  # 90% gone
+    events = manager.manage([running()], NOW)
+
+    assert [event.action for event in events] == ["GIVEBACK_EXIT"]
+    assert "too much to hold" in events[0].detail
+
+
+def test_the_reason_records_which_way_it_was_decided() -> None:
+    """The journal line is the only record of *why*, and "banked because the
+    move stopped working" and "banked because too much was gone" are different
+    lessons to read back."""
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
+    manager = manager_for(broker, journal)
 
     at(broker, 0.8)
-    manager.manage([position()], NOW)
-    at(broker, 0.1)
-    events = manager.manage([position()], NOW)
+    manager.manage([running()], NOW)
+    at(broker, 0.3)
+    (event,) = [e for e in manager.manage([running()], NOW) if e.action == "GIVEBACK_EXIT"]
 
-    assert not any(event.action == "GIVEBACK_EXIT" for event in events)
+    assert "gave back" in event.detail
+    assert "read:" in event.detail
 
 
-def test_a_fresh_high_is_never_a_giveback() -> None:
-    """The first observation of a new peak has r_now == peak; a rule that
-    compared with `>=` against the floor would close the trade at its best
-    price for a fraction of 1.0."""
-    broker, journal = BrokerStub(), JournalStub()
-    manager = manager_for(broker, journal, giveback_arm_r=1.0, giveback_fraction=1.0)
+def test_a_new_high_is_never_a_giveback() -> None:
+    """At a fresh peak there is nothing handed back, and a rule that divided by
+    a peak it had just set would read 0% as 100%."""
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
+    manager = manager_for(broker, journal)
 
     at(broker, 2.5)
-    events = manager.manage([position()], NOW)
+    events = manager.manage([running()], NOW)
 
     assert not any(event.action == "GIVEBACK_EXIT" for event in events)
 
@@ -258,25 +306,25 @@ def test_a_fresh_high_is_never_a_giveback() -> None:
 def test_the_peak_survives_a_restart() -> None:
     """A new manager reads the peak from the journal, so a crash mid-trade
     cannot hand the position a clean slate and let it give back everything."""
-    broker, journal = BrokerStub(), JournalStub()
-    at(broker, 1.8)
-    manager_for(broker, journal).manage([position()], NOW)
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
+    at(broker, 1.0)
+    manager_for(broker, journal).manage([running()], NOW)
 
-    reborn = manager_for(BrokerStub(price=ENTRY + 0.4 * (ENTRY - STOP)), journal)
-    events = reborn.manage([position()], NOW)
+    reborn = manager_for(BrokerStub(drift=-0.4, price=ENTRY + 0.2 * (ENTRY - STOP)), journal)
+    events = reborn.manage([running()], NOW)
 
-    assert journal.peak_r == pytest.approx(1.8)
+    assert journal.peak_r == pytest.approx(1.0)
     assert [event.action for event in events] == ["GIVEBACK_EXIT"]
 
 
 def test_zero_disables_the_rule() -> None:
-    broker, journal = BrokerStub(), JournalStub()
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
     manager = manager_for(broker, journal, giveback_arm_r=0.0)
 
-    at(broker, 2.0)
-    manager.manage([position()], NOW)
+    at(broker, 1.0)
+    manager.manage([running()], NOW)
     at(broker, 0.0)
-    events = manager.manage([position()], NOW)
+    events = manager.manage([running()], NOW)
 
     assert not any(event.action == "GIVEBACK_EXIT" for event in events)
 
@@ -284,18 +332,14 @@ def test_zero_disables_the_rule() -> None:
 def test_a_refused_close_is_not_reported_as_an_exit() -> None:
     """Recording a close the broker rejected would leave the journal believing
     the position is flat while the money is still at risk."""
-    broker, journal = BrokerStub(), JournalStub()
-
-    def refuse(_position, volume=None):  # type: ignore[no-untyped-def]
-        return OrderResult(ok=False, filled_price=None)
-
-    broker.close_position = refuse  # type: ignore[assignment]
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
+    broker.close_position = lambda _p, volume=None: OrderResult(ok=False, filled_price=None)  # type: ignore[assignment]
     manager = manager_for(broker, journal)
 
-    at(broker, 1.6)
-    manager.manage([position()], NOW)
+    at(broker, 1.0)
+    manager.manage([running()], NOW)
     at(broker, 0.2)
-    events = manager.manage([position()], NOW)
+    events = manager.manage([running()], NOW)
 
     assert not any(event.action == "GIVEBACK_EXIT" for event in events)
 
@@ -362,14 +406,14 @@ def test_the_cache_uses_a_monotonic_deadline() -> None:
 def test_the_giveback_pre_empts_the_partial_and_the_trail() -> None:
     """Half-closing a position we have already decided to leave would pay two
     spreads to exit and carry the rest through the reversal."""
-    broker, journal = BrokerStub(), JournalStub()
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
     manager = manager_for(broker, journal, giveback_arm_r=1.0, giveback_fraction=0.4)
 
     at(broker, 2.0)
-    manager.manage([position()], NOW)  # break-even moves the stop here
+    manager.manage([running()], NOW)  # break-even moves the stop here
     before = len(broker.modified)
     at(broker, 1.1)  # above partial_close_at_r, but 45% given back
-    events = manager.manage([position()], NOW)
+    events = manager.manage([running()], NOW)
 
     assert [event.action for event in events] == ["GIVEBACK_EXIT"]
     assert broker.closed == [(555, None)], "closed whole, not halved"
@@ -496,4 +540,42 @@ def test_a_continuous_market_is_not_flattened() -> None:
     events = manager.manage([replace(position(), symbol="BTCUSD")], EVENING)
 
     assert not any(event.action == "EVENING_FLAT" for event in events)
+    assert broker.closed == []
+
+
+def test_the_audjpy_case_end_to_end() -> None:
+    """The trade that prompted all of this, as a regression.
+
+    Peaked at 0.57R — EUR 1.00 against EUR 1.77 of risk — then reversed to
+    -0.28R. Under the old thresholds nothing engaged: the give-back armed at
+    1.0R and so did break-even, both above anything that trade would reach, and
+    a euro of profit turned into fifty cents of loss with the machine watching.
+    """
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
+    manager = manager_for(broker, journal)
+
+    at(broker, 0.57)  # the peak, exactly as it happened
+    manager.manage([running()], NOW)
+    assert journal.peak_r == pytest.approx(0.57, abs=0.01)
+
+    at(broker, 0.20)  # 65% of the gain gone, market moving against us
+    events = manager.manage([running()], NOW)
+
+    assert [event.action for event in events] == ["GIVEBACK_EXIT"]
+    assert events[0].r_at_action is not None
+    assert events[0].r_at_action > 0, "banked in profit, not at a loss"
+
+
+def test_the_old_thresholds_would_have_let_it_run_to_a_loss() -> None:
+    """The counterfactual, so the regression above cannot pass for the wrong
+    reason. At the settings this account was running, nothing fires."""
+    broker, journal = BrokerStub(drift=-0.4), JournalStub()
+    manager = manager_for(broker, journal, giveback_arm_r=1.0, break_even_at_r=1.0)
+
+    at(broker, 0.57)
+    manager.manage([running()], NOW)
+    at(broker, 0.20)
+    events = manager.manage([running()], NOW)
+
+    assert not any(event.action == "GIVEBACK_EXIT" for event in events)
     assert broker.closed == []

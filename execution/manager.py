@@ -197,17 +197,17 @@ class PositionManager:
             if wind_down is not None:
                 events.append(wind_down)
                 continue
-            giveback = self._giveback_exit(position, r_now, peak_r)
+            age_hours = (now - position.opened_at).total_seconds() / 3600.0
+            # How the trade is actually behaving, not just what R it is at.
+            # Read before the give-back rule, because that rule now asks it
+            # whether the move is still working rather than acting on a number
+            # alone — see `_giveback_exit`.
+            health = self._read_health(position, r_now, age_hours * 60.0, risk, tick)
+            self.last_health[position.ticket] = health
+            giveback = self._giveback_exit(position, r_now, peak_r, health)
             if giveback is not None:
                 events.append(giveback)
                 continue
-            age_hours = (now - position.opened_at).total_seconds() / 3600.0
-            # How the trade is actually behaving, not just what R it is at.
-            # Runs before the slower rules because a broken thesis outranks
-            # every one of them: there is no point trailing a stop on a trade
-            # we have already decided to leave.
-            health = self._read_health(position, r_now, age_hours * 60.0, risk, tick)
-            self.last_health[position.ticket] = health
             reacted = self._act_on_health(position, health, r_now, risk)
             if reacted is not None:
                 events.append(reacted)
@@ -450,29 +450,67 @@ class PositionManager:
         return max(recorded_peak, r_now)
 
     def _giveback_exit(
-        self, position: Position, r_now: float, peak_r: float
+        self, position: Position, r_now: float, peak_r: float, health: PositionHealth
     ) -> ManagementEvent | None:
-        """Take what is left when a trade hands back most of its gain.
+        """Bank a profit that is being handed back — unless the move still works.
 
-        The stop and the trail both measure from price and neither one knows
-        the trade was ever ahead, so a run to 1.6R that fully retraces inside a
-        single cycle looked exactly like a trade that never moved. This is the
-        reflex a person has and the machine did not.
+        The stop and the trail both measure from price and neither knows the
+        trade was ever ahead, so a run that fully retraces looked exactly like a
+        trade that never moved. This is the reflex a person has and the machine
+        did not.
+
+        Two things were wrong with the first version, and a live AUDJPY pair
+        showed both. It peaked around EUR 1.00 against EUR 1.77 of risk — 0.57R
+        — and ended at -0.28R. The rule armed at 1.0R, so it never engaged at
+        all; neither did break-even, on the same threshold. Both sat 0.43R above
+        anything that trade was ever going to reach, and watched the whole gain
+        go.
+
+        So the arming level now matches what counts as real profit on this
+        account rather than a round number, and the decision itself is no longer
+        a tripwire. At the give-back mark the question is the one a person
+        actually asks: *is this still working?* If the health read says the move
+        is intact, the position is held — that is the "it goes further" case,
+        and closing there would be paying the spread to abandon a live trade on
+        a wobble. If the read says otherwise, the profit is banked.
+
+        The hard fraction is the part that is not a judgement. Whatever the
+        read says, handing back nearly all of a gain is not a position worth
+        holding, and no amount of confidence in the thesis makes it one.
         """
         config = self.settings.trade_management
         arm, fraction = config.giveback_arm_r, config.giveback_fraction
-        if arm <= 0 or fraction <= 0 or peak_r < arm:
+        if arm <= 0 or fraction <= 0 or peak_r < arm or r_now >= peak_r:
             return None
-        floor = peak_r * (1.0 - fraction)
-        if r_now > floor:
+
+        given_back = (peak_r - r_now) / peak_r
+        hard = config.giveback_hard_fraction
+        if given_back < fraction:
             return None
+        # Still working: give it the room. Only the hard backstop overrides.
+        #
+        # `healthy` and nothing looser. `watch` means a reader has already found
+        # something off, and the give-back is itself independent evidence — the
+        # trade's own P&L trajectory, which no health reader looks at. One of
+        # each is the same corroboration standard the health engine applies to
+        # itself, and "the drift is against us" is not a reason to keep holding
+        # a gain that is draining away; it is the reason it is draining.
+        conviction = health.verdict == "healthy"
+        if conviction and given_back < hard:
+            return None
+
         result = self.broker.close_position(position)
         if not result.ok:
             return None
+        why = (
+            f"gave back {given_back:.0%} of a {peak_r:.2f}R gain"
+            if not conviction
+            else f"gave back {given_back:.0%} of a {peak_r:.2f}R gain; too much to hold"
+        )
         return ManagementEvent(
             position.ticket,
             "GIVEBACK_EXIT",
-            f"peaked at {peak_r:.2f}R, back to {r_now:.2f}R",
+            f"{why} (now {r_now:.2f}R, read: {health.verdict})",
             result.filled_price,
             position.profit + position.swap,
             r_at_action=r_now,
