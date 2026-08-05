@@ -78,6 +78,22 @@ def main() -> int:
             f"risk {contract.risk_per_trade_pct:.1f}%, drawdown {contract.max_drawdown_pct:.1f}%, "
             f"equity floor {contract.equity_floor:.2f} {contract.currency}."
         )
+        # Which of the two backstops will actually stop you, at today's equity.
+        #
+        # The floor is the deeper one and is rarely what bites; the peak-to-
+        # current breaker measures from the all-time high and normally halts
+        # trading well before it is reached. Printing the floor alone let it be
+        # read as "the point at which I stop losing money", which is wrong by
+        # however far apart the two numbers happen to be.
+        room = account.equity * contract.max_drawdown_pct / 100.0
+        print(
+            f"  absolute floor    {contract.equity_floor:.2f} {contract.currency} — fixed, "
+            "re-arming never moves it\n"
+            f"  drawdown breaker  {contract.max_drawdown_pct:.1f}% below the all-time equity "
+            f"peak. About {room:.2f} {contract.currency} of room from {account.equity:.2f} "
+            "if today is the peak, and less if the peak is higher.\n"
+            "  Whichever is reached first halts trading and needs a manual restart."
+        )
     finally:
         connector.shutdown()
     return 0
