@@ -619,6 +619,19 @@ class ConfluenceConfig(Base):
     #: their own spread.
     minimum_r_multiple: float = Field(default=1.0, ge=0.5, le=5.0)
     atr_stop_multiple: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: Floor on the stop distance, as a multiple of H1 ATR.
+    #:
+    #: Only the structural path needs this. `atr_stop_multiple` already places
+    #: the fallback stop 1.5 ATR out, but a stop anchored to a structural level
+    #: took that level plus a 0.25 ATR buffer and nothing else — so an
+    #: invalidation price a few pips from entry produced a stop at a fraction of
+    #: an ATR, sitting squarely inside normal M1/M5 chop. Those trades were not
+    #: stopped out because the idea was wrong; they were stopped out by noise.
+    #:
+    #: 0.8 leaves room for a genuinely tight structural stop to stay tight while
+    #: putting the floor above the band the adviser kept describing as "inside
+    #: recent noise" (it was rejecting stops at 0.13 to 0.85 ATR).
+    min_stop_atr: float = Field(default=0.8, ge=0.0, le=5.0)
     #: Spread ceiling as a fraction of this trade's own stop distance.
     #:
     #: A different question from the spread filter's, which asks whether the
@@ -645,6 +658,23 @@ class ConfluenceConfig(Base):
     #: Adverse movement, in ATR, that blocks the entry. A flat lower timeframe
     #: is never an objection; only a move materially against the direction is.
     entry_timing_max_adverse_atr: float = Field(default=0.50, gt=0.0, le=5.0)
+
+    #: Higher timeframes checked for an established trend the trade would be
+    #: taken straight into. There was a timing gate below the bias and nothing
+    #: above it, so shorts were proposed on indices in multi-week uptrends that
+    #: had just broken to fresh highs. An empty tuple disables the check.
+    htf_trend_timeframes: tuple[str, ...] = ("D1", "W1")
+    #: Closed bars of higher-timeframe trend considered.
+    htf_trend_lookback: int = Field(default=20, ge=5, le=200)
+    #: How strong an opposing trend has to be to block the entry, in
+    #: `sqrt(bars) * ATR` units — the same scale `analysis/position_health.py`
+    #: measures drift on. Around 1.0 is a trend clearly beyond ordinary
+    #: wandering; a flat or mildly opposed higher timeframe is not an objection.
+    #:
+    #: This does not ban counter-trend trades. It bans trading *into* a strong,
+    #: still-accelerating one, where the setup has to be right about the turn
+    #: and about its timing at the same time.
+    htf_trend_veto: float = Field(default=1.0, gt=0.0, le=5.0)
     weights: dict[str, float] = Field(
         default_factory=lambda: {
             "market_structure": 1.0,

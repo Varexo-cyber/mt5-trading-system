@@ -80,6 +80,10 @@ class ConfluenceEngine:
                 ctx, signals, f"confluence score {score:.1f} below threshold", score, confidence
             )
 
+        against_the_tide = self._higher_timeframe_conflict(ctx, direction)
+        if against_the_tide is not None:
+            return self._reject(ctx, signals, against_the_tide, score, confidence)
+
         adverse = self._entry_timing_conflict(ctx, direction)
         if adverse is not None:
             return self._reject(ctx, signals, adverse, score, confidence)
@@ -101,6 +105,21 @@ class ConfluenceEngine:
             stop = (
                 structural - atr * 0.25 if direction is Direction.LONG else structural + atr * 0.25
             )
+            # A structural level close to entry does not make a tight stop
+            # correct — it makes it a stop measured inside the noise. There was
+            # no floor here at all, and the invalidation price of a nearby M15
+            # swing sits a few pips away, so the stop came out at a fraction of
+            # an ATR and was taken out by ordinary chop rather than by the trade
+            # being wrong. That is not a tail case: it is what the adviser
+            # rejected almost every setup for, in those words, all day.
+            #
+            # The floor pushes the stop out rather than rejecting the setup. If
+            # the wider stop then prices the trade out of the account, the sizer
+            # says so — which is the honest answer, and a far better one than
+            # shrinking the stop until the arithmetic fits.
+            floor = atr * self.config.min_stop_atr
+            if abs(entry - stop) < floor:
+                stop = entry - floor * int(direction)
         else:
             stop = entry - atr * self.config.atr_stop_multiple * int(direction)
         risk = abs(entry - stop)
@@ -182,6 +201,51 @@ class ConfluenceEngine:
             )
         note = "planned" if distance >= planned else f"trimmed to {achieved_r:.2f}R"
         return entry + distance * int(direction), note
+
+    def _higher_timeframe_conflict(self, ctx: MarketContext, direction: Direction) -> str | None:
+        """Refuse a trade taken straight into an established higher-timeframe trend.
+
+        There was a timing gate for the timeframes *below* the bias and nothing
+        at all above it, so the engine happily proposed shorts on indices in
+        multi-week uptrends that had just broken to fresh highs. The adviser
+        rejected them one after another in exactly those words — "countertrend
+        short against a clear, accelerating multi-timeframe uptrend" — which is
+        a finding worth encoding rather than paying for once per candidate.
+
+        The drift is a least-squares slope across the window, divided by
+        `sqrt(bars) * ATR` — roughly how far a market wanders over that many
+        bars for no reason at all. That makes the threshold dimensionless and
+        comparable across instruments and window lengths, and it is the same
+        normalisation `analysis/position_health.py` uses, so "a strong trend"
+        means one thing in this codebase rather than two.
+
+        Deliberately one-sided, like the timing gate: a flat or mildly opposed
+        higher timeframe is not an objection, and this never creates a signal.
+        Counter-trend trades are not banned in principle — trading *into* a
+        strong, still-accelerating trend is what is banned, because the setup
+        has to be right about the turn and about its timing at once.
+        """
+        for timeframe in self.config.htf_trend_timeframes:
+            series = ctx.series.get(Timeframe(timeframe))
+            bars = self.config.htf_trend_lookback
+            if series is None or len(series.df) < bars + 2:
+                continue
+            frame = series.df
+            atr = self._atr(frame)
+            if atr <= 0:
+                continue
+            closes = frame["close"].tail(bars).to_numpy(dtype=float)
+            slope = float(np.polyfit(np.arange(len(closes), dtype=float), closes, 1)[0])
+            drift = slope * bars / atr / float(np.sqrt(bars))
+            against = drift * -int(direction)
+            if against >= self.config.htf_trend_veto:
+                trend = "uptrend" if drift > 0 else "downtrend"
+                return (
+                    f"{direction.name.lower()} straight into an established {timeframe} "
+                    f"{trend}: {against:.2f} against the trade, "
+                    f"limit {self.config.htf_trend_veto:.2f}"
+                )
+        return None
 
     def _entry_timing_conflict(self, ctx: MarketContext, direction: Direction) -> str | None:
         """Refuse an entry the immediate price action is moving against.

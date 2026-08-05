@@ -44,6 +44,22 @@ class Advice:
     model: str = ""
     request_id: str = ""
     error: str = ""
+    #: What the adviser actually said, before the confidence threshold was
+    #: applied. `approved` is `said_yes and confidence >= minimum`, so the two
+    #: differ whenever a setup was approved without enough conviction — and the
+    #: raw answer was previously discarded, leaving the journal and the deck
+    #: unable to tell "this is a bad trade" from "this is fine, I am just not
+    #: sure enough". Those call for opposite responses: one is the system
+    #: working, the other is a threshold that may be set too high.
+    said_yes: bool = False
+    #: The threshold `confidence` was compared against, recorded alongside it so
+    #: a row remains readable after the setting changes.
+    threshold: float = 0.0
+
+    @property
+    def below_threshold(self) -> bool:
+        """Approved on the merits, refused for want of conviction."""
+        return self.said_yes and not self.approved
 
     def safe_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -769,6 +785,8 @@ def _parse_review(
             provider,
             model,
             request_id,
+            said_yes=approve,
+            threshold=minimum,
         )
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return Advice(

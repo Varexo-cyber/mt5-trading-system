@@ -48,6 +48,13 @@ def pair_ai_reviews(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]
                 exchange["status"] = "ERROR / FAIL CLOSED"
             elif decision.get("approved"):
                 exchange["status"] = "APPROVED"
+            elif decision.get("said_yes"):
+                # Approved on the merits and refused for want of conviction.
+                # Reporting these as VETO made a screen of them read as "Claude
+                # rejects every setup", when the real question is whether the
+                # confidence threshold sits where it should. Different problem,
+                # different fix, so it gets its own label.
+                exchange["status"] = "UNDER THRESHOLD"
             else:
                 exchange["status"] = "VETO"
         paired.append(exchange)
