@@ -34,6 +34,7 @@ from dashboard.ai_exchange import (
     pair_ai_reviews,
     read_block_reason,
     read_posture,
+    spend_summary,
     supervision_rows,
 )
 from dashboard.ledger import (
@@ -729,6 +730,7 @@ def render_ai_exchange() -> None:
     decisions = [item for item in exchanges if item["status"] != "PENDING"]
     approvals = sum(item["status"] == "APPROVED" for item in decisions)
     vetoes = sum(item["status"] == "VETO" for item in decisions)
+    thin = sum(item["status"] == "UNDER THRESHOLD" for item in decisions)
     errors = sum(item["status"] == "ERROR / FAIL CLOSED" for item in decisions)
     pending = sum(item["status"] == "PENDING" for item in exchanges)
 
@@ -736,8 +738,33 @@ def render_ai_exchange() -> None:
         st.metric("Naar Claude gestuurd", len(exchanges), border=True)
         st.metric("Goedgekeurd", approvals, border=True)
         st.metric("Veto", vetoes, border=True)
+        st.metric("Te weinig zekerheid", thin, border=True)
         st.metric("API-/auditfouten", errors, border=True)
         st.metric("Wacht op antwoord", pending, border=True)
+
+    if thin:
+        st.info(
+            f"**{thin} voorstellen waren goedgekeurd maar haalden de zekerheidsdrempel "
+            f"({settings.ai.minimum_confidence:.2f}) niet.** Dat is iets anders dan een veto: "
+            "Claude vond de trade prima maar was er niet zeker genoeg van. Blijft dit getal "
+            "hoog terwijl de echte veto's laag zijn, dan staat de drempel te streng."
+        )
+
+    # What this has actually cost. Estimated from recorded token counts, not
+    # guessed — "verbrandt dit mijn credit" had no answer anywhere before.
+    spend = spend_summary(exchanges)
+    if spend["calls"]:
+        with st.container(horizontal=True):
+            st.metric("Kosten (geschat)", f"${spend['usd']:.2f}", border=True)
+            st.metric("Per call", f"${spend['usd_per_call']:.4f}", border=True)
+            st.metric("Uit cache", f"{spend['cache_hit_rate']:.0%}", border=True)
+            st.metric("Input tokens", f"{spend['input_tokens']:,}", border=True)
+        st.caption(
+            f"Over de laatste {spend['calls']} calls met token-registratie. "
+            "'Uit cache' is het deel van de invoer dat tegen een tiende van de prijs ging — "
+            "de vaste instructies. Zakt dat naar 0%, dan betaalt elke call weer vol voor een "
+            "prefix die gratis hoorde te zijn."
+        )
 
     st.caption(
         "Automatische update iedere 3 seconden. Alleen voorstellen die analyse, risico, "
