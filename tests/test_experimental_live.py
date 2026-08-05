@@ -12,6 +12,8 @@ from config.schema import MT5Config
 from core.mt5_connector import MT5Connector
 from core.types import AccountSnapshot
 from promotion.experimental import (
+    EXPERIMENTAL_EQUITY_FLOOR,
+    EXPERIMENTAL_MAX_DRAWDOWN_PCT,
     EXPERIMENTAL_RISK_PER_TRADE_PCT,
     ExperimentalLiveContract,
     apply_experimental_live_limits,
@@ -73,9 +75,14 @@ def test_contract_is_account_bound_and_has_absolute_floor(tmp_path: Path) -> Non
     restored.assert_compatible(account(), settings)
 
     assert restored == contract
-    assert restored.equity_floor == pytest.approx(85.0)
-    assert not restored.floor_breached(85.01)
-    assert restored.floor_breached(85.0)
+    # A fixed number, not equity-at-arming times 0.85. The derived version
+    # weakened every time it was re-armed after a loss: armed at 100 the floor
+    # was 85, armed again at 88.28 it became 75.04, and a further re-arm at 75
+    # would have put it at 63.75. The capital stop eroded fastest in exactly the
+    # situation it exists for.
+    assert restored.equity_floor == pytest.approx(EXPERIMENTAL_EQUITY_FLOOR)
+    assert not restored.floor_breached(EXPERIMENTAL_EQUITY_FLOOR + 0.01)
+    assert restored.floor_breached(EXPERIMENTAL_EQUITY_FLOOR)
     with pytest.raises(RuntimeError, match=r"account .* does not match"):
         restored.assert_compatible(account(login=123), settings)
     with pytest.raises(RuntimeError, match="connected account is demo"):
@@ -185,7 +192,7 @@ def test_experimental_capital_floor_engages_persistent_stop(tmp_path: Path) -> N
     )
     runner.connect()
     try:
-        fake.equity = 85.0
+        fake.equity = EXPERIMENTAL_EQUITY_FLOOR
         runner.run_once()
 
         assert runner.kill_switch.is_engaged()
@@ -240,3 +247,41 @@ def test_experimental_live_refuses_disabled_ai_gate(tmp_path: Path) -> None:
         runner.connect()
 
     assert not fake.orders_sent
+
+
+def test_re_arming_after_a_loss_does_not_lower_the_floor(tmp_path: Path) -> None:
+    """The bug this constant replaced, stated as a test.
+
+    The floor used to be equity-at-arming times 0.85. Armed at 100 it was 85;
+    re-armed at 88.28 after a losing day it silently became 75.04, and another
+    re-arm at 75 would have made it 63.75. Ten euro of protection vanished with
+    nothing on screen to say it had — the operator saw a new floor printed and
+    no way to know it used to be higher.
+    """
+    rich = write_contract(tmp_path, account(equity=100.0))
+    poor = write_contract(tmp_path, account(equity=88.28))
+    broke = write_contract(tmp_path, account(equity=60.0))
+
+    assert rich.equity_floor == poor.equity_floor == broke.equity_floor
+
+
+def test_the_floor_survives_a_contract_written_by_an_older_build(tmp_path: Path) -> None:
+    """Old contract files carry `initial_equity` and the old percentage. The
+    floor must come from this build regardless, or a file written last week
+    would still be enforcing last week's weaker number."""
+    stale = write_contract(tmp_path, account(equity=1_000.0))
+    assert stale.initial_equity == pytest.approx(1_000.0)
+    assert stale.equity_floor == pytest.approx(EXPERIMENTAL_EQUITY_FLOOR)
+
+
+def test_the_floor_is_below_the_drawdown_breaker_not_instead_of_it(tmp_path: Path) -> None:
+    """Two backstops, and this is the deeper one.
+
+    The 15% peak-to-current circuit breaker measures from the all-time equity
+    high and normally halts trading well before the absolute floor is reached.
+    Reading the floor as "the point at which I stop losing money" would be
+    wrong by a wide margin, in the safe direction.
+    """
+    contract = write_contract(tmp_path, account(equity=100.0))
+    peak_breaker_trips_at = 100.0 * (1.0 - EXPERIMENTAL_MAX_DRAWDOWN_PCT / 100.0)
+    assert contract.equity_floor < peak_breaker_trips_at

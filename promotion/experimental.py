@@ -31,6 +31,25 @@ EXPERIMENTAL_LIVE_PHRASE = "BEVESTIG EXPERIMENTEEL LIVE"
 EXPERIMENTAL_RISK_PER_TRADE_PCT = 2.0
 EXPERIMENTAL_MAX_DRAWDOWN_PCT = 15.0
 
+# The absolute capital stop, in account currency. A fixed number, chosen by the
+# operator, and deliberately not derived from anything.
+#
+# It used to be `equity_at_arming * 0.85`, which meant the protection weakened
+# every time it was re-armed after a loss. Armed at 100 the floor was 85; armed
+# again at 88.28 it became 75.04; a run down to 75 and another re-arm would have
+# put it at 63.75. The capital stop eroded fastest in exactly the situation it
+# exists for, and it did so silently — the operator saw a new floor printed and
+# had no way to know it used to be ten euro higher.
+#
+# A constant cannot do that. Re-arming does not move it, a losing week does not
+# move it, and changing it is an edit to this line that shows up in a diff.
+#
+# Note this is the *deeper* of two backstops. The 15% peak-to-current circuit
+# breaker in `risk/risk_manager.py` measures from the all-time equity high and
+# will normally halt trading long before this number is reached. This one is the
+# floor under everything, not the first line of defence.
+EXPERIMENTAL_EQUITY_FLOOR = 50.0
+
 
 @dataclass(frozen=True, slots=True)
 class ExperimentalLiveContract:
@@ -81,8 +100,14 @@ class ExperimentalLiveContract:
 
     @property
     def equity_floor(self) -> float:
-        """Absolute capital floor in addition to peak-to-current drawdown."""
-        return self.initial_equity * (1.0 - self.max_drawdown_pct / 100.0)
+        """Absolute capital floor, in addition to peak-to-current drawdown.
+
+        Read from the build rather than from this contract, so an old contract
+        file cannot carry a stale floor and re-arming cannot move it. See
+        `EXPERIMENTAL_EQUITY_FLOOR` for why it is a constant and not derived
+        from the equity at arming time.
+        """
+        return EXPERIMENTAL_EQUITY_FLOOR
 
     def floor_breached(self, equity: float) -> bool:
         return equity <= self.equity_floor + 1e-9
