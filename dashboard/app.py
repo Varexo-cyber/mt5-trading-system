@@ -58,6 +58,7 @@ from infra.killswitch import KillSwitch
 from learning.memory import TradingMemory
 from monitoring.scan_activity import read_scan_activity
 from promotion.experimental import (
+    EXPERIMENTAL_EQUITY_FLOOR,
     ExperimentalLiveContract,
     apply_experimental_live_limits,
     contract_path,
@@ -984,6 +985,23 @@ try:
             "geanalyseerd: de analyse wordt overgeslagen zodra vaststaat dat er toch niet "
             "gehandeld mag worden."
         )
+    # Which brakes are switched off, stated plainly. Both were disabled on
+    # purpose, and both are the kind of thing that is easy to forget six weeks
+    # from now when the account is somewhere unexpected and nobody remembers
+    # why nothing stopped it.
+    off = []
+    if settings.risk.max_drawdown_circuit_breaker_pct == 0:
+        off.append("de 15%-drawdownbreaker")
+    if not settings.risk.posture_throttle:
+        off.append("de houdingsrem na verliezen")
+    if off:
+        st.warning(
+            f"**Uitgezet op jouw verzoek: {' en '.join(off)}.** De enige harde stop die "
+            f"overblijft is de vaste kapitaalbodem van {EXPERIMENTAL_EQUITY_FLOOR:.2f} "
+            f"{account.currency} — plus de STOP-knop op het Control-tabblad. Er zit nu niets "
+            "automatisch meer tussen je huidige saldo en die bodem."
+        )
+
     stance = dict(heartbeat.get("posture") or {}) if running else {}
     if stance and stance.get("posture") not in {None, "steady"}:
         st.warning(

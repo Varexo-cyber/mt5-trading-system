@@ -391,6 +391,7 @@ class JarvisRunner:
             consecutive_losses=interim.consecutive_losses,
             equity=interim.equity,
             equity_peak=interim.equity_peak,
+            enabled=self.settings.risk.posture_throttle,
         )
         if self.posture.is_stressed:
             log.warning(

@@ -27,7 +27,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from config.schema import NO_LOSS_LIMIT, UNLIMITED_TRADES, Settings
+from config.schema import NO_DRAWDOWN_BREAKER, NO_LOSS_LIMIT, UNLIMITED_TRADES, Settings
 from core.clock import Clock
 from core.errors import ForbiddenStrategyError
 from core.instrument import InstrumentSpec
@@ -408,7 +408,13 @@ class RiskManager:
     # -- circuit breaker ---------------------------------------------------
 
     def circuit_breaker_tripped(self, state: RiskState) -> bool:
-        return state.drawdown_pct >= self.settings.risk.max_drawdown_circuit_breaker_pct
+        limit = self.settings.risk.max_drawdown_circuit_breaker_pct
+        # Zero means off, not "trip at nought". Without this line a disabled
+        # breaker would fire on the first cycle of every account, because any
+        # drawdown at all — including exactly zero — clears a bar of zero.
+        if limit == NO_DRAWDOWN_BREAKER:
+            return False
+        return state.drawdown_pct >= limit
 
     def trip_circuit_breaker(self, state: RiskState) -> str:
         """Halt, trip the kill switch, and return the message to alert on.

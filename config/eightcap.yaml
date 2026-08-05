@@ -230,6 +230,8 @@ ai:
 # filter and Claude's veto, which is what makes "more trades" mean "more good
 # trades" rather than "more trades".
 risk:
+  # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
+  posture_throttle: false
   max_trades_per_day: 0
   max_trades_per_week: 0
 

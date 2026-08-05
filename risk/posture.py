@@ -120,6 +120,7 @@ def assess(
     cautious_after_losses: int = 2,
     defensive_after_losses: int = 4,
     defensive_drawdown_pct: float = 8.0,
+    enabled: bool = True,
 ) -> PostureAssessment:
     """Read the account's recent record and return how it should behave.
 
@@ -128,10 +129,26 @@ def assess(
     if each loss was small. Drawdown from peak is the slow one, and it catches
     the case a streak counter misses entirely: a long grind of small losses
     with the occasional win keeping the streak at zero while the balance bleeds.
+
+    `enabled=False` reports the real numbers and acts on none of them. The
+    drawdown and the streak are still measured and still logged, because the
+    operator needs to see what the throttle *would* have done; only the dials
+    are neutral. Switching it off was a deliberate choice on an account where
+    the throttle was refusing fifteen of every sixteen setups over a drawdown
+    the account could then never trade its way out of.
     """
     drawdown = 0.0
     if equity_peak > 0:
         drawdown = max(0.0, (equity_peak - equity) / equity_peak * 100.0)
+
+    if not enabled:
+        return PostureAssessment(
+            posture=Posture.STEADY,
+            consecutive_losses=consecutive_losses,
+            drawdown_pct=drawdown,
+            patience_multiplier=1.0,
+            max_candidates=None,
+        )
 
     if consecutive_losses >= defensive_after_losses or drawdown >= defensive_drawdown_pct:
         posture = Posture.DEFENSIVE

@@ -270,15 +270,22 @@ UNLIMITED_TRADES = 0
 #: they reset with the calendar. Switching one off is a real loosening and is
 #: not the same class of change as removing the trade counter.
 #:
-#: What still stops the account either way is `max_drawdown_circuit_breaker_pct`,
-#: which is a different kind of gate. It measures from the all-time equity peak
-#: rather than a period start, so it never resets, it cannot be recovered by
-#: waiting for tomorrow, and reaching it closes every position and halts the
-#: system until a human restarts it. Under the experimental-live contract it is
-#: also bound to the armed figure and cannot be edited without re-arming, which
-#: is why disabling the daily limit does not leave the account unprotected — it
-#: leaves the drawdown floor as the single binding constraint.
+#: What still stops the account depends on what else is switched on.
+#:
+#: `max_drawdown_circuit_breaker_pct` used to be the answer, and this note used
+#: to say so. It can now be zero, and on this account it is: the operator turned
+#: it off after it left 6.54 EUR of room on an 88 EUR balance. With it off, the
+#: last unconditional stop is the fixed capital floor in
+#: `promotion/experimental.py` — an absolute equity level that re-arming cannot
+#: move. Everything between here and that floor is a soft limit that resets, or
+#: the manual kill switch.
 NO_LOSS_LIMIT = 0.0
+
+#: Zero on the circuit breaker means "no automatic peak-to-current halt".
+#: Named rather than spelled 0.0 at the comparison sites, because a bare zero
+#: there reads as a threshold of nought — which would trip on every account,
+#: always, and is the opposite of what it means.
+NO_DRAWDOWN_BREAKER = 0.0
 
 
 class RiskConfig(Base):
@@ -297,8 +304,32 @@ class RiskConfig(Base):
     daily_loss_limit_pct: NonNegPct = 3.0
     weekly_loss_limit_pct: NonNegPct = 6.0
     #: Drawdown from the equity peak that flattens everything and halts until a
-    #: human restarts the system.
-    max_drawdown_circuit_breaker_pct: Pct = 15.0
+    #: human restarts the system. Zero switches it off.
+    #:
+    #: Switching it off is a deliberate, consequential choice and the operator
+    #: made it: on a EUR 88 account already 8% below its peak, the breaker had
+    #: 6.54 EUR of room left, which is three losing trades, while the posture
+    #: throttle was simultaneously refusing fifteen of every sixteen setups. The
+    #: account could not trade its way out of the drawdown that was blocking it.
+    #:
+    #: What still stops this account with the breaker off: the fixed capital
+    #: floor in `promotion/experimental.py` (an absolute equity level, unmoved by
+    #: re-arming), the per-trade risk cap, the maximum concurrent positions, the
+    #: daily and weekly loss limits if they are set, and the manual kill switch.
+    #: What is gone is the automatic peak-to-current halt — nothing now stops a
+    #: slow grind downward before it reaches the floor.
+    max_drawdown_circuit_breaker_pct: NonNegPct = 15.0
+
+    #: Let a losing run tighten how the account carries itself — fewer
+    #: candidates per cycle, less patience with a stalled trade. See
+    #: `risk/posture.py`. Off reports the same numbers and acts on none of them.
+    #:
+    #: Turned off deliberately. On an 88 EUR account 8.2% below its peak it was
+    #: refusing fifteen of every sixteen setups, over a drawdown threshold of
+    #: 8.0% that the account was 0.19 EUR the wrong side of — too defensive to
+    #: take the trade that would have cleared it. A throttle that cannot be
+    #: escaped by trading well is not a throttle, it is a stop.
+    posture_throttle: bool = True
 
     min_risk_reward: float = Field(default=2.0, ge=1.0)
 
@@ -335,6 +366,7 @@ class RiskConfig(Base):
         # it against, and the breaker simply becomes the first thing to trip.
         if (
             self.weekly_loss_limit_pct != NO_LOSS_LIMIT
+            and self.max_drawdown_circuit_breaker_pct != NO_DRAWDOWN_BREAKER
             and self.max_drawdown_circuit_breaker_pct <= self.weekly_loss_limit_pct
         ):
             raise ValueError("circuit breaker must sit above the weekly loss limit")
