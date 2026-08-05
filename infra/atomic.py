@@ -36,10 +36,21 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
-#: Attempts, and the pause before each retry. Short: the contending reader holds
-#: the handle only for the length of one read.
-_ATTEMPTS = 5
+#: Attempts, and the pause before each retry.
+#:
+#: The original five at a flat 50ms assumed "the contending reader holds the
+#: handle only for the length of one read". True of one reader. The deck polls
+#: several of these files on one- and two-second fragments from a separate
+#: process, so on Windows the rename lands in a contended window often enough
+#: to lose updates outright — a live session filled with `this update is lost`
+#: once or twice per cycle.
+#:
+#: Exponential now, capped so one slow write cannot stall a caller for long:
+#: 0.05, 0.1, 0.2, then 0.4 repeated. Eight attempts is about 2.3s worst case
+#: and almost always returns on the first or second.
+_ATTEMPTS = 8
 _BACKOFF_SECONDS = 0.05
+_BACKOFF_CAP_SECONDS = 0.4
 
 
 def write_json_atomic(path: Path, payload: Any, *, required: bool = False) -> bool:
@@ -68,7 +79,7 @@ def write_json_atomic(path: Path, payload: Any, *, required: bool = False) -> bo
         except PermissionError as exc:
             # Windows only: a reader has the destination open. Wait it out.
             last = exc
-            time.sleep(_BACKOFF_SECONDS * (attempt + 1))
+            time.sleep(min(_BACKOFF_SECONDS * 2**attempt, _BACKOFF_CAP_SECONDS))
         except OSError as exc:
             last = exc
             break
