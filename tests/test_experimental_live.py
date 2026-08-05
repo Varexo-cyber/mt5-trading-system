@@ -103,7 +103,10 @@ def test_experimental_settings_fix_risk_without_promoting_modules() -> None:
     # therefore cannot express a trade at all. See EXPERIMENTAL_RISK_PER_TRADE_PCT.
     assert experimental.effective_risk_pct() == EXPERIMENTAL_RISK_PER_TRADE_PCT
     assert experimental.effective_max_risk_pct() == EXPERIMENTAL_RISK_PER_TRADE_PCT
-    assert experimental.risk.max_drawdown_circuit_breaker_pct == 15.0
+    # Zero: the automatic peak-to-current halt is off for this experiment, by
+    # explicit choice. The fixed capital floor is the only unconditional stop
+    # that remains — see EXPERIMENTAL_MAX_DRAWDOWN_PCT for the reasoning.
+    assert experimental.risk.max_drawdown_circuit_breaker_pct == EXPERIMENTAL_MAX_DRAWDOWN_PCT
 
     # Whatever the shipped config says is what live gets — no more, no less.
     assert (

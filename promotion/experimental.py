@@ -25,11 +25,26 @@ EXPERIMENTAL_LIVE_PHRASE = "BEVESTIG EXPERIMENTEEL LIVE"
 # Two percent doubles that to 0.0154 lots, which rounds *down* to 0.01 and fits.
 # It is the smallest number that makes the experiment possible, and it stays
 # inside the 2% ceiling `micro_live` already declared, so no limit is being
-# raised to accommodate it. The 15% drawdown floor is unchanged: at 2% a losing
-# run still ends the experiment after roughly seven or eight trades, which is
-# the protection that actually matters here.
+# raised to accommodate it.
+#
+# This note used to add "and the 15% drawdown floor still ends the experiment
+# after seven or eight losers". That is no longer true — the breaker is off (see
+# below) and the fixed capital floor is what ends it now. At 2% of an 88 EUR
+# account, roughly 1.77 EUR a trade, the distance from here to that floor is a
+# great many losing trades rather than a handful.
 EXPERIMENTAL_RISK_PER_TRADE_PCT = 2.0
-EXPERIMENTAL_MAX_DRAWDOWN_PCT = 15.0
+# Zero: the automatic peak-to-current halt is off for this experiment.
+#
+# The operator turned it off after seeing what it left. At 88.28 EUR against a
+# 96.17 peak the breaker had 6.54 EUR of room — three losing trades — while the
+# posture throttle was refusing fifteen of every sixteen setups over the same
+# drawdown. The account was too far down to trade and not far enough down to
+# stop, which is the one state a risk system should never produce.
+#
+# The fixed capital floor below is now the only unconditional stop. That is a
+# real reduction in protection and it is the choice that was made, with the
+# numbers on the table.
+EXPERIMENTAL_MAX_DRAWDOWN_PCT = 0.0
 
 # The absolute capital stop, in account currency. A fixed number, chosen by the
 # operator, and deliberately not derived from anything.
@@ -44,10 +59,10 @@ EXPERIMENTAL_MAX_DRAWDOWN_PCT = 15.0
 # A constant cannot do that. Re-arming does not move it, a losing week does not
 # move it, and changing it is an edit to this line that shows up in a diff.
 #
-# Note this is the *deeper* of two backstops. The 15% peak-to-current circuit
-# breaker in `risk/risk_manager.py` measures from the all-time equity high and
-# will normally halt trading long before this number is reached. This one is the
-# floor under everything, not the first line of defence.
+# With the peak-to-current breaker off, this is not the deeper of two backstops
+# any more — it is the only one that cannot be reset, waited out, or recovered
+# by a new day. Nothing automatic stands between the current equity and this
+# number. Reaching it flattens everything and halts until a human restarts.
 EXPERIMENTAL_EQUITY_FLOOR = 50.0
 
 
@@ -174,6 +189,24 @@ def contract_path(root: Path) -> Path:
     return root / "runtime" / EXPERIMENTAL_LIVE_FILENAME
 
 
+def _breaker_for(settings: Settings) -> float:
+    """The circuit-breaker percentage this contract binds the config to.
+
+    Spelled out rather than `min(config, EXPERIMENTAL)`, which used to be here
+    and read as "take the tighter of the two". It stopped meaning that the
+    moment zero came to mean *off*: with the contract at 0 and the config at 10,
+    `min` returns 0 and quietly loosens the account, which is the exact opposite
+    of what the expression looks like it is doing.
+
+    The contract wins outright. That is its job — the whole point of arming is
+    that the envelope cannot drift with a config edit — and it is now explicit
+    in both directions rather than true only by arithmetic accident.
+    """
+    if EXPERIMENTAL_MAX_DRAWDOWN_PCT == 0.0:
+        return 0.0
+    return min(settings.risk.max_drawdown_circuit_breaker_pct, EXPERIMENTAL_MAX_DRAWDOWN_PCT)
+
+
 def apply_experimental_live_limits(settings: Settings) -> Settings:
     """Return the fixed, non-configurable risk envelope for this experiment."""
     system = settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})
@@ -181,10 +214,7 @@ def apply_experimental_live_limits(settings: Settings) -> Settings:
         update={
             "risk_per_trade_pct": EXPERIMENTAL_RISK_PER_TRADE_PCT,
             "max_risk_per_trade_pct": EXPERIMENTAL_RISK_PER_TRADE_PCT,
-            "max_drawdown_circuit_breaker_pct": min(
-                settings.risk.max_drawdown_circuit_breaker_pct,
-                EXPERIMENTAL_MAX_DRAWDOWN_PCT,
-            ),
+            "max_drawdown_circuit_breaker_pct": _breaker_for(settings),
         }
     )
     limits = dict(settings.modes)
