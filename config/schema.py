@@ -744,7 +744,20 @@ class TradeManagementConfig(Base):
     sl_atr_buffer_multiple: float = Field(default=0.5, ge=0.0, le=3.0)
     sl_atr_period: int = Field(default=14, ge=2)
 
-    break_even_at_r: float = Field(default=1.0, gt=0.0)
+    #: 0.6, down from 1.0, for the same reason the give-back arm moved.
+    #:
+    #: A full R is a large move on a EUR 88 account and most winners never see
+    #: it. AUDJPY peaked at 0.57R — a euro of real profit — and this rule, set
+    #: at 1.0, never moved the stop an inch before the whole gain went. A
+    #: protection that only engages on the trades that were going to win anyway
+    #: is not protecting anything.
+    #:
+    #: The cost of moving earlier is being taken out at break-even by noise that
+    #: the trade would have survived. That cost is much lower than it was: with
+    #: `min_stop_atr` the stop is now at least an ATR wide, so 0.6R is a real
+    #: move rather than a wobble, and the offset below leaves the exit slightly
+    #: profitable rather than exactly flat.
+    break_even_at_r: float = Field(default=0.6, gt=0.0)
     #: Offset past entry when moving to break even, in ATR multiples, to cover
     #: spread and commission. Break even at exactly entry is a small loss.
     break_even_offset_atr: float = Field(default=0.1, ge=0.0)
@@ -770,8 +783,24 @@ class TradeManagementConfig(Base):
     #: half-give-back is nothing at all. Above the arming level break-even has
     #: already banked the trade, so the worst case here is a small win rather
     #: than a loss.
-    giveback_arm_r: float = Field(default=1.0, ge=0.0)
+    #: 0.5, not 1.0, and a live pair is why. AUDJPY peaked at EUR 1.00 against
+    #: EUR 1.77 of risk — 0.57R — and ended at -0.28R. Arming at 1.0R meant the
+    #: rule never engaged; break-even, on the same threshold, never engaged
+    #: either. Both sat above anything that trade would ever reach.
+    #:
+    #: On a EUR 88 account a full R is a large move and most winners never get
+    #: there. The bar has to be what counts as real profit *here*, which is the
+    #: same level `health_secure_at_r` already uses, so the two agree.
+    giveback_arm_r: float = Field(default=0.5, ge=0.0)
+    #: How much of the peak may be handed back before the question is asked.
+    #: Reaching it is not an exit on its own — see `_giveback_exit`, which then
+    #: asks the health read whether the move is still working.
     giveback_fraction: float = Field(default=0.5, ge=0.0, le=1.0)
+    #: And the part that is not a judgement. However intact the read says the
+    #: move is, handing back this much of a gain is not a position worth
+    #: holding. Without it, a permanently "healthy" read could ride a winner all
+    #: the way back to entry, which is the exact complaint this rule answers.
+    giveback_hard_fraction: float = Field(default=0.8, ge=0.0, le=1.0)
 
     #: The per-second read of how an open trade is actually behaving — has the
     #: structure broken, has momentum turned, is it running against us, has the
