@@ -69,7 +69,7 @@ class PositionManager:
         #: Claude sees what the fast layer has been watching rather than only a
         #: snapshot of the moment it happened to be asked, and by the deck.
         self.last_health: dict[int, PositionHealth] = {}
-        self._evening_window: object = _UNSET
+        self._session_filter: object = _UNSET
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -196,6 +196,13 @@ class PositionManager:
             wind_down = self._evening_flatten(position, now, r_now)
             if wind_down is not None:
                 events.append(wind_down)
+                continue
+            # Next, because it is about to happen to us rather than about what
+            # the trade is worth: a spread wide enough to trigger the stop on
+            # its own.
+            squeezed = self._spread_squeeze_exit(position, tick, r_now)
+            if squeezed is not None:
+                events.append(squeezed)
                 continue
             age_hours = (now - position.opened_at).total_seconds() / 3600.0
             # How the trade is actually behaving, not just what R it is at.
@@ -404,12 +411,15 @@ class PositionManager:
         Continuously traded markets are exempt: crypto has no FX rollover and
         no reason to be closed at 22:15 Amsterdam time.
         """
-        window = self._session_windows()
-        if window is None or not window.contains(now):
+        asset_class = self.broker.spec(position.symbol).asset_class.value
+        if asset_class in self.settings.filters.session.continuous_asset_classes:
             return None
-        if self.broker.spec(position.symbol).asset_class.value in (
-            self.settings.filters.session.continuous_asset_classes
-        ):
+        # Per asset class, because an index does not follow the FX rollover: its
+        # cash session closes at 20:00 UTC and the quote widens from there, so
+        # the forex wind-down at 20:15 leaves it in the widest spread of the day
+        # for a final quarter of an hour.
+        window = self._session_windows(asset_class)
+        if window is None or not window.contains(now):
             return None
         result = self.broker.close_position(position)
         if not result.ok:
@@ -424,18 +434,69 @@ class PositionManager:
             r_at_action=r_now,
         )
 
-    def _session_windows(self):  # type: ignore[no-untyped-def]
-        """The evening-flat window, built once and reused.
+    def _spread_squeeze_exit(
+        self, position: Position, tick, r_now: float
+    ) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
+        """Leave when the spread, not the market, is about to take the stop.
 
-        Built from the same config the session filter reads, so the moment
-        entries stop is exactly the moment the flatten starts. Two independently
-        derived times would eventually drift and leave a gap in which the loop
-        closes a position and immediately re-opens it.
+        A stop does not trigger on the price you watch. A short is closed at the
+        ask, a long at the bid, and both of those move toward the stop when the
+        book thins — with the market perfectly still. A live NZDJPY sell showed
+        it exactly: bid 92.845, stop 92.904, five point nine pips of room, and
+        six pips of spread would have taken it out having never gone wrong.
+
+        Being stopped there is not the market disagreeing with the trade. It is
+        the broker's book charging for the hour. Both exits pay the spread, but
+        this one happens at a price we picked and turns a full stop-out into
+        roughly break-even.
+
+        The `r_now` floor is what keeps this from becoming "close every loser
+        just before its stop". Once price has genuinely carried the trade most
+        of the way there, the room is small because the trade is losing, not
+        because the quote is wide, and the stop is doing precisely its job.
         """
-        if self._evening_window is _UNSET:
+        config = self.settings.trade_management
+        share_limit = config.spread_squeeze_share
+        if share_limit <= 0 or not position.sl:
+            return None
+        spread = getattr(tick, "spread", 0.0)
+        if spread <= 0:
+            return None
+        # The side the stop actually triggers on: ask for a short, bid for a
+        # long. Reading the wrong one hides the whole effect on the short side.
+        trigger = tick.ask if position.direction is Direction.SHORT else tick.bid
+        room = abs(position.sl - trigger)
+        if room <= 0 or spread < room * share_limit:
+            return None
+        if r_now < config.spread_squeeze_min_r:
+            return None
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "SPREAD_SQUEEZE",
+            f"spread {spread:.5g} is {spread / room:.0%} of the {room:.5g} left to the stop; "
+            f"leaving at {r_now:.2f}R rather than being stopped by the quote",
+            result.filled_price,
+            position.profit + position.swap,
+            r_at_action=r_now,
+        )
+
+    def _session_windows(self, asset_class: str):  # type: ignore[no-untyped-def]
+        """The evening-flat window for this asset class, built once and reused.
+
+        Built from the same filter the entry gate uses, so the moment entries
+        stop is exactly the moment the flatten starts — for each class. Two
+        independently derived times would eventually drift and leave a gap in
+        which the loop closes a position and immediately re-opens it.
+        """
+        if self._session_filter is _UNSET:
             config = self.settings.filters.session
-            self._evening_window = SessionFilter(config).evening_flat if config.enabled else None
-        return self._evening_window
+            self._session_filter = SessionFilter(config) if config.enabled else None
+        if self._session_filter is None:
+            return None
+        return self._session_filter.evening_flat_window(asset_class)
 
     def _record_excursion(self, trade_id: int, r_now: float, recorded_peak: float) -> float:
         """Ratchet how far the trade has run, and return the peak so far.

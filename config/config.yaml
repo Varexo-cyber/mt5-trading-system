@@ -315,6 +315,9 @@ trade_management:
   giveback_fraction: 0.5
   # Hoeveel er terugmag ongeacht wat de gezondheidslezing zegt.
   giveback_hard_fraction: 0.8
+  # Eruit als de spread zelf de stop dreigt te raken (zie schema.py).
+  spread_squeeze_share: 0.75
+  spread_squeeze_min_r: -0.5
   # Per-second read of how the trade is behaving (structure, momentum, adverse
   # run, spread). Can only reduce risk, and needs two signals to close.
   health_enabled: true

@@ -495,12 +495,47 @@ class SessionFilterConfig(Base):
     #: the spread widens is the entire point — flattening at 20:45 would pay
     #: exactly the cost this is meant to avoid.
     evening_flat_from: str | None = "20:15"
+    #: Asset classes that wind down at their own time rather than the FX one.
+    #:
+    #: An index does not follow the FX rollover. The US cash session closes at
+    #: 20:00 UTC and the CFD spread widens from that moment, so a position held
+    #: to the forex wind-down at 20:15 spends its last quarter of an hour in the
+    #: widest quote of the day. A live SPX500 long sat in exactly that window.
+    #:
+    #: Times are UTC and must be no later than `evening_flat_from`; a class that
+    #: wants to run *longer* than forex is not a wind-down override, it is a
+    #: different feature, and letting it in here would silently extend exposure.
+    evening_flat_by_class: dict[str, str] = Field(default_factory=lambda: {"index": "20:00"})
     block_friday_after: str | None = "19:00"
     block_sunday_before: str | None = "23:00"
     #: These markets are not forced through the FX London/New York calendar.
     #: A missing/stale broker tick still blocks them later in the chain.
     continuous_asset_classes: tuple[str, ...] = ("crypto",)
     continuous_maintenance_block: tuple[str, str] = ("23:55", "00:10")
+
+    @model_validator(mode="after")
+    def _class_overrides_only_tighten(self) -> SessionFilterConfig:
+        """A per-class wind-down may be earlier than the FX one, never later.
+
+        Enforced rather than documented. An override reading 21:30 looks like a
+        harmless edit and silently *extends* exposure into the rollover for a
+        whole asset class — the opposite of what the setting exists for, and
+        invisible until something is held through it.
+        """
+        if not self.evening_flat_from:
+            return self
+        limit = tuple(int(part) for part in self.evening_flat_from.split(":"))
+        late = {
+            name: when
+            for name, when in self.evening_flat_by_class.items()
+            if tuple(int(part) for part in when.split(":")) > limit
+        }
+        if late:
+            raise ValueError(
+                "evening_flat_by_class may only be earlier than evening_flat_from "
+                f"({self.evening_flat_from}); these are later: {late}"
+            )
+        return self
 
 
 class SpreadFilterConfig(Base):
@@ -801,6 +836,25 @@ class TradeManagementConfig(Base):
     #: holding. Without it, a permanently "healthy" read could ride a winner all
     #: the way back to entry, which is the exact complaint this rule answers.
     giveback_hard_fraction: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    #: Leave when the spread is this share of the room left to the stop.
+    #:
+    #: A stop does not trigger on the price you watch: a short closes at the
+    #: ask, a long at the bid, and both move toward the stop when the book
+    #: thins — with the market perfectly still. A live NZDJPY sell had bid
+    #: 92.845 against a stop at 92.904: 5.9 pips of room, and six pips of
+    #: spread would have taken it out having never once gone wrong.
+    #:
+    #: At 0.75 the quote owns three quarters of what is left. Both exits pay
+    #: the spread, but this one happens at a price we chose, and on a trade
+    #: near flat it turns a full stop-out into roughly break-even.
+    spread_squeeze_share: float = Field(default=0.75, ge=0.0)
+    #: ...but only while price has not already carried the trade most of the
+    #: way to the stop. Past this the room is small because the trade is
+    #: losing, not because the quote is wide, and the stop is doing its job.
+    #: Without this the rule degenerates into closing every loser a moment
+    #: early, which changes the risk profile for no gain.
+    spread_squeeze_min_r: float = Field(default=-0.5)
 
     #: The per-second read of how an open trade is actually behaving — has the
     #: structure broken, has momentum turned, is it running against us, has the
