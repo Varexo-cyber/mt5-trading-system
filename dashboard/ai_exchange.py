@@ -128,3 +128,74 @@ def supervision_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any
         )
     out.reverse()
     return out
+
+
+#: USD per million tokens, by model. Input, output, and the two cache rates
+#: (write is 1.25x input for the 5-minute TTL, read is 0.1x).
+#:
+#: Hardcoded rather than fetched: this is a dashboard estimate, and a pricing
+#: table that silently fails to load would show a plausible wrong number, which
+#: is worse than a stale one. An unknown model reports no cost rather than
+#: guessing at somebody else's rate.
+_PRICES = {
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+
+def call_cost(model: str, usage: Mapping[str, Any]) -> float | None:
+    """Estimated USD for one call, or None when the model is not priced here."""
+    price = _PRICES.get(str(model))
+    if price is None or not usage:
+        return None
+    per_in, per_out = price
+    fresh = float(usage.get("input_tokens", 0) or 0)
+    written = float(usage.get("cache_creation_input_tokens", 0) or 0)
+    read = float(usage.get("cache_read_input_tokens", 0) or 0)
+    out = float(usage.get("output_tokens", 0) or 0)
+    return (
+        fresh * per_in + written * per_in * 1.25 + read * per_in * 0.1 + out * per_out
+    ) / 1_000_000
+
+
+def spend_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, Any]:
+    """What the adviser has cost, and how much of it the cache absorbed.
+
+    "Am I burning credit" had no answer anywhere in the interface. The cache
+    hit rate is the part worth watching: if it collapses, something has started
+    varying the system prompt and every call is paying full price for a prefix
+    that used to be free.
+    """
+    calls = priced = 0
+    cost = 0.0
+    fresh = written = read = out = 0
+    for row in rows:
+        decision = row.get("decision")
+        if not isinstance(decision, Mapping):
+            continue
+        usage = decision.get("usage")
+        if not isinstance(usage, Mapping) or not usage:
+            continue
+        calls += 1
+        fresh += int(usage.get("input_tokens", 0) or 0)
+        written += int(usage.get("cache_creation_input_tokens", 0) or 0)
+        read += int(usage.get("cache_read_input_tokens", 0) or 0)
+        out += int(usage.get("output_tokens", 0) or 0)
+        amount = call_cost(str(decision.get("model", "")), usage)
+        if amount is not None:
+            cost += amount
+            priced += 1
+    total_in = fresh + written + read
+    return {
+        "calls": calls,
+        "priced_calls": priced,
+        "usd": round(cost, 4),
+        "usd_per_call": round(cost / priced, 4) if priced else 0.0,
+        "input_tokens": total_in,
+        "output_tokens": out,
+        # Share of input served from cache at a tenth of the price.
+        "cache_hit_rate": (read / total_in) if total_in else 0.0,
+    }

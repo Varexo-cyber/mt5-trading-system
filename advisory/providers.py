@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Protocol
 
 import pandas as pd
@@ -33,6 +33,64 @@ _MAX_TOKENS = 4_000
 # another silent veto.
 _EFFORT = "medium"
 
+_SCHEMA_NOTE = " Return only one JSON object matching the schema."
+
+
+def _cached(instructions: str, ttl: str | None = None) -> list[dict[str, object]]:
+    """The system prompt as one cacheable block.
+
+    These instructions are byte-identical on every call and are the largest
+    fixed part of the request — roughly 2,800 tokens for a review and 1,400 for
+    a supervision — and every single call was paying full price to send them
+    again. A cache read costs a tenth of that, and the break-even is two
+    requests.
+
+    The prefix must stay frozen for this to work at all: nothing here may
+    interpolate a timestamp, a symbol or an account number, because a single
+    changed byte invalidates the whole entry and leaves only the 1.25x write
+    premium. The per-trade payload goes in `messages`, after this block, where
+    it belongs.
+
+    `ttl` selects the one-hour cache. Worth it only where calls are spaced
+    further apart than five minutes but still regular — supervision runs every
+    fifteen, so the default TTL would expire between every pair of calls and
+    the write premium would be paid each time with no read to show for it.
+    """
+    block: dict[str, object] = {
+        "type": "text",
+        "text": instructions + _SCHEMA_NOTE,
+        "cache_control": (
+            {"type": "ephemeral"} if ttl is None else {"type": "ephemeral", "ttl": ttl}
+        ),
+    }
+    return [block]
+
+
+def _usage(message: Any) -> dict[str, int]:
+    """Token counts for one call, for the spend ledger.
+
+    Recorded rather than estimated. "Am I burning credit" was previously
+    answerable only by opening the Anthropic console, and the number that
+    matters most — how much of the prompt is being served from cache — is not
+    visible anywhere else at all.
+
+    Note that `input_tokens` is the *uncached remainder*, not the prompt size:
+    the total is input + cache_creation + cache_read. Summing only the first
+    would report a caching win that is really a measurement error.
+    """
+    usage = getattr(message, "usage", None)
+    if usage is None:
+        return {}
+    return {
+        field: int(getattr(usage, field, 0) or 0)
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
+    }
+
 
 @dataclass(frozen=True, slots=True)
 class Advice:
@@ -55,6 +113,9 @@ class Advice:
     #: The threshold `confidence` was compared against, recorded alongside it so
     #: a row remains readable after the setting changes.
     threshold: float = 0.0
+    #: Token counts for this call. Carried on the verdict because that is what
+    #: reaches the audit ledger; nothing else in the pipeline sees the response.
+    usage: dict[str, int] = field(default_factory=dict)
 
     @property
     def below_threshold(self) -> bool:
@@ -118,6 +179,7 @@ class Supervision:
     model: str = ""
     request_id: str = ""
     error: str = ""
+    usage: dict[str, int] = field(default_factory=dict)
 
     def safe_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -309,7 +371,7 @@ class AnthropicAdvisor:
             message = self.client.messages.create(
                 model=self.model,
                 max_tokens=_MAX_TOKENS,
-                system=_REVIEW_INSTRUCTIONS + " Return only one JSON object matching the schema.",
+                system=_cached(_REVIEW_INSTRUCTIONS),
                 output_config={
                     "effort": _EFFORT,
                     "format": {
@@ -358,6 +420,7 @@ class AnthropicAdvisor:
                 self.model,
                 self.minimum,
                 request_id,
+                _usage(message),
             )
         except Exception as exc:  # noqa: BLE001 - API/auth/timeout/rate limit must all veto
             return _failed_advice("anthropic", self.model, exc)
@@ -410,8 +473,7 @@ class AnthropicAdvisor:
             message = self.client.messages.create(
                 model=self.model,
                 max_tokens=_MAX_TOKENS,
-                system=_SUPERVISION_INSTRUCTIONS
-                + " Return only one JSON object matching the schema.",
+                system=_cached(_SUPERVISION_INSTRUCTIONS, ttl="1h"),
                 output_config={
                     "effort": _EFFORT,
                     "format": {
@@ -440,7 +502,7 @@ class AnthropicAdvisor:
             text = "".join(
                 block.text for block in message.content if getattr(block, "type", "") == "text"
             )
-            return _parse_supervision(text, "anthropic", self.model, request_id)
+            return _parse_supervision(text, "anthropic", self.model, request_id, _usage(message))
         except Exception as exc:  # noqa: BLE001 - an unreachable adviser must not touch the book
             return _failed_supervision("anthropic", self.model, _safe_error(exc))
 
@@ -525,7 +587,24 @@ def build_advisor(config: AIConfig) -> Advisor:
 #: the review impossible: nobody can judge whether a target is reachable, or
 #: whether price is running into a level, from three candles. The higher frames
 #: need fewer bars to show structure; the lower ones are where the entry lives.
-_BARS_SENT = {"MN1": 12, "W1": 20, "D1": 40, "H4": 60, "H1": 80, "M15": 80, "M5": 60, "M1": 60}
+#:
+#: Every timeframe still goes, deliberately — the adviser has to see the monthly
+#: picture and the last half hour in one payload, and dropping a rung is how a
+#: verdict ends up missing the trend it was standing in.
+#:
+#: The counts are another matter, and they were the single largest line in the
+#: bill: 412 bars is roughly 11,000 tokens on every call, against a system
+#: prompt of 2,800. They had been tuned for coverage without noticing that
+#: coverage is what the *slower* rung is for. 80 M15 bars is twenty hours, which
+#: H1 was already showing, which H4 was already showing. The lower timeframes
+#: exist for recent detail and only need to reach back far enough to overlap the
+#: rung above them.
+#:
+#: 260 bars now, about 3,700 tokens off every call, and the ladder still has no
+#: gap: 30 minutes of M1 inside 3 hours of M5, inside 8 hours of M15, inside 2
+#: days of H1, inside 7 days of H4, inside 40 days of D1, inside 140 of W1,
+#: inside a year of MN1.
+_BARS_SENT = {"MN1": 12, "W1": 20, "D1": 40, "H4": 42, "H1": 48, "M15": 32, "M5": 36, "M1": 30}
 _BARS_SENT_DEFAULT = 40
 
 
@@ -764,6 +843,7 @@ def _parse_review(
     model: str,
     minimum: float,
     request_id: str,
+    usage: dict[str, int] | None = None,
 ) -> Advice:
     try:
         payload = json.loads(text.strip())
@@ -787,6 +867,7 @@ def _parse_review(
             request_id,
             said_yes=approve,
             threshold=minimum,
+            usage=dict(usage or {}),
         )
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return Advice(
@@ -826,7 +907,13 @@ def _parse_reflection(text: str, provider: str, model: str, request_id: str) -> 
         )
 
 
-def _parse_supervision(text: str, provider: str, model: str, request_id: str) -> Supervision:
+def _parse_supervision(
+    text: str,
+    provider: str,
+    model: str,
+    request_id: str,
+    usage: dict[str, int] | None = None,
+) -> Supervision:
     try:
         payload = json.loads(text.strip())
         action = str(payload["action"]).strip()
@@ -854,6 +941,7 @@ def _parse_supervision(text: str, provider: str, model: str, request_id: str) ->
             provider,
             model,
             request_id,
+            usage=dict(usage or {}),
         )
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return _failed_supervision(provider, model, "invalid_response", request_id)
