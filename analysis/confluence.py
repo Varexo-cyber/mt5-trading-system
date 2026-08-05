@@ -80,7 +80,7 @@ class ConfluenceEngine:
                 ctx, signals, f"confluence score {score:.1f} below threshold", score, confidence
             )
 
-        against_the_tide = self._higher_timeframe_conflict(ctx, direction)
+        against_the_tide = self.higher_timeframe_conflict(ctx, direction)
         if against_the_tide is not None:
             return self._reject(ctx, signals, against_the_tide, score, confidence)
 
@@ -202,7 +202,7 @@ class ConfluenceEngine:
         note = "planned" if distance >= planned else f"trimmed to {achieved_r:.2f}R"
         return entry + distance * int(direction), note
 
-    def _higher_timeframe_conflict(self, ctx: MarketContext, direction: Direction) -> str | None:
+    def higher_timeframe_conflict(self, ctx: MarketContext, direction: Direction) -> str | None:
         """Refuse a trade taken straight into an established higher-timeframe trend.
 
         There was a timing gate for the timeframes *below* the bias and nothing

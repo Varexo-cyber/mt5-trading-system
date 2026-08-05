@@ -263,6 +263,12 @@ class MomentumScalp:
         risk = abs(entry - stop)
         if risk <= 0:
             return None
+        # Clear one ordinary bar of this timeframe before anything else. A stop
+        # inside that band is not testing the plan, it is testing the noise.
+        floor = atr * self.config.min_stop_atr
+        if risk < floor:
+            stop = entry - floor * int(direction)
+            risk = floor
         # And it has to stay a scalp. A stop several ATR wide is a different
         # trade wearing this playbook's name, and it belongs to the swing
         # engine, which sizes and targets it properly.
@@ -380,6 +386,10 @@ class RangeFade:
         risk = abs(entry - stop)
         if risk <= 0:
             return None
+        floor = atr * self.config.min_stop_atr
+        if risk < floor:
+            stop = entry - floor * int(direction)
+            risk = floor
 
         affordable, share = _spread_is_affordable(ctx, risk, self.config.max_spread_share_of_stop)
         if not affordable:
@@ -433,6 +443,21 @@ class ScalpConfig:
     #: Hard ceiling on the stop, in ATR. Past this it is not a scalp any more
     #: and the swing engine is the right owner of the trade.
     max_stop_atr: float = 2.5
+    #: Floor on the stop, in ATR of this playbook's own timeframe.
+    #:
+    #: There was a ceiling and no floor, and the floor is the one that was
+    #: needed. A shallow pullback puts the pivot within a pip or two of entry,
+    #: so the stop came out at a fraction of one M5 bar's range — the adviser
+    #: rejected these all day in the same words: "the stop (1.7 pips) is far
+    #: smaller than even the M5 ATR (3.8 pips)", "2.4-pip stop, 0.24 ATR H1".
+    #:
+    #: One ATR of the timeframe the plan lives on. Below that the stop is not
+    #: measuring whether the pullback held, it is measuring whether the next
+    #: ordinary bar happens to tick through it. The stop is widened to the floor
+    #: rather than the play being dropped; if the target can no longer justify
+    #: the honest stop, `min_target_r` refuses it a few lines later, which is
+    #: the correct place for that answer.
+    min_stop_atr: float = 1.0
     target_bars: int = 24
     target_r: float = 2.0
     min_target_r: float = 1.2
@@ -448,6 +473,10 @@ class FadeConfig:
     touch_tolerance_atr: float = 0.3
     min_touches: int = 3
     stop_buffer_atr: float = 0.35
+    #: Same floor as the scalp, in M15 ATR. A rejection wick at a range edge
+    #: can leave the stop a hair beyond the edge itself, which is inside the
+    #: noise that produced the wick.
+    min_stop_atr: float = 1.0
     min_target_r: float = 1.2
     max_spread_share_of_stop: float = 0.12
 

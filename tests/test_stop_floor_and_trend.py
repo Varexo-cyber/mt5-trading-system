@@ -88,7 +88,7 @@ def flat(bars: int = 40) -> list[float]:
 
 
 def conflict(engine_, frames, direction: Direction) -> str | None:  # type: ignore[no-untyped-def]
-    return engine_._higher_timeframe_conflict(context(frames), direction)
+    return engine_.higher_timeframe_conflict(context(frames), direction)
 
 
 def test_a_short_into_a_multi_week_uptrend_is_refused() -> None:
@@ -153,10 +153,10 @@ def test_the_measure_is_scale_free() -> None:
     """A dimensionless reading is the whole reason one threshold can serve gold,
     an index and a currency pair. Ten times the price with ten times the range
     has to read the same."""
-    small = engine()._higher_timeframe_conflict(
+    small = engine().higher_timeframe_conflict(
         context({Timeframe.D1: [100.0 + i * 0.3 for i in range(40)]}), Direction.SHORT
     )
-    large = engine()._higher_timeframe_conflict(
+    large = engine().higher_timeframe_conflict(
         MarketContext(
             symbol="XAUUSD",
             now=NOW,
