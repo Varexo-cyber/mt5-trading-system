@@ -232,6 +232,30 @@ ai:
 risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
   posture_throttle: false
+
+  # De anti-martingale-halvering staat uit op DIT account, en alleen omdat hij
+  # hier niet doet waar hij voor bedoeld is.
+  #
+  # Hij hoort de inzet te verkleinen als het bewijs dat de edge werkt het zwakst
+  # is. Op een account van EUR 88 verkleint hij niks: 2% is EUR 1,77, gehalveerd
+  # EUR 0,88, en dat ligt onder wat de kleinste lot van de broker kost. Het
+  # effect is dus niet "kleiner traden" maar "helemaal niet traden" — en dat is
+  # een schakelaar die pas omgaat door te winnen, wat niet kan zolang hij aan
+  # staat. Precies dezelfde val als de houdingsrem hierboven.
+  #
+  # Bij een account dat groot genoeg is om een gehalveerde inzet nog uit te
+  # drukken, moet dit terug naar 0.5. De drempel blijft op 3 staan zodat de
+  # verliesreeks nog steeds geteld en gelogd wordt.
+  losing_streak_risk_multiplier: 1.0
+
+  # Van 2.0 naar 1.5, en dit is een correctie en geen versoepeling.
+  #
+  # Die 2.0 is afgestemd op de stops van vóór `min_stop_atr`. Die vloer maakt de
+  # stop breder waar hij in de ruis lag; het target verandert niet mee, dus
+  # dezelfde trade scoort nu mechanisch lager op reward/risk. In de laatste
+  # cyclus vielen er acht af op RR_BELOW_MINIMUM die daarvoor door zouden zijn
+  # gekomen. Het getal verlagen houdt de strengheid gelijk aan wat hij was.
+  min_risk_reward: 1.5
   max_trades_per_day: 0
   max_trades_per_week: 0
 

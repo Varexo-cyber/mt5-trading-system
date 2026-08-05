@@ -1840,6 +1840,35 @@ class JarvisRunner:
                 "next_cursor": summary.next_cursor,
             },
         )
+        self._report_dominant_blocker(summary, deep_reasons)
+
+    def _report_dominant_blocker(self, summary: CycleSummary, reasons: dict[str, int]) -> None:
+        """When nothing traded, name the one gate that refused the most.
+
+        The breakdown above already carried this, and four separate times today
+        it was read past: monitor mode, a circuit breaker disabled to zero, the
+        posture throttle cutting sixteen setups to one, and a losing-streak
+        halving that put every trade under the broker's minimum lot. Each time
+        the counts were on screen and each time the answer was "why is it not
+        trading" asked out loud.
+
+        A list of five numbers is not an answer. The largest one, named, is.
+        """
+        if summary.trades_opened or not reasons:
+            return
+        reason, count = max(reasons.items(), key=lambda kv: kv[1])
+        log.warning(
+            "nothing opened this cycle; the biggest single blocker was %s (%d of %d analysed)",
+            reason,
+            count,
+            summary.deep_analysed,
+            extra={
+                "event": "no_trades_dominant_reason",
+                "reason": reason,
+                "count": count,
+                "deep_analysed": summary.deep_analysed,
+            },
+        )
 
     def _deep_rejection_counts(self, since: datetime) -> dict[str, int]:
         """Reasons the deeply-analysed candidates were refused, this cycle.
