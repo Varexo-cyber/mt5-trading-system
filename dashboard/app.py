@@ -31,6 +31,7 @@ from core.instrument import AssetClass
 from core.mt5_connector import MT5Connector
 from core.types import Direction, Timeframe
 from dashboard.ai_exchange import (
+    cannot_trade,
     pair_ai_reviews,
     read_block_reason,
     read_posture,
@@ -946,6 +947,25 @@ try:
         )
     elif kill_switch.is_engaged():
         st.warning("Jarvis is OFF because the durable hard STOP is engaged.")
+
+    # The mode that looks healthy and cannot trade.
+    #
+    # `monitor` is the default, so a session started without an explicit mode
+    # scans every market, analyses every setup, and places nothing — with no
+    # sign of it anywhere except a five-letter word in a metric nobody reads as
+    # a warning. An hour went by like that. The mode was on screen the whole
+    # time; what was missing was anyone saying what it meant.
+    if running and cannot_trade(str(heartbeat.get("operation", ""))):
+        st.error(
+            "**JARVIS PLAATST GEEN ENKELE TRADE — hij draait in MONITOR.**\n\n"
+            "Monitor kijkt alleen. Hij scant alles, analyseert alles, en stuurt nooit een "
+            "order — wat de analyse ook zegt. Er wordt in deze stand ook niets aan Claude "
+            "betaald, want een oordeel over een order die toch niet verstuurd kan worden "
+            "kost alleen geld.\n\n"
+            "Wil je dat er echt gehandeld wordt, start dan `rearm_experimental_live.cmd`. "
+            "Wil je de volledige route testen zonder echt geld, kies dan PAPER — die "
+            "plaatst wél orders, op de papieren broker."
+        )
 
     # Why no new trades, at the top of the page rather than in one log line.
     #

@@ -800,6 +800,36 @@ class JarvisRunner:
             return False
         self.risk.assert_not_forbidden(sizing, state)
 
+        # Monitor mode cannot send an order no matter what comes back, so a paid
+        # verdict here buys nothing. Seventy-nine calls went out in one session
+        # before anyone noticed, eleven of them approvals that could never have
+        # become trades. The review is skipped rather than the mode being
+        # forbidden: watching the engine reason without spending is exactly what
+        # monitor is for, and PAPER exercises the full path including the
+        # adviser when that is what is wanted.
+        if self.operation is OperationMode.MONITOR:
+            self.scan_activity.record_deep_decision(
+                symbol,
+                "MONITOR_SIGNAL_ONLY",
+                "All gates passed in monitor mode",
+                "Monitor mode cannot send an order, so the adviser was not asked "
+                "and nothing was charged. Run PAPER to exercise the full path.",
+                self.clock.now(),
+            )
+            self.recorder.record_cycle(
+                cycle_id=cycle_id,
+                context=CycleContext(symbol, account.equity, extra=filter_data),
+                reason=Reason.OK,
+                detail=idea.reason,
+                traded=False,
+                direction=idea.direction,
+                total_score=idea.score,
+                score_threshold=self.settings.analysis.confluence.score_threshold,
+                signals=list(idea.signals),
+                weights=self.settings.analysis.confluence.weights,
+            )
+            return False
+
         proposal = {
             "operation": self.operation.value,
             "account_currency": account.currency,
@@ -943,15 +973,6 @@ class JarvisRunner:
             weights=self.settings.analysis.confluence.weights,
         )
         self.recorder.record_sizing(cycle_pk, sizing)
-        if self.operation is OperationMode.MONITOR:
-            self.scan_activity.record_deep_decision(
-                symbol,
-                "MONITOR_SIGNAL_ONLY",
-                "All gates passed in monitor mode",
-                "Monitor mode cannot send an order",
-                self.clock.now(),
-            )
-            return False
         if not self._entry_still_allowed():
             self.scan_activity.record_deep_decision(
                 symbol,
