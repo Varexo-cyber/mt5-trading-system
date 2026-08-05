@@ -21,6 +21,7 @@ from config.schema import NO_DRAWDOWN_BREAKER
 from core.clock import SimulatedClock
 from journal.database import Journal
 from risk.posture import Posture, assess
+from risk.reasons import Reason
 from risk.risk_manager import RiskManager, RiskState
 
 NOW = datetime(2026, 8, 5, 12, 0, tzinfo=UTC)
@@ -140,3 +141,36 @@ def test_the_live_overlay_has_both_switched_off() -> None:
     live = apply_experimental_live_limits(settings)
     assert live.risk.posture_throttle is False
     assert live.risk.max_drawdown_circuit_breaker_pct == NO_DRAWDOWN_BREAKER
+
+
+def test_new_risk_is_not_blocked_when_the_breaker_is_off(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The bug the first attempt shipped.
+
+    There were two drawdown comparisons. Switching the breaker off fixed
+    `circuit_breaker_tripped` and left this one — the gate the runner actually
+    calls each cycle — with its bare `>=`. The result on a live account was
+    `NEW RISK HALTED: MAX_DRAWDOWN_CIRCUIT_BREAKER - drawdown 8.22% has reached
+    the 0.0% circuit breaker; manual restart required`, and every cycle
+    analysed nothing.
+
+    Testing the predicate alone could not catch it, which is the lesson: the
+    assertion has to sit at the level the caller uses.
+    """
+    decision = manager(tmp_path, NO_DRAWDOWN_BREAKER).check_can_trade(state(88.28, 96.19))
+    assert decision.approved, decision.detail
+
+
+def test_new_risk_is_still_blocked_when_the_breaker_is_set(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    decision = manager(tmp_path, 15.0).check_can_trade(state(80.0, 100.0))
+    assert not decision.approved
+    assert decision.reason is Reason.CIRCUIT_BREAKER
+
+
+def test_both_drawdown_checks_agree(tmp_path) -> None:
+    """They are one rule and must not be able to disagree — the two copies
+    drifting apart is exactly what broke it."""
+    risk = manager(tmp_path, 15.0)
+    for equity in (100.0, 90.0, 85.0, 84.9, 50.0):
+        current = state(equity, 100.0)
+        blocked = risk.check_can_trade(current).reason is Reason.CIRCUIT_BREAKER
+        assert blocked == risk.circuit_breaker_tripped(current), equity
