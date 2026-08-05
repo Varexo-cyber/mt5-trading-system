@@ -76,6 +76,16 @@ class SessionFilter(Filter):
             if config.evening_flat_from
             else None
         )
+        # Per-asset-class overrides, each strictly earlier than the FX one (the
+        # config validator refuses anything later). An index does not follow the
+        # FX rollover: its cash session closes at 20:00 UTC and the CFD quote
+        # widens from that moment, so holding to 20:15 spends the last quarter
+        # of an hour in the widest spread of the day.
+        self.evening_flat_by_class = {
+            name: Window(f"evening-flat-{name}", _parse(when), self.rollover.end)
+            for name, when in config.evening_flat_by_class.items()
+        }
+
         self.continuous_maintenance = Window(
             "continuous-maintenance",
             _parse(config.continuous_maintenance_block[0]),
@@ -89,6 +99,10 @@ class SessionFilter(Filter):
         )
 
     # -- queries -----------------------------------------------------------
+
+    def evening_flat_window(self, asset_class: str) -> Window | None:
+        """The wind-down that applies to this asset class."""
+        return self.evening_flat_by_class.get(asset_class, self.evening_flat)
 
     def active_sessions(self, moment: datetime) -> tuple[str, ...]:
         """Sessions currently open. Overlaps are real and reported as such."""
@@ -164,11 +178,12 @@ class SessionFilter(Filter):
         # Evening wind-down. Strictly wider than the rollover block, and checked
         # first so the message names the real reason: not "we are inside the
         # rollover" but "we are going flat for the evening".
-        if self.evening_flat is not None and self.evening_flat.contains(now):
+        flat_window = self.evening_flat_window(asset_class)
+        if flat_window is not None and flat_window.contains(now):
             return FilterVerdict.block(
                 self.name,
                 Reason.EVENING_WIND_DOWN,
-                f"evening wind-down ({self.evening_flat.describe()} UTC); the book thins "
+                f"evening wind-down ({flat_window.describe()} UTC); the book thins "
                 f"and spreads widen from here, and open positions are being flattened",
                 session=label,
                 asset_class=asset_class,

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from config.schema import (
     CorrelationFilterConfig,
@@ -15,7 +17,7 @@ from config.schema import (
     SpreadFilterConfig,
 )
 from core.clock import SimulatedClock
-from core.instrument import InstrumentSpec
+from core.instrument import AssetClass, InstrumentSpec
 from core.types import Direction, Position, Series, Tick, Timeframe
 from filters.base import Filter, FilterChain, FilterContext, FilterVerdict
 from filters.correlation_filter import CorrelationFilter
@@ -547,3 +549,60 @@ class TestFilterChain:
         verdict, data = chain.check(context(spec))
         assert not verdict.passed
         assert data == {"session": "london", "spread": 9.9}
+
+
+class TestPerClassWindDown:
+    """An index does not follow the FX rollover.
+
+    Its cash session closes at 20:00 UTC and the CFD quote widens from that
+    moment, so a position held to the forex wind-down at 20:15 spends its last
+    quarter of an hour in the widest spread of the day. A live SPX500 long sat
+    in exactly that window.
+    """
+
+    @pytest.fixture
+    def filter_(self) -> SessionFilter:
+        return SessionFilter(SessionFilterConfig())
+
+    def index_spec(self, spec: InstrumentSpec) -> InstrumentSpec:
+        return replace(spec, symbol="SPX500", asset_class=AssetClass.INDEX, is_forex=False)
+
+    def test_an_index_winds_down_before_forex_does(
+        self, filter_: SessionFilter, spec: InstrumentSpec
+    ) -> None:
+        moment = datetime(2026, 3, 11, 20, 5, tzinfo=UTC)  # after 20:00, before 20:15
+        assert filter_.check(context(self.index_spec(spec), now=moment)).reason is (
+            Reason.EVENING_WIND_DOWN
+        )
+        assert filter_.check(context(spec, now=moment)).passed, "forex still open at 20:05"
+
+    def test_both_are_shut_once_the_forex_window_opens(
+        self, filter_: SessionFilter, spec: InstrumentSpec
+    ) -> None:
+        moment = datetime(2026, 3, 11, 20, 30, tzinfo=UTC)
+        for which in (spec, self.index_spec(spec)):
+            assert not filter_.check(context(which, now=moment)).passed
+
+    def test_the_afternoon_is_open_for_both(
+        self, filter_: SessionFilter, spec: InstrumentSpec
+    ) -> None:
+        moment = datetime(2026, 3, 11, 17, 0, tzinfo=UTC)
+        for which in (spec, self.index_spec(spec)):
+            assert filter_.check(context(which, now=moment)).passed
+
+    def test_an_override_later_than_forex_is_refused_at_load(self) -> None:
+        """It looks like a harmless edit and silently *extends* exposure into
+        the rollover for a whole asset class — the opposite of the setting's
+        purpose, and invisible until something is held through it."""
+        with pytest.raises(ValidationError, match="only be earlier"):
+            SessionFilterConfig(evening_flat_by_class={"index": "21:30"})
+
+    def test_an_earlier_override_is_accepted(self) -> None:
+        config = SessionFilterConfig(evening_flat_by_class={"index": "19:00"})
+        assert config.evening_flat_by_class["index"] == "19:00"
+
+    def test_a_class_without_an_override_uses_the_forex_window(
+        self, filter_: SessionFilter
+    ) -> None:
+        assert filter_.evening_flat_window("forex") is filter_.evening_flat
+        assert filter_.evening_flat_window("index") is not filter_.evening_flat
