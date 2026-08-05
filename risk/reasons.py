@@ -19,6 +19,10 @@ class Reason(StrEnum):
 
     OK = "OK"
     NO_SIGNAL = "NO_SIGNAL"
+    #: Independent techniques read the same chart in opposite directions. Not a
+    #: close call to be settled by whichever scored higher — a market with no
+    #: clear edge, where the honest answer is to stand aside.
+    METHODS_DISAGREE = "METHODS_DISAGREE"
     DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
     AI_VETO = "AI_VETO"
     LIVE_NOT_ARMED = "LIVE_NOT_ARMED"
@@ -51,6 +55,10 @@ class Reason(StrEnum):
     OUTSIDE_TRADABLE_SESSION = "OUTSIDE_TRADABLE_SESSION"
     #: Daily rollover: spreads blow out and liquidity vanishes.
     ROLLOVER_WINDOW = "ROLLOVER_WINDOW"
+    #: The evening wind-down before the rollover, when the book thins out and
+    #: spreads widen. Wider than the rollover block, and it closes positions as
+    #: well as refusing entries.
+    EVENING_WIND_DOWN = "EVENING_WIND_DOWN"
     #: Friday close or Sunday reopen — thin books, gap risk over the weekend.
     WEEKEND_EDGE = "WEEKEND_EDGE"
     MARKET_CLOSED = "MARKET_CLOSED"

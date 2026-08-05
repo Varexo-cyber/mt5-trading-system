@@ -200,6 +200,10 @@ filters:
       newyork:  ["12:00", "21:00"]
     tradable_sessions: [london, newyork]
     rollover_block: ["20:45", "21:15"]
+    # 20:15 UTC = 22:15 Amsterdam. From here no new entries AND open positions
+    # are flattened: the book thins and spreads widen well before the rollover,
+    # and being flat before that happens is the whole point. null switches off.
+    evening_flat_from: "20:15"
     block_friday_after: "19:00"
     block_sunday_before: "23:00"
     continuous_asset_classes: [crypto]

@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from config.loader import load_settings
+from core.instrument import AssetClass
 from core.types import Direction, Position, Tick, Timeframe
 from execution.manager import ATR_CACHE_SECONDS, ManagementEvent, PositionManager
 
@@ -48,6 +49,7 @@ class BrokerStub:
     price: float = ENTRY
     atr: float = 1.0
     spread: float = 0.0
+    asset_class: AssetClass = AssetClass.FOREX
     rate_calls: dict[int, int] = field(default_factory=dict)
     closed: list[tuple[int, float | None]] = field(default_factory=list)
     modified: list[float] = field(default_factory=list)
@@ -62,10 +64,11 @@ class BrokerStub:
         return Tick(symbol=symbol, bid=self.price, ask=self.price, time=NOW)
 
     def spec(self, _symbol: str):  # type: ignore[no-untyped-def]
-        broker = self
+        klass = self.asset_class
 
         class Spec:
             volume_min = 0.01
+            asset_class = klass
 
             @staticmethod
             def normalize_price(price: float) -> float:
@@ -75,7 +78,6 @@ class BrokerStub:
             def round_volume_down(volume: float) -> float:
                 return round(volume, 2)
 
-        del broker
         return Spec()
 
     def copy_rates(self, _symbol, timeframe, count):  # type: ignore[no-untyped-def]
@@ -395,3 +397,103 @@ def test_management_events_are_still_typed() -> None:
     (event,) = manager.manage([position()], NOW)
     assert isinstance(event, ManagementEvent)
     assert event.r_at_action == pytest.approx(0.1)
+
+
+# ------------------------------------------------------- evening wind-down ---
+
+EVENING = datetime(2026, 8, 4, 20, 30, tzinfo=UTC)  # 22:30 in Amsterdam
+AFTERNOON = datetime(2026, 8, 4, 14, 0, tzinfo=UTC)
+
+
+def test_positions_are_flattened_before_the_evening_spread() -> None:
+    """The rollover block stopped us opening into the worst half hour and said
+    nothing about what was already on, so a position entered in a 1-pip market
+    was carried into a 6-pip one and charged the difference on the way out.
+    """
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(broker, journal)
+
+    at(broker, 0.3)
+    events = manager.manage([position()], EVENING)
+
+    assert [event.action for event in events] == ["EVENING_FLAT"]
+    assert broker.closed == [(555, None)]
+
+
+def test_the_afternoon_is_left_alone() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(broker, journal)
+
+    at(broker, 0.3)
+    events = manager.manage([position()], AFTERNOON)
+
+    assert not any(event.action == "EVENING_FLAT" for event in events)
+    assert broker.closed == []
+
+
+def test_a_winner_is_flattened_too() -> None:
+    """ "Let this one run, it is almost at target" is the reasoning that produces
+    the loss: the widening spread moves the market away from the target and
+    toward the stop at the same time."""
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(broker, journal)
+
+    at(broker, 1.4)
+    events = manager.manage([position()], EVENING)
+
+    assert [event.action for event in events] == ["EVENING_FLAT"]
+
+
+def test_the_flatten_pre_empts_every_other_rule() -> None:
+    """Everything else assumes we intend to still be in the trade."""
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(broker, journal, giveback_arm_r=1.0, giveback_fraction=0.5)
+
+    at(broker, 2.0)
+    manager.manage([position()], AFTERNOON)  # records the peak
+    before = len(broker.modified)
+    at(broker, 0.5)  # would be a give-back exit in the afternoon
+    events = manager.manage([position()], EVENING)
+
+    assert [event.action for event in events] == ["EVENING_FLAT"]
+    assert len(broker.modified) == before, "no stop moves on the way out"
+
+
+def test_switching_it_off_leaves_positions_open() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    settings = load_settings(env_overrides=False)
+    session = settings.filters.session.model_copy(update={"evening_flat_from": None})
+    filters = settings.filters.model_copy(update={"session": session})
+    manager = PositionManager(broker, journal, settings.model_copy(update={"filters": filters}))  # type: ignore[arg-type]
+
+    at(broker, 0.3)
+    events = manager.manage([position()], EVENING)
+
+    assert not any(event.action == "EVENING_FLAT" for event in events)
+
+
+def test_a_refused_close_is_not_recorded_as_flat() -> None:
+    """Recording a close the broker rejected would leave the journal believing
+    the position is gone while the money is still at risk."""
+    broker, journal = BrokerStub(), JournalStub()
+    broker.close_position = lambda _p, volume=None: OrderResult(ok=False, filled_price=None)  # type: ignore[assignment]
+    manager = manager_for(broker, journal)
+
+    at(broker, 0.3)
+    events = manager.manage([position()], EVENING)
+
+    assert not any(event.action == "EVENING_FLAT" for event in events)
+
+
+def test_a_continuous_market_is_not_flattened() -> None:
+    """Crypto has no FX rollover and no reason to be closed at 22:15 Amsterdam
+    time. Flattening it would book a spread cost for a calendar it does not
+    follow."""
+    broker = BrokerStub(asset_class=AssetClass.CRYPTO)
+    manager = manager_for(broker, JournalStub())
+
+    at(broker, 0.3)
+    events = manager.manage([replace(position(), symbol="BTCUSD")], EVENING)
+
+    assert not any(event.action == "EVENING_FLAT" for event in events)
+    assert broker.closed == []

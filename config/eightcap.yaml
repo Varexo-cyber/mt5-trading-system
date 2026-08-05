@@ -178,6 +178,8 @@ analysis:
     # Two theories reading the same bars in opposite directions is a market
     # with no edge, not a close call to settle by score. Stand aside.
     veto_on_conflict: true
+    # Also refuse when a short-horizon theory contradicts the swing engine.
+    require_method_agreement: true
     max_spread_share_of_stop: 0.15
     min_conviction: 60.0
 

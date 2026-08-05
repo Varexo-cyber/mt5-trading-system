@@ -67,6 +67,15 @@ class SessionFilter(Filter):
         self.rollover = Window(
             "rollover", _parse(config.rollover_block[0]), _parse(config.rollover_block[1])
         )
+        # Runs from the wind-down time to the end of the rollover, so it strictly
+        # contains the rollover block. Entries must stop at the same moment the
+        # flatten starts, or the loop would close a position and immediately
+        # re-open it into a widening spread, paying that cost twice.
+        self.evening_flat = (
+            Window("evening-flat", _parse(config.evening_flat_from), self.rollover.end)
+            if config.evening_flat_from
+            else None
+        )
         self.continuous_maintenance = Window(
             "continuous-maintenance",
             _parse(config.continuous_maintenance_block[0]),
@@ -148,6 +157,19 @@ class SessionFilter(Filter):
                 self.name,
                 Reason.MARKET_CLOSED,
                 f"FX market is closed ({now:%A %H:%M} UTC)",
+                session=label,
+                asset_class=asset_class,
+            )
+
+        # Evening wind-down. Strictly wider than the rollover block, and checked
+        # first so the message names the real reason: not "we are inside the
+        # rollover" but "we are going flat for the evening".
+        if self.evening_flat is not None and self.evening_flat.contains(now):
+            return FilterVerdict.block(
+                self.name,
+                Reason.EVENING_WIND_DOWN,
+                f"evening wind-down ({self.evening_flat.describe()} UTC); the book thins "
+                f"and spreads widen from here, and open positions are being flattened",
                 session=label,
                 asset_class=asset_class,
             )

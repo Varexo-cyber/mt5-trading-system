@@ -15,6 +15,7 @@ from core.broker import Broker
 from core.data_manager import DataManager
 from core.types import Direction, Position, Timeframe
 from filters.news_filter import NewsFilter
+from filters.session_filter import SessionFilter
 from infra.logging import get_logger
 from journal.database import Journal
 
@@ -50,6 +51,9 @@ ATR_CACHE_SECONDS = 60.0
 #: tick, which is read fresh every pass.
 BAR_CACHE_SECONDS = 3.0
 
+#: Distinguishes "not built yet" from "built, and there is no window".
+_UNSET = object()
+
 
 class PositionManager:
     def __init__(self, broker: Broker, journal: Journal, settings: Settings) -> None:
@@ -65,6 +69,7 @@ class PositionManager:
         #: Claude sees what the fast layer has been watching rather than only a
         #: snapshot of the moment it happened to be asked, and by the deck.
         self.last_health: dict[int, PositionHealth] = {}
+        self._evening_window: object = _UNSET
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -185,6 +190,13 @@ class PositionManager:
             price = tick.bid if position.direction is Direction.LONG else tick.ask
             r_now = (price - position.price_open) * int(position.direction) / risk
             peak_r = self._record_excursion(int(row["id"]), r_now, float(row["mfe_r"] or 0.0))
+            # Before anything else, because everything else assumes we intend to
+            # still be in the trade. Nothing that happens after 20:15 UTC is
+            # worth the spread it costs to be there.
+            wind_down = self._evening_flatten(position, now, r_now)
+            if wind_down is not None:
+                events.append(wind_down)
+                continue
             giveback = self._giveback_exit(position, r_now, peak_r)
             if giveback is not None:
                 events.append(giveback)
@@ -371,6 +383,59 @@ class PositionManager:
             f"{health.reason} at {r_now:.2f}R",
             r_at_action=r_now,
         )
+
+    def _evening_flatten(
+        self, position: Position, now: datetime, r_now: float
+    ) -> ManagementEvent | None:
+        """Go flat before the evening spread arrives.
+
+        The rollover block stopped us *opening* into the worst half hour and
+        said nothing about what was already on. So a position entered in a
+        1-pip market was carried into a 6-pip one and charged the difference on
+        the way out — the stop taken by the spread rather than by the market.
+        On a small account with tight stops that is not a tail risk; it is what
+        happened every evening.
+
+        Deliberately unconditional on P&L. "Let this one run a bit longer, it
+        is almost at target" is the reasoning that produces the loss, because
+        the widening spread moves the market away from the target and toward
+        the stop at the same time. Being flat before it widens is the point.
+
+        Continuously traded markets are exempt: crypto has no FX rollover and
+        no reason to be closed at 22:15 Amsterdam time.
+        """
+        window = self._session_windows()
+        if window is None or not window.contains(now):
+            return None
+        if self.broker.spec(position.symbol).asset_class.value in (
+            self.settings.filters.session.continuous_asset_classes
+        ):
+            return None
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "EVENING_FLAT",
+            f"evening wind-down ({window.describe()} UTC) at {r_now:.2f}R; "
+            "spreads widen from here",
+            result.filled_price,
+            position.profit + position.swap,
+            r_at_action=r_now,
+        )
+
+    def _session_windows(self):  # type: ignore[no-untyped-def]
+        """The evening-flat window, built once and reused.
+
+        Built from the same config the session filter reads, so the moment
+        entries stop is exactly the moment the flatten starts. Two independently
+        derived times would eventually drift and leave a gap in which the loop
+        closes a position and immediately re-opens it.
+        """
+        if self._evening_window is _UNSET:
+            config = self.settings.filters.session
+            self._evening_window = SessionFilter(config).evening_flat if config.enabled else None
+        return self._evening_window
 
     def _record_excursion(self, trade_id: int, r_now: float, recorded_peak: float) -> float:
         """Ratchet how far the trade has run, and return the peak so far.

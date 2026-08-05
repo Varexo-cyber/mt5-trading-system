@@ -101,8 +101,41 @@ class TestSessionFilter:
         assert verdict.data["session_overlap"] is False
 
     def test_rollover_window_is_blocked(self, filter_: SessionFilter, spec: InstrumentSpec) -> None:
+        """The evening wind-down starts earlier and contains the rollover, so
+        this now reports the more specific reason. Still refused, which is the
+        part that matters."""
         moment = datetime(2026, 3, 11, 21, 0, tzinfo=UTC)
         verdict = filter_.check(context(spec, now=moment))
+        assert not verdict.passed
+        assert verdict.reason is Reason.EVENING_WIND_DOWN
+
+    def test_the_evening_wind_down_starts_before_the_rollover(
+        self, filter_: SessionFilter, spec: InstrumentSpec
+    ) -> None:
+        """20:15 UTC is 22:15 in Amsterdam. Entries have to stop the moment the
+        flatten starts, or the loop would close a position and re-open it into a
+        widening spread, paying that cost twice.
+        """
+        moment = datetime(2026, 3, 11, 20, 20, tzinfo=UTC)
+        verdict = filter_.check(context(spec, now=moment))
+        assert not verdict.passed
+        assert verdict.reason is Reason.EVENING_WIND_DOWN
+
+    def test_the_afternoon_is_still_open_for_business(
+        self, filter_: SessionFilter, spec: InstrumentSpec
+    ) -> None:
+        """The wind-down must not swallow the New York session it precedes."""
+        moment = datetime(2026, 3, 11, 19, 0, tzinfo=UTC)
+        assert filter_.check(context(spec, now=moment)).passed
+
+    def test_the_rollover_still_blocks_when_the_wind_down_is_off(
+        self, spec: InstrumentSpec
+    ) -> None:
+        """Turning the wind-down off must not also remove the rollover block it
+        was layered on top of."""
+        verdict = SessionFilter(SessionFilterConfig(evening_flat_from=None)).check(
+            context(spec, now=datetime(2026, 3, 11, 21, 0, tzinfo=UTC))
+        )
         assert not verdict.passed
         assert verdict.reason is Reason.ROLLOVER_WINDOW
 

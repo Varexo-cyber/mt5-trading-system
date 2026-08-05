@@ -447,6 +447,22 @@ class SessionFilterConfig(Base):
     tradable_sessions: tuple[str, ...] = ("london", "newyork")
     #: Rollover window: spreads blow out and liquidity vanishes. No entries.
     rollover_block: tuple[str, str] = ("20:45", "21:15")
+    #: Evening wind-down, UTC. From here until the rollover block ends, no new
+    #: entries *and* open positions are flattened. `None` switches it off.
+    #:
+    #: The rollover block alone was never enough. It stops us opening into the
+    #: worst thirty minutes but says nothing about what is already on, so a
+    #: position taken in a 1-pip market gets carried into a 6-pip one and is
+    #: charged the difference on the way out — the stop is hit by the spread
+    #: rather than by the market. On a small account with tight stops that is
+    #: not a tail risk, it is what happens every single evening.
+    #:
+    #: 20:15 UTC is 22:15 in Amsterdam: New York is winding down, London has
+    #: been shut for hours, and the book thins out well before the rollover
+    #: itself. Deliberately earlier than the block, because being flat *before*
+    #: the spread widens is the entire point — flattening at 20:45 would pay
+    #: exactly the cost this is meant to avoid.
+    evening_flat_from: str | None = "20:15"
     block_friday_after: str | None = "19:00"
     block_sunday_before: str | None = "23:00"
     #: These markets are not forced through the FX London/New York calendar.
@@ -561,6 +577,19 @@ class PlaybooksConfig(Base):
     #: call to be settled by whichever scored higher — it is a market with no
     #: edge in either direction, and the honest answer is to stand aside.
     veto_on_conflict: bool = True
+    #: Refuse when a short-horizon theory contradicts the swing engine.
+    #:
+    #: `veto_on_conflict` only ever caught the playbooks disagreeing with each
+    #: other. The swing engine reading H1 structure as LONG while an M5 impulse
+    #: theory read the same chart as SHORT went straight through — which is the
+    #: one case where two genuinely different techniques contradict each other,
+    #: and the clearest evidence there is that the read is ambiguous.
+    #:
+    #: Silence is not disagreement: a theory with no setup has no opinion, and
+    #: most markets have no short-horizon setup at any given moment. Only an
+    #: opposing play above `min_conviction` counts — one too weak to trade in
+    #: its own right is too weak to cancel somebody else's trade.
+    require_method_agreement: bool = True
     #: Spread ceiling as a fraction of the stop, for every short-horizon play.
     #: The constraint that actually binds: at 0.15 a 10-pip stop tolerates
     #: 1.5 pips of spread and no more.
