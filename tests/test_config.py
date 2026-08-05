@@ -371,7 +371,7 @@ class TestTradeFrequency:
         assert settings.instruments.symbol_suffix == ".i"
         assert settings.instruments.universe_mode == "affordable"
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
-        assert settings.ai.anthropic_model == "claude-sonnet-5"
+        assert settings.ai.anthropic_model == "claude-opus-5"
         # Large enough to cover everything the cheap scan lets through on a full
         # broker catalogue, rather than a top-N slice of it.
         assert settings.scanner.deep_candidates >= 200

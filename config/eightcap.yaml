@@ -188,7 +188,13 @@ analysis:
 ai:
   enabled: true
   provider: anthropic
-  anthropic_model: claude-sonnet-5
+  # Opus 5, not Sonnet. This model is the only thing in the pipeline doing
+  # judgement rather than arithmetic, and it is the last gate before real money
+  # on a EUR 100 account — the one place where paying more per call is
+  # obviously worth it. Roughly 1.7x Sonnet's price per token, against a call
+  # count that the veto memory, the review cache and the new pre-adviser gates
+  # have already cut hard.
+  anthropic_model: claude-opus-5
   # An approval below this is silently converted into a veto, which is how a
   # run of seventy-four vetoes happened: Claude was answering 0.60-0.62 against
   # a 0.65 bar, so even the setups it judged sound were flipped. 0.55 is the
