@@ -390,6 +390,11 @@ class PositionManager:
             risk=risk,
             secure_at_r=config.health_secure_at_r,
             tighten_at_r=config.health_tighten_at_r,
+            # So the drift readers can tell how much of their window is from
+            # after this trade opened, rather than from the chart that produced
+            # it. Taken from the timeframe rather than hardcoded: the two must
+            # not be able to disagree.
+            fast_bar_minutes=Timeframe.M1.duration.total_seconds() / 60.0,
         )
 
     def _act_on_health(
