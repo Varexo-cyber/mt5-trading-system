@@ -793,6 +793,28 @@ class JarvisRunner:
         # no amount of edge in the setup survives that. The playbooks already
         # refused on this; the confluence path did not, which is where the
         # evening stop-outs were coming from.
+        # Is the market already moving the other way? Asked before the paid
+        # review, because a setup price is actively contradicting is not worth
+        # an opinion — and because this is the gate that would have stopped a
+        # short being sent into a resistance break.
+        confirmed, adverse = self._entry_is_confirmed(context, idea)
+        if not confirmed:
+            assert adverse is not None  # only False once it has been measured
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AWAITING_CONFIRMATION,
+                f"price has run {adverse:.2f} ATR against this {idea.direction.name} over the "
+                f"last {self.settings.analysis.confluence.confirmation_bars} "
+                f"{self.settings.analysis.confluence.confirmation_timeframe} bars, above the "
+                f"{self.settings.analysis.confluence.confirmation_max_adverse_atr:.2f} limit; "
+                f"the setup may still be right, it is early. Re-checked next cycle.",
+                signals=list(idea.signals),
+                extra={**filter_data, "adverse_atr": round(adverse, 2)},
+            )
+            return False
+
         # Give the stop the room the costs demand, before anything is sized.
         #
         # The cost gate in the sizer would otherwise refuse this outright, and
@@ -1457,6 +1479,49 @@ class JarvisRunner:
             ],
         }
         write_json_atomic(self.health_file, payload)
+
+    def _entry_is_confirmed(
+        self, context: MarketContext, idea: TradeIdea
+    ) -> tuple[bool, float | None]:
+        """Is price already running against this trade at the moment of entry?
+
+        Returns `(ok, adverse_atr)`. The second value is how far price has
+        travelled the wrong way over the confirmation window, in ATR, and is
+        None whenever the question could not be asked.
+
+        The engine finds a level, forms a view, and the order goes out on the
+        same tick. Nothing in between ever looks at which way price is moving
+        *right now* — so a short is sent into a market climbing through the
+        very level it is short against. A live GBPJPY short was that exactly:
+        resistance broke upward and the system sold into the break.
+
+        This is the cheapest form of waiting for confirmation and the only one
+        that needs no state. It does not ask whether the market has proved the
+        thesis right; it asks whether the market has already started proving it
+        wrong. A setup refused here is not discarded — every cycle re-examines
+        it, and it is taken the moment the adverse move stops.
+
+        Fails open when it cannot measure. A missing timeframe is not evidence
+        that price is running against the trade, and the analysis gates that
+        judged the setup have all already passed.
+        """
+        config = self.settings.analysis.confluence
+        if not config.require_entry_confirmation or idea.direction is None:
+            return True, None
+        try:
+            timeframe = Timeframe.parse(config.confirmation_timeframe)
+            frame = context.bars(timeframe).df
+            reference = atr(frame, period=14)
+        except (KeyError, TradingSystemError, ValueError):
+            return True, None
+        if reference <= 0 or len(frame) <= config.confirmation_bars:
+            return True, None
+
+        closes = frame["close"].to_numpy()
+        travelled = float(closes[-1] - closes[-1 - config.confirmation_bars])
+        # Positive means the market has moved against the intended direction.
+        adverse = -travelled * int(idea.direction) / reference
+        return adverse <= config.confirmation_max_adverse_atr, adverse
 
     def _widen_stop_for_costs(self, idea: TradeIdea, spec) -> TradeIdea:  # type: ignore[no-untyped-def]
         """Push the stop out until commission and slippage are a small part of it.
