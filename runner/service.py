@@ -34,11 +34,13 @@ from analysis import (
 )
 from analysis.confluence import TradeIdea
 from analysis.playbooks import (
+    BreakConfig,
     FadeConfig,
     MomentumScalp,
     Playbook,
     PlaybookEngine,
     PlaybookVerdict,
+    RangeBreak,
     RangeFade,
     ScalpConfig,
 )
@@ -1671,6 +1673,10 @@ class JarvisRunner:
         if config.range_fade:
             chosen.append(
                 RangeFade(FadeConfig(max_spread_share_of_stop=config.max_spread_share_of_stop))
+            )
+        if config.range_break:
+            chosen.append(
+                RangeBreak(BreakConfig(max_spread_share_of_stop=config.max_spread_share_of_stop))
             )
         if not chosen:
             return None

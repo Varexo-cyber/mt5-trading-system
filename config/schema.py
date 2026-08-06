@@ -823,6 +823,14 @@ class PlaybooksConfig(Base):
     momentum_scalp: bool = True
     #: M15 range-extreme rejection targeting the midpoint, ~3 hours.
     range_fade: bool = True
+    #: M15 range break, targeting a measured move, ~2 hours.
+    #:
+    #: The counterpart to `range_fade`, and worth having on even if it never
+    #: opened a trade. Without it the system is not neutral about which of the
+    #: two is happening: it fades every edge, including the ones that are
+    #: giving way. With it, a genuine break has both theories pointing opposite
+    #: ways and `veto_on_conflict` stands them both down.
+    range_break: bool = True
     #: Refuse everything when two theories disagree on direction.
     #:
     #: On by default and it should stay on. Momentum continuation and range
