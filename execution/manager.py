@@ -54,6 +54,13 @@ BAR_CACHE_SECONDS = 3.0
 #: Distinguishes "not built yet" from "built, and there is no window".
 _UNSET = object()
 
+#: How much a peak must improve to count as a new high, in R.
+#:
+#: Not zero. `peak_r` is recomputed from a live tick on every pass, so the last
+#: decimal flickers constantly; treating a 0.0001R wobble as a new high would
+#: reset the stall clock forever and the rule would never fire once.
+_PEAK_EPSILON_R = 0.02
+
 
 class PositionManager:
     def __init__(self, broker: Broker, journal: Journal, settings: Settings) -> None:
@@ -70,6 +77,9 @@ class PositionManager:
         #: snapshot of the moment it happened to be asked, and by the deck.
         self.last_health: dict[int, PositionHealth] = {}
         self._session_filter: object = _UNSET
+        #: ticket -> (highest R seen, when it was first reached). In memory on
+        #: purpose: a restart resets the clock, which errs toward holding.
+        self._peak_seen: dict[int, tuple[float, datetime]] = {}
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -211,6 +221,14 @@ class PositionManager:
             # alone — see `_giveback_exit`.
             health = self._read_health(position, r_now, age_hours * 60.0, risk, tick)
             self.last_health[position.ticket] = health
+            # Asked first, because it is the only exit here that can act while
+            # the money is still on the table. The two rules cannot both apply:
+            # this one needs price near the peak, the give-back needs it far
+            # from the peak.
+            stalled = self._peak_stall_exit(position, r_now, peak_r, now)
+            if stalled is not None:
+                events.append(stalled)
+                continue
             giveback = self._giveback_exit(position, r_now, peak_r, health)
             if giveback is not None:
                 events.append(giveback)
@@ -516,6 +534,72 @@ class PositionManager:
         """
         self.journal.update_excursions(trade_id, mae_r=min(0.0, r_now), mfe_r=max(0.0, r_now))
         return max(recorded_peak, r_now)
+
+    def _peak_stall_exit(
+        self, position: Position, r_now: float, peak_r: float, now: datetime
+    ) -> ManagementEvent | None:
+        """Bank a profit whose move has stopped advancing, while it is still there.
+
+        Every other exit in this file measures how much has been *given back*,
+        which means every one of them can only act after the money has gone.
+        This measures what a person actually watches: the trade has stopped
+        making new highs. A move that is working prints a new high every few
+        minutes. One that has sat at the same level for six is not pausing, it
+        is over, and what comes next is the retrace that all the other rules
+        are waiting for.
+
+        A live NZDCAD long is the case. It peaked at 0.92R — EUR 1.60 on an
+        EUR 87 account — and closed at 0.13R for 22 cents. Three separate rules
+        were aimed at it: the profit lock armed at 1.0R and so never fired, the
+        give-back allowed an 80% drain while the health read stayed healthy,
+        and the break-even stop sat below both and took the trade. The crudest
+        rule in the file decided the outcome, and the operator watching it had
+        the right instinct forty minutes earlier: it has been sitting at the
+        same high for a while, take it.
+
+        Three conditions, all required. Enough profit to be worth protecting;
+        still near the high, because past that the give-back owns the decision
+        and this rule is specifically about leaving *at* the top; and a peak
+        that has not moved for the configured wait.
+
+        The peak's age is held in memory and is lost on restart, which resets
+        the clock and errs toward holding. That is the safe direction for a
+        rule that closes positions, and the alternative — persisting it — would
+        make a restart able to close a trade on evidence gathered before the
+        process that is now running ever existed.
+        """
+        config = self.settings.trade_management
+        wait = config.peak_stall_minutes
+        if wait <= 0 or peak_r < config.peak_stall_arm_r:
+            self._peak_seen.pop(position.ticket, None)
+            return None
+
+        seen = self._peak_seen.get(position.ticket)
+        if seen is None or peak_r > seen[0] + _PEAK_EPSILON_R:
+            # A new high resets the clock. This is the whole mechanism: while
+            # the trade keeps working it can never stall.
+            self._peak_seen[position.ticket] = (peak_r, now)
+            return None
+
+        if r_now < peak_r * config.peak_stall_near_peak:
+            return None
+        standing_minutes = (now - seen[1]).total_seconds() / 60.0
+        if standing_minutes < wait:
+            return None
+
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        self._peak_seen.pop(position.ticket, None)
+        return ManagementEvent(
+            position.ticket,
+            "PEAK_STALL",
+            f"{peak_r:.2f}R peak has not advanced in {standing_minutes:.0f} min and price "
+            f"is still at {r_now:.2f}R; the move is done, banking it near the high",
+            result.filled_price,
+            position.profit + position.swap,
+            r_at_action=r_now,
+        )
 
     def _profit_lock(
         self, position: Position, r_now: float, peak_r: float, risk: float
