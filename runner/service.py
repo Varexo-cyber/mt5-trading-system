@@ -36,13 +36,17 @@ from analysis.confluence import TradeIdea
 from analysis.playbooks import (
     BreakConfig,
     FadeConfig,
+    FailedBreak,
+    FailedBreakConfig,
     MomentumScalp,
     Playbook,
     PlaybookEngine,
     PlaybookVerdict,
+    PullbackConfig,
     RangeBreak,
     RangeFade,
     ScalpConfig,
+    TrendPullback,
 )
 from config.schema import Settings
 from core.broker import Broker
@@ -1677,6 +1681,18 @@ class JarvisRunner:
         if config.range_break:
             chosen.append(
                 RangeBreak(BreakConfig(max_spread_share_of_stop=config.max_spread_share_of_stop))
+            )
+        if config.failed_break:
+            chosen.append(
+                FailedBreak(
+                    FailedBreakConfig(max_spread_share_of_stop=config.max_spread_share_of_stop)
+                )
+            )
+        if config.trend_pullback:
+            chosen.append(
+                TrendPullback(
+                    PullbackConfig(max_spread_share_of_stop=config.max_spread_share_of_stop)
+                )
             )
         if not chosen:
             return None

@@ -823,6 +823,19 @@ class PlaybooksConfig(Base):
     momentum_scalp: bool = True
     #: M15 range-extreme rejection targeting the midpoint, ~3 hours.
     range_fade: bool = True
+    #: H1 trend, M15 pullback, entry on the turn back. ~4 hours.
+    #:
+    #: The most ordinary thing a market does — go one way, rest, go on — and
+    #: nothing saw it. The scalp wants compression right before the move, which
+    #: a trend running for hours does not have; the fade wants a range, and a
+    #: trend is the absence of one.
+    trend_pullback: bool = True
+    #: A break of the M15 range that could not hold and came back inside. ~2.5h.
+    #:
+    #: Cannot fire on the same bar as `range_break`, by construction: that one
+    #: needs a close outside the edge, this one a close back inside. They read
+    #: one event and disagree only about how it ended.
+    failed_break: bool = True
     #: M15 range break, targeting a measured move, ~2 hours.
     #:
     #: The counterpart to `range_fade`, and worth having on even if it never
