@@ -432,6 +432,25 @@ class Journal:
                 break
         return streak
 
+    def last_loss_closed_at(self, symbol: str) -> datetime | None:
+        """When the most recent losing trade on this instrument closed.
+
+        Losses only. A winner closing and a fresh setup appearing on the same
+        instrument is an ordinary sequence; a loser closing and the same
+        instrument being taken again a minute later is not.
+        """
+        row = self.conn.execute(
+            "SELECT closed_at FROM trades WHERE symbol = ? AND closed_at IS NOT NULL "
+            "AND pnl_money < 0 ORDER BY closed_at DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        if row is None or not row["closed_at"]:
+            return None
+        try:
+            return datetime.fromisoformat(str(row["closed_at"]))
+        except ValueError:
+            return None
+
     def last_trade_risk_pct(self) -> float | None:
         """Risk percentage of the most recently opened trade.
 

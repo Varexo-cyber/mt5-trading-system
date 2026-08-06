@@ -105,6 +105,11 @@ class Reason(StrEnum):
     #: CORRELATED_EXPOSURE, which measures how returns have moved together:
     #: a GBP short is a GBP short by identity, and no measurement weakens it.
     CURRENCY_CONCENTRATION = "CURRENCY_CONCENTRATION"
+    #: This instrument took money off us a moment ago and nothing has changed
+    #: since. Live pair: GBPNZD short closed at a loss at 18:53:43, GBPNZD
+    #: short reopened at 18:54:58, lost again. The read that produced the first
+    #: was wrong, and seventy-five seconds is not new information.
+    LOSS_COOLDOWN = "LOSS_COOLDOWN"
 
     # -- exposure limits ---------------------------------------------------
     MAX_POSITIONS_REACHED = "MAX_POSITIONS_REACHED"

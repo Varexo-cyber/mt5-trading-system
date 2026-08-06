@@ -752,6 +752,20 @@ class CurrencyExposureConfig(Base):
     max_positions_per_currency: int = Field(default=1, ge=1, le=10)
 
 
+class LossCooldownConfig(Base):
+    """How long an instrument is left alone after it has cost us money."""
+
+    enabled: bool = True
+    #: A third of the shortest playbook horizon. `momentum_scalp` expects to be
+    #: finished inside an hour, so re-entering the same instrument within
+    #: twenty minutes of a loss is the same idea taken twice — the chart it
+    #: read has not had time to become a different chart.
+    #:
+    #: Not "the observed 75 seconds plus a margin". That would fix the one case
+    #: in the log and nothing standing next to it.
+    minutes: float = Field(default=20.0, ge=0.0, le=1440.0)
+
+
 class FiltersConfig(Base):
     news: NewsFilterConfig = NewsFilterConfig()
     session: SessionFilterConfig = SessionFilterConfig()
@@ -760,6 +774,7 @@ class FiltersConfig(Base):
     spread: SpreadFilterConfig = SpreadFilterConfig()
     correlation: CorrelationFilterConfig = CorrelationFilterConfig()
     currency_exposure: CurrencyExposureConfig = CurrencyExposureConfig()
+    loss_cooldown: LossCooldownConfig = LossCooldownConfig()
 
 
 # ------------------------------------------------------------- analysis ---

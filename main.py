@@ -30,6 +30,7 @@ from filters.calendar.service import CalendarService
 from filters.correlation_filter import CorrelationFilter
 from filters.currency_exposure import CurrencyExposureFilter
 from filters.liveliness_filter import LivelinessFilter
+from filters.loss_cooldown import LossCooldownFilter
 from filters.news_filter import NewsFilter
 from filters.runway_filter import RunwayFilter
 from filters.session_filter import SessionFilter
@@ -315,6 +316,12 @@ def build_filter_chain(
             NewsFilter(news_config, calendar, clock),
             session,
             RunwayFilter(settings.filters.runway, session),
+            # Early, and above everything that fetches bars: one indexed row
+            # from the journal decides it, and no amount of market analysis
+            # changes the answer. The reason recorded then names the real
+            # objection rather than whichever measurement happened to fail
+            # second.
+            LossCooldownFilter(settings.filters.loss_cooldown, journal.last_loss_closed_at),
             LivelinessFilter(
                 settings.filters.liveliness,
                 lambda symbol, timeframe: data.get_series(symbol, timeframe),
