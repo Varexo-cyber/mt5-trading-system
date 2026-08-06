@@ -654,3 +654,94 @@ class TestAgedButProfitable:
 
     def test_no_deadline_configured_means_no_time_exit_at_all(self) -> None:
         assert self.verdict(500.0, 0.40, 0.40, deadline=None) is None
+
+
+class TestProfitLock:
+    """Break-even protects the entry; this protects the move.
+
+    Between `break_even_at_r` (0.6) and `partial_close_at_r` (1.5) nothing
+    touched the stop, so a trade could run to 1.4R over several hours and hand
+    every cent of it back to a stop still sitting at entry — right for hours,
+    paid nothing.
+
+    It overlaps the give-back exit on purpose. The give-back lives inside our
+    own loop; a stop lives at the broker and survives a VPS reboot, a dropped
+    terminal, and this process dying at three in the morning. This account is
+    meant to be left alone overnight.
+    """
+
+    @staticmethod
+    def lock(peak_r: float, r_now: float, current_sl: float, *, entry: float = 1.0800):
+        """Return (event, requested_sl) from one profit-lock evaluation."""
+        from types import SimpleNamespace
+
+        from config.schema import TradeManagementConfig
+        from core.types import Direction, Position
+        from execution.manager import PositionManager
+
+        sent: dict[str, float] = {}
+
+        def modify_stops(position, sl, tp):  # type: ignore[no-untyped-def]
+            sent["sl"] = sl
+            return SimpleNamespace(ok=True)
+
+        manager = PositionManager.__new__(PositionManager)
+        manager.settings = SimpleNamespace(trade_management=TradeManagementConfig())
+        manager.broker = SimpleNamespace(
+            modify_stops=modify_stops,
+            spec=lambda symbol: SimpleNamespace(normalize_price=lambda price: round(price, 5)),
+        )
+        position = Position(
+            ticket=1,
+            symbol="EURUSD",
+            direction=Direction.LONG,
+            volume=0.01,
+            price_open=entry,
+            sl=current_sl,
+            tp=entry + 0.0040,
+            profit=1.0,
+            swap=0.0,
+            opened_at=datetime(2026, 8, 6, 10, 0, tzinfo=UTC),
+            magic=1,
+        )
+        event = manager._profit_lock(position, r_now, peak_r, risk=0.0010)
+        return event, sent.get("sl")
+
+    def test_below_the_arming_peak_nothing_moves(self) -> None:
+        event, sl = self.lock(peak_r=0.9, r_now=0.9, current_sl=1.0800)
+        assert event is None and sl is None
+
+    def test_at_one_r_it_secures_half(self) -> None:
+        """Peak 1.0R with a 10-pip risk puts the stop 5 pips above entry."""
+        event, sl = self.lock(peak_r=1.0, r_now=1.0, current_sl=1.0800)
+        assert event is not None
+        assert event.action == "PROFIT_LOCK"
+        assert sl == pytest.approx(1.08050, abs=1e-6)
+
+    def test_it_ratchets_off_the_peak_not_the_current_price(self) -> None:
+        """A trade that reached 2R keeps its 1R stop after pulling back.
+
+        This is the whole reason it reads the peak: measured from the current
+        price, a pullback would walk the stop backwards, which is the one thing
+        a stop must never do.
+        """
+        event, sl = self.lock(peak_r=2.0, r_now=1.2, current_sl=1.0805)
+        assert event is not None
+        assert sl == pytest.approx(1.08100, abs=1e-6)
+
+    def test_a_stop_already_better_is_left_alone(self) -> None:
+        """The ATR trail may already have moved past it. No retreat."""
+        event, sl = self.lock(peak_r=2.0, r_now=1.9, current_sl=1.0815)
+        assert event is None and sl is None
+
+    def test_it_never_strangles_the_winner(self) -> None:
+        """Half the peak, not all of it — the market must be allowed to breathe.
+
+        A stop tucked under the high is taken out by ordinary noise, and this
+        one always leaves at least half the excursion as room.
+        """
+        _, sl = self.lock(peak_r=3.0, r_now=3.0, current_sl=1.0800)
+        assert sl is not None
+        high_water = 1.0800 + 3.0 * 0.0010
+        assert sl < high_water
+        assert (high_water - sl) == pytest.approx(0.0015, abs=1e-6)

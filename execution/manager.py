@@ -281,6 +281,16 @@ class PositionManager:
                             )
                         )
                         continue
+
+            # Walk the stop up behind a trade that has proved itself, instead
+            # of leaving it parked at break-even all the way to 1.5R. Placed
+            # after the partial close deliberately: banking real money outranks
+            # adjusting a stop, and the guard comes round again in a second.
+            locked = self._profit_lock(position, r_now, peak_r, risk)
+            if locked is not None:
+                events.append(locked)
+                continue
+
             if config.trailing_mode == "atr" and r_now >= config.partial_close_at_r:
                 trailing = price - atr * config.trailing_atr_multiple * int(position.direction)
                 improves = (position.direction is Direction.LONG and trailing > position.sl) or (
@@ -506,6 +516,55 @@ class PositionManager:
         """
         self.journal.update_excursions(trade_id, mae_r=min(0.0, r_now), mfe_r=max(0.0, r_now))
         return max(recorded_peak, r_now)
+
+    def _profit_lock(
+        self, position: Position, r_now: float, peak_r: float, risk: float
+    ) -> ManagementEvent | None:
+        """Secure a share of the peak at the broker, once the trade has earned it.
+
+        Break-even protects the entry; this protects the *move*. Between
+        `break_even_at_r` and `partial_close_at_r` nothing touched the stop, so
+        a position could run to 1.4R over several hours and hand back every
+        cent of it to a stop still sitting at entry — right for hours, paid
+        nothing.
+
+        Measured from the peak rather than the current price, so the stop
+        ratchets and never retreats: a trade that reached 2R keeps its 1R stop
+        even after pulling back to 1.2R. Combined with the `improves` test
+        below, a stop under this rule can only ever move in the direction of
+        the trade.
+
+        This overlaps the give-back exit on purpose, and the overlap is the
+        point. The give-back rule lives inside our own loop; a stop lives at
+        the broker and survives a VPS reboot, a dropped terminal connection,
+        and this process dying at three in the morning. Protection that
+        requires our code to still be running is absent exactly when it matters
+        most, and this account is meant to be left alone overnight.
+        """
+        config = self.settings.trade_management
+        if peak_r < config.profit_lock_from_r or risk <= 0:
+            return None
+
+        sign = int(position.direction)
+        secured_r = peak_r * config.profit_lock_fraction
+        target = position.price_open + secured_r * risk * sign
+        improves = (position.direction is Direction.LONG and target > position.sl) or (
+            position.direction is Direction.SHORT and target < position.sl
+        )
+        if not improves:
+            return None
+
+        spec = self.broker.spec(position.symbol)
+        result = self.broker.modify_stops(position, sl=spec.normalize_price(target), tp=position.tp)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "PROFIT_LOCK",
+            f"peak {peak_r:.2f}R, now {r_now:.2f}R; stop secures "
+            f"{secured_r:.2f}R at the broker",
+            r_at_action=r_now,
+        )
 
     @staticmethod
     def _time_exit_verdict(
