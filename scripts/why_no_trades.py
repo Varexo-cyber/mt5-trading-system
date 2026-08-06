@@ -73,6 +73,13 @@ _ADVICE = {
         "No economic calendar, so every entry is blocked by design. Run "
         "`python scripts/verify_calendar.py` — this one WILL stop all trading."
     ),
+    "CURRENCY_CONCENTRATION": (
+        "A second position leaning the same way on a currency already in the book. "
+        "GBPAUD short and GBPJPY short are not two trades, they are one GBP short "
+        "with a second lot on it. Expected when the whole market is moving on one "
+        "currency; raise `filters.currency_exposure.max_positions_per_currency` only "
+        "if you actually want that bet doubled."
+    ),
     "AI_VETO_PATTERN_KNOWN": (
         "Claude has refused this symbol and direction several times for the same "
         "underlying reason, so the question was not bought again. Not a judgement on "

@@ -740,6 +740,18 @@ class LivelinessFilterConfig(Base):
         return self
 
 
+class CurrencyExposureConfig(Base):
+    """How many positions may lean the same way on one currency."""
+
+    enabled: bool = True
+    #: Positions already leaning one way on a currency before a further one is
+    #: refused. One, because a two-slot account holding GBPAUD short and
+    #: GBPJPY short is not diversified — it is one GBP short with a second lot
+    #: on it, and it was believed to be two independent trades right up until
+    #: both moved together.
+    max_positions_per_currency: int = Field(default=1, ge=1, le=10)
+
+
 class FiltersConfig(Base):
     news: NewsFilterConfig = NewsFilterConfig()
     session: SessionFilterConfig = SessionFilterConfig()
@@ -747,6 +759,7 @@ class FiltersConfig(Base):
     liveliness: LivelinessFilterConfig = LivelinessFilterConfig()
     spread: SpreadFilterConfig = SpreadFilterConfig()
     correlation: CorrelationFilterConfig = CorrelationFilterConfig()
+    currency_exposure: CurrencyExposureConfig = CurrencyExposureConfig()
 
 
 # ------------------------------------------------------------- analysis ---
