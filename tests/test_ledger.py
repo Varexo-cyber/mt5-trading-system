@@ -17,6 +17,7 @@ import pytest
 from dashboard.ledger import (
     closed_trades,
     day_start,
+    operation_label,
     recent_management,
     starting_equity,
     summarise,
@@ -319,3 +320,32 @@ def test_the_management_log_respects_its_limit(database: Path) -> None:
 
 def test_a_missing_database_has_no_management_log(tmp_path) -> None:  # type: ignore[no-untyped-def]
     assert recent_management(tmp_path / "nothing.db") == []
+
+
+class TestOperationLabel:
+    """The mode tile has three states, and the third one is why it exists.
+
+    The heartbeat is written when a cycle *completes*. On a cold cache the
+    first cycle pulls every timeframe for the whole catalogue, so for several
+    minutes the process is up, the pid file is on disk, and there is no
+    heartbeat. Reading that as OFF tells a live operator that nothing is
+    running — and the obvious response, starting it again, puts two instances
+    on one account fighting over the same positions.
+    """
+
+    def test_not_running_is_off(self) -> None:
+        assert operation_label(False, {}) == "OFF"
+
+    def test_a_stale_heartbeat_from_a_dead_process_is_still_off(self) -> None:
+        assert operation_label(False, {"operation": "experimental_live"}) == "OFF"
+
+    def test_running_without_a_heartbeat_yet_is_starting(self) -> None:
+        assert operation_label(True, {}) == "STARTING"
+
+    def test_running_reports_the_operation(self) -> None:
+        assert operation_label(True, {"operation": "experimental_live"}) == "EXPERIMENTAL_LIVE"
+        assert operation_label(True, {"operation": "monitor"}) == "MONITOR"
+
+    def test_a_heartbeat_missing_its_operation_does_not_claim_to_be_starting(self) -> None:
+        """A malformed heartbeat is a different problem from a cold start."""
+        assert operation_label(True, {"ts": "2026-08-06T08:15:00Z"}) == "OFF"
