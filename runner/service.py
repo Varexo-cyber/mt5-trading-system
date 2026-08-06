@@ -207,6 +207,8 @@ class JarvisRunner:
         self.experimental_contract: ExperimentalLiveContract | None = None
         # (symbol, direction, fastest-timeframe bar close) -> the verdict given.
         self._review_cache: dict[tuple[str, str, datetime], Advice] = {}
+        # Paid reviews spent in the cycle currently running; reset by run_once.
+        self._reviews_this_cycle = 0
         # Refusals outlive the bar they were given on; see advisory/veto_memory.
         self.veto_memory = VetoMemory(root / "runtime" / "veto_memory.json")
         # What the account has taught itself, fed back into every review.
@@ -360,6 +362,7 @@ class JarvisRunner:
         self, *, batch_size: int | None = None, deep_candidates: int | None = None
     ) -> CycleSummary:
         started_at = self.clock.now()
+        self._reviews_this_cycle = 0
         if self.kill_switch.is_engaged():
             self._flatten_owned_positions("operator hard STOP")
             return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
@@ -888,6 +891,37 @@ class JarvisRunner:
             },
             "account_posture": self.posture.brief(),
         }
+        # Has this cycle already spent its review budget on better ideas?
+        #
+        # Asked here, before the payload is built and before anything is
+        # written, and only when the verdict is not already on file — a
+        # replayed verdict costs nothing and must not be rationed.
+        #
+        # Candidates arrive in the engine's order of conviction, so whatever
+        # reaches this point first is the best thing that survived every free
+        # gate. Spending the budget there and stopping is what a person with a
+        # fixed research budget does. The live account was doing the opposite:
+        # paying five cents to be told, in the reviewer's own words, that its
+        # "weakest setup of the 10 tradeable candidates" was weak.
+        remaining = self._review_budget_left()
+        if (
+            remaining == 0
+            and self.operation is not OperationMode.MONITOR
+            and self._cached_review(idea, context) is None
+        ):
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AI_BUDGET_SPENT,
+                f"rank {rank} of {of}; this cycle's {self.settings.ai.max_reviews_per_cycle} "
+                f"paid reviews went to higher-conviction setups. Not a judgement on this "
+                f"one — it was not asked about, and it is first in line next cycle.",
+                signals=list(idea.signals),
+                extra=filter_data,
+            )
+            return False
+
         if self.memory.has_evidence():
             briefing["learned_so_far"] = self.memory.briefing(symbol, idea.direction.name)
         # Every theory's reading of this chart, including the ones that did not
@@ -1616,20 +1650,11 @@ class JarvisRunner:
         only ever replays a veto or an approval of an unchanged setup.
         """
         key = self._review_key(idea, context)
-        if key is not None:
-            cached = self._review_cache.get(key)
-            if cached is not None:
-                log.info(
-                    "reusing the AI verdict for an unchanged setup",
-                    extra={
-                        "event": "ai_review_reused",
-                        "symbol": idea.symbol,
-                        "direction": idea.direction.name if idea.direction else None,
-                        "approved": cached.approved,
-                    },
-                )
-                return cached
+        cached = self._cached_review(idea, context)
+        if cached is not None:
+            return cached
 
+        self._reviews_this_cycle += 1
         advice = self.advisor.review(idea, context, proposal, memory)
         if key is not None:
             if len(self._review_cache) >= _REVIEW_CACHE_ENTRIES:
@@ -1637,6 +1662,38 @@ class JarvisRunner:
                 del self._review_cache[next(iter(self._review_cache))]
             self._review_cache[key] = advice
         return advice
+
+    def _cached_review(self, idea: TradeIdea, context: MarketContext) -> Advice | None:
+        """A verdict already on file for this exact setup, or None.
+
+        Separate from `_reviewed` so the budget gate can ask "would this cost
+        anything" without committing to the call. A replayed verdict is free
+        and must never consume budget — charging for it would make a cheap
+        cycle look expensive and starve the candidates that do need asking.
+        """
+        key = self._review_key(idea, context)
+        if key is None:
+            return None
+        cached = self._review_cache.get(key)
+        if cached is None:
+            return None
+        log.info(
+            "reusing the AI verdict for an unchanged setup",
+            extra={
+                "event": "ai_review_reused",
+                "symbol": idea.symbol,
+                "direction": idea.direction.name if idea.direction else None,
+                "approved": cached.approved,
+            },
+        )
+        return cached
+
+    def _review_budget_left(self) -> int | None:
+        """Paid reviews still allowed this cycle. None means no budget is set."""
+        budget = self.settings.ai.max_reviews_per_cycle
+        if budget <= 0:
+            return None
+        return max(0, budget - self._reviews_this_cycle)
 
     def _review_key(
         self, idea: TradeIdea, context: MarketContext

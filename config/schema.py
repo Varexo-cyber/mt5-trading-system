@@ -1045,6 +1045,21 @@ class AIConfig(Base):
     minimum_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
     fail_closed: Literal[True] = True
+    #: Paid pre-trade reviews allowed per cycle. 0 removes the budget.
+    #:
+    #: Candidates reach the reviewer in the engine's own order of conviction,
+    #: so a budget is spent on the best setups that survived every free gate
+    #: and then stops. Without one, a cycle pays to be told that its ninth,
+    #: tenth and eleventh-best ideas are weak — which is what the reviewer
+    #: actually said, in those words, on a live account.
+    #:
+    #: Deliberately a budget rather than a rank cut-off. Candidates are
+    #: processed in rank order and a low rank is only *reached* because the
+    #: better ones were rejected earlier, so "never review below rank 3" would
+    #: silently stop trading altogether on any day the top three keep failing
+    #: a deterministic gate. A budget cannot do that: whatever reaches the
+    #: reviewer first is by construction the best thing still standing.
+    max_reviews_per_cycle: int = Field(default=3, ge=0, le=50)
 
 
 # -------------------------------------------------------------- settings ---

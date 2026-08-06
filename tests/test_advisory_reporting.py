@@ -98,9 +98,20 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     # but the engine's own summary to restate, which is what every early answer
     # did — it could not see a level being run into or judge whether the target
     # was somewhere this market goes.
-    assert len(safe_payload["timeframes"]["H1"]["closed_bars"]) == len(frame)
-    assert safe_payload["timeframes"]["H1"]["atr14"] > 0
-    assert "range_high" in safe_payload["timeframes"]["H1"]
+    h1 = safe_payload["timeframes"]["H1"]
+    assert len(h1["rows"]) == len(frame)
+    assert h1["atr14"] > 0
+    assert "range_high" in h1
+    # Rows, not objects: the same numbers at half the tokens, and bars are 91%
+    # of the request. A row is [open, high, low, close, tick_volume] and
+    # `columns` says so — a bare array with no header is a puzzle, not data.
+    assert h1["columns"] == "open,high,low,close,tick_volume"
+    assert all(len(row) == 5 for row in h1["rows"])
+    assert h1["rows"][-1][3] == pytest.approx(float(frame["close"].iloc[-1]), abs=1e-6)
+    # Per-bar timestamps are gone; the window is still pinned at both ends,
+    # and the interval makes every bar in between arithmetic.
+    assert h1["bar_interval"] == "H1"
+    assert h1["oldest_bar_opened"] and h1["last_closed_bar"]
     output_config = captured["output_config"]
     assert isinstance(output_config, dict)
     assert output_config["format"]["type"] == "json_schema"

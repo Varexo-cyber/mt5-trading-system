@@ -25,6 +25,11 @@ class Reason(StrEnum):
     METHODS_DISAGREE = "METHODS_DISAGREE"
     DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
     AI_VETO = "AI_VETO"
+    #: This cycle has spent its paid-review budget on higher-conviction
+    #: candidates. Not a judgement on the setup — it was never asked about.
+    #: It comes back next cycle, and if the better ideas have cleared out by
+    #: then, it gets the budget.
+    AI_BUDGET_SPENT = "AI_REVIEW_BUDGET_SPENT"
     LIVE_NOT_ARMED = "LIVE_NOT_ARMED"
 
     # -- sizing: the account cannot express this trade --------------------
