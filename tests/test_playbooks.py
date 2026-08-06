@@ -15,10 +15,12 @@ import pandas as pd
 import pytest
 
 from analysis.playbooks import (
+    BreakConfig,
     FadeConfig,
     MomentumScalp,
     Play,
     PlaybookEngine,
+    RangeBreak,
     RangeFade,
     ScalpConfig,
     _atr,
@@ -360,3 +362,127 @@ def test_series_duration_sanity() -> None:
     """Guard the helper: M5 bars must actually be five minutes apart."""
     frame = series(Timeframe.M5, [1.1, 1.2, 1.3]).df
     assert frame.index[1] - frame.index[0] == timedelta(minutes=5)
+
+
+# ----------------------------------------------------------------- the break ---
+
+
+def broken_out(*, inside: float = 0.0008, beyond: float = 0.0006) -> list[float]:
+    """A respected range whose final bar closes decisively through the top.
+
+    The bar opens `inside` the range and closes `beyond` the edge, which is the
+    shape a real break has: a large body relative to how far past the level it
+    finishes. Opening exactly on the edge instead would make body and extension
+    the same number, and the two gates measure deliberately different things —
+    one wants conviction, the other refuses a chase.
+    """
+    path = ranging_path()
+    edge = max(path)
+    path[-2] = edge - inside
+    path[-1] = edge + beyond
+    return path
+
+
+def test_a_range_that_gives_way_is_traded_with_not_against() -> None:
+    """The operator's own complaint: price printed a new high, the obvious read
+    was continuation, and the system was short the top."""
+    path = broken_out()
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    found = RangeBreak(BreakConfig(min_touches=2)).propose(
+        context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+    )
+
+    assert found is not None
+    assert found.direction is Direction.LONG
+    assert found.stop_loss < found.entry
+    assert found.take_profit > found.entry
+
+
+def test_the_stop_sits_back_behind_the_broken_edge() -> None:
+    """Where the theory fails. A break taken back inside the range was not a
+    break, and that is the only thing worth paying to find out."""
+    path = broken_out()
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    found = RangeBreak(BreakConfig(min_touches=2)).propose(
+        context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+    )
+
+    assert found is not None
+    assert found.stop_loss < max(ranging_path())
+
+
+def test_a_wick_through_the_top_is_not_a_break() -> None:
+    """It is the fade's signal. The two readings must never both be available
+    on one bar, or the engine would veto every range edge it ever saw."""
+    path = ranging_path()
+    path[-1] = max(path) - 0.0001  # poked up and closed back inside
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    assert (
+        RangeBreak(BreakConfig(min_touches=2)).propose(
+            context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )
+
+
+def test_a_drift_through_the_level_is_erosion_not_a_break() -> None:
+    """An ordinary-sized bar sliding past a level is the shape that most often
+    comes straight back."""
+    path = broken_out(inside=0.00002, beyond=0.00004)
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    assert (
+        RangeBreak(BreakConfig(min_touches=2)).propose(
+            context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )
+
+
+def test_a_break_found_late_is_not_chased() -> None:
+    """The stop still has to sit at the level while the remaining move has
+    shrunk, so a late entry is strictly worse on both sides of the ratio."""
+    path = broken_out(inside=0.0008, beyond=0.0100)
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    assert (
+        RangeBreak(BreakConfig(min_touches=2)).propose(
+            context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )
+
+
+def test_a_range_nobody_respected_is_not_worth_breaking() -> None:
+    trending = np.linspace(1.1000, 1.1200, 90).tolist()
+    frames = {Timeframe.M15: series(Timeframe.M15, trending)}
+
+    assert RangeBreak(BreakConfig()).propose(context(frames, bid=1.1200), TradingMode.PAPER) is None
+
+
+def test_the_two_range_theories_stand_each_other_down() -> None:
+    """The most valuable thing this playbook does, and it does it without
+    opening anything.
+
+    Before it existed the system was not neutral about which of the two was
+    happening — it faded every edge, including the ones giving way. A losing
+    trade avoided counts the same as a winning one taken, and it is available
+    far more often.
+    """
+    settings = load_settings(env_overrides=False)
+    engine = PlaybookEngine(
+        [
+            _Fixed("range_fade", play(direction=Direction.SHORT, conviction=80.0)),
+            _Fixed("range_break", play(direction=Direction.LONG, conviction=60.0)),
+        ],
+        settings.analysis.confluence,
+    )
+
+    verdict = engine.evaluate(context({}), TradingMode.PAPER)
+
+    assert verdict.conflict
+    # Not settled by the higher score. That would be inventing an edge.
+    assert "no edge either way" in verdict.note

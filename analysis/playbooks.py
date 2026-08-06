@@ -428,6 +428,139 @@ class RangeFade:
         )
 
 
+class RangeBreak:
+    """The range gave way. Trade with it, not against it.
+
+    This is the theory `RangeFade` is missing, and until it existed the system
+    was not neutral about which of the two was happening — it assumed the fade
+    every time. A range that has held three times and then breaks is the single
+    most common way a fade loses, because the same evidence that makes the fade
+    attractive (a level respected again and again) is what makes the break
+    significant when it finally goes.
+
+    The operator watched it happen and said so: price printed a new high, the
+    obvious read was continuation, and the system was short the top.
+
+    **The most valuable thing this does is disagree.** `PlaybookEngine` stands
+    every theory down when two of them point opposite ways on one chart, so on
+    a genuine breakout this fires long, the fade fires short, and the engine
+    takes neither. A losing trade avoided counts the same as a winning one
+    taken, and it is available far more often.
+
+    Three requirements, each closing a way breakouts fail:
+
+    * The range must have been real — held repeatedly, the same test the fade
+      applies, so the two are reading one definition of a range and not two.
+    * The bar must *close* through the edge with its body, not poke through
+      with a wick. A wick through the top is the fade's signal, and the two
+      readings must never both be available on one bar.
+    * The break must come with expansion. A drift through a level on an
+      ordinary-sized bar is the level eroding, not breaking, and it is the
+      shape that most often reverses straight back.
+    """
+
+    name = "range_break"
+    horizon_minutes = 120
+
+    def __init__(self, config: BreakConfig) -> None:
+        self.config = config
+
+    def propose(self, ctx: MarketContext, mode: TradingMode) -> Play | None:  # noqa: ARG002
+        series = ctx.series.get(Timeframe.M15)
+        if series is None or len(series.df) < 80 or ctx.tick is None:
+            return None
+        frame = series.df
+        atr = _atr(frame)
+        if atr <= 0:
+            return None
+
+        history = frame.iloc[-(self.config.range_bars + 1) : -1]
+        top = float(history["high"].max())
+        bottom = float(history["low"].min())
+        height = top - bottom
+        if height <= atr * self.config.min_range_atr:
+            return None
+
+        near = atr * self.config.touch_tolerance_atr
+        touches_top = int((history["high"] >= top - near).sum())
+        touches_bottom = int((history["low"] <= bottom + near).sum())
+
+        candle = frame.iloc[-1]
+        close = float(candle["close"])
+        body = abs(close - float(candle["open"]))
+        # Body, not range: a bar with a huge wick and a small body travelled and
+        # came back, which is rejection rather than a break.
+        if body < atr * self.config.min_body_atr:
+            return None
+
+        direction: Direction | None = None
+        if close > top + near and touches_top >= self.config.min_touches:
+            direction, edge, touches = Direction.LONG, top, touches_top
+        elif close < bottom - near and touches_bottom >= self.config.min_touches:
+            direction, edge, touches = Direction.SHORT, bottom, touches_bottom
+        if direction is None:
+            return None
+
+        # Already extended. A break found four bars late is a chase: the stop
+        # has to sit back at the level, so the risk grows exactly as the
+        # remaining move shrinks.
+        travelled = abs(close - edge)
+        if travelled > atr * self.config.max_extension_atr:
+            return None
+
+        entry = ctx.tick.ask if direction is Direction.LONG else ctx.tick.bid
+        # Behind the broken edge, because that is where the theory fails: a
+        # break that gets taken back inside the range was not a break.
+        stop = edge - atr * self.config.stop_buffer_atr * int(direction)
+        risk = abs(entry - stop)
+        if risk <= 0:
+            return None
+        floor = atr * self.config.min_stop_atr
+        if risk < floor:
+            stop = entry - floor * int(direction)
+            risk = floor
+
+        affordable, share = _spread_is_affordable(ctx, risk, self.config.max_spread_share_of_stop)
+        if not affordable:
+            return None
+
+        # A measured move: ranges tend to travel about their own height once
+        # they let go. Capped in R so a tall range cannot manufacture a target
+        # the market has no reason to reach.
+        projected = height * self.config.projection
+        target_distance = min(projected, risk * self.config.max_target_r)
+        if target_distance / risk < self.config.min_target_r:
+            return None
+        target = entry + target_distance * int(direction)
+
+        return Play(
+            playbook=self.name,
+            direction=direction,
+            entry=entry,
+            stop_loss=stop,
+            take_profit=target,
+            conviction=min(88.0, 42.0 + touches * 6.0 + min(body / atr, 3.0) * 6.0),
+            horizon_minutes=self.horizon_minutes,
+            thesis=(
+                f"M15 range of {height / atr:.1f} ATR held {touches} times and then closed "
+                f"through the {'top' if direction is Direction.LONG else 'bottom'} with a "
+                f"{body / atr:.1f} ATR body. A level respected that often is worth something "
+                f"when it finally gives way."
+            ),
+            evidence={
+                "timeframe": "M15",
+                "range_height_atr": round(height / atr, 2),
+                "edge_touches": touches,
+                "break_body_atr": round(body / atr, 2),
+                "extension_atr": round(travelled / atr, 2),
+                "spread_share_of_stop": round(share, 3),
+                "stop_distance": round(risk, 6),
+                "range_top": round(top, 6),
+                "range_bottom": round(bottom, 6),
+            },
+        )
+
+
 # --------------------------------------------------------------------- config ---
 
 
@@ -478,6 +611,38 @@ class FadeConfig:
     #: noise that produced the wick.
     min_stop_atr: float = 1.0
     min_target_r: float = 1.2
+    max_spread_share_of_stop: float = 0.12
+
+
+@dataclass(frozen=True, slots=True)
+class BreakConfig:
+    """Deliberately shares `range_bars`, `min_range_atr`, `touch_tolerance_atr`
+    and `min_touches` with `FadeConfig`. The two theories must agree on what a
+    range *is*, or they would be arguing about different objects and the
+    conflict rule that stands them both down would never fire."""
+
+    range_bars: int = 48
+    min_range_atr: float = 3.0
+    touch_tolerance_atr: float = 0.3
+    min_touches: int = 3
+    #: Body of the breaking bar, in ATR. A drift through a level on an
+    #: ordinary-sized bar is erosion, not a break, and it is the shape that
+    #: most often comes straight back.
+    min_body_atr: float = 0.8
+    #: How far past the edge price may already be. Beyond this the stop has to
+    #: sit back at the level while the remaining move has shrunk, which is the
+    #: definition of a chase.
+    max_extension_atr: float = 1.5
+    stop_buffer_atr: float = 0.35
+    min_stop_atr: float = 1.0
+    #: Share of the range height projected past the break. Ranges tend to
+    #: travel roughly their own height; asking for all of it every time is
+    #: optimism, so this asks for most of it.
+    projection: float = 0.8
+    min_target_r: float = 1.3
+    #: Ceiling in R, so a tall range cannot manufacture a target the market has
+    #: no particular reason to reach.
+    max_target_r: float = 3.0
     max_spread_share_of_stop: float = 0.12
 
 
