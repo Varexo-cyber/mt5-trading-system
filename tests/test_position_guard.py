@@ -764,6 +764,63 @@ class TestProfitLock:
         assert (high_water - sl) == pytest.approx(0.0015, abs=1e-6)
 
 
+class TestStopsOnlyMoveWhenItMatters:
+    """Every rule that touches a stop ends in `continue`.
+
+    That makes a pointless stop move expensive in a way that is invisible when
+    you read the rules one at a time: it does not merely cost a broker
+    round-trip, it costs the position its turn at every rule below. Break-even
+    recomputes from a live ATR, so before `_STOP_IMPROVEMENT_R` a fractionally
+    rising ATR nudged the target up and re-fired the rule on every pass — and
+    the profit lock, two rules further down, never ran at all.
+
+    Found by replaying the real rules over bar history rather than by reading
+    them, which is exactly the class of bug a replay is for.
+    """
+
+    @staticmethod
+    def at_break_even(broker: BrokerStub) -> Position:
+        """The position as it stands after break-even has moved the stop."""
+        return replace(position(), sl=broker.modified[-1])
+
+    def test_break_even_fires_once_and_then_lets_the_next_rule_through(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+
+        at(broker, 0.9)
+        first = manager.manage([position()], NOW)
+        second = manager.manage([self.at_break_even(broker)], NOW)
+
+        assert [event.action for event in first] == ["BREAK_EVEN"]
+        # Not BREAK_EVEN a second time: half of the 0.9R peak, secured.
+        assert [event.action for event in second] == ["PROFIT_LOCK"]
+
+    def test_a_stop_move_worth_nothing_is_not_made(self) -> None:
+        """A hundredth of an R is noise in the ATR, not a decision."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+        risk = ENTRY - STOP
+
+        assert not manager._worth_moving(position(), STOP + risk * 0.005, risk)
+        assert manager._worth_moving(position(), STOP + risk * 0.5, risk)
+
+    def test_a_stop_is_never_walked_backwards(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+        risk = ENTRY - STOP
+
+        assert not manager._worth_moving(replace(position(), sl=ENTRY), ENTRY - risk * 0.5, risk)
+
+    def test_a_zero_risk_position_moves_nothing(self) -> None:
+        """Guarding the division. A journal that records the stop at entry has
+        no R to measure a stop move against, and the rule that divides by it
+        would take the whole guard down."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+
+        assert not manager._worth_moving(position(), ENTRY + 1.0, 0.0)
+
+
 class TestPeakStall:
     """Leaving near the high, instead of confirming the retrace afterwards.
 
