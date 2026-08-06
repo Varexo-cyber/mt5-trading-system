@@ -394,6 +394,46 @@ def render_recent_adoptions() -> None:
                 st.markdown(f"- `{row['ts']}` **{row['symbol']}** #{row['ticket']} — {row['note']}")
 
 
+def jarvis_pid() -> int:
+    """The live runner's process id, or 0 when nothing is running.
+
+    Extracted from the page body so the positions fragment can ask too. That
+    fragment renders on its own one-second clock with nothing from `main` in
+    scope, and it needs the answer: "no live judgement" means one thing when
+    Jarvis is stopped and something entirely different when it is running.
+
+    A pid file whose process is gone is deleted here. Leaving it would make
+    every later check pay for a dead lookup and, worse, make a crashed run
+    indistinguishable from a live one on the next page load.
+    """
+    pid_path = ROOT / "runtime" / "jarvis.pid"
+    if not pid_path.exists():
+        return 0
+    try:
+        pid = int(pid_path.read_text().strip())
+    except (OSError, ValueError):
+        return 0
+    if not pid:
+        return 0
+
+    alive = False
+    if sys.platform == "win32":
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        alive = bool(handle)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    else:
+        try:
+            os.kill(pid, 0)
+            alive = True
+        except OSError:
+            alive = False
+    if not alive:
+        pid_path.unlink(missing_ok=True)
+        return 0
+    return pid
+
+
 @st.fragment(run_every="1s")
 def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
     """Live open positions with per-position control.
@@ -457,9 +497,12 @@ def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
     )
 
     # What the per-second layer currently thinks of each trade. Published by
-    # the runner because it lives in a different process; an empty map here
-    # means Jarvis is not running, which is worth showing rather than hiding.
+    # the runner because it lives in a different process. A gap here has three
+    # very different causes — Jarvis stopped, the guard loop not completing, or
+    # a position nothing is managing — so the caption is told which it is
+    # rather than asking the operator to guess.
     verdicts = live_health(ROOT / "runtime" / "position_health.json")
+    running = bool(jarvis_pid())
 
     for position in positions:
         tick = service.tick(position.symbol)
@@ -479,7 +522,7 @@ def render_live_positions(account) -> None:  # type: ignore[no-untyped-def]
             f"{account.currency}" + (f" · {r_now:+.2f}R" if r_now is not None else "")
         )
         with st.expander(header, expanded=len(positions) <= 3):
-            st.markdown(health_caption(verdicts.get(position.ticket)))
+            st.markdown(health_caption(verdicts.get(position.ticket), jarvis_running=running))
             # Where price sits between the stop and the target, right now. The
             # number that matters on a live trade is not the price, it is how
             # much room is left in each direction.
@@ -923,23 +966,8 @@ try:
         )
     except (OSError, json.JSONDecodeError):
         heartbeat = {}
-    pid_path = ROOT / "runtime" / "jarvis.pid"
-    running_pid = int(pid_path.read_text().strip()) if pid_path.exists() else 0
-    running = False
-    if running_pid:
-        if sys.platform == "win32":
-            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, running_pid)
-            running = bool(handle)
-            if handle:
-                ctypes.windll.kernel32.CloseHandle(handle)
-        else:
-            try:
-                os.kill(running_pid, 0)
-                running = True
-            except OSError:
-                running = False
-        if not running:
-            pid_path.unlink(missing_ok=True)
+    running_pid = jarvis_pid()
+    running = bool(running_pid)
     experimental_contract = None
     experimental_error = "not armed"
     try:

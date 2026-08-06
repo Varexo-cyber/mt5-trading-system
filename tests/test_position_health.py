@@ -277,8 +277,14 @@ def test_the_summary_is_prompt_sized() -> None:
     fast, structure = deteriorating_bars()
     health = assess_position(sign=LONG, r_now=0.0, age_minutes=30, fast=fast, structure=structure)
     summary = health.summary()
-    assert set(summary) == {"verdict", "severity", "action", "signals"}
+    assert set(summary) == {"verdict", "severity", "action", "reason", "signals"}
     assert all(set(item) == {"name", "severity", "detail"} for item in summary["signals"])
+    # `reason` was already computed and was the one field `summary` dropped.
+    # On an ordinary reading it condenses the signals; on `unmanaged` it is the
+    # whole answer, because there are no signals and the verdict only says a
+    # reading was never taken.
+    assert "broken" in summary["reason"]
+    assert "structure_broken" in summary["reason"]
 
 
 def test_severity_is_bounded() -> None:

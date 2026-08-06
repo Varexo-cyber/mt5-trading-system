@@ -8,6 +8,7 @@ the numbers are asserted rather than eyeballed.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,8 @@ import pytest
 from dashboard.ledger import (
     closed_trades,
     day_start,
+    health_caption,
+    live_health,
     operation_label,
     recent_management,
     starting_equity,
@@ -349,3 +352,111 @@ class TestOperationLabel:
     def test_a_heartbeat_missing_its_operation_does_not_claim_to_be_starting(self) -> None:
         """A malformed heartbeat is a different problem from a cold start."""
         assert operation_label(True, {"ts": "2026-08-06T08:15:00Z"}) == "OFF"
+
+
+class TestHealthCaption:
+    """Three different problems used to share one misleading sentence.
+
+    "geen live oordeel (draait Jarvis?)" was shown for every cause at once.
+    Seen on a live deck beside a mode tile reading EXPERIMENTAL_LIVE, that
+    question answers itself, and the operator is left concluding the panel is
+    broken rather than learning which of three real faults they have.
+    """
+
+    def test_jarvis_stopped_says_so_plainly(self) -> None:
+        caption = health_caption(None, jarvis_running=False)
+        assert "Jarvis draait niet" in caption
+
+    def test_jarvis_running_but_no_entry_points_at_the_guard(self) -> None:
+        """The case from the live deck. Never ask a question with a visible answer."""
+        caption = health_caption(None, jarvis_running=True)
+        assert "draait Jarvis?" not in caption
+        assert "guard_tick_failed" in caption
+
+    def test_an_unmanaged_position_says_what_is_holding_it(self) -> None:
+        """The most serious state, and it used to render as a shrug.
+
+        No health read means no give-back, no profit lock, no peak stall and no
+        time exit — the broker stop is the only thing on the trade.
+        """
+        caption = health_caption(
+            {
+                "verdict": "unmanaged",
+                "action": "hold",
+                "reason": "no open trade on record for this ticket",
+                "signals": [],
+                "age_seconds": 1.0,
+            }
+        )
+        assert "NIET BEHEERD" in caption
+        assert "no open trade on record" in caption
+
+    def test_a_normal_reading_is_unchanged(self) -> None:
+        caption = health_caption(
+            {
+                "verdict": "healthy",
+                "action": "hold",
+                "reason": "",
+                "signals": [],
+                "age_seconds": 2.0,
+            }
+        )
+        assert "gezond" in caption
+        assert "oud, niet live" not in caption
+
+    def test_a_stale_reading_is_labelled_as_stale(self) -> None:
+        """A frozen file otherwise renders a twenty-minute-old verdict with a
+        green tick, which is the most confidently wrong state available."""
+        caption = health_caption(
+            {
+                "verdict": "healthy",
+                "action": "hold",
+                "reason": "",
+                "signals": [],
+                "age_seconds": 1200.0,
+            }
+        )
+        assert "gezond" in caption
+        assert "20 min oud, niet live" in caption
+
+    def test_an_unknown_age_is_not_guessed_at(self) -> None:
+        """A file without `recorded_at` gives no age. Silence beats a made-up one."""
+        caption = health_caption(
+            {"verdict": "healthy", "action": "hold", "signals": [], "age_seconds": None}
+        )
+        assert "niet live" not in caption
+
+
+class TestLiveHealthAge:
+    def test_each_entry_carries_the_files_age(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        written = datetime(2026, 8, 6, 9, 40, tzinfo=UTC)
+        path = tmp_path / "position_health.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "recorded_at": written.isoformat(),
+                    "positions": [{"ticket": 134372061, "verdict": "healthy"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        entries = live_health(path, now=written + timedelta(minutes=4))
+        assert entries[134372061]["age_seconds"] == pytest.approx(240.0)
+
+    def test_a_missing_file_is_an_empty_map_not_a_crash(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        assert live_health(tmp_path / "nope.json") == {}
+
+    def test_a_corrupt_file_is_an_empty_map(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        path = tmp_path / "position_health.json"
+        path.write_text("{ not json", encoding="utf-8")
+        assert live_health(path) == {}
+
+    def test_an_unparseable_timestamp_leaves_the_age_unknown(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Rather than defaulting to zero, which would read as freshly written."""
+        path = tmp_path / "position_health.json"
+        path.write_text(
+            json.dumps({"recorded_at": "whenever", "positions": [{"ticket": 1}]}),
+            encoding="utf-8",
+        )
+        assert live_health(path)[1]["age_seconds"] is None

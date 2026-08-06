@@ -920,3 +920,62 @@ class TestPeakStall:
         restarted = self.manager()
         assert restarted._peak_stall_exit(position, 0.92, 0.92, self.at(7)) is None
         assert restarted._peak_stall_exit(position, 0.92, 0.92, self.at(14)) is not None
+
+
+class TestUnmanagedIsVisible:
+    """A position the loop skips gets nothing from the manager, and used to
+    say nothing about it either.
+
+    Both paths in were a bare `continue`. A trade taking one of them has no
+    health read, no give-back, no profit lock, no peak stall and no time exit
+    — the broker stop is the only thing holding it. That is a legitimate state
+    after a manual trade or a half-recovered restart, and a serious one to be
+    in unknowingly.
+    """
+
+    @staticmethod
+    def manager_with(journal_row):  # type: ignore[no-untyped-def]
+        broker = BrokerStub()
+
+        class Journal(JournalStub):
+            def open_trade_by_ticket(self, ticket):  # type: ignore[no-untyped-def]
+                return journal_row
+
+        return manager_for(broker, Journal()), broker
+
+    def test_a_position_absent_from_the_journal_is_reported(self) -> None:
+        manager, _ = self.manager_with(None)
+        manager.manage([position()], NOW)
+
+        health = manager.last_health[555]
+        assert health.verdict == "unmanaged"
+        assert "no open trade on record" in health.reason
+
+    def test_a_zero_width_stop_is_reported_with_the_price(self) -> None:
+        """1R is zero, and every rule in the file divides by it."""
+        manager, _ = self.manager_with(
+            {"id": 1, "ticket": 555, "sl": ENTRY, "volume": 0.02, "mfe_r": 0.0}
+        )
+        manager.manage([position()], NOW)
+
+        health = manager.last_health[555]
+        assert health.verdict == "unmanaged"
+        assert "the same as entry" in health.reason
+
+    def test_it_reaches_the_published_summary(self) -> None:
+        """The deck reads `summary()`, so the reason has to survive the trip."""
+        manager, _ = self.manager_with(None)
+        manager.manage([position()], NOW)
+
+        summary = manager.last_health[555].summary()
+        assert summary["verdict"] == "unmanaged"
+        assert summary["reason"]
+        assert summary["action"] == "hold"
+
+    def test_a_managed_position_is_never_marked_unmanaged(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+        at(broker, 0.3)
+        manager.manage([position(opened_at=NOW - timedelta(minutes=30))], NOW)
+
+        assert manager.last_health[555].verdict != "unmanaged"

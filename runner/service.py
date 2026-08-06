@@ -88,6 +88,7 @@ _UNKNOWN_HEALTH: dict[str, object] = {
     "verdict": "unknown",
     "severity": 0.0,
     "action": "hold",
+    "reason": "",
     "signals": [],
 }
 
@@ -339,16 +340,17 @@ class JarvisRunner:
         take the service down, and the next full cycle re-does everything this
         does with its own error handling.
         """
+        positions: list = []
         try:
             self.broker.ensure_connected()
             positions = self.broker.positions(magic=self.settings.system.magic_number)
             if not positions:
+                self._publish_health(positions)
                 return []
             events = self.manager.manage(
                 positions, self.clock.now(), self.posture.patience_multiplier
             )
             self._record_management(events)
-            self._publish_health(positions)
             return events
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning(
@@ -357,6 +359,15 @@ class JarvisRunner:
                 extra={"event": "guard_tick_failed", "error": type(exc).__name__},
             )
             return []
+        finally:
+            # Publish whatever we know, including after a failed pass. It used
+            # to run only on the success path, so any error anywhere in
+            # `manage` left the file frozen at its last good write — and a
+            # frozen file is indistinguishable from a stopped Jarvis on the
+            # deck. The one moment an operator most needs to see what the
+            # system thinks is the moment something went wrong.
+            if positions:
+                self._publish_health(positions)
 
     def run_once(
         self, *, batch_size: int | None = None, deep_candidates: int | None = None
