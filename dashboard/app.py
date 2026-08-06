@@ -43,6 +43,7 @@ from dashboard.ledger import (
     day_start,
     health_caption,
     live_health,
+    operation_label,
     recent_management,
     summarise,
     week_start,
@@ -939,7 +940,7 @@ try:
     except RuntimeError as exc:
         experimental_error = str(exc)
     paper = load_paper_snapshot(ROOT / "runtime" / "paper_state.json")
-    active_operation = str(heartbeat.get("operation", "OFF")).upper() if running else "OFF"
+    active_operation = operation_label(running, heartbeat)
     render_account_header(active_operation, paper)
     if running and heartbeat.get("operation") == "experimental_live":
         st.error(

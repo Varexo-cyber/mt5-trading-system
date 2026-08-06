@@ -290,6 +290,27 @@ def health_caption(entry: dict[str, Any] | None) -> str:
     return "  ·  ".join(part for part in parts if part)
 
 
+def operation_label(running: bool, heartbeat: dict[str, Any]) -> str:
+    """What the mode tile shows: OFF, STARTING, or the running operation.
+
+    Three states, because the two obvious ones are not enough. The heartbeat is
+    written when a cycle *completes*, and the first cycle on a cold cache pulls
+    every timeframe for the whole catalogue — minutes in which the process is
+    up, the pid file is on disk, and no heartbeat exists yet.
+
+    Collapsing that into OFF is the worst available answer on a live account:
+    it reads as "nothing is running" at precisely the moment an operator is
+    checking whether the system they just started came up correctly, and the
+    natural response to it — start it again — puts two instances on one account
+    fighting over the same positions.
+    """
+    if not running:
+        return "OFF"
+    if not heartbeat:
+        return "STARTING"
+    return str(heartbeat.get("operation", "OFF")).upper()
+
+
 def recent_management(path: Path, limit: int = 25) -> list[dict[str, Any]]:
     """What the mechanical layer has actually been doing, newest first.
 
