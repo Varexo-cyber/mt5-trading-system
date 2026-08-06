@@ -10,7 +10,7 @@ import pandas as pd
 
 from advisory.providers import Supervision
 from analysis.position_health import PositionHealth, assess_position
-from config.schema import Settings
+from config.schema import Settings, TradeManagementConfig
 from core.broker import Broker
 from core.data_manager import DataManager
 from core.types import Direction, Position, Timeframe
@@ -223,18 +223,15 @@ class PositionManager:
             deadline = (
                 config.time_exit_hours * patience if config.time_exit_hours is not None else None
             )
-            if (
-                deadline is not None
-                and age_hours >= deadline
-                and abs(r_now) < config.time_exit_min_abs_r
-            ):
+            expired = self._time_exit_verdict(config, age_hours, deadline, r_now, peak_r)
+            if expired is not None:
                 result = self.broker.close_position(position)
                 events.append(
                     ManagementEvent(
                         position.ticket,
                         "TIME_EXIT",
-                        f"{age_hours:.1f}h, {r_now:.2f}R"
-                        + (f" (drawdown posture: {deadline:.1f}h limit)" if patience < 1.0 else ""),
+                        f"{age_hours:.1f}h, {r_now:.2f}R (peak {peak_r:.2f}R) — {expired}"
+                        + (f"; drawdown posture: {deadline:.1f}h limit" if patience < 1.0 else ""),
                         result.filled_price,
                         position.profit + position.swap,
                     )
@@ -509,6 +506,49 @@ class PositionManager:
         """
         self.journal.update_excursions(trade_id, mae_r=min(0.0, r_now), mfe_r=max(0.0, r_now))
         return max(recorded_peak, r_now)
+
+    @staticmethod
+    def _time_exit_verdict(
+        config: TradeManagementConfig,
+        age_hours: float,
+        deadline: float | None,
+        r_now: float,
+        peak_r: float,
+    ) -> str | None:
+        """Why an aged position should be closed on the clock, or None to keep it.
+
+        Two reasons, and the second one was missing.
+
+        The first is the original rule: a trade that has gone nowhere. Dead
+        capital still carries risk, still pays swap, and still occupies one of
+        two slots on a small account.
+
+        The second is the trade that got somewhere unremarkable and stopped. At
+        `time_exit_min_abs_r` of 0.3 and a give-back that arms at 0.5R, a
+        position sitting on +0.4R after a day and a half fell between the two:
+        too profitable for the time exit, never good enough for the give-back.
+        It stayed open indefinitely, paying swap for a slot it was not using —
+        and the operator watching it asked exactly the right question, which is
+        why is that still on.
+
+        A person banks that. The test is the *peak*, not the current price:
+        `peak_r` is ratcheted on every pass, so a trade that once ran to 2R and
+        has come back to 0.4 has demonstrated something, and the give-back rule
+        owns it. A trade whose best moment in a whole day was under
+        `time_exit_stale_peak_r` has demonstrated the opposite. Being green is
+        required — this rule banks a modest profit, it never realises a loss
+        the old rule would have held.
+        """
+        if deadline is None or age_hours < deadline:
+            return None
+        if abs(r_now) < config.time_exit_min_abs_r:
+            return "went nowhere"
+        if r_now > 0 and peak_r < config.time_exit_stale_peak_r:
+            return (
+                f"in profit but never got going (best was {peak_r:.2f}R, under "
+                f"{config.time_exit_stale_peak_r:.2f}R); banking it frees the slot"
+            )
+        return None
 
     def _giveback_exit(
         self, position: Position, r_now: float, peak_r: float, health: PositionHealth

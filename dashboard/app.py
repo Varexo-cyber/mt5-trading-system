@@ -737,8 +737,15 @@ def render_ai_exchange() -> None:
     errors = sum(item["status"] == "ERROR / FAIL CLOSED" for item in decisions)
     pending = sum(item["status"] == "PENDING" for item in exchanges)
 
+    spend = spend_summary(exchanges)
+    replays = int(spend["replayed_calls"])
     with st.container(horizontal=True):
-        st.metric("Naar Claude gestuurd", len(exchanges), border=True)
+        # Betaalde calls, niet het aantal regels. Een herhaald oordeel staat
+        # in de tabel omdat het een echte beslissing was, maar er ging geen
+        # verzoek de deur uit — het deck telde ze mee en rapporteerde daardoor
+        # bijna het dubbele van wat er werkelijk werd uitgegeven.
+        st.metric("Betaald naar Claude", len(exchanges) - replays, border=True)
+        st.metric("Uit geheugen (gratis)", replays, border=True)
         st.metric("Goedgekeurd", approvals, border=True)
         st.metric("Veto", vetoes, border=True)
         st.metric("Te weinig zekerheid", thin, border=True)
@@ -755,7 +762,6 @@ def render_ai_exchange() -> None:
 
     # What this has actually cost. Estimated from recorded token counts, not
     # guessed — "verbrandt dit mijn credit" had no answer anywhere before.
-    spend = spend_summary(exchanges)
     if spend["calls"]:
         with st.container(horizontal=True):
             st.metric("Kosten (geschat)", f"${spend['usd']:.2f}", border=True)
@@ -763,8 +769,9 @@ def render_ai_exchange() -> None:
             st.metric("Uit cache", f"{spend['cache_hit_rate']:.0%}", border=True)
             st.metric("Input tokens", f"{spend['input_tokens']:,}", border=True)
         st.caption(
-            f"Over de laatste {spend['calls']} calls met token-registratie. "
-            "'Uit cache' is het deel van de invoer dat tegen een tiende van de prijs ging — "
+            f"Over de laatste {spend['calls']} **betaalde** calls"
+            + (f"; {replays} oordelen kwamen gratis uit het geheugen. " if replays else ". ")
+            + "'Uit cache' is het deel van de invoer dat tegen een tiende van de prijs ging — "
             "de vaste instructies. Zakt dat naar 0%, dan betaalt elke call weer vol voor een "
             "prefix die gratis hoorde te zijn."
         )
@@ -785,6 +792,11 @@ def render_ai_exchange() -> None:
                     "Markt": item["symbol"],
                     "Richting": item["direction"],
                     "Status": item["status"],
+                    # Vier identieke regels achter elkaar zien er uit als vier
+                    # betaalde calls. Drie ervan waren herhalingen van hetzelfde
+                    # oordeel over een ongewijzigde setup, en dat is precies wat
+                    # de cache hoort te doen — maar dat moet je kunnen zien.
+                    "Betaald": "nee (geheugen)" if decision.get("replayed") else "ja",
                     "Duur (ms)": item["latency_ms"],
                     "Confidence": decision.get("confidence"),
                     "Claude zegt": decision.get("thesis") or decision.get("error"),

@@ -131,9 +131,17 @@ class TestBudget:
         assert service._review_budget_left() == 2
 
         again = service._reviewed(idea(), context(), {}, None)
-        assert again is first
         assert service._review_budget_left() == 2
         assert service.calls_made == 1
+        # Same verdict, marked as a replay so the spend report does not bill
+        # the original call's tokens a second time.
+        assert not first.replayed
+        assert again.replayed
+        assert (again.approved, again.confidence, again.thesis) == (
+            first.approved,
+            first.confidence,
+            first.thesis,
+        )
 
     def test_a_new_bar_is_a_new_question_and_costs_again(self) -> None:
         service = runner(3)

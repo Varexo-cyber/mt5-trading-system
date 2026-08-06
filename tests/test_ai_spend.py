@@ -149,3 +149,59 @@ def test_an_approval_is_unaffected() -> None:
         },
     ]
     assert pair_ai_reviews(rows)[0]["status"] == "APPROVED"
+
+
+# ------------------------------------------------------------- replays ---
+
+
+def replay(model: str = SONNET, **counts: int) -> dict[str, object]:
+    """A verdict served from the review cache: real decision, no API call."""
+    return {"decision": {"model": model, "usage": usage(**counts), "replayed": True}}
+
+
+class TestReplaysAreNotBilled:
+    """A live deck read nine calls and $0.41 where five had been paid.
+
+    The review cache replays a verdict for a setup no new bar has changed. It
+    is a real decision and belongs in the audit trail, so it carries the
+    original call's token counts — and the spend report was charging for them
+    again. Four rows on that deck had latencies of 1 to 3 milliseconds against
+    12 to 34 seconds for a genuine call, which is what gave it away.
+    """
+
+    def test_a_replay_adds_nothing_to_the_bill(self) -> None:
+        paid = spend_summary([exchange(fresh=10_000, out=500)])
+        with_replays = spend_summary(
+            [
+                exchange(fresh=10_000, out=500),
+                replay(fresh=10_000, out=500),
+                replay(fresh=10_000, out=500),
+            ]
+        )
+        assert with_replays["usd"] == paid["usd"]
+        assert with_replays["input_tokens"] == paid["input_tokens"]
+
+    def test_the_per_call_figure_is_not_diluted(self) -> None:
+        """Averaging over rows that never touched the network understates it."""
+        summary = spend_summary(
+            [exchange(fresh=10_000, out=500)] + [replay(fresh=10_000, out=500)] * 4
+        )
+        assert summary["calls"] == 1
+        assert summary["usd_per_call"] == pytest.approx(summary["usd"])
+
+    def test_replays_are_still_counted_separately(self) -> None:
+        """Hidden is as wrong as billed — the operator should see the saving."""
+        summary = spend_summary([exchange(fresh=10_000)] * 5 + [replay(fresh=10_000)] * 4)
+        assert summary["calls"] == 5
+        assert summary["replayed_calls"] == 4
+
+    def test_a_cycle_of_nothing_but_replays_costs_zero(self) -> None:
+        summary = spend_summary([replay(fresh=10_000, out=500)] * 3)
+        assert summary["usd"] == 0.0
+        assert summary["calls"] == 0
+        assert summary["replayed_calls"] == 3
+        assert summary["usd_per_call"] == 0.0
+
+    def test_an_unflagged_row_is_still_billed(self) -> None:
+        """Absence of the flag must mean "paid", not "unknown, assume free"."""
+        assert spend_summary([exchange(fresh=10_000)])["calls"] == 1

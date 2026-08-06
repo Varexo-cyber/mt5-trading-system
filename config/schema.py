@@ -958,6 +958,15 @@ class TradeManagementConfig(Base):
     #: Close a position that has gone nowhere. Dead capital still carries risk.
     time_exit_hours: float | None = Field(default=24.0, gt=0.0)
     time_exit_min_abs_r: float = Field(default=0.3, ge=0.0)
+    #: Past the deadline, also bank a profitable trade whose *peak* never
+    #: reached this. Between `time_exit_min_abs_r` (0.3) and the give-back's
+    #: arming point (0.5R) sat a gap nothing owned: a position on +0.4R after
+    #: a day and a half was too profitable for the time exit and never good
+    #: enough for the give-back, so it stayed on indefinitely, paying swap for
+    #: one of two slots it was not using. Judged on the peak rather than the
+    #: current price, because a trade that ran to 2R and came back has proved
+    #: something — that one belongs to the give-back rule, not to this one.
+    time_exit_stale_peak_r: float = Field(default=1.0, ge=0.0)
 
     #: How often the AI supervisor reconsiders each open position, in minutes.
     #: Zero switches it off and leaves the mechanical rules above as the whole

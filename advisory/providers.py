@@ -116,6 +116,15 @@ class Advice:
     #: Token counts for this call. Carried on the verdict because that is what
     #: reaches the audit ledger; nothing else in the pipeline sees the response.
     usage: dict[str, int] = field(default_factory=dict)
+    #: True when this verdict came from the review cache rather than the API.
+    #:
+    #: A replay is a real decision and belongs in the audit trail, but it cost
+    #: nothing. Without this flag it carries the *original* call's token counts
+    #: into the ledger, and the spend report bills them a second time: nine
+    #: rows on the deck where five were paid, and a per-call figure computed
+    #: over the wrong denominator. The operator then reads a cost they are not
+    #: incurring and reaches for a fix that is not needed.
+    replayed: bool = False
 
     @property
     def below_threshold(self) -> bool:

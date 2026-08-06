@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -1686,7 +1686,10 @@ class JarvisRunner:
                 "approved": cached.approved,
             },
         )
-        return cached
+        # Flagged, not stripped. The token counts stay on the row so the audit
+        # trail still shows which call this verdict came from; what must not
+        # happen is the spend report charging for them a second time.
+        return replace(cached, replayed=True)
 
     def _review_budget_left(self) -> int | None:
         """Paid reviews still allowed this cycle. None means no budget is set."""
