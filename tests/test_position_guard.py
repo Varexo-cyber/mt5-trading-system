@@ -579,3 +579,78 @@ def test_the_old_thresholds_would_have_let_it_run_to_a_loss() -> None:
 
     assert not any(event.action == "GIVEBACK_EXIT" for event in events)
     assert broker.closed == []
+
+
+class TestAgedButProfitable:
+    """The gap between the time exit and the give-back.
+
+    `time_exit_min_abs_r` is 0.3 and the give-back arms at 0.5R, so a position
+    on +0.4R after a day and a half belonged to neither rule. It stayed open
+    indefinitely, paying swap for one of two slots on a small account while
+    doing nothing with it.
+
+    Judged on the *peak*, not the current price. A trade that ran to 2R and
+    came back to 0.4 has demonstrated something and belongs to the give-back;
+    one whose best moment in a whole day was 0.4R has demonstrated the
+    opposite.
+    """
+
+    @staticmethod
+    def verdict(
+        age_hours: float,
+        r_now: float,
+        peak_r: float,
+        *,
+        deadline: float | None = 24.0,
+        stale_peak: float = 1.0,
+    ) -> str | None:
+        from config.schema import TradeManagementConfig
+        from execution.manager import PositionManager
+
+        config = TradeManagementConfig(time_exit_stale_peak_r=stale_peak)
+        return PositionManager._time_exit_verdict(config, age_hours, deadline, r_now, peak_r)
+
+    def test_a_young_trade_is_never_closed_on_the_clock(self) -> None:
+        assert self.verdict(2.0, 0.05, 0.05) is None
+        assert self.verdict(23.9, 0.40, 0.40) is None
+
+    def test_the_original_rule_still_closes_a_flat_trade(self) -> None:
+        assert self.verdict(25.0, 0.05, 0.10) == "went nowhere"
+
+    def test_the_gap_case_is_now_banked(self) -> None:
+        """+0.4R after 25 hours, best-ever 0.4R. Take it and free the slot."""
+        reason = self.verdict(25.0, 0.40, 0.40)
+        assert reason is not None
+        assert "never got going" in reason
+
+    def test_a_trade_that_ran_and_came_back_is_left_to_the_giveback(self) -> None:
+        """Same current R, a completely different trade.
+
+        Peaking at 2R is evidence the thesis worked. That position is the
+        give-back rule's to judge, and closing it here would pre-empt a rule
+        that reads whether the move is still working.
+        """
+        assert self.verdict(25.0, 0.40, 2.00) is None
+
+    def test_a_loser_is_never_realised_by_this_rule(self) -> None:
+        """It banks a modest profit; it does not cut a trade the old rule held.
+
+        -0.8R past the deadline stays open exactly as before — that position
+        belongs to its stop, or to the health reader, not to a clock.
+        """
+        assert self.verdict(25.0, -0.80, 0.10) is None
+
+    def test_a_strong_winner_past_the_deadline_keeps_running(self) -> None:
+        assert self.verdict(50.0, 1.80, 2.10) is None
+
+    def test_the_drawdown_posture_shortens_the_deadline(self) -> None:
+        """Patience below 1.0 brings the same judgement forward."""
+        assert self.verdict(13.0, 0.40, 0.40, deadline=24.0) is None
+        assert self.verdict(13.0, 0.40, 0.40, deadline=12.0) is not None
+
+    def test_the_threshold_is_configurable(self) -> None:
+        assert self.verdict(25.0, 0.40, 1.50, stale_peak=1.0) is None
+        assert self.verdict(25.0, 0.40, 1.50, stale_peak=2.0) is not None
+
+    def test_no_deadline_configured_means_no_time_exit_at_all(self) -> None:
+        assert self.verdict(500.0, 0.40, 0.40, deadline=None) is None

@@ -169,7 +169,7 @@ def spend_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, Any]:
     varying the system prompt and every call is paying full price for a prefix
     that used to be free.
     """
-    calls = priced = 0
+    calls = priced = replayed = 0
     cost = 0.0
     fresh = written = read = out = 0
     for row in rows:
@@ -178,6 +178,15 @@ def spend_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, Any]:
             continue
         usage = decision.get("usage")
         if not isinstance(usage, Mapping) or not usage:
+            continue
+        # A replayed verdict keeps the original call's token counts, because
+        # the audit trail should still show which call it came from. Billing
+        # them again is the bug this skips. A live deck read nine calls and
+        # $0.41 where five were paid, and averaged the per-call figure over
+        # four rows that never touched the network — their latencies gave them
+        # away at 1 to 3 milliseconds against 12 to 34 seconds for a real one.
+        if decision.get("replayed"):
+            replayed += 1
             continue
         calls += 1
         fresh += int(usage.get("input_tokens", 0) or 0)
@@ -192,6 +201,8 @@ def spend_summary(rows: Sequence[Mapping[str, object]]) -> dict[str, Any]:
     return {
         "calls": calls,
         "priced_calls": priced,
+        #: Verdicts served from the review cache: real decisions, no API call.
+        "replayed_calls": replayed,
         "usd": round(cost, 4),
         "usd_per_call": round(cost / priced, 4) if priced else 0.0,
         "input_tokens": total_in,
