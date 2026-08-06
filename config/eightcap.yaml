@@ -258,6 +258,23 @@ risk:
   # Nooit minder dan twee, hoe klein het account ook is. Met één slot blokkeert
   # één open trade elke andere kans zolang hij loopt.
   min_concurrent_positions: 2
+
+  # Commissie per lot per kant, in euro. Dit is geen boekhouding maar risico.
+  #
+  # Gemeten, niet geschat: een AUDNZD-stop-out van 0,06 lot kostte EUR 1,93
+  # tegen een gemodelleerde 1R van EUR 1,53, en EUR 0,33 van dat gat was
+  # commissie — bevestigd tegen de deal in de terminal. Dat is EUR 5,50 per lot
+  # round trip, dus EUR 2,75 per kant.
+  #
+  # Elke drempel in dit systeem is uitgedrukt in R. Een R die een vijfde van
+  # het echte verlies weglaat laat de give-back te laat wapenen, laat de
+  # winst-grendel minder vastzetten dan hij zegt, en maakt elk
+  # verwachtingsgetal mooier dan het is.
+  #
+  # Dit prijst ook krappe stops voor het eerst eerlijk. Commissie is een vaste
+  # kost per lot: op een stop van 2 pips is het een derde van je risico, op 20
+  # pips een afrondingsfout.
+  commission_per_lot_per_side: 2.75
   # Het absolute plafond. Een modus mag hier lager gaan, nooit hoger — de
   # loader weigert dat bij het inladen, en dat is precies hoe deze regel is
   # opgevallen toen micro_live op 4 werd gezet terwijl dit nog 2 was.

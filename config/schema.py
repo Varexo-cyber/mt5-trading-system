@@ -293,6 +293,27 @@ class RiskConfig(Base):
     #: Ceiling the sizer will never exceed regardless of setup quality.
     max_risk_per_trade_pct: Pct = 1.0
 
+    #: Broker commission per lot per side, in account currency. 0 for accounts
+    #: whose cost is entirely in the spread.
+    #:
+    #: This is not bookkeeping, it is part of the risk. A live AUDNZD stop-out
+    #: cost EUR 1.93 against a modelled 1R of EUR 1.53 — and EUR 0.33 of the
+    #: EUR 0.40 gap was commission, confirmed against the deal in the terminal.
+    #: Every threshold in this system is denominated in R, so an R that omits
+    #: a fifth of what a loss actually costs makes the give-back arm late, the
+    #: profit lock secure less than it claims, and every expectancy figure
+    #: flatter the account.
+    #:
+    #: It also prices tight stops correctly for the first time. Commission is a
+    #: fixed cost per lot, so on a 2-pip stop it is a third of the risk and on
+    #: a 20-pip stop it is a rounding error. Including it makes scalp-width
+    #: stops unattractive by arithmetic rather than by a threshold someone
+    #: guessed.
+    commission_per_lot_per_side: float = Field(default=0.0, ge=0.0)
+    #: Per-asset-class overrides, for brokers that charge indices or metals
+    #: differently from FX. Absent classes take the figure above.
+    commission_by_asset_class: dict[str, float] = Field(default_factory=dict)
+
     max_concurrent_positions: int = Field(default=2, ge=1, le=10)
     #: Equity that buys one concurrent position. 0 keeps the flat cap above.
     #:
@@ -367,6 +388,16 @@ class RiskConfig(Base):
     margin_safety_factor: float = Field(default=2.0, ge=1.0, le=10.0)
 
     forbidden: ForbiddenPractices = ForbiddenPractices()
+
+    def commission_per_lot(self, asset_class: str) -> float:
+        """Round-trip commission for one lot, in account currency.
+
+        Round trip because a stop-out pays both sides, and the risk model is
+        answering "what does it cost me if this is wrong" — which is never one
+        side of the trade.
+        """
+        per_side = self.commission_by_asset_class.get(asset_class, self.commission_per_lot_per_side)
+        return 2.0 * max(0.0, per_side)
 
     @model_validator(mode="after")
     def _coherent(self) -> RiskConfig:
