@@ -308,15 +308,28 @@ risk:
   # hier niet doet waar hij voor bedoeld is.
   #
   # Hij hoort de inzet te verkleinen als het bewijs dat de edge werkt het zwakst
-  # is. Op een account van EUR 88 verkleint hij niks: 2% is EUR 1,77, gehalveerd
-  # EUR 0,88, en dat ligt onder wat de kleinste lot van de broker kost. Het
-  # effect is dus niet "kleiner traden" maar "helemaal niet traden" — en dat is
-  # een schakelaar die pas omgaat door te winnen, wat niet kan zolang hij aan
-  # staat. Precies dezelfde val als de houdingsrem hierboven.
+  # is. Op dit account verkleint hij niks — hij zet het handelen stil. Dat is
+  # een schakelaar die alleen omgaat door te winnen, wat niet kan zolang hij
+  # aan staat. Precies dezelfde val als de houdingsrem hierboven.
   #
-  # Bij een account dat groot genoeg is om een gehalveerde inzet nog uit te
-  # drukken, moet dit terug naar 0.5. De drempel blijft op 3 staan zodat de
-  # verliesreeks nog steeds geteld en gelogd wordt.
+  # De rekensom, bij 2% experimenteel-live risico en een 0,01-lot minimum dat
+  # inclusief commissie ongeveer EUR 1,05 kost op een stop van 10 pips en
+  # EUR 2,06 op 20 pips:
+  #
+  #   saldo    budget   gehalveerd   breedste stop die de helft nog uitdrukt
+  #   EUR  88   1,77       0,88        ~8 pips
+  #   EUR 123   2,47       1,23        ~11 pips
+  #   EUR 250   5,00       2,50        ~24 pips
+  #
+  # De echte stops op dit account liggen op 10 tot 12 pips. Bij EUR 123 zou de
+  # halvering dus nog steeds ruwweg de helft van de setups weigeren met
+  # TRADE_SKIPPED_UNDERCAPITALIZED, en precies tijdens een verliesreeks. Dat is
+  # geen risicobeheer, dat is een storing met een nette naam.
+  #
+  # Terug naar 0.5 rond EUR 250, waar een gehalveerde inzet een stop van 20+
+  # pips nog kan uitdrukken. De drempel blijft op 3 staan zodat de verliesreeks
+  # geteld en vastgelegd blijft worden — alleen zonder er iets mee te doen, en
+  # sinds `risk_manager.risk_multiplier` ook zonder te beweren van wel.
   losing_streak_risk_multiplier: 1.0
 
   # Van 2.0 naar 1.5, en dit is een correctie en geen versoepeling.
