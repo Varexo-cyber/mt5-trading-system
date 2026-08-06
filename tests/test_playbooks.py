@@ -17,12 +17,16 @@ import pytest
 from analysis.playbooks import (
     BreakConfig,
     FadeConfig,
+    FailedBreak,
+    FailedBreakConfig,
     MomentumScalp,
     Play,
     PlaybookEngine,
+    PullbackConfig,
     RangeBreak,
     RangeFade,
     ScalpConfig,
+    TrendPullback,
     _atr,
 )
 from config.loader import load_settings
@@ -486,3 +490,194 @@ def test_the_two_range_theories_stand_each_other_down() -> None:
     assert verdict.conflict
     # Not settled by the higher score. That would be inventing an edge.
     assert "no edge either way" in verdict.note
+
+
+# --------------------------------------------------------- the trend pullback ---
+
+
+def trending_pair(*, retrace: float = 0.45) -> dict[Timeframe, Series]:
+    """An H1 uptrend with an M15 pullback that has just turned back up."""
+    h1 = np.linspace(1.1000, 1.1240, 40).tolist()
+    m15 = np.linspace(1.1000, 1.1240, 70).tolist()
+    peak, origin = m15[-13], m15[-37]
+    drop = (peak - origin) * retrace
+    for i in range(11):
+        m15[-12 + i] = peak - drop * (i + 1) / 11
+    m15[-1] = peak - drop * 0.92  # the turn
+    return {
+        Timeframe.H1: series(Timeframe.H1, h1),
+        Timeframe.M15: series(Timeframe.M15, m15),
+    }
+
+
+def test_a_trend_that_paused_and_resumed_is_taken_with_the_trend() -> None:
+    """The most ordinary thing a market does — go, rest, go on — and neither of
+    the other theories can see it. The scalp needs compression right before the
+    move, which a trend running for hours does not have; the fade needs a
+    range, and a trend is the absence of one."""
+    frames = trending_pair()
+    last = float(frames[Timeframe.M15].df["close"].iloc[-1])
+
+    found = TrendPullback(PullbackConfig()).propose(
+        context(frames, bid=last, spread=0.00002), TradingMode.PAPER
+    )
+
+    assert found is not None
+    assert found.direction is Direction.LONG
+    assert found.stop_loss < found.entry < found.take_profit
+
+
+def test_the_stop_stands_behind_the_pullback_not_the_entry() -> None:
+    frames = trending_pair()
+    frame = frames[Timeframe.M15].df
+    last = float(frame["close"].iloc[-1])
+
+    found = TrendPullback(PullbackConfig()).propose(
+        context(frames, bid=last, spread=0.00002), TradingMode.PAPER
+    )
+
+    assert found is not None
+    assert found.stop_loss < float(frame.iloc[-12:]["low"].min())
+
+
+def test_a_pullback_that_ate_the_whole_leg_is_not_a_pause() -> None:
+    """Past the ceiling the trend is ending, which is a different trade and
+    not one anything here is proposing."""
+    frames = trending_pair(retrace=0.95)
+    last = float(frames[Timeframe.M15].df["close"].iloc[-1])
+
+    assert (
+        TrendPullback(PullbackConfig()).propose(
+            context(frames, bid=last, spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )
+
+
+def test_a_pullback_still_falling_is_not_entered() -> None:
+    """One that has not finished. Entering into it is catching it rather than
+    joining the trend."""
+    frames = trending_pair()
+    frame = frames[Timeframe.M15].df.copy()
+    frame.iloc[-1, frame.columns.get_loc("close")] = float(frame["close"].iloc[-2]) - 0.0002
+    frames[Timeframe.M15] = Series(
+        symbol="EURUSD", timeframe=Timeframe.M15, df=frame, fetched_at=NOW
+    )
+    last = float(frame["close"].iloc[-1])
+
+    assert (
+        TrendPullback(PullbackConfig()).propose(
+            context(frames, bid=last, spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )
+
+
+def test_a_market_with_no_trend_produces_no_pullback_trade() -> None:
+    frames = {
+        Timeframe.H1: series(Timeframe.H1, ranging_path(60)),
+        Timeframe.M15: series(Timeframe.M15, ranging_path()),
+    }
+
+    assert (
+        TrendPullback(PullbackConfig()).propose(
+            context(frames, bid=1.1000, spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )
+
+
+def test_depth_is_measured_against_the_leg_not_against_atr() -> None:
+    """ATR was the obvious unit and the wrong one: it is computed from the
+    recent bars, which during a pullback *are* the pullback. Depth-in-ATR came
+    out at roughly "how many bars has this been going on", so any pullback
+    lasting more than two or three bars was refused however shallow it was.
+
+    Both of these are ordinary retracements and both must be readable.
+    """
+    for retrace in (0.3, 0.6):
+        frames = trending_pair(retrace=retrace)
+        last = float(frames[Timeframe.M15].df["close"].iloc[-1])
+        found = TrendPullback(PullbackConfig()).propose(
+            context(frames, bid=last, spread=0.00002), TradingMode.PAPER
+        )
+        assert found is not None, f"a {retrace:.0%} retracement should be tradeable"
+
+
+# ----------------------------------------------------------- the failed break ---
+
+
+def failed_break_path(*, poke: float = 0.0008, back: float = 0.0006) -> list[float]:
+    """Price pokes above a respected range top and closes back inside."""
+    path = ranging_path()
+    top = max(path)
+    path[-3] = top + poke
+    path[-2] = top - back * 0.5
+    path[-1] = top - back
+    return path
+
+
+def test_a_break_that_could_not_hold_is_traded_back_into_the_range() -> None:
+    path = failed_break_path()
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    found = FailedBreak(FailedBreakConfig(min_touches=2)).propose(
+        context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+    )
+
+    assert found is not None
+    assert found.direction is Direction.SHORT
+    assert found.stop_loss > max(ranging_path())  # beyond the failed attempt
+    assert found.take_profit < found.entry
+
+
+def test_it_cannot_fire_on_the_same_bar_as_the_break() -> None:
+    """By construction: that one needs a close outside the edge, this one a
+    close back inside. Two theories reading one event and disagreeing only
+    about how it ended."""
+    broke = broken_out()
+    frames = {Timeframe.M15: series(Timeframe.M15, broke)}
+    ctx_ = context(frames, bid=broke[-1], spread=0.00002)
+
+    assert RangeBreak(BreakConfig(min_touches=2)).propose(ctx_, TradingMode.PAPER) is not None
+    assert FailedBreak(FailedBreakConfig(min_touches=2)).propose(ctx_, TradingMode.PAPER) is None
+
+
+def test_a_close_still_hanging_on_the_edge_is_a_break_in_progress() -> None:
+    """Without a reclaim floor, a bar closing a hair under the level would
+    count as a rejection while the break is still being decided."""
+    path = failed_break_path(back=0.00002)
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    assert (
+        FailedBreak(FailedBreakConfig(min_touches=2)).propose(
+            context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )
+
+
+def test_an_overshoot_too_large_to_stand_behind_is_refused() -> None:
+    """The stop has to sit beyond the failed attempt's extreme, so a violent
+    overshoot is a stop this account cannot express."""
+    path = failed_break_path(poke=0.0030, back=0.0008)
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    assert (
+        FailedBreak(FailedBreakConfig(min_touches=2)).propose(
+            context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )
+
+
+def test_a_range_that_was_never_left_produces_no_failed_break() -> None:
+    path = ranging_path()
+    frames = {Timeframe.M15: series(Timeframe.M15, path)}
+
+    assert (
+        FailedBreak(FailedBreakConfig(min_touches=2)).propose(
+            context(frames, bid=path[-1], spread=0.00002), TradingMode.PAPER
+        )
+        is None
+    )

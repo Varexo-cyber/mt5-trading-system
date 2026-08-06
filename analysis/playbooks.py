@@ -561,6 +561,275 @@ class RangeBreak:
         )
 
 
+def _drift(frame: pd.DataFrame, bars: int) -> float:
+    """How far the market has travelled over `bars`, against how far it wanders.
+
+    A least-squares slope totalled over the window and divided by
+    `sqrt(bars) * ATR` — roughly the displacement of a random walk over that
+    many bars. The same normalisation the health reader uses, deliberately: a
+    trend measured one way for entry and another way for management is two
+    definitions of the word, and they would disagree at the worst moment.
+
+    Dimensionless, so one threshold means the same thing on gold and on EURUSD.
+    """
+    atr = _atr(frame)
+    if atr <= 0 or len(frame) < bars:
+        return 0.0
+    closes = frame["close"].tail(bars).to_numpy(dtype=float)
+    positions = np.arange(len(closes), dtype=float)
+    slope = float(np.polyfit(positions, closes, 1)[0])
+    return slope * bars / (np.sqrt(bars) * atr)
+
+
+class TrendPullback:
+    """An established H1 trend that has paused, and is starting again.
+
+    Neither existing theory covers this. `MomentumScalp` wants compression
+    immediately before the move, which a trend that has been running for hours
+    does not have; `RangeFade` wants a range, and a trend is the absence of one.
+    So the most ordinary thing a market does — go one way, rest, go on — was
+    invisible to a system with two theories in it.
+
+    It is also the regime where a small account gets the best of both: the
+    stop is a pullback, so it is short, but the context is an H1 trend, so the
+    target is not the next few pips.
+
+    The pullback has to be a real one. Too shallow and there is nothing to
+    stand behind, so the stop lands inside the noise; too deep and it is not a
+    pause any more, it is the trend ending, which is a different trade nobody
+    here is proposing. And the current bar must have *turned back* — a pullback
+    still falling is a pullback that has not finished.
+    """
+
+    name = "trend_pullback"
+    horizon_minutes = 240
+
+    def __init__(self, config: PullbackConfig) -> None:
+        self.config = config
+
+    def propose(self, ctx: MarketContext, mode: TradingMode) -> Play | None:  # noqa: ARG002
+        higher = ctx.series.get(Timeframe.H1)
+        series = ctx.series.get(Timeframe.M15)
+        if higher is None or series is None or ctx.tick is None:
+            return None
+        if len(higher.df) < self.config.trend_bars + 2 or len(series.df) < 60:
+            return None
+
+        drift = _drift(higher.df, self.config.trend_bars)
+        if abs(drift) < self.config.min_trend_drift:
+            return None
+        direction = Direction.LONG if drift > 0 else Direction.SHORT
+
+        frame = series.df
+        atr = _atr(frame)
+        if atr <= 0:
+            return None
+
+        # The extreme the trend reached before it paused, and where the leg
+        # that reached it began.
+        window = frame.iloc[-self.config.pullback_bars :]
+        extreme = float(
+            window["high"].max() if direction is Direction.LONG else window["low"].min()
+        )
+        leg = frame.iloc[
+            -(self.config.pullback_bars + self.config.leg_bars) : -self.config.pullback_bars
+        ]
+        if leg.empty:
+            return None
+        origin = float(leg["low"].min() if direction is Direction.LONG else leg["high"].max())
+        impulse = abs(extreme - origin)
+        if impulse <= atr:
+            return None
+
+        # Depth as a share of the leg it is retracing, not in ATR.
+        #
+        # ATR was the obvious unit and it is the wrong one here: it is computed
+        # from the recent bars, which during a pullback *are* the pullback. So
+        # depth-in-ATR came out at roughly "how many bars has this been going
+        # on", not "how far back has it come", and any pullback lasting more
+        # than two or three bars was refused however shallow it was. A share of
+        # the impulse has no such circularity.
+        close = float(frame["close"].iloc[-1])
+        retrace = abs(extreme - close) / impulse
+        if not (self.config.min_retrace <= retrace <= self.config.max_retrace):
+            return None
+
+        # Turned back. A pullback still going is one that has not finished, and
+        # entering into it is catching it rather than joining the trend.
+        previous = float(frame["close"].iloc[-2])
+        if (close - previous) * int(direction) <= 0:
+            return None
+
+        # Behind the pullback's own extreme: the level that says the pause was
+        # actually a reversal.
+        pivot = float(window["low"].min() if direction is Direction.LONG else window["high"].max())
+        entry = ctx.tick.ask if direction is Direction.LONG else ctx.tick.bid
+        stop = pivot - atr * self.config.stop_buffer_atr * int(direction)
+        risk = abs(entry - stop)
+        if risk <= 0:
+            return None
+        floor = atr * self.config.min_stop_atr
+        if risk < floor:
+            stop = entry - floor * int(direction)
+            risk = floor
+        if risk > atr * self.config.max_stop_atr:
+            return None
+
+        affordable, share = _spread_is_affordable(ctx, risk, self.config.max_spread_share_of_stop)
+        if not affordable:
+            return None
+
+        # The extreme the trend already reached. A level the market has proved
+        # it can trade at beats a projection it has never been near.
+        target_distance = abs(extreme - entry)
+        if target_distance / risk < self.config.min_target_r:
+            return None
+        capped = min(target_distance, risk * self.config.max_target_r)
+        target = entry + capped * int(direction)
+
+        return Play(
+            playbook=self.name,
+            direction=direction,
+            entry=entry,
+            stop_loss=stop,
+            take_profit=target,
+            conviction=min(
+                86.0, 40.0 + min(abs(drift), 3.0) * 10.0 + (1.0 - abs(retrace - 0.45)) * 12.0
+            ),
+            horizon_minutes=self.horizon_minutes,
+            thesis=(
+                f"H1 drift of {drift:+.1f} over {self.config.trend_bars} bars; M15 gave back "
+                f"{retrace:.0%} of its last leg and the final bar turned back with the trend. "
+                f"Target is the extreme it already reached."
+            ),
+            evidence={
+                "timeframe": "M15 in H1 context",
+                "h1_drift": round(drift, 2),
+                "retrace_of_leg": round(retrace, 2),
+                "impulse": round(impulse, 6),
+                "spread_share_of_stop": round(share, 3),
+                "stop_distance": round(risk, 6),
+                "trend_extreme": round(extreme, 6),
+            },
+        )
+
+
+class FailedBreak:
+    """Price left the range, could not stay out, and came back in.
+
+    The third member of the range family and the one a person reacts to
+    fastest: everyone who bought the break is now wrong and their stops sit
+    just back inside. That is what makes the move away from a failed break
+    quick — it is fuelled by the positions the break itself created.
+
+    It cannot fire on the same bar as `RangeBreak`, by construction: that one
+    needs a close outside the edge and this one needs a close back inside. They
+    read the same event and disagree only about how it ended, which is the
+    right way for two theories to be mutually exclusive.
+    """
+
+    name = "failed_break"
+    horizon_minutes = 150
+
+    def __init__(self, config: FailedBreakConfig) -> None:
+        self.config = config
+
+    def propose(self, ctx: MarketContext, mode: TradingMode) -> Play | None:  # noqa: ARG002
+        series = ctx.series.get(Timeframe.M15)
+        if series is None or len(series.df) < 80 or ctx.tick is None:
+            return None
+        frame = series.df
+        atr = _atr(frame)
+        if atr <= 0:
+            return None
+
+        recent = self.config.break_lookback
+        history = frame.iloc[-(self.config.range_bars + recent) : -recent]
+        top = float(history["high"].max())
+        bottom = float(history["low"].min())
+        if top - bottom <= atr * self.config.min_range_atr:
+            return None
+
+        near = atr * self.config.touch_tolerance_atr
+        if int((history["high"] >= top - near).sum()) < self.config.min_touches:
+            top_respected = False
+        else:
+            top_respected = True
+        bottom_respected = int((history["low"] <= bottom + near).sum()) >= self.config.min_touches
+
+        attempt = frame.iloc[-recent:]
+        close = float(frame["close"].iloc[-1])
+        reclaim = atr * self.config.min_reclaim_atr
+
+        direction: Direction | None = None
+        if top_respected and float(attempt["high"].max()) > top + near and close < top - reclaim:
+            direction, extreme, edge = Direction.SHORT, float(attempt["high"].max()), top
+        elif (
+            bottom_respected
+            and float(attempt["low"].min()) < bottom - near
+            and close > bottom + reclaim
+        ):
+            direction, extreme, edge = Direction.LONG, float(attempt["low"].min()), bottom
+        if direction is None:
+            return None
+
+        entry = ctx.tick.ask if direction is Direction.LONG else ctx.tick.bid
+        # Beyond the high water mark of the failed attempt. If price goes back
+        # through that, the break was real after all and simply took its time.
+        stop = extreme + atr * self.config.stop_buffer_atr * int(direction) * -1
+        risk = abs(entry - stop)
+        if risk <= 0:
+            return None
+        floor = atr * self.config.min_stop_atr
+        if risk < floor:
+            stop = entry - floor * int(direction)
+            risk = floor
+        if risk > atr * self.config.max_stop_atr:
+            return None
+
+        affordable, share = _spread_is_affordable(ctx, risk, self.config.max_spread_share_of_stop)
+        if not affordable:
+            return None
+
+        # The far side, where `RangeFade` takes the midpoint. The two are
+        # reading different fuel: a fade is betting on the absence of buyers
+        # above, while this is betting on the presence of trapped ones, whose
+        # stops sit further away and keep the move going once it starts.
+        # Capped in R so a very tall range cannot invent a target.
+        far = bottom if direction is Direction.SHORT else top
+        target_distance = min(abs(far - entry), risk * self.config.max_target_r)
+        if target_distance / risk < self.config.min_target_r:
+            return None
+        target = entry + target_distance * int(direction)
+
+        return Play(
+            playbook=self.name,
+            direction=direction,
+            entry=entry,
+            stop_loss=stop,
+            take_profit=target,
+            conviction=min(
+                84.0,
+                44.0 + min(abs(extreme - edge) / atr, 2.0) * 8.0 + (abs(close - edge) / atr) * 8.0,
+            ),
+            horizon_minutes=self.horizon_minutes,
+            thesis=(
+                f"Price traded {abs(extreme - edge) / atr:.1f} ATR beyond the M15 range "
+                f"{'top' if direction is Direction.SHORT else 'bottom'} and closed back inside. "
+                f"Everyone who took that break is now wrong, and their stops are the fuel."
+            ),
+            evidence={
+                "timeframe": "M15",
+                "broken_edge": round(edge, 6),
+                "attempt_extreme": round(extreme, 6),
+                "overshoot_atr": round(abs(extreme - edge) / atr, 2),
+                "reclaim_atr": round(abs(close - edge) / atr, 2),
+                "spread_share_of_stop": round(share, 3),
+                "stop_distance": round(risk, 6),
+            },
+        )
+
+
 # --------------------------------------------------------------------- config ---
 
 
@@ -642,6 +911,55 @@ class BreakConfig:
     min_target_r: float = 1.3
     #: Ceiling in R, so a tall range cannot manufacture a target the market has
     #: no particular reason to reach.
+    max_target_r: float = 3.0
+    max_spread_share_of_stop: float = 0.12
+
+
+@dataclass(frozen=True, slots=True)
+class PullbackConfig:
+    #: H1 bars the trend is measured over. Twenty-four is a day.
+    trend_bars: int = 24
+    #: Dimensionless drift — see `_drift`. One is a whole random-walk
+    #: excursion's worth of one-way travel, which is a trend rather than a
+    #: market that happened to finish higher than it started.
+    min_trend_drift: float = 1.0
+    pullback_bars: int = 12
+    #: Bars before the pullback window in which the impulse leg is looked for.
+    leg_bars: int = 24
+    #: Depth as a share of the leg being retraced.
+    #:
+    #: Below the floor nothing has actually pulled back and there is no pivot
+    #: to stand a stop behind. Above the ceiling the leg has been mostly given
+    #: back, which is the trend ending rather than pausing — a different trade,
+    #: and not one anything here is proposing.
+    min_retrace: float = 0.2
+    max_retrace: float = 0.7
+    stop_buffer_atr: float = 0.3
+    min_stop_atr: float = 1.0
+    max_stop_atr: float = 3.0
+    min_target_r: float = 1.5
+    max_target_r: float = 4.0
+    max_spread_share_of_stop: float = 0.12
+
+
+@dataclass(frozen=True, slots=True)
+class FailedBreakConfig:
+    #: Same range definition as the fade and the break, again. Three theories,
+    #: one object.
+    range_bars: int = 48
+    min_range_atr: float = 3.0
+    touch_tolerance_atr: float = 0.3
+    min_touches: int = 3
+    #: Bars in which the break may have been attempted and undone.
+    break_lookback: int = 3
+    #: How far back inside the range price must have closed. Without a floor,
+    #: a bar closing a hair under the edge would count, and that is still a
+    #: break in progress.
+    min_reclaim_atr: float = 0.3
+    stop_buffer_atr: float = 0.3
+    min_stop_atr: float = 1.0
+    max_stop_atr: float = 3.0
+    min_target_r: float = 1.2
     max_target_r: float = 3.0
     max_spread_share_of_stop: float = 0.12
 
