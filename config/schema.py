@@ -913,6 +913,37 @@ class ConfluenceConfig(Base):
     #: still-accelerating one, where the setup has to be right about the turn
     #: and about its timing at the same time.
     htf_trend_veto: float = Field(default=1.0, gt=0.0, le=5.0)
+
+    #: Refuse to enter while price is actively running the other way.
+    #:
+    #: The engine finds a level, forms a view, and the order goes out on the
+    #: same tick — so a short can be sent into a market that is climbing
+    #: through the very level it is short against. A live GBPJPY short was
+    #: exactly that: the operator watched resistance break upward and the
+    #: system sold into it, because nothing between "this is a good level" and
+    #: "send the order" ever looked at which way price was going right then.
+    #:
+    #: This is the cheapest form of waiting for confirmation, and the only one
+    #: that needs no state: not "has the market proved me right", but "has it
+    #: already started proving me wrong". A setup refused here is not gone — it
+    #: is re-examined every cycle, and taken the moment the move against it
+    #: stops.
+    require_entry_confirmation: bool = True
+    #: Timeframe the immediate move is read on. Fast enough to be about *now*
+    #: rather than about the setup, which the analysis has already judged.
+    confirmation_timeframe: str = "M5"
+    #: Closed bars of it to measure across.
+    confirmation_bars: int = Field(default=3, ge=1, le=50)
+    #: How far price may travel against the entry over those bars before the
+    #: trade waits, in ATR of that timeframe.
+    #:
+    #: Measured in ATR so it means the same on gold as on EURGBP, and set at
+    #: half a bar because that is the point where "noise around the level"
+    #: becomes "the level is not holding". Below about 0.3 ordinary wobble
+    #: blocks everything; above 1.0 a full bar can run against the trade and
+    #: still be waved through, which is the situation this exists to catch.
+    confirmation_max_adverse_atr: float = Field(default=0.5, gt=0.0, le=3.0)
+
     weights: dict[str, float] = Field(
         default_factory=lambda: {
             "market_structure": 1.0,

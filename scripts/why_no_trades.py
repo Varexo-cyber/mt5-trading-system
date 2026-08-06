@@ -73,6 +73,14 @@ _ADVICE = {
         "No economic calendar, so every entry is blocked by design. Run "
         "`python scripts/verify_calendar.py` — this one WILL stop all trading."
     ),
+    "AWAITING_CONFIRMATION": (
+        "Price is running against the trade at the moment of entry — a short into a "
+        "rising market, or a long into a falling one. Not a judgement on the setup: "
+        "it may be right and simply early, and it is re-checked every cycle and taken "
+        "as soon as the adverse move stops. If it dominates all day, either the "
+        "analysis is consistently calling turns too soon or "
+        "`analysis.confluence.confirmation_max_adverse_atr` is too tight."
+    ),
     "CURRENCY_CONCENTRATION": (
         "A second position leaning the same way on a currency already in the book. "
         "GBPAUD short and GBPJPY short are not two trades, they are one GBP short "

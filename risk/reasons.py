@@ -54,6 +54,10 @@ class Reason(StrEnum):
     RISK_EXCEEDS_CAP = "RISK_EXCEEDS_CAP"
     #: Stop missing, on the wrong side of entry, or equal to it.
     INVALID_STOP = "INVALID_STOP"
+    #: Price is running against the trade at the moment of entry. Not a
+    #: judgement on the setup — the setup may be right and simply early. It is
+    #: re-examined every cycle and taken as soon as the adverse move stops.
+    AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
     #: Reward-to-risk on structural levels is below the minimum.
     RR_BELOW_MINIMUM = "RR_BELOW_MINIMUM"
 
