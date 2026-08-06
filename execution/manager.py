@@ -61,6 +61,20 @@ _UNSET = object()
 #: reset the stall clock forever and the rule would never fire once.
 _PEAK_EPSILON_R = 0.02
 
+#: How much a stop must improve before it is worth moving, in R.
+#:
+#: A stop move is not free. It is a round-trip to the broker, and — because
+#: every stop rule here ends in `continue` — it also costs the position its
+#: turn at every rule below it. Break-even is recomputed from a live ATR, so
+#: without a floor a fractionally rising ATR nudges the target up and re-fires
+#: the rule on every pass, while the profit lock and the partial close sitting
+#: beneath it never once get a look at the trade.
+#:
+#: Found by replaying the real rules over bar history rather than by reading
+#: them: BREAK_EVEN fired on seven consecutive bars of a trade parked at 0.88R,
+#: and the profit lock two rules below it never ran.
+_STOP_IMPROVEMENT_R = 0.02
+
 
 class PositionManager:
     def __init__(self, broker: Broker, journal: Journal, settings: Settings) -> None:
@@ -270,10 +284,7 @@ class PositionManager:
             break_even = position.price_open + atr * config.break_even_offset_atr * int(
                 position.direction
             )
-            stop_behind_break_even = (
-                position.direction is Direction.LONG and position.sl < break_even
-            ) or (position.direction is Direction.SHORT and position.sl > break_even)
-            if r_now >= config.break_even_at_r and stop_behind_break_even:
+            if r_now >= config.break_even_at_r and self._worth_moving(position, break_even, risk):
                 result = self.broker.modify_stops(
                     position,
                     sl=self.broker.spec(position.symbol).normalize_price(break_even),
@@ -322,10 +333,7 @@ class PositionManager:
 
             if config.trailing_mode == "atr" and r_now >= config.partial_close_at_r:
                 trailing = price - atr * config.trailing_atr_multiple * int(position.direction)
-                improves = (position.direction is Direction.LONG and trailing > position.sl) or (
-                    position.direction is Direction.SHORT and trailing < position.sl
-                )
-                if improves:
+                if self._worth_moving(position, trailing, risk):
                     result = self.broker.modify_stops(
                         position,
                         sl=self.broker.spec(position.symbol).normalize_price(trailing),
@@ -534,6 +542,18 @@ class PositionManager:
             return None
         return self._session_filter.evening_flat_window(asset_class)
 
+    def _worth_moving(self, position: Position, candidate: float, risk: float) -> bool:
+        """Whether moving the stop to `candidate` is worth a broker round-trip.
+
+        One test for all three rules that touch a stop, so a stop under any of
+        them can only ever move in the direction of the trade, and only when
+        the move is big enough to matter. See `_STOP_IMPROVEMENT_R` for why the
+        floor is not zero.
+        """
+        if risk <= 0:
+            return False
+        return (candidate - position.sl) * int(position.direction) / risk >= _STOP_IMPROVEMENT_R
+
     def _record_excursion(self, trade_id: int, r_now: float, recorded_peak: float) -> float:
         """Ratchet how far the trade has run, and return the peak so far.
 
@@ -672,10 +692,7 @@ class PositionManager:
         sign = int(position.direction)
         secured_r = peak_r * config.profit_lock_fraction
         target = position.price_open + secured_r * risk * sign
-        improves = (position.direction is Direction.LONG and target > position.sl) or (
-            position.direction is Direction.SHORT and target < position.sl
-        )
-        if not improves:
+        if not self._worth_moving(position, target, risk):
             return None
 
         spec = self.broker.spec(position.symbol)
