@@ -307,3 +307,81 @@ def test_signals_carry_their_own_reason() -> None:
     health = assess_position(sign=LONG, r_now=0.0, age_minutes=30, fast=fast, structure=structure)
     assert all(isinstance(s, HealthSignal) and s.detail for s in health.signals)
     assert health.reason
+
+
+def _names(health) -> set[str]:
+    return {signal.name for signal in health.signals}
+
+
+class TestDriftReadersWaitForTheirOwnBars:
+    """A drift reader must not judge a trade on bars from before it existed.
+
+    `MIN_AGE_MINUTES` alone did not do this. At two minutes old, ten of the
+    slope's twelve bars predate the entry — the same stretch of chart the
+    playbook read when it decided to enter. Entry says the move is continuing
+    and health says it turned, from one set of bars, and health wins because it
+    is asked again every second.
+
+    Live evidence, 6 August: three trades cut at 2:14, 2:19 and 2:38 against a
+    two-minute floor, for -0.16R, -0.71R and -0.48R. Not one reached its stop.
+    """
+
+    def test_the_slope_says_nothing_on_a_trade_minutes_old(self) -> None:
+        fast, structure = deteriorating_bars()
+        health = assess_position(
+            sign=LONG, r_now=-0.3, age_minutes=2.5, fast=fast, structure=structure
+        )
+        assert _names(health) == {"structure_broken"}
+
+    def test_and_so_the_trade_is_tightened_rather_than_closed(self) -> None:
+        """The corroboration rule does the rest: one family left standing is
+        not evidence, so `exit` becomes `tighten` and the trade keeps its
+        chance instead of being cut at two and a half minutes."""
+        fast, structure = deteriorating_bars()
+        health = assess_position(
+            sign=LONG, r_now=-0.3, age_minutes=2.5, fast=fast, structure=structure
+        )
+        assert health.action != "exit"
+
+    def test_the_run_reader_speaks_first(self) -> None:
+        """Six bars against twelve. It needs less history, so it earns its say
+        sooner — one number for both would have been wrong for one of them."""
+        fast, structure = deteriorating_bars()
+        early = assess_position(
+            sign=LONG, r_now=-0.3, age_minutes=7.0, fast=fast, structure=structure
+        )
+        assert "adverse_run" in _names(early)
+        assert "momentum_turned" not in _names(early)
+
+    def test_an_older_trade_is_judged_in_full(self) -> None:
+        """The gate delays the readers; it must not disable them."""
+        fast, structure = deteriorating_bars()
+        health = assess_position(
+            sign=LONG, r_now=-0.3, age_minutes=30.0, fast=fast, structure=structure
+        )
+        assert "momentum_turned" in _names(health)
+        assert health.action == "exit"
+
+    def test_a_slower_fast_frame_waits_proportionally_longer(self) -> None:
+        """The gate counts bars, not minutes. On a five-minute fast frame the
+        same twelve bars are an hour, and the reader must wait that hour."""
+        fast, structure = deteriorating_bars()
+        health = assess_position(
+            sign=LONG,
+            r_now=-0.3,
+            age_minutes=30.0,
+            fast=fast,
+            structure=structure,
+            fast_bar_minutes=5.0,
+        )
+        assert "momentum_turned" not in _names(health)
+
+    def test_structure_is_not_held_back(self) -> None:
+        """Deliberately exempt. The swing holding a trade up legitimately
+        formed before the trade, and closing through it is a real break
+        whenever it happens."""
+        fast, structure = deteriorating_bars()
+        health = assess_position(
+            sign=LONG, r_now=-0.3, age_minutes=2.5, fast=fast, structure=structure
+        )
+        assert "structure_broken" in _names(health)

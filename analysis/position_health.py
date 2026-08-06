@@ -54,6 +54,24 @@ Verdict = Literal["healthy", "watch", "deteriorating", "broken", "unmanaged"]
 #: and close good trades before they can breathe.
 MIN_AGE_MINUTES = 2.0
 
+#: Bars of the fast timeframe each drift reader needs to have formed *since the
+#: entry* before it is allowed to speak.
+#:
+#: Stated per reader because one number is wrong for both: the slope reads
+#: twelve bars, the run reads six. And stated at all because `MIN_AGE_MINUTES`
+#: alone does not do this job — at two minutes old, ten of the slope's twelve
+#: bars are from before the trade existed, which is the same stretch of chart
+#: the playbook read when it decided to enter. Entry and health then draw
+#: opposite conclusions from one set of bars, and health wins because it is
+#: asked again every second.
+#:
+#: Live evidence, 6 August: three trades were cut at 2:14, 2:19 and 2:38
+#: against a two-minute floor, for -0.16R, -0.71R and -0.48R. Not one of them
+#: reached its stop; the reader closed all three within seconds of becoming
+#: eligible to.
+_MOMENTUM_BARS = 12
+_RUN_BARS = 6
+
 #: Severity thresholds for the combined read. Chosen so that "broken" is out of
 #: reach for any single reader at full strength, which is what makes the
 #: two-signal rule structural rather than a comment.
@@ -294,12 +312,18 @@ def assess_position(
     weights: HealthWeights | None = None,
     secure_at_r: float = 0.5,
     tighten_at_r: float = 0.2,
+    fast_bar_minutes: float = 1.0,
 ) -> PositionHealth:
     """Combine the readers into one verdict and one permitted action.
 
     `fast` is the short timeframe the momentum and run readers work on; the
     structure reader deliberately uses `structure`, a slower one, because a
     swing on M1 is noise wearing the word "structure".
+
+    The drift readers are additionally held back until their own window has
+    filled with bars from after the entry — see `_MOMENTUM_BARS`. The structure
+    reader is not: the swing holding a trade up legitimately formed before it,
+    and closing through that swing is a real break whenever it happens.
     """
     weights = weights or HealthWeights()
     if age_minutes < MIN_AGE_MINUTES:
@@ -310,10 +334,14 @@ def assess_position(
         found = structure_broken(structure, sign)
         if found is not None:
             signals.append(found)
+    since_entry = age_minutes / fast_bar_minutes if fast_bar_minutes > 0 else 0.0
     if fast is not None and not fast.empty:
-        signals.extend(
-            found for found in (momentum_turned(fast, sign), adverse_run(fast, sign)) if found
-        )
+        drift = []
+        if since_entry >= _MOMENTUM_BARS:
+            drift.append(momentum_turned(fast, sign))
+        if since_entry >= _RUN_BARS:
+            drift.append(adverse_run(fast, sign))
+        signals.extend(found for found in drift if found)
     blown = spread_blowout(spread, risk)
     if blown is not None:
         signals.append(blown)
