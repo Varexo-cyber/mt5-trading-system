@@ -45,6 +45,11 @@ class Reason(StrEnum):
     SL_TOO_WIDE_FOR_ACCOUNT = "SL_TOO_WIDE_FOR_ACCOUNT"
     #: The stop sits inside the broker's minimum stop distance.
     SL_TOO_TIGHT_FOR_BROKER = "SL_TOO_TIGHT_FOR_BROKER"
+    #: The stop is legal at the broker and still too narrow to be worth taking:
+    #: commission and the slippage a stop-out actually suffers would be a large
+    #: share of the risk. A live AUDNZD stop-out on a 5-pip stop returned
+    #: -1.48R, of which 0.56R was pure cost.
+    SL_TOO_TIGHT_FOR_COSTS = "SL_TOO_TIGHT_FOR_COSTS"
     #: Even the minimum lot would risk more than the configured ceiling.
     RISK_EXCEEDS_CAP = "RISK_EXCEEDS_CAP"
     #: Stop missing, on the wrong side of entry, or equal to it.

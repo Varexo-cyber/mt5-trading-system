@@ -56,6 +56,13 @@ _ADVICE = {
         "lot rounds below the broker minimum. Correct behaviour — rounding up would "
         "silently multiply your risk. Nothing to fix unless equity has grown."
     ),
+    "SL_TOO_TIGHT_FOR_COSTS": (
+        "The stop is legal at the broker and still too narrow to be worth taking: "
+        "commission plus the slippage a stop-out actually suffers would be a large "
+        "share of the risk. Expected on scalp-width setups. It is the gate that "
+        "stops a -1.00R plan returning -1.48R; loosen `risk.max_cost_share_of_risk` "
+        "only if you are willing to have the cost of trading decide the outcome."
+    ),
     "SL_TOO_WIDE_FOR_ACCOUNT": (
         "The structural stop is wider than this account can carry. Raise "
         "`max_sl_pips` only if the arithmetic genuinely allows it."

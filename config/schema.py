@@ -293,6 +293,24 @@ class RiskConfig(Base):
     #: Ceiling the sizer will never exceed regardless of setup quality.
     max_risk_per_trade_pct: Pct = 1.0
 
+    #: Slippage a stop-out actually suffers, in pips, per asset class. A class
+    #: not listed here contributes nothing, and the cost check below then rests
+    #: on commission alone.
+    #:
+    #: Measured, not assumed. A live AUDNZD stop sat at 1.19722 and filled at
+    #: 1.19705 — 1.7 pips straight through it, on a 5-pip stop. A stop is a
+    #: request, not a guarantee, and the difference is a cost the risk model
+    #: has to carry like any other.
+    stop_slippage_pips: dict[str, float] = Field(default_factory=dict)
+    #: Share of the risk that commission plus slippage may consume before a
+    #: setup is refused outright. 0 switches the check off.
+    #:
+    #: On that AUDNZD trade the two together were 56% of 1R and it returned
+    #: -1.48R on a -1.00R plan. At that ratio the strategy is not what is being
+    #: tested — the cost of trading is, and it wins. Past roughly a quarter, a
+    #: full stop-out cannot land inside -1.25R however good the entry was.
+    max_cost_share_of_risk: float = Field(default=0.0, ge=0.0, le=1.0)
+
     #: Broker commission per lot per side, in account currency. 0 for accounts
     #: whose cost is entirely in the spread.
     #:

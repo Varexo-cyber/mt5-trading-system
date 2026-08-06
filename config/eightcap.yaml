@@ -275,6 +275,30 @@ risk:
   # kost per lot: op een stop van 2 pips is het een derde van je risico, op 20
   # pips een afrondingsfout.
   commission_per_lot_per_side: 2.75
+
+  # Slippage die een stop-out werkelijk oploopt, in pips per assetklasse.
+  #
+  # Gemeten: een AUDNZD-stop stond op 1.19722 en werd gevuld op 1.19705 —
+  # 1,7 pip dwars door de stop heen, op een stop van 5 pips. Een stop is een
+  # verzoek, geen garantie.
+  #
+  # Eén waarneming per klasse is weinig. Draai `scripts/execution_noise.py`
+  # als er meer trades zijn en stel bij op wat de data zegt.
+  stop_slippage_pips:
+    forex: 1.7
+    metal: 2.0
+    index: 2.0
+
+  # Hoeveel van je risico commissie plus slippage mogen opeten.
+  #
+  # Op die AUDNZD-trade was dat samen 56% van 1R, en hij kwam uit op -1.48R
+  # tegen een plan van -1.00R. Bij die verhouding wordt niet de strategie
+  # getest maar de kosten van handelen, en die winnen.
+  #
+  # Op 25% kan een volle stop-out nooit slechter uitpakken dan -1.25R, hoe
+  # goed of slecht de entry ook was. Setups met een krappere stop worden
+  # geweigerd met SL_TOO_TIGHT_FOR_COSTS.
+  max_cost_share_of_risk: 0.25
   # Het absolute plafond. Een modus mag hier lager gaan, nooit hoger — de
   # loader weigert dat bij het inladen, en dat is precies hoe deze regel is
   # opgevallen toen micro_live op 4 werd gezet terwijl dit nog 2 was.
