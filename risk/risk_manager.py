@@ -197,14 +197,25 @@ class RiskManager:
         if state.consecutive_losses < threshold:
             return 1.0
         multiplier = self.settings.risk.losing_streak_risk_multiplier
+        detail = {
+            "consecutive_losses": state.consecutive_losses,
+            "threshold": threshold,
+            "multiplier": multiplier,
+        }
+        if multiplier >= 1.0:
+            # The halving is switched off on this account, on purpose: at EUR 88
+            # a halved stake is below the smallest lot the broker sells, so the
+            # effect is not "trade smaller" but "stop trading" — see the note on
+            # `losing_streak_risk_multiplier` in config/eightcap.yaml.
+            #
+            # Counted and reported either way. But it must not claim to have
+            # reduced anything, and it must not shout: an operator reading
+            # "reducing risk after a losing streak" eight times in one cycle
+            # concludes the account is protecting itself, and here it is not.
+            log.info("losing streak noted, risk unchanged", extra={"event": "streak", **detail})
+            return 1.0
         log.warning(
-            "reducing risk after a losing streak",
-            extra={
-                "event": "risk_reduced",
-                "consecutive_losses": state.consecutive_losses,
-                "threshold": threshold,
-                "multiplier": multiplier,
-            },
+            "reducing risk after a losing streak", extra={"event": "risk_reduced", **detail}
         )
         return multiplier
 
