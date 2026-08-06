@@ -66,6 +66,13 @@ _ADVICE = {
         "No economic calendar, so every entry is blocked by design. Run "
         "`python scripts/verify_calendar.py` — this one WILL stop all trading."
     ),
+    "AI_VETO_PATTERN_KNOWN": (
+        "Claude has refused this symbol and direction several times for the same "
+        "underlying reason, so the question was not bought again. Not a judgement on "
+        "this setup — it was recognised, not reviewed, and an approval on the same "
+        "pair clears the pattern immediately. If it dominates a whole day, the "
+        "instrument selection is the problem rather than this gate."
+    ),
     "AI_REVIEW_BUDGET_SPENT": (
         "The cycle's paid reviews went to higher-conviction setups. Not a judgement "
         "on these — they were never asked about, and they are first in line next "

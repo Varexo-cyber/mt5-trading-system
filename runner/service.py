@@ -18,10 +18,12 @@ from advisory import (
     AIReviewLedger,
     DisabledAdvisor,
     VetoMemory,
+    VetoPatterns,
     build_advisor,
     build_review_payload,
     build_supervision_payload,
 )
+from advisory.veto_patterns import readable as veto_readable
 from analysis import (
     ConfluenceEngine,
     LevelReaction,
@@ -212,6 +214,8 @@ class JarvisRunner:
         self._reviews_this_cycle = 0
         # Refusals outlive the bar they were given on; see advisory/veto_memory.
         self.veto_memory = VetoMemory(root / "runtime" / "veto_memory.json")
+        # And *why* they were refused, which outlives the proposal's shape.
+        self.veto_patterns = VetoPatterns(root / "runtime" / "veto_patterns.json")
         # What the account has taught itself, fed back into every review.
         self.memory = TradingMemory(root / "runtime" / "trading_memory.json")
         # The fast layer's live read, published for the deck. The manager holds
@@ -902,6 +906,34 @@ class JarvisRunner:
             },
             "account_posture": self.posture.brief(),
         }
+        # Do we already know what the reviewer is going to say, and why?
+        #
+        # `veto_memory` above catches the identical proposal coming back. This
+        # catches the case it cannot: five GBPCAD longs at five different
+        # entries, refused five times as counter-trend. The shape moved every
+        # time so the shape memory forgot; the flaw never moved at all.
+        #
+        # Only ever suppresses a paid call. Every deterministic gate has
+        # already run, and an approval on this pair wipes the pattern outright.
+        pattern = (
+            self.veto_patterns.established(symbol, idea.direction.name, self.clock.now())
+            if self.operation is not OperationMode.MONITOR
+            else None
+        )
+        if pattern is not None and self._cached_review(idea, context) is None:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AI_VETO_PATTERN,
+                f"{pattern.describe()}: {veto_readable(pattern.tag)}. Nothing about that "
+                f"has changed, so this is not worth asking again yet — an approval on "
+                f"{symbol} {idea.direction.name} clears it immediately.",
+                signals=list(idea.signals),
+                extra={**filter_data, "veto_pattern": pattern.tag},
+            )
+            return False
+
         # Has this cycle already spent its review budget on better ideas?
         #
         # Asked here, before the payload is built and before anything is
@@ -1017,6 +1049,13 @@ class JarvisRunner:
             # timeout would let a brief outage blank out the catalogue.
             if not advice.error:
                 self._remember_veto(idea, context, advice)
+                self.veto_patterns.remember(
+                    symbol,
+                    idea.direction.name,
+                    risks=advice.risks,
+                    thesis=advice.thesis,
+                    now=self.clock.now(),
+                )
                 self.memory.record_veto(symbol, idea.direction.name, self.clock.now())
             self._record_skip(
                 cycle_id,
@@ -1028,8 +1067,12 @@ class JarvisRunner:
                 extra={**filter_data, **ai_data},
             )
             return False
-        # Approved: whatever was held against this symbol no longer stands.
+        # Approved: whatever was held against this symbol no longer stands —
+        # neither the refused shape nor the reason behind it. The reviewer has
+        # just said yes to exactly the pair the pattern called hopeless, so the
+        # pattern is wrong by demonstration rather than merely weakened.
         self.veto_memory.clear(symbol, idea.direction.name)
+        self.veto_patterns.clear(symbol, idea.direction.name)
 
         cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
