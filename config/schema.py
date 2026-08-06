@@ -584,9 +584,86 @@ class CorrelationFilterConfig(Base):
     timeframe: str = "H1"
 
 
+class RunwayFilterConfig(Base):
+    """How much time a trade must have before we force it flat."""
+
+    enabled: bool = True
+    #: Minutes of clear market required between an entry and this instrument's
+    #: own wind-down. 45 is not a market constant, it is a floor: a structural
+    #: target on the M5/M15 setups this system trades resolves in roughly one
+    #: to three hours, and a trade with less than three quarters of an hour is
+    #: not being given a chance to be right — it is being charged the spread
+    #: for the privilege of being closed on the clock.
+    min_runway_minutes: float = Field(default=45.0, ge=0.0, le=480.0)
+    #: Per-asset-class overrides, for instruments that resolve on a different
+    #: clock than FX. Absent classes take `min_runway_minutes`.
+    min_runway_by_class: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("min_runway_by_class")
+    @classmethod
+    def _sane_overrides(cls, value: dict[str, float]) -> dict[str, float]:
+        bad = {name: minutes for name, minutes in value.items() if not 0.0 <= minutes <= 480.0}
+        if bad:
+            raise ValueError(f"min_runway_by_class out of range [0, 480]: {bad}")
+        return value
+
+    #: Beyond the blunt floor above, also ask whether *this* target can be
+    #: reached in the time left at the market's current speed. The filter
+    #: cannot ask that — it never sees the setup — so the runner does, once the
+    #: levels are known.
+    require_reachable_target: bool = True
+    #: How much better than a pure random walk a market travels when we have a
+    #: directional read on it. Net displacement over n bars is `sqrt(n) x ATR`
+    #: for a random walk, so bars-to-target is `(distance / ATR)^2`; this
+    #: divides the distance first. 1.0 assumes we have no edge at all and is
+    #: brutally pessimistic; above ~2.5 the check stops rejecting anything.
+    travel_efficiency: float = Field(default=1.5, ge=0.5, le=3.0)
+    #: Timeframe whose ATR sets the market's speed for that estimate.
+    speed_timeframe: str = "M5"
+
+    def minutes_for(self, asset_class: str) -> float:
+        return self.min_runway_by_class.get(asset_class, self.min_runway_minutes)
+
+
+class LivelinessFilterConfig(Base):
+    """When is a market too quiet to be worth entering."""
+
+    enabled: bool = True
+    timeframe: str = "M5"
+    #: Bars averaged for "how fast is it moving right now".
+    recent_bars: int = Field(default=6, ge=2, le=60)
+    #: Bars the recent window is compared against. 120 M5 bars is ten hours —
+    #: long enough to span more than one session, so the comparison is against
+    #: the instrument's day rather than against the last twenty minutes of it.
+    baseline_bars: int = Field(default=120, ge=30, le=1000)
+    #: Below this fraction of its own baseline, the market is asleep. 0.5 is
+    #: deliberately not close to 1.0: normal markets breathe, and a gate that
+    #: fires on every lull is a gate that never lets anything through.
+    min_activity_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
+    #: Bars needed before the ratio means anything at all.
+    min_bars: int = Field(default=40, ge=10, le=1000)
+
+    @model_validator(mode="after")
+    def _windows_are_ordered(self) -> LivelinessFilterConfig:
+        if self.recent_bars >= self.baseline_bars:
+            raise ValueError(
+                f"recent_bars ({self.recent_bars}) must be shorter than baseline_bars "
+                f"({self.baseline_bars}); comparing a window against itself always "
+                f"reads as normal"
+            )
+        if self.min_bars < self.recent_bars:
+            raise ValueError(
+                f"min_bars ({self.min_bars}) is below recent_bars ({self.recent_bars}); "
+                f"the recent window would be padded with bars that do not exist"
+            )
+        return self
+
+
 class FiltersConfig(Base):
     news: NewsFilterConfig = NewsFilterConfig()
     session: SessionFilterConfig = SessionFilterConfig()
+    runway: RunwayFilterConfig = RunwayFilterConfig()
+    liveliness: LivelinessFilterConfig = LivelinessFilterConfig()
     spread: SpreadFilterConfig = SpreadFilterConfig()
     correlation: CorrelationFilterConfig = CorrelationFilterConfig()
 

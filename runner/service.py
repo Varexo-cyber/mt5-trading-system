@@ -43,7 +43,7 @@ from analysis.playbooks import (
 from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
-from core.data_manager import DataManager
+from core.data_manager import DataManager, atr
 from core.errors import TradingSystemError
 from core.startup import run_startup_guard
 from core.types import AccountSnapshot, MarketContext, OrderRequest, Timeframe, TradingMode
@@ -51,6 +51,7 @@ from execution.manager import ManagementEvent, PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
 from filters.news_filter import NewsFilter
+from filters.runway_filter import RunwayFilter
 from infra.atomic import write_json_atomic
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger
@@ -761,6 +762,30 @@ class JarvisRunner:
             )
             return False
 
+        # Is there time for this to work? The runway filter enforced a flat
+        # floor without seeing the setup; now that the target is known, ask the
+        # sharper question. A 5-ATR target on a market moving at its usual pace
+        # needs hours, and an hour before the wind-down it is not a trade with
+        # a lower probability — it is a trade that cannot complete, and the
+        # only thing it reliably does is pay the spread twice.
+        reachable, needed, runway = self._target_is_reachable_in_time(
+            context, idea, spec.asset_class.value
+        )
+        if not reachable:
+            assert needed is not None and runway is not None  # only False with both set
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.INSUFFICIENT_RUNWAY,
+                f"target is ~{needed:.0f} min away at the current pace but only "
+                f"{runway:.0f} min remain before the {spec.asset_class.value} wind-down; "
+                f"the position would be closed on the clock, not on the idea",
+                signals=list(idea.signals),
+                extra={**filter_data, "minutes_to_target": round(needed, 1)},
+            )
+            return False
+
         sizing = PositionSizer(self.settings).size(
             spec=spec,
             equity=account.equity,
@@ -1315,6 +1340,68 @@ class JarvisRunner:
             return False, 1.0
         share = context.tick.spread / risk
         return share <= self.settings.analysis.confluence.max_spread_share_of_stop, share
+
+    def _target_is_reachable_in_time(
+        self, context: MarketContext, idea: TradeIdea, asset_class: str
+    ) -> tuple[bool, float | None, float | None]:
+        """Can this target be reached before we force the position flat?
+
+        Returns `(ok, minutes_needed, runway_minutes)`. Both numbers are None
+        when the question does not apply — a continuous market, the check
+        switched off, or no usable speed reading.
+
+        The runway *filter* enforces a flat floor because it never sees the
+        setup. This is the same idea with the setup in hand, and it is the
+        version that matters: forty-five minutes is plenty for a target one ATR
+        away and nowhere near enough for one five ATR away, and a rule that
+        cannot tell those apart is either blocking good trades or letting bad
+        ones through, usually both.
+
+        Time-to-target comes from the same normalisation the health reader and
+        the higher-timeframe conflict check already use. Net displacement over
+        n bars scales with `sqrt(n) x ATR`, not with n, because price does not
+        travel in a straight line — so covering d requires `(d / ATR)^2` bars,
+        not `d / ATR`. Using the linear form is what makes a distant target
+        look forty minutes away when it is really three hours away, and it is
+        why an entry can look reasonable at 19:50 and be hopeless in fact.
+
+        `travel_efficiency` divides the distance first, crediting the setup for
+        the directional read we think we have. It is an assumption, stated in
+        one place and configurable, rather than an optimism baked into the
+        shape of the formula.
+        """
+        config = self.settings.filters.runway
+        if not config.enabled or not config.require_reachable_target:
+            return True, None, None
+
+        runway_filter = self.filters.find(RunwayFilter)
+        if runway_filter is None:
+            return True, None, None
+        runway = runway_filter.session.minutes_of_runway(self.clock.now(), asset_class)
+        if runway is None:
+            return True, None, None
+
+        try:
+            timeframe = Timeframe.parse(config.speed_timeframe)
+            speed = atr(context.bars(timeframe).df, period=14)
+        except (KeyError, TradingSystemError, ValueError) as exc:
+            # No speed reading means no estimate. The flat floor in the filter
+            # has already cleared this moment, so falling through is not the
+            # same as skipping the check entirely.
+            log.debug(
+                "no speed reading for the reachability estimate",
+                extra={"symbol": context.symbol, "reason": str(exc)},
+            )
+            return True, None, runway
+
+        distance = abs(idea.take_profit - idea.entry)
+        if speed <= 0 or distance <= 0:
+            return True, None, runway
+
+        atr_units = distance / speed / config.travel_efficiency
+        bars_needed = atr_units**2
+        minutes_needed = bars_needed * timeframe.duration.total_seconds() / 60.0
+        return minutes_needed <= runway, minutes_needed, runway
 
     def _health_brief(self, ticket: int) -> dict[str, object]:
         """The fast layer's current read, for the adviser's payload."""

@@ -66,6 +66,19 @@ _ADVICE = {
         "No economic calendar, so every entry is blocked by design. Run "
         "`python scripts/verify_calendar.py` — this one WILL stop all trading."
     ),
+    "INSUFFICIENT_RUNWAY": (
+        "Too close to the evening wind-down for a trade to finish — either under "
+        "`filters.runway.min_runway_minutes` of clear market left, or a target that "
+        "needs longer than the time remaining at the market's current pace. Expected "
+        "in the last hour of the session; if it dominates all day, the floor or "
+        "`filters.runway.travel_efficiency` is set too conservatively."
+    ),
+    "MARKET_TOO_QUIET": (
+        "The market is ranging well below its own recent normal, so a target priced "
+        "in ATR cannot be reached in any reasonable time. Expected during lulls and "
+        "holidays; if it dominates for hours across every market, lower "
+        "`filters.liveliness.min_activity_ratio`."
+    ),
     "MAX_TRADES_PER_DAY": "Daily trade cap reached. Set `risk.max_trades_per_day: 0` to remove it.",
     "DAILY_LOSS_LIMIT_HIT": "Daily loss limit hit; paused until the next trading day.",
     "MAX_POSITIONS_REACHED": "Already holding the maximum number of positions.",

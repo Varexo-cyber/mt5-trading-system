@@ -104,6 +104,39 @@ class SessionFilter(Filter):
         """The wind-down that applies to this asset class."""
         return self.evening_flat_by_class.get(asset_class, self.evening_flat)
 
+    def minutes_of_runway(self, moment: datetime, asset_class: str) -> float | None:
+        """Minutes left before *we* force this instrument flat.
+
+        The deadline is whichever comes first: this asset class's evening
+        wind-down, or the Friday cut-off on a Friday. `None` means no deadline
+        applies — a continuous market, or a profile with the wind-down off.
+
+        This is the number the session gate never had. `check` answers "are we
+        inside a blocked window", which is a different question, and it leaves
+        the minute before the window wide open: an entry at 20:14 clears every
+        gate and is flattened by us at 20:15, having paid the spread twice to
+        find out nothing.
+
+        A deadline already behind us returns 0.0 rather than tomorrow's, which
+        keeps the failure direction safe. `check` blocks those moments anyway,
+        so the only way to see 0.0 is a caller asking out of band — and for
+        that caller, "no runway" is the honest answer.
+        """
+        if asset_class in self.config.continuous_asset_classes:
+            return None
+
+        deadlines: list[time] = []
+        window = self.evening_flat_window(asset_class)
+        if window is not None:
+            deadlines.append(window.start)
+        if self.friday_cutoff is not None and moment.weekday() == 4:
+            deadlines.append(self.friday_cutoff)
+        if not deadlines:
+            return None
+
+        current = moment.timetz().replace(tzinfo=None)
+        return min(_minutes_until(current, deadline) for deadline in deadlines)
+
     def active_sessions(self, moment: datetime) -> tuple[str, ...]:
         """Sessions currently open. Overlaps are real and reported as such."""
         return tuple(name for name, window in self.sessions.items() if window.contains(moment))
@@ -239,6 +272,19 @@ class SessionFilter(Filter):
             session_overlap=overlap,
             asset_class=asset_class,
         )
+
+
+def _minutes_until(current: time, deadline: time) -> float:
+    """Minutes from `current` to `deadline` on the same day, floored at zero.
+
+    Deliberately does not roll over to tomorrow. Every deadline this is used
+    for is an end-of-day one, so a deadline that reads as "past" means the day
+    is over — answering with 1400 minutes of runway would be the one wrong
+    answer that lets a trade through.
+    """
+    minutes = (deadline.hour - current.hour) * 60 + (deadline.minute - current.minute)
+    minutes -= current.second / 60.0
+    return max(0.0, minutes)
 
 
 def _parse(text: str) -> time:
