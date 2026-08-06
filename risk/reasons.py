@@ -25,6 +25,11 @@ class Reason(StrEnum):
     METHODS_DISAGREE = "METHODS_DISAGREE"
     DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
     AI_VETO = "AI_VETO"
+    #: The reviewer has already refused this instrument and direction several
+    #: times for the same underlying reason, and nothing about that reason has
+    #: changed. Different from AI_VETO: this trade was not judged, it was
+    #: recognised. An approval on the same pair wipes the pattern.
+    AI_VETO_PATTERN = "AI_VETO_PATTERN_KNOWN"
     #: This cycle has spent its paid-review budget on higher-conviction
     #: candidates. Not a judgement on the setup — it was never asked about.
     #: It comes back next cycle, and if the better ideas have cleared out by
