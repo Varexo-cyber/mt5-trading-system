@@ -36,7 +36,18 @@ import pandas as pd
 from analysis.market_structure import find_swings
 
 Action = Literal["hold", "tighten", "secure", "exit"]
-Verdict = Literal["healthy", "watch", "deteriorating", "broken"]
+#: `unmanaged` is not a reading, it is the absence of one, and it is a state
+#: distinct from every other value here. The four real verdicts all mean "the
+#: fast layer looked at this trade and concluded something". `unmanaged` means
+#: the loop skipped the position before any reader ran — so no give-back, no
+#: profit lock, no peak stall, no time exit. The trade is held by its broker
+#: stop alone, and nothing else in this system is watching it.
+#:
+#: It exists because that state used to be invisible. A skipped position simply
+#: never appeared in the health map, and the deck rendered the gap as "geen live
+#: oordeel (draait Jarvis?)" — pointing at the one explanation the operator can
+#: see with their own eyes is false, while the real one went unsaid.
+Verdict = Literal["healthy", "watch", "deteriorating", "broken", "unmanaged"]
 
 #: Below this the trade is too young to judge. Entry noise — the first tick
 #: against you, the spread crossing — would otherwise read as a momentum turn
@@ -92,6 +103,11 @@ class PositionHealth:
             "verdict": self.verdict,
             "severity": round(self.severity, 2),
             "action": self.action,
+            # Already computed, and the one field this used to drop. On an
+            # ordinary reading it condenses the signals into a line; on an
+            # `unmanaged` verdict it is the entire answer, because there are no
+            # signals and the verdict alone only says a reading was not taken.
+            "reason": self.reason,
             "signals": [
                 {"name": s.name, "severity": round(s.severity, 2), "detail": s.detail}
                 for s in self.signals

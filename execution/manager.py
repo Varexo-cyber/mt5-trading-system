@@ -191,10 +191,21 @@ class PositionManager:
         for position in positions:
             row = self.journal.open_trade_by_ticket(position.ticket)
             if row is None:
+                self._unmanaged(
+                    position,
+                    "no open trade on record for this ticket, so there is no entry "
+                    "intent to measure R against; the broker stop is the only thing "
+                    "holding it",
+                )
                 continue
             original_sl = float(row["sl"])
             risk = abs(position.price_open - original_sl)
             if risk <= 0:
+                self._unmanaged(
+                    position,
+                    f"journal records the stop at {original_sl:.5f}, the same as entry, "
+                    f"so 1R is zero and every rule here divides by it",
+                )
                 continue
             tick = self.broker.tick(position.symbol)
             price = tick.bid if position.direction is Direction.LONG else tick.ask
@@ -534,6 +545,35 @@ class PositionManager:
         """
         self.journal.update_excursions(trade_id, mae_r=min(0.0, r_now), mfe_r=max(0.0, r_now))
         return max(recorded_peak, r_now)
+
+    def _unmanaged(self, position: Position, why: str) -> None:
+        """Record that this position was skipped, and say why.
+
+        The two paths into here both used to be a bare `continue`. A position
+        that takes one of them gets nothing from this file: no health read, no
+        give-back, no profit lock, no peak stall, no time exit. It is held by
+        its broker stop and by nothing else — which is a legitimate state after
+        a manual trade or a half-recovered restart, and a serious one to be in
+        without knowing.
+
+        It was invisible. The health map simply had no entry for the ticket,
+        the deck rendered that absence as "geen live oordeel (draait Jarvis?)",
+        and an operator looking at a running Jarvis reasonably concluded the
+        deck was broken. Logged at warning because being unmanaged is not
+        routine, and carried into the health map so the panel can say the true
+        thing instead of the misleading one.
+        """
+        self.last_health[position.ticket] = PositionHealth("unmanaged", 0.0, "hold", (), why)
+        log.warning(
+            "position is not being managed: %s",
+            why,
+            extra={
+                "event": "position_unmanaged",
+                "ticket": position.ticket,
+                "symbol": position.symbol,
+                "reason": why,
+            },
+        )
 
     def _peak_stall_exit(
         self, position: Position, r_now: float, peak_r: float, now: datetime
