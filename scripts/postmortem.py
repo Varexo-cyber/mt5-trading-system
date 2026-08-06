@@ -137,9 +137,20 @@ def report(db: sqlite3.Connection, trade: sqlite3.Row) -> None:
 
     print(f"  ticket        {trade['ticket']}")
     print(f"  opened        {trade['opened_at']}")
-    print(f"  closed        {trade['closed_at'] or 'still open'}")
+    print(f"  closed        {trade['closed_at'] or 'no closure recorded'}")
     if opened and closed:
         print(f"  held          {elapsed(opened, closed)}")
+    if not closed:
+        # "still open" is what this used to say, and it is a claim the journal
+        # cannot actually make. All it knows is that no closure has been
+        # written. An operator who has just watched the position disappear
+        # from MT5 reads that as the report being wrong, when the real message
+        # is that reconciliation has not run — it only runs inside a full
+        # cycle, so a stopped Jarvis leaves every closure unrecorded.
+        print("                ^ the journal has no closure for this ticket.")
+        print("                  If it is gone from MT5, Jarvis has not")
+        print("                  reconciled yet — reconciliation runs once per")
+        print("                  cycle, so check that Jarvis is actually running.")
     print()
     print(f"  entry         {trade['entry_price']:.5f}")
     print(f"  stop          {trade['sl']:.5f}   ({trade['sl_distance_pips']:.1f} pips)")
