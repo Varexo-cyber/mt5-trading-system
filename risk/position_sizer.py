@@ -125,6 +125,15 @@ class PositionSizer:
         sl_pips = spec.price_to_pips(sl_distance)
         reward_risk = self._reward_risk(direction, entry, sl, tp)
 
+        # What one lot costs if this trade is wrong: the price move to the
+        # stop, plus the round-trip commission that is charged either way.
+        # Computed here rather than at the division below so the recorded
+        # `actual_risk_money` means the same thing — that number becomes
+        # `risk_money` in the journal and is the denominator of every R the
+        # account will ever report.
+        commission_per_lot = self.settings.risk.commission_per_lot(spec.asset_class.value)
+        cost_per_lot = spec.money_per_lot(sl_distance) + commission_per_lot
+
         def result(decision: RiskDecision, volume: float = 0.0, raw: float = 0.0) -> SizingResult:
             return SizingResult(
                 decision=decision,
@@ -136,10 +145,8 @@ class PositionSizer:
                 tp=tp,
                 intended_risk_money=intended_money,
                 intended_risk_pct=intended_pct,
-                actual_risk_money=spec.money_per_lot(sl_distance) * volume,
-                actual_risk_pct=(
-                    100.0 * spec.money_per_lot(sl_distance) * volume / equity if equity > 0 else 0.0
-                ),
+                actual_risk_money=cost_per_lot * volume,
+                actual_risk_pct=(100.0 * cost_per_lot * volume / equity if equity > 0 else 0.0),
                 sl_distance_price=sl_distance,
                 sl_distance_pips=sl_pips,
                 reward_risk=reward_risk,
@@ -209,7 +216,21 @@ class PositionSizer:
                 )
             )
 
-        raw_volume = intended_money / money_per_lot
+        # A live AUDNZD stop-out cost EUR 1.93 against a modelled 1R of EUR
+        # 1.53, and EUR 0.33 of that gap was commission, confirmed against the
+        # deal in the terminal. Every threshold in this system is written in R,
+        # so an R missing a fifth of the real loss arms the give-back late,
+        # makes the profit lock secure less than it claims, and flatters every
+        # expectancy figure the account will ever produce.
+        #
+        # It also prices tight stops honestly for the first time. Commission is
+        # fixed per lot, so on a 2-pip stop it is a third of the risk and on a
+        # 20-pip stop it is a rounding error — which makes scalp-width stops
+        # unattractive by arithmetic instead of by a threshold someone guessed.
+        #
+        # Both terms scale linearly with volume, so solving for it stays a
+        # single division rather than an iteration.
+        raw_volume = intended_money / cost_per_lot
         volume = spec.round_volume_down(min(raw_volume, spec.volume_max))
 
         # -- 5. can this account express the trade at all? ----------------
@@ -232,7 +253,7 @@ class PositionSizer:
         # Rounding down can only reduce risk, so this should never fire. It is
         # here because "should never fire" is exactly the assumption that turns
         # into an incident, and the cost of the check is nothing.
-        actual_money = money_per_lot * volume
+        actual_money = cost_per_lot * volume
         actual_pct = 100.0 * actual_money / equity if equity > 0 else float("inf")
         ceiling = self.settings.effective_max_risk_pct()
         if actual_pct > ceiling + 1e-9:
