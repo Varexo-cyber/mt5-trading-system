@@ -195,6 +195,30 @@ class PositionSizer:
                 )
             )
 
+        # Is the stop wide enough that the trade, and not the cost of taking
+        # it, decides the outcome?
+        #
+        # A live AUDNZD long had a 5-pip stop, which the broker accepted and
+        # every gate passed. It returned -1.48R on a -1.00R plan: commission
+        # was 0.22R and the fill came 1.7 pips *through* the stop for another
+        # 0.34R. Over half the risk was cost. At that ratio the strategy is not
+        # what is being tested.
+        #
+        # Placed after the broker's own stop level and before reward:risk,
+        # because it is the same kind of statement — a fact about this
+        # instrument that no quality of setup can argue with.
+        cost_share = self._cost_share(spec, sl_distance, commission_per_lot)
+        limit = self.settings.risk.max_cost_share_of_risk
+        if limit > 0 and cost_share > limit:
+            return result(
+                RiskDecision.block(
+                    Reason.SL_TOO_TIGHT_FOR_COSTS,
+                    f"commission and slippage would be {cost_share:.0%} of the risk on a "
+                    f"{sl_pips:.1f} pip stop, above the {limit:.0%} limit; a full stop-out "
+                    f"would cost about {1 + cost_share:.2f}R rather than 1.00R",
+                )
+            )
+
         # -- 3. reward:risk on structural levels --------------------------
         minimum_rr = self.settings.risk.min_risk_reward
         if tp and reward_risk < minimum_rr:
@@ -293,6 +317,27 @@ class PositionSizer:
         return result(RiskDecision.allow(detail), volume=volume, raw=raw_volume)
 
     # -- helpers -----------------------------------------------------------
+
+    def _cost_share(
+        self, spec: InstrumentSpec, sl_distance: float, commission_per_lot: float
+    ) -> float:
+        """Commission plus expected slippage, as a fraction of the price risk.
+
+        Per lot on both terms, so the volume cancels and the answer depends
+        only on the instrument and how wide the stop is — which is the whole
+        point. The same commission is a fifth of a 2-pip stop and a rounding
+        error on a 40-pip one.
+
+        Slippage is counted in price rather than as a ratio because that is how
+        it was measured: a stop at 1.19722 filled at 1.19705. Multiplying it by
+        `money_per_lot` puts it in the same units as everything else.
+        """
+        price_risk = spec.money_per_lot(sl_distance)
+        if price_risk <= 0:
+            return 1.0
+        slip_pips = self.settings.risk.stop_slippage_pips.get(spec.asset_class.value, 0.0)
+        slip_cost = spec.money_per_lot(spec.pips_to_price(slip_pips)) if slip_pips > 0 else 0.0
+        return (commission_per_lot + slip_cost) / price_risk
 
     @staticmethod
     def _validate_stop(
