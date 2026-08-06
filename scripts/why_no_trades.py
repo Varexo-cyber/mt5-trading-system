@@ -66,6 +66,12 @@ _ADVICE = {
         "No economic calendar, so every entry is blocked by design. Run "
         "`python scripts/verify_calendar.py` — this one WILL stop all trading."
     ),
+    "AI_REVIEW_BUDGET_SPENT": (
+        "The cycle's paid reviews went to higher-conviction setups. Not a judgement "
+        "on these — they were never asked about, and they are first in line next "
+        "cycle. Only worth changing if the top-ranked candidates are consistently "
+        "rejected by a later gate: raise `ai.max_reviews_per_cycle`, or 0 for no cap."
+    ),
     "INSUFFICIENT_RUNWAY": (
         "Too close to the evening wind-down for a trade to finish — either under "
         "`filters.runway.min_runway_minutes` of clear market left, or a target that "

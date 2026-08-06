@@ -395,3 +395,5 @@ ai:
   # impatient client is indistinguishable from a real one — leave headroom.
   timeout_seconds: 60
   fail_closed: true
+  # Paid pre-trade reviews per cycle, spent best-first. 0 removes the cap.
+  max_reviews_per_cycle: 3

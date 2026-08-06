@@ -214,6 +214,17 @@ ai:
   minimum_confidence: 0.55
   timeout_seconds: 60
   fail_closed: true
+  # Paid reviews per cycle. Candidates reach the reviewer in the engine's own
+  # order of conviction, so this budget buys the best setups that survived
+  # every free gate and then stops. Without it a cycle pays to be told that its
+  # ninth, tenth and eleventh-best ideas are weak — which is what happened, in
+  # those words, on this account.
+  #
+  # Not a rank cut-off: a low rank is only *reached* because the better
+  # candidates were rejected earlier, so a hard "never below rank 3" would halt
+  # trading entirely on a day the top three keep failing a gate. A budget
+  # cannot do that. Set 0 to remove the cap.
+  max_reviews_per_cycle: 3
 
 # No cap on how many trades a good day may produce.
 #
