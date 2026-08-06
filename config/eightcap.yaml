@@ -244,6 +244,25 @@ risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
   posture_throttle: false
 
+  # Hoeveel eigen vermogen één gelijktijdige positie "koopt".
+  #
+  # Een vast aantal slots is de verkeerde vorm voor een account dat moet
+  # groeien. Twee klopt bij EUR 100 — een derde gelijktijdige trade daar is er
+  # een die het account bij de minimum lot toch niet kan uitdrukken — en klopt
+  # niet meer bij EUR 400.
+  #
+  # Bij EUR 75 per slot:  87 -> 2 (de bodem),  225 -> 3,  300 -> 4 (het plafond
+  # van micro_live). Een drawdown draait dat vanzelf weer terug. Het plafond
+  # per modus blijft absoluut; groei loopt ernaartoe, nooit erdoorheen.
+  equity_per_position: 75
+  # Nooit minder dan twee, hoe klein het account ook is. Met één slot blokkeert
+  # één open trade elke andere kans zolang hij loopt.
+  min_concurrent_positions: 2
+  # Het absolute plafond. Een modus mag hier lager gaan, nooit hoger — de
+  # loader weigert dat bij het inladen, en dat is precies hoe deze regel is
+  # opgevallen toen micro_live op 4 werd gezet terwijl dit nog 2 was.
+  max_concurrent_positions: 4
+
   # De anti-martingale-halvering staat uit op DIT account, en alleen omdat hij
   # hier niet doet waar hij voor bedoeld is.
   #
@@ -298,7 +317,13 @@ modes:
     max_sl_pips: 30
     max_trades_per_day: 0
     daily_loss_limit_pct: 0
-    max_concurrent_positions: 2
+    # The ceiling, not the everyday number. What is actually allowed is earned
+    # from equity — see `risk.equity_per_position` — and at EUR 87 that is 2.
+    # Four is where it stops even after the account has grown into this mode's
+    # EUR 500 range: four positions at 2% is 8% of equity at risk at once, and
+    # with the daily and weekly limits switched off on this account that is as
+    # far as simultaneous exposure should go.
+    max_concurrent_positions: 4
     max_journal_detail: true
     min_equity: 50
     max_equity: 500

@@ -280,11 +280,14 @@ class RiskManager:
                 f"{state.trades_today} trades today, limit {max_day}",
             )
 
-        max_positions = self.settings.effective_max_positions()
+        # Scaled by what the account actually holds, so a deposit widens the
+        # book and a drawdown narrows it without anyone editing a config file.
+        max_positions = self.settings.effective_max_positions(state.equity)
         if len(state.open_positions) >= max_positions:
             return RiskDecision.block(
                 Reason.MAX_POSITIONS_REACHED,
-                f"{len(state.open_positions)} positions open, limit {max_positions}",
+                f"{len(state.open_positions)} positions open, limit {max_positions} "
+                f"at {state.equity:.2f} equity",
             )
 
         return RiskDecision.allow(

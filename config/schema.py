@@ -294,6 +294,23 @@ class RiskConfig(Base):
     max_risk_per_trade_pct: Pct = 1.0
 
     max_concurrent_positions: int = Field(default=2, ge=1, le=10)
+    #: Equity that buys one concurrent position. 0 keeps the flat cap above.
+    #:
+    #: A fixed number of slots is the wrong shape for an account that is meant
+    #: to grow. Two is right at EUR 100 — three simultaneous trades there means
+    #: three positions the account cannot express at the minimum lot anyway —
+    #: and plainly wrong at EUR 1,000, where the constraint is no longer size
+    #: but the fact that somebody once typed a 2.
+    #:
+    #: Slots earned this way are still bounded by `max_concurrent_positions`
+    #: and by the mode's own ceiling, so growth widens the account toward a
+    #: limit that a human set; it never walks through it.
+    equity_per_position: float = Field(default=0.0, ge=0.0)
+    #: Never fewer than this, however small the account. Below two, one open
+    #: trade blocks every other opportunity for as long as it runs, and a
+    #: system that can hold only one position is a system that spends most of
+    #: its day unable to act.
+    min_concurrent_positions: int = Field(default=2, ge=1, le=10)
     #: Trades a day, or 0 for no cap. See `UNLIMITED_TRADES` below for why 0 is
     #: a defensible setting and not a hole in the risk model.
     max_trades_per_day: int = Field(default=3, ge=0, le=50)
@@ -874,6 +891,26 @@ class TradeManagementConfig(Base):
     #: spread and commission. Break even at exactly entry is a small loss.
     break_even_offset_atr: float = Field(default=0.1, ge=0.0)
 
+    #: From this peak R, walk the stop up behind the trade instead of leaving
+    #: it parked at break-even.
+    #:
+    #: Between `break_even_at_r` (0.6) and `partial_close_at_r` (1.5) the stop
+    #: did not move at all: a trade could run to 1.4R and hand every cent of it
+    #: back to a break-even stop, having been demonstrably right for hours.
+    #:
+    #: The give-back rule watches the same ground from inside our own loop, and
+    #: this is deliberately redundant with it. A stop lives at the broker. It
+    #: survives the VPS rebooting, the terminal dropping its connection, and
+    #: this process dying at three in the morning — none of which the give-back
+    #: rule survives. Protection that depends on our code still running is not
+    #: protection at the moment it is most needed.
+    profit_lock_from_r: float = Field(default=1.0, gt=0.0)
+    #: Share of the *peak* excursion the stop secures. 0.5 at a 2R peak leaves
+    #: the stop at 1R. Deliberately not close to 1.0: a stop tucked right under
+    #: the high is stopped out by ordinary noise, and strangling a winner is
+    #: the single most expensive habit available here.
+    profit_lock_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
+
     partial_close_at_r: float = Field(default=1.5, gt=0.0)
     partial_close_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
 
@@ -1181,8 +1218,25 @@ class Settings(Base):
     def effective_daily_loss_limit_pct(self) -> float:
         return self.active_limits.daily_loss_limit_pct
 
-    def effective_max_positions(self) -> int:
-        return self.active_limits.max_concurrent_positions
+    def effective_max_positions(self, equity: float | None = None) -> int:
+        """How many positions may be open at once, given what the account holds.
+
+        The mode's ceiling is absolute and is never exceeded — this only decides
+        where between the floor and that ceiling the account currently sits.
+        Passing no equity returns the ceiling, which is what the startup banner
+        and the profile printout want: the shape of the mode, not today's
+        balance.
+
+        Slots are earned in whole steps of `equity_per_position`, so the number
+        moves when the account genuinely grows rather than drifting with every
+        floating tick.
+        """
+        ceiling = self.active_limits.max_concurrent_positions
+        step = self.risk.equity_per_position
+        if equity is None or step <= 0:
+            return ceiling
+        earned = int(max(0.0, equity) // step)
+        return max(1, min(ceiling, max(self.risk.min_concurrent_positions, earned)))
 
     def symbol_allowed_at_equity(self, symbol: str, equity: float) -> tuple[bool, str]:
         """Whitelist + equity gate for one symbol.
