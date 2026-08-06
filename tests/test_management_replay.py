@@ -343,3 +343,65 @@ def test_a_short_is_replayed_the_right_way_up(spec, settings) -> None:  # type: 
 
     assert outcome.exit_reason == "TARGET"
     assert outcome.exit_r == pytest.approx(2.0)
+
+
+# ---------------------------------------------------- reading the summary ---
+
+
+def outcome_for(symbol: str, actual: float, real_reason: str, replayed: float, reason: str):  # type: ignore[no-untyped-def]
+    from backtesting.management_replay import ReplayOutcome
+
+    return (
+        trade(symbol=symbol, actual_pnl_r=actual, actual_exit_reason=real_reason),
+        ReplayOutcome(
+            trade=trade(symbol=symbol, actual_pnl_r=actual, actual_exit_reason=real_reason),
+            steps=(),
+            exit_r=replayed,
+            exit_reason=reason,
+            peak_r=0.0,
+            trough_r=0.0,
+            bars=10,
+        ),
+    )
+
+
+def test_a_trade_closed_by_hand_is_shown_but_not_counted(capsys) -> None:  # type: ignore[no-untyped-def]
+    """The operator closed a GBPJPY position from the MT5 phone app. The replay
+    ran it to target and the first version of this table credited the rules
+    with +1.58R they never had the chance to earn."""
+    from scripts.replay_trade import summarise
+
+    summarise(
+        [
+            outcome_for("GBPJPY.i", -0.01, "BROKER_MOBILE", 1.57, "TARGET"),
+            outcome_for("GBPAUD.i", -1.01, "AI_CLOSE", 0.50, "STOP"),
+        ],
+        skipped=0,
+    )
+    printed = capsys.readouterr().out
+
+    assert "by hand, not counted" in printed
+    # Only the AI_CLOSE trade: -1.01R actually against +0.50R replayed.
+    assert "1 trades: -1.01R actually, +0.50R replayed" in printed
+    assert "+1.51R better" in printed
+
+
+def test_an_exit_the_replay_cannot_reproduce_is_flagged(capsys) -> None:  # type: ignore[no-untyped-def]
+    """Bar history has no spread series, so the replay can never fire the
+    spread-squeeze rule and will always look like it held on longer."""
+    from scripts.replay_trade import summarise
+
+    summarise([outcome_for("USDDKK.i", 0.41, "SPREAD_SQUEEZE", 0.27, "STOP")], skipped=0)
+    printed = capsys.readouterr().out
+
+    assert "*" in printed
+    assert "bar history does not carry" in printed
+
+
+def test_nothing_left_to_compare_says_so(capsys) -> None:  # type: ignore[no-untyped-def]
+    from scripts.replay_trade import summarise
+
+    summarise([outcome_for("GBPJPY.i", -0.01, "BROKER_MOBILE", 1.57, "TARGET")], skipped=4)
+    printed = capsys.readouterr().out
+
+    assert "Nothing left to compare" in printed

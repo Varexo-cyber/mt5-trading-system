@@ -47,6 +47,21 @@ from core.types import Direction
 #: trade the rules would have held to the deadline still reaches it.
 WINDOW_HOURS = 30.0
 
+#: Closes a person made, recovered from MT5 deal history: CLIENT is the desktop
+#: terminal, MOBILE the phone, WEB the browser.
+#:
+#: Shown, but kept out of the headline. That number claims the *rules* would
+#: have done better or worse, and a trade closed by hand measures the hand.
+#: Including one is how a tool built to check our reasoning ends up flattering
+#: it — the first run of this script counted a phone close as +1.58R of credit
+#: to rules that never got to act.
+BY_HAND = frozenset({"BROKER_CLIENT", "BROKER_MOBILE", "BROKER_WEB"})
+
+#: Exits the replay is structurally unable to reproduce, so it always looks
+#: like it held on longer and did better or worse for a reason that is about
+#: the harness rather than the rules. Bar history carries no spread series.
+UNREPRODUCIBLE = frozenset({"SPREAD_SQUEEZE", "SPREAD_SQUEEZE_EXIT"})
+
 
 def connect_journal(path: Path) -> sqlite3.Connection:
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -119,24 +134,33 @@ def summarise(outcomes: list[tuple[ReplayTrade, ReplayOutcome]], skipped: int) -
     print(header + f"{'closed by (real)':<22}closed by (replay)")
     print("  " + "-" * 88)
     actual_total = replay_total = 0.0
-    counted = 0
+    counted = by_hand = caveated = 0
     for trade, outcome in outcomes:
+        real = trade.actual_exit_reason or "unknown"
         got = "—" if trade.actual_pnl_r is None else f"{trade.actual_pnl_r:+.2f}R"
         would = "open" if outcome.exit_r is None else f"{outcome.exit_r:+.2f}R"
-        diff = "—"
-        if outcome.improvement_r is not None:
+        diff, note = "—", ""
+        if real in BY_HAND:
+            by_hand += 1
+            note = "  (by hand, not counted)"
+        elif outcome.improvement_r is not None:
             diff = f"{outcome.improvement_r:+.2f}R"
             actual_total += trade.actual_pnl_r or 0.0
             replay_total += outcome.exit_r or 0.0
             counted += 1
-        real = (trade.actual_exit_reason or "unknown")[:21]
-        print(f"  {trade.symbol:<12}{got:>8}{would:>8}{diff:>8}   {real:<22}{outcome.exit_reason}")
+            if real in UNREPRODUCIBLE:
+                caveated += 1
+                note = "  *"
+        print(
+            f"  {trade.symbol:<12}{got:>8}{would:>8}{diff:>8}   "
+            f"{real[:21]:<22}{outcome.exit_reason}{note}"
+        )
 
+    print("  " + "-" * 88)
     if not counted:
-        print("\n  Nothing comparable. No trade had both a recorded result and a replay.\n")
+        print("  Nothing left to compare once hand-closed trades are set aside.\n")
         return
     change = replay_total - actual_total
-    print("  " + "-" * 88)
     print(f"  {counted} trades: {actual_total:+.2f}R actually, {replay_total:+.2f}R replayed")
     if change > 0:
         print(f"  The rules as they stand now would have been {change:+.2f}R better.")
@@ -147,6 +171,14 @@ def summarise(outcomes: list[tuple[ReplayTrade, ReplayOutcome]], skipped: int) -
         print("  No difference. The changes did not touch these trades.")
 
     print()
+    if by_hand:
+        print(f"  {by_hand} trade(s) were closed by hand from a terminal or phone and are")
+        print("  shown but not counted. That total is about the rules; a manual close")
+        print("  measures the hand, and crediting the rules for it would be flattery.")
+    if caveated:
+        print("  * The real exit used the spread, which bar history does not carry, so")
+        print("    the replay could never fire that rule. Those rows say more about the")
+        print("    harness than about the rules.")
     if skipped:
         print(f"  {skipped} further trade(s) could not be replayed at all, so they are not in")
         print("  the total above. A sample that excludes what it could not read is not a")
