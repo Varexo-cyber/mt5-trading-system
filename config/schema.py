@@ -891,6 +891,29 @@ class TradeManagementConfig(Base):
     #: spread and commission. Break even at exactly entry is a small loss.
     break_even_offset_atr: float = Field(default=0.1, ge=0.0)
 
+    #: Minutes the peak may stand still before a profitable trade is banked.
+    #: 0 switches the rule off.
+    #:
+    #: Every other exit here measures how much has been *given back*, which
+    #: means every one of them can only act after the money has already gone.
+    #: This one measures the thing a person actually watches: the trade stopped
+    #: making new highs. A move that is working prints a new high every few
+    #: minutes; one that has sat at the same level for six is not pausing, it
+    #: is finished, and what follows is the retrace.
+    #:
+    #: Six minutes is roughly a M5 bar plus confirmation — long enough that an
+    #: ordinary pullback inside a live move does not trigger it, short enough
+    #: to still be near the high when it does.
+    peak_stall_minutes: float = Field(default=6.0, ge=0.0, le=240.0)
+    #: Profit required before a stalled peak means anything. Below this the
+    #: trade has not made enough to be worth protecting and the noise band is
+    #: wide enough that "no new high" says nothing.
+    peak_stall_arm_r: float = Field(default=0.6, gt=0.0)
+    #: How close to the peak the price must still be. Past this the money is
+    #: already gone and the give-back rule owns the decision; this rule exists
+    #: to leave *near the high*, not to confirm a retrace that has happened.
+    peak_stall_near_peak: float = Field(default=0.7, gt=0.0, le=1.0)
+
     #: From this peak R, walk the stop up behind the trade instead of leaving
     #: it parked at break-even.
     #:
@@ -904,7 +927,13 @@ class TradeManagementConfig(Base):
     #: this process dying at three in the morning — none of which the give-back
     #: rule survives. Protection that depends on our code still running is not
     #: protection at the moment it is most needed.
-    profit_lock_from_r: float = Field(default=1.0, gt=0.0)
+    #: 0.7, not 1.0. A live NZDCAD long peaked at 0.92R and stopped out at
+    #: 0.13R for 22 cents: the lock armed at 1.0R and never fired, the
+    #: give-back with conviction allowed an 80% drain to 0.18R, and the
+    #: break-even stop sat below both at 0.13R and won the race. Three rules
+    #: aimed at that trade and the crudest of them decided it. Arming below
+    #: break-even's own reach is what stops that happening again.
+    profit_lock_from_r: float = Field(default=0.7, gt=0.0)
     #: Share of the *peak* excursion the stop secures. 0.5 at a 2R peak leaves
     #: the stop at 1R. Deliberately not close to 1.0: a stop tucked right under
     #: the high is stopped out by ordinary noise, and strangling a winner is

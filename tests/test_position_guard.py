@@ -708,15 +708,32 @@ class TestProfitLock:
         return event, sent.get("sl")
 
     def test_below_the_arming_peak_nothing_moves(self) -> None:
-        event, sl = self.lock(peak_r=0.9, r_now=0.9, current_sl=1.0800)
+        event, sl = self.lock(peak_r=0.6, r_now=0.6, current_sl=1.0800)
         assert event is None and sl is None
 
-    def test_at_one_r_it_secures_half(self) -> None:
-        """Peak 1.0R with a 10-pip risk puts the stop 5 pips above entry."""
-        event, sl = self.lock(peak_r=1.0, r_now=1.0, current_sl=1.0800)
+    def test_at_the_arming_peak_it_secures_half(self) -> None:
+        """Peak 0.7R with a 10-pip risk puts the stop 3.5 pips above entry."""
+        event, sl = self.lock(peak_r=0.7, r_now=0.7, current_sl=1.0800)
         assert event is not None
         assert event.action == "PROFIT_LOCK"
-        assert sl == pytest.approx(1.08050, abs=1e-6)
+        assert sl == pytest.approx(1.08035, abs=1e-6)
+
+    def test_the_nzdcad_trade_would_have_kept_most_of_its_gain(self) -> None:
+        """The live case this threshold was moved for.
+
+        NZDCAD long peaked at 0.92R — EUR 1.60 on an EUR 87 account — and
+        stopped out at 0.13R for 22 cents. The lock armed at 1.0R and so never
+        fired, the give-back allowed an 80% drain while the health read stayed
+        healthy, and the break-even stop sat below both and took the trade.
+
+        Armed at 0.7R the lock secures 0.46R, which is EUR 0.80 — still not the
+        EUR 1.60 the peak was worth, but nearly four times what the crudest
+        rule in the file actually delivered.
+        """
+        event, sl = self.lock(peak_r=0.92, r_now=0.92, current_sl=1.08010)
+        assert event is not None
+        secured_r = (sl - 1.0800) / 0.0010
+        assert secured_r == pytest.approx(0.46, abs=0.01)
 
     def test_it_ratchets_off_the_peak_not_the_current_price(self) -> None:
         """A trade that reached 2R keeps its 1R stop after pulling back.
@@ -745,3 +762,161 @@ class TestProfitLock:
         high_water = 1.0800 + 3.0 * 0.0010
         assert sl < high_water
         assert (high_water - sl) == pytest.approx(0.0015, abs=1e-6)
+
+
+class TestPeakStall:
+    """Leaving near the high, instead of confirming the retrace afterwards.
+
+    Every other exit in the manager measures how much has been *given back*,
+    so every one of them can only act after the money has gone. This measures
+    what a person watches: the trade stopped making new highs.
+
+    NZDCAD is the case. Peak 0.92R — EUR 1.60 on an EUR 87 account — closed at
+    0.13R for 22 cents. The operator's own read, forty minutes before the
+    system's, was "it has been sitting at the same high for a while, take it".
+    """
+
+    @staticmethod
+    def manager():  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        from config.schema import TradeManagementConfig
+        from execution.manager import PositionManager
+
+        closed: list[float] = []
+
+        def close_position(position, volume=None):  # type: ignore[no-untyped-def]
+            closed.append(position.profit)
+            return SimpleNamespace(ok=True, filled_price=1.0900, filled_volume=position.volume)
+
+        instance = PositionManager.__new__(PositionManager)
+        instance.settings = SimpleNamespace(trade_management=TradeManagementConfig())
+        instance.broker = SimpleNamespace(close_position=close_position)
+        instance._peak_seen = {}
+        instance.closed = closed
+        return instance
+
+    @staticmethod
+    def position(ticket: int = 1):  # type: ignore[no-untyped-def]
+        from core.types import Direction, Position
+
+        return Position(
+            ticket=ticket,
+            symbol="NZDCAD",
+            direction=Direction.LONG,
+            volume=0.01,
+            price_open=0.8400,
+            sl=0.8390,
+            tp=0.8440,
+            profit=1.60,
+            swap=0.0,
+            opened_at=datetime(2026, 8, 6, 8, 24, tzinfo=UTC),
+            magic=1,
+        )
+
+    def at(self, minutes: float) -> datetime:
+        return datetime(2026, 8, 6, 9, 0, tzinfo=UTC) + timedelta(minutes=minutes)
+
+    def test_the_nzdcad_trade_is_banked_near_its_high(self) -> None:
+        """0.92R, standing still for seven minutes. Take it."""
+        manager = self.manager()
+        position = self.position()
+
+        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(0)) is None
+        event = manager._peak_stall_exit(position, 0.90, 0.92, self.at(7))
+
+        assert event is not None
+        assert event.action == "PEAK_STALL"
+        assert manager.closed == [1.60]
+
+    def test_a_new_high_resets_the_clock(self) -> None:
+        """The whole mechanism: while it keeps working it can never stall.
+
+        A trade printing a new high every few minutes runs for as long as it
+        keeps doing that, however many hours it takes.
+        """
+        manager = self.manager()
+        position = self.position()
+        peak = 0.70
+        for minute in range(0, 60, 5):
+            assert manager._peak_stall_exit(position, peak, peak, self.at(minute)) is None
+            peak += 0.10
+        assert manager.closed == []
+
+    def test_a_flickering_last_decimal_is_not_a_new_high(self) -> None:
+        """`peak_r` comes off a live tick and wobbles constantly.
+
+        Without an epsilon the clock resets on every pass and the rule never
+        fires once — which is worse than not having it, because it would look
+        installed.
+        """
+        manager = self.manager()
+        position = self.position()
+        manager._peak_stall_exit(position, 0.90, 0.9000, self.at(0))
+        # Well inside the wait, so only the epsilon decides whether the clock
+        # survives these passes.
+        for minute in (1, 2, 3):
+            assert (
+                manager._peak_stall_exit(position, 0.90, 0.9000 + minute * 0.0001, self.at(minute))
+                is None
+            )
+        event = manager._peak_stall_exit(position, 0.90, 0.9007, self.at(7))
+        assert event is not None
+
+    def test_too_soon_is_left_alone(self) -> None:
+        manager = self.manager()
+        position = self.position()
+        manager._peak_stall_exit(position, 0.92, 0.92, self.at(0))
+        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(5)) is None
+
+    def test_a_small_gain_is_not_worth_protecting(self) -> None:
+        """Below the arming R the noise band is wide enough that no new high
+        says nothing at all."""
+        manager = self.manager()
+        position = self.position()
+        manager._peak_stall_exit(position, 0.40, 0.40, self.at(0))
+        assert manager._peak_stall_exit(position, 0.40, 0.40, self.at(30)) is None
+
+    def test_a_trade_that_already_gave_it_back_belongs_to_the_giveback(self) -> None:
+        """This rule leaves at the top; it does not confirm a retrace.
+
+        Once price is far below the peak the money is gone and the give-back
+        rule owns the decision — which weighs the health read, as it should.
+        """
+        manager = self.manager()
+        position = self.position()
+        manager._peak_stall_exit(position, 2.00, 2.00, self.at(0))
+        assert manager._peak_stall_exit(position, 0.80, 2.00, self.at(30)) is None
+
+    def test_switching_it_off_forgets_the_position_entirely(self) -> None:
+        manager = self.manager()
+        manager.settings.trade_management = manager.settings.trade_management.model_copy(
+            update={"peak_stall_minutes": 0.0}
+        )
+        position = self.position()
+        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(0)) is None
+        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(30)) is None
+        assert manager._peak_seen == {}
+
+    def test_each_position_is_timed_separately(self) -> None:
+        manager = self.manager()
+        first, second = self.position(1), self.position(2)
+        manager._peak_stall_exit(first, 0.92, 0.92, self.at(0))
+        manager._peak_stall_exit(second, 0.92, 0.92, self.at(5))
+
+        assert manager._peak_stall_exit(first, 0.92, 0.92, self.at(7)) is not None
+        assert manager._peak_stall_exit(second, 0.92, 0.92, self.at(7)) is None
+
+    def test_a_restart_resets_the_clock_toward_holding(self) -> None:
+        """Losing the timer must never be able to close a trade sooner.
+
+        A fresh manager has no memory of the peak, so the wait starts again —
+        the safe direction for a rule whose action is to exit.
+        """
+        manager = self.manager()
+        position = self.position()
+        manager._peak_stall_exit(position, 0.92, 0.92, self.at(0))
+
+        restarted = self.manager()
+        assert restarted._peak_stall_exit(position, 0.92, 0.92, self.at(7)) is None
+        assert restarted._peak_stall_exit(position, 0.92, 0.92, self.at(14)) is not None
