@@ -61,6 +61,15 @@ class Reason(StrEnum):
     EVENING_WIND_DOWN = "EVENING_WIND_DOWN"
     #: Friday close or Sunday reopen — thin books, gap risk over the weekend.
     WEEKEND_EDGE = "WEEKEND_EDGE"
+    #: Not enough time left before this instrument's own forced exit for the
+    #: trade to reach anything. The wind-down and the rollover only say "not
+    #: inside this window" — they say nothing about the minute before it, which
+    #: is how a position gets opened at 20:14 and flattened by us at 20:15.
+    INSUFFICIENT_RUNWAY = "INSUFFICIENT_RUNWAY"
+    #: The market has gone to sleep: recent bar ranges are far below this
+    #: instrument's own recent normal. A target measured in ATR is unreachable
+    #: when the market has stopped producing ATR, and the spread is paid anyway.
+    MARKET_TOO_QUIET = "MARKET_TOO_QUIET"
     MARKET_CLOSED = "MARKET_CLOSED"
     STALE_QUOTE = "STALE_QUOTE"
     SPREAD_TOO_WIDE = "SPREAD_TOO_WIDE"

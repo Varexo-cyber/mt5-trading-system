@@ -28,7 +28,9 @@ from filters.base import FilterChain, FilterContext
 from filters.calendar.providers import build_providers
 from filters.calendar.service import CalendarService
 from filters.correlation_filter import CorrelationFilter
+from filters.liveliness_filter import LivelinessFilter
 from filters.news_filter import NewsFilter
+from filters.runway_filter import RunwayFilter
 from filters.session_filter import SessionFilter
 from filters.spread_filter import SpreadFilter
 from infra.killswitch import KillSwitch
@@ -303,11 +305,19 @@ def build_filter_chain(
         max_age_minutes=news_config.max_calendar_age_minutes,
     )
     data = DataManager(connector, settings.data, clock)
+    # One instance, shared with the runway gate. The deadline the runway gate
+    # protects is this object's wind-down; a second copy could drift.
+    session = SessionFilter(settings.filters.session)
 
     return FilterChain(
         [
             NewsFilter(news_config, calendar, clock),
-            SessionFilter(settings.filters.session),
+            session,
+            RunwayFilter(settings.filters.runway, session),
+            LivelinessFilter(
+                settings.filters.liveliness,
+                lambda symbol, timeframe: data.get_series(symbol, timeframe),
+            ),
             SpreadFilter(
                 settings.filters.spread,
                 journal,
