@@ -256,6 +256,53 @@ def test_max_bars_stops_the_walk(spec, settings) -> None:  # type: ignore[no-unt
     assert outcome.bars == 7
 
 
+# ------------------------------------------------------------- the costs ---
+
+
+def charging(settings, per_side: float):  # type: ignore[no-untyped-def]
+    risk = settings.risk.model_copy(update={"commission_per_lot_per_side": per_side})
+    return settings.model_copy(update={"risk": risk})
+
+
+def test_commission_comes_out_of_the_replayed_result(spec, settings) -> None:  # type: ignore[no-untyped-def]
+    """The journal's `pnl_r` is money the broker moved, so it is already net.
+    A gross replay compared against it would credit these rules with a cost
+    they never paid, on exactly the narrow stops where this account bleeds."""
+    frame = bars([at_r(0.3), at_r(1.4)], highs=[at_r(0.3), TARGET + 0.0001])
+
+    free = replay_management(trade(), frame, charging(settings, 0.0), spec)
+    charged = replay_management(trade(), frame, charging(settings, 2.75), spec)
+
+    # 1R is 20 pips on EURUSD: EUR 200 a lot, against EUR 5.50 round trip.
+    assert charged.commission_r == pytest.approx(5.50 / 200.0)
+    assert free.exit_r == pytest.approx(2.0)
+    assert charged.exit_r == pytest.approx(2.0 - 5.50 / 200.0)
+    assert charged.gross_r == pytest.approx(2.0)
+
+
+def test_a_narrow_stop_is_where_the_commission_hurts(spec, settings) -> None:  # type: ignore[no-untyped-def]
+    """Five pips instead of twenty, and the same EUR 5.50 becomes four times
+    the share of the risk. This is why it cannot be left out."""
+    narrow = trade(stop=ENTRY - 0.00050, target=ENTRY + 0.00100)
+    frame = bars([ENTRY + 0.0002, ENTRY + 0.0011], highs=[ENTRY + 0.0002, ENTRY + 0.0011])
+
+    outcome = replay_management(narrow, frame, charging(settings, 2.75), spec)
+
+    assert outcome.commission_r == pytest.approx(0.11, abs=0.005)
+    assert "commission" in outcome.render()
+
+
+def test_an_unfinished_trade_is_charged_nothing(spec, settings) -> None:  # type: ignore[no-untyped-def]
+    """No exit, no result to deduct from. Reporting a cost against a trade
+    that never closed would be inventing a loss."""
+    frame = bars([at_r(0.1), at_r(0.2)])
+
+    outcome = replay_management(trade(), frame, charging(settings, 2.75), spec)
+
+    assert outcome.exit_r is None
+    assert outcome.gross_r is None
+
+
 # ------------------------------------------------------ what it reports ---
 
 

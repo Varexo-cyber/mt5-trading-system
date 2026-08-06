@@ -109,10 +109,15 @@ def history(connector: MT5Connector, symbol: str, opened_at: datetime) -> object
     )
 
 
-def summarise(outcomes: list[tuple[ReplayTrade, ReplayOutcome]]) -> None:
+def summarise(outcomes: list[tuple[ReplayTrade, ReplayOutcome]], skipped: int) -> None:
     print()
-    print(f"  {'symbol':<12}{'actual':>9}{'replay':>9}{'diff':>9}   what closed it")
-    print("  " + "-" * 74)
+    header = f"  {'symbol':<12}{'actual':>8}{'replay':>8}{'diff':>8}   "
+    # Both exit reasons, side by side. Without the real one the interesting
+    # rows are unreadable: a trade that scratched at -0.01R and replays to
+    # TARGET means something completely different if the broker took it on a
+    # break-even stop than if the evening wind-down closed it early.
+    print(header + f"{'closed by (real)':<22}closed by (replay)")
+    print("  " + "-" * 88)
     actual_total = replay_total = 0.0
     counted = 0
     for trade, outcome in outcomes:
@@ -124,13 +129,14 @@ def summarise(outcomes: list[tuple[ReplayTrade, ReplayOutcome]]) -> None:
             actual_total += trade.actual_pnl_r or 0.0
             replay_total += outcome.exit_r or 0.0
             counted += 1
-        print(f"  {trade.symbol:<12}{got:>9}{would:>9}{diff:>9}   {outcome.exit_reason}")
+        real = (trade.actual_exit_reason or "unknown")[:21]
+        print(f"  {trade.symbol:<12}{got:>8}{would:>8}{diff:>8}   {real:<22}{outcome.exit_reason}")
 
     if not counted:
         print("\n  Nothing comparable. No trade had both a recorded result and a replay.\n")
         return
     change = replay_total - actual_total
-    print("  " + "-" * 74)
+    print("  " + "-" * 88)
     print(f"  {counted} trades: {actual_total:+.2f}R actually, {replay_total:+.2f}R replayed")
     if change > 0:
         print(f"  The rules as they stand now would have been {change:+.2f}R better.")
@@ -139,9 +145,17 @@ def summarise(outcomes: list[tuple[ReplayTrade, ReplayOutcome]]) -> None:
         print("  That is the useful answer. Do not deploy a change this says makes it worse.")
     else:
         print("  No difference. The changes did not touch these trades.")
-    print("\n  Bars are not ticks: a stop and a target in the same minute resolve")
-    print("  stop-first here, and there is no spread series, so this is the")
-    print("  pessimistic reading of the mechanics — not a profitability estimate.\n")
+
+    print()
+    if skipped:
+        print(f"  {skipped} further trade(s) could not be replayed at all, so they are not in")
+        print("  the total above. A sample that excludes what it could not read is not a")
+        print("  random sample, and this one excludes the oldest trades.")
+    if counted < 20:
+        print(f"  {counted} trades is not a sample. It is a hint about the mechanics.")
+    print("  Costs: commission is charged, spread is not, and bars are not ticks — a")
+    print("  stop and a target in the same minute resolve stop-first. This measures")
+    print("  whether the rules do what they should, not whether they make money.\n")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -180,15 +194,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     outcomes: list[tuple[ReplayTrade, ReplayOutcome]] = []
+    skipped = 0
     try:
         for row in rows:
             trade = to_replay_trade(row)
             if trade is None:
+                skipped += 1
                 continue
             spec = connector.spec(trade.symbol)
             frame = frame_from_bars(history(connector, trade.symbol, trade.opened_at))
             if frame.empty:
                 print(f"  {trade.symbol}: no bars available for that window")
+                skipped += 1
                 continue
             outcome = replay_management(trade, frame, settings, spec, max_bars=len(frame))
             outcomes.append((trade, outcome))
@@ -199,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
             connector.shutdown()
 
     if args.all:
-        summarise(outcomes)
+        summarise(outcomes, skipped)
     return 0 if outcomes else 1
 
 
