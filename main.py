@@ -28,6 +28,7 @@ from filters.base import FilterChain, FilterContext
 from filters.calendar.providers import build_providers
 from filters.calendar.service import CalendarService
 from filters.correlation_filter import CorrelationFilter
+from filters.currency_exposure import CurrencyExposureFilter
 from filters.liveliness_filter import LivelinessFilter
 from filters.news_filter import NewsFilter
 from filters.runway_filter import RunwayFilter
@@ -324,6 +325,10 @@ def build_filter_chain(
                 clock,
                 retention_days=settings.filters.spread.retention_days,
             ),
+            # Before the correlation filter, because it is the cheaper and more
+            # absolute of the two: a shared currency leg is an identity, while a
+            # correlation is a measurement that needs 200 bars to make.
+            CurrencyExposureFilter(settings.filters.currency_exposure, connector.spec),
             CorrelationFilter(
                 settings.filters.correlation,
                 lambda symbol, timeframe: data.get_series(symbol, timeframe),

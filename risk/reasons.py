@@ -97,6 +97,10 @@ class Reason(StrEnum):
     SPREAD_EATS_THE_STOP = "SPREAD_EATS_THE_STOP"
     #: A second position that would double the same underlying currency risk.
     CORRELATED_EXPOSURE = "CORRELATED_EXPOSURE"
+    #: Two positions sharing a directional currency leg. Different from
+    #: CORRELATED_EXPOSURE, which measures how returns have moved together:
+    #: a GBP short is a GBP short by identity, and no measurement weakens it.
+    CURRENCY_CONCENTRATION = "CURRENCY_CONCENTRATION"
 
     # -- exposure limits ---------------------------------------------------
     MAX_POSITIONS_REACHED = "MAX_POSITIONS_REACHED"

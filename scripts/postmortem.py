@@ -264,6 +264,83 @@ def _json(text: str | None) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+#: Exits this system chose for itself, as opposed to the market reaching a
+#: level we left sitting at the broker.
+_OUR_EXITS = frozenset(
+    {
+        "PEAK_STALL",
+        "GIVEBACK_EXIT",
+        "PROFIT_LOCK",
+        "TIME_EXIT",
+        "HEALTH_EXIT",
+        "HEALTH_SECURE",
+        "SPREAD_SQUEEZE_EXIT",
+        "EVENING_FLAT",
+        "PARTIAL_CLOSE",
+    }
+)
+
+
+def overview(db: sqlite3.Connection, limit: int) -> None:
+    """Every recent trade on one screen, with the two columns that matter.
+
+    `kept` is what survived to the exit as a share of the trade's best moment.
+    It is the number that separates a losing strategy from a strategy that
+    wins and then hands it back, and neither `pnl_r` nor `mfe_r` says it alone.
+
+    `by` says whether anything in this system chose the exit. A column of
+    nothing but BROKER_SL means every trade ran to a level left sitting at the
+    broker and not one rule ever acted — which was true here for a long time
+    and invisible, because the guard loop that runs those rules was being
+    starved by slow cycles.
+    """
+    rows = db.execute(
+        "SELECT ticket, symbol, direction, sl_distance_pips, pnl_r, pnl_money, mae_r, mfe_r, "
+        "exit_reason, closed_at FROM trades "
+        "ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    if not rows:
+        print("\n  No trades recorded yet.\n")
+        return
+
+    print(
+        f"\n  {'ticket':>10}  {'symbol':<11}{'dir':<7}{'stop':>7}{'R':>9}{'money':>12}"
+        f"{'peak':>9}{'kept':>7}   exit"
+    )
+    print(f"  {'-' * 84}")
+
+    ours = closed = handed_back = 0
+    for row in rows:
+        peak, pnl = row["mfe_r"], row["pnl_r"]
+        kept = "—"
+        if peak is not None and pnl is not None and float(peak) > 0:
+            share = float(pnl) / float(peak)
+            kept = f"{share:.0%}"
+            if share < 0.5:
+                handed_back += 1
+        reason = row["exit_reason"] or ("open" if not row["closed_at"] else "?")
+        if row["closed_at"]:
+            closed += 1
+            if reason in _OUR_EXITS:
+                ours += 1
+        stop = row["sl_distance_pips"]
+        print(
+            f"  {row['ticket'] or 0:>10}  {row['symbol']:<11}{row['direction']:<7}"
+            + (f"{stop:>6.1f}p" if stop else f"{'—':>7}")
+            + f"{r_of(pnl):>9}{money(row['pnl_money']):>12}{r_of(peak):>9}{kept:>7}   {reason}"
+        )
+
+    print(f"\n  {closed} closed · {ours} exited by a rule of ours · {closed - ours} by the broker")
+    if closed and not ours:
+        print("  ^ not one exit was chosen by this system. Every trade ran to a level")
+        print("    left sitting at the broker. If the guard loop is running, that is a")
+        print("    finding; check the Positions tab for the age of the health reading.")
+    if handed_back:
+        print(f"  {handed_back} trade(s) kept under half of their best moment.")
+    print()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("symbol", nargs="?", default="", help="e.g. USDCHF (suffix optional)")
@@ -280,23 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     db = connect(path)
     try:
         if args.list:
-            rows = db.execute(
-                "SELECT ticket, symbol, direction, opened_at, closed_at, pnl_r, pnl_money, "
-                "mfe_r, exit_reason FROM trades ORDER BY COALESCE(closed_at, opened_at) DESC "
-                "LIMIT ?",
-                (args.list,),
-            ).fetchall()
-            print(
-                f"\n  {'ticket':>10}  {'symbol':<12} {'dir':<6} {'R':>7} {'money':>9} "
-                f"{'peak':>7}  exit"
-            )
-            for row in rows:
-                print(
-                    f"  {row['ticket'] or 0:>10}  {row['symbol']:<12} {row['direction']:<6} "
-                    f"{r_of(row['pnl_r']):>7} {money(row['pnl_money']):>9} "
-                    f"{r_of(row['mfe_r']):>7}  {row['exit_reason'] or 'open'}"
-                )
-            print()
+            overview(db, args.list)
             return 0
 
         trade = find_trade(db, args.symbol, args.ticket)

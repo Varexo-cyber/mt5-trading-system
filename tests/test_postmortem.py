@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.postmortem import connect, find_trade, main, report
+from scripts.postmortem import connect, find_trade, main, overview, report
 
 
 @pytest.fixture
@@ -244,3 +244,64 @@ class TestUnclosedTrades:
 
         assert "no closure recorded" not in out
         assert "reconciled yet" not in out
+
+
+class TestOverview:
+    """Every recent trade on one screen, with the two columns that matter.
+
+    `kept` separates a losing strategy from one that wins and hands it back;
+    neither `pnl_r` nor `mfe_r` says that alone. `by` says whether anything in
+    this system chose the exit — a column of nothing but BROKER_SL means no
+    rule ever acted, which was true here for a long time and invisible.
+    """
+
+    def test_it_reports_what_survived_to_the_exit(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """Peak 0.92R, returned 0.13R: 14% kept."""
+        overview(connect(journal), 10)
+        out = capsys.readouterr().out
+        assert "14%" in out
+
+    def test_it_counts_who_chose_the_exit(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        overview(connect(journal), 10)
+        out = capsys.readouterr().out
+        assert "1 closed · 0 exited by a rule of ours · 1 by the broker" in out
+
+    def test_it_says_so_when_no_rule_ever_acted(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """The finding that took a guard-loop bug and a live account to notice."""
+        overview(connect(journal), 10)
+        assert "not one exit was chosen by this system" in capsys.readouterr().out
+
+    def test_a_rule_exit_is_credited(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.execute("UPDATE trades SET exit_reason = 'PEAK_STALL'")
+        db.commit()
+        db.close()
+
+        overview(connect(journal), 10)
+        out = capsys.readouterr().out
+        assert "1 exited by a rule of ours · 0 by the broker" in out
+        assert "not one exit was chosen" not in out
+
+    def test_it_flags_a_trade_that_handed_its_gain_back(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        overview(connect(journal), 10)
+        assert "kept under half of their best moment" in capsys.readouterr().out
+
+    def test_an_open_trade_is_not_counted_as_closed(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.execute("UPDATE trades SET closed_at = NULL, exit_reason = NULL")
+        db.commit()
+        db.close()
+
+        overview(connect(journal), 10)
+        out = capsys.readouterr().out
+        assert "0 closed" in out
+        assert "open" in out
+
+    def test_an_empty_journal_says_so(self, tmp_path: Path, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.execute("DELETE FROM trades")
+        db.commit()
+        db.close()
+
+        overview(connect(journal), 10)
+        assert "No trades recorded yet" in capsys.readouterr().out
