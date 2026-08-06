@@ -56,6 +56,21 @@ class SystemConfig(Base):
     #: this cadence. It never calls the adviser and never opens anything, so
     #: tightening it costs latency and nothing else.
     guard_interval_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
+    #: Seconds of guarding that a slow cycle may never take away.
+    #:
+    #: The guard used to run until `cycle_start + loop_interval_seconds`, which
+    #: is a deadline already in the past by the time a cycle returns: the live
+    #: log shows cycles of 55 to 121 seconds against a 30-second interval, so
+    #: `remaining <= 0` fired immediately and the one-second layer never ran at
+    #: all. No give-back, no peak stall, no profit lock, no health reading —
+    #: every one of them written, tested, deployed and never once executed on
+    #: an open position. The deck showed it plainly the moment it started
+    #: reporting the age of a reading: "this measurement is 9 minutes old".
+    #:
+    #: A scan that starts thirty seconds late costs a setup. A position left
+    #: unwatched for two minutes costs money, and the whole reason the fast
+    #: layer exists is that it is the cheaper of the two.
+    min_guard_seconds: float = Field(default=20.0, ge=0.0, le=300.0)
     #: Filename of the manual kill switch, relative to the project root.
     kill_switch_file: str = "STOP"
     #: Refuse to start if the terminal reports a live account while the config

@@ -310,9 +310,30 @@ class JarvisRunner:
                 self.run_once()
                 # The gap between cycles is not idle time — it is the time open
                 # money spends unwatched. Spend it watching.
-                self._guard_until(started + self.settings.system.loop_interval_seconds)
+                self._guard_until(self._guard_deadline(started))
         finally:
             self.close()
+
+    def _guard_deadline(self, cycle_started: float) -> float:
+        """When the next cycle may begin, given that positions need watching.
+
+        The interval is a target gap between cycle *starts*, which is the right
+        way to pace scanning and the wrong way to schedule protection: a cycle
+        that overruns the interval leaves a deadline in the past, and the guard
+        returns without a single tick.
+
+        That is not a corner case here. Live cycles run 55 to 121 seconds
+        against a 30-second interval, so the one-second layer never ran at all
+        — every rule in it written, tested, deployed and never once executed on
+        an open position, while the deck reported readings nine minutes old.
+
+        So the guard gets a floor. A scan delayed by twenty seconds costs at
+        most a setup; a position unwatched for two minutes costs money, and the
+        fast layer exists precisely because that trade-off is not close.
+        """
+        interval = self.settings.system.loop_interval_seconds
+        floor = self.settings.system.min_guard_seconds
+        return max(cycle_started + interval, time.monotonic() + floor)
 
     def _guard_until(self, deadline: float) -> None:
         """Watch open positions until the next full cycle is due.
