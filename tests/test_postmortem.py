@@ -201,3 +201,46 @@ class TestActionLabels:
         from scripts.postmortem import describe
 
         assert describe("SOME_FUTURE_RULE") == ""
+
+
+class TestUnclosedTrades:
+    """ "Still open" is a claim the journal cannot make.
+
+    All it knows is that no closure has been written. Reconciliation only runs
+    inside a full cycle, so a stopped Jarvis leaves every broker closure
+    unrecorded — and an operator who has just watched the position vanish from
+    MT5 reads "still open" as the report being broken.
+    """
+
+    @staticmethod
+    def without_closure(path: Path) -> None:
+        db = sqlite3.connect(path)
+        db.execute("UPDATE trades SET closed_at=NULL, exit_price=NULL, pnl_money=NULL, pnl_r=NULL")
+        db.commit()
+        db.close()
+
+    def test_it_does_not_claim_the_position_is_open(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        self.without_closure(journal)
+        db = connect(journal)
+        report(db, find_trade(db, "USDCHF", 0))
+        out = capsys.readouterr().out
+
+        assert "still open" not in out
+        assert "no closure recorded" in out
+
+    def test_it_names_reconciliation_as_the_thing_to_check(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        self.without_closure(journal)
+        db = connect(journal)
+        report(db, find_trade(db, "USDCHF", 0))
+        out = capsys.readouterr().out
+
+        assert "reconcile" in out.lower()
+        assert "Jarvis is actually running" in out
+
+    def test_a_closed_trade_says_nothing_about_reconciliation(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        db = connect(journal)
+        report(db, find_trade(db, "USDCHF", 0))
+        out = capsys.readouterr().out
+
+        assert "no closure recorded" not in out
+        assert "reconciled yet" not in out
