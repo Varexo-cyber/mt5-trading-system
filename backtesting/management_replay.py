@@ -221,13 +221,25 @@ class ReplayOutcome:
 
     trade: ReplayTrade
     steps: tuple[ReplayStep, ...]
-    #: Volume-weighted, so a partial banked at 1.0R followed by a stop-out at
-    #: break-even reads as the half-win it was rather than as a scratch.
+    #: Net of commission and volume-weighted, so a partial banked at 1.0R
+    #: followed by a stop-out at break-even reads as the half-win it was rather
+    #: than as a scratch — and so this is directly comparable to the journal's
+    #: `pnl_r`, which is money the broker actually moved.
     exit_r: float | None
     exit_reason: str
     peak_r: float
     trough_r: float
     bars: int
+    #: Round-trip commission as a share of 1R, already deducted from `exit_r`.
+    #: A five-pip stop on this account carries about 0.18R of it, so a replay
+    #: that ignored it would beat reality by a fifth of an R on every trade and
+    #: the difference column would be flattery rather than evidence.
+    commission_r: float = 0.0
+
+    @property
+    def gross_r(self) -> float | None:
+        """Before costs. Shown only so the deduction is visible, never compared."""
+        return None if self.exit_r is None else self.exit_r + self.commission_r
 
     @property
     def improvement_r(self) -> float | None:
@@ -267,6 +279,11 @@ class ReplayOutcome:
         if self.exit_r is None:
             lines.append("  replay exit    still open when the bars ran out")
         else:
+            if self.commission_r:
+                lines.append(
+                    f"  before costs   {self.gross_r:+.2f}R  [{self.exit_reason}]"
+                    f"   commission {-self.commission_r:.2f}R"
+                )
             lines.append(f"  replay exit    {self.exit_r:+.2f}R  [{self.exit_reason}]")
         if self.trade.actual_pnl_r is not None:
             lines.append(
@@ -314,6 +331,11 @@ def replay_management(
     the rules run, because the broker would have filled them first. A rule that
     "exits" after price already went through the stop is measuring a trade that
     no longer existed.
+
+    The result is net of commission, because the journal's `pnl_r` is: it comes
+    from money the broker moved. Comparing a gross replay against a net reality
+    would credit these rules with a fifth of an R per trade that they did not
+    earn, on exactly the narrow stops where this account bleeds.
     """
     broker = _ReplayBroker(spec_=spec, frame=frame)
     journal = _ReplayJournal(original_stop=trade.stop, volume=trade.volume)
@@ -400,14 +422,24 @@ def replay_management(
         if broker.stops:
             stop = broker.stops[-1]
 
+    # Charged once on the whole position rather than per leg: the round-trip
+    # figure already covers both sides, and a partial pays its share of the
+    # same total. Volume cancels out of the ratio, so this is the cost of
+    # being in this trade at all, expressed in the only unit the rules use.
+    commission_r = 0.0
+    risk_money_per_lot = spec.money_per_lot(risk)
+    if risk_money_per_lot > 0:
+        commission_r = settings.risk.commission_per_lot(spec.asset_class.value) / risk_money_per_lot
+
     return ReplayOutcome(
         trade=trade,
         steps=tuple(steps),
-        exit_r=exit_r,
+        exit_r=None if exit_r is None else exit_r - commission_r,
         exit_reason=exit_reason or "never closed",
         peak_r=journal.peak_r,
         trough_r=journal.trough_r,
         bars=used,
+        commission_r=commission_r,
     )
 
 
