@@ -94,6 +94,12 @@ _UNKNOWN_HEALTH: dict[str, object] = {
     "signals": [],
 }
 
+#: How far inside the cost limit a widened stop is placed, as a multiplier on
+#: the limit itself. Solving for exactly the limit and stopping there loses to
+#: the float: the widened stop is normalised to the instrument's tick and comes
+#: back a hair short, and the gate refuses it anyway.
+_COST_MARGIN = 0.95
+
 #: The timeframe a review is tied to. H1 is where the weighted modules read
 #: their structure, so it is what defines "the same setup".
 _REVIEW_TIMEFRAME = Timeframe.H1
@@ -766,6 +772,23 @@ class JarvisRunner:
         # no amount of edge in the setup survives that. The playbooks already
         # refused on this; the confluence path did not, which is where the
         # evening stop-outs were coming from.
+        # Give the stop the room the costs demand, before anything is sized.
+        #
+        # The cost gate in the sizer would otherwise refuse this outright, and
+        # on this account it refuses nearly everything: measured against real
+        # fills, all four of the live trades had stops between 1.8 and 6.3 pips
+        # and every one of them spends over a quarter of its risk on commission
+        # and slippage. A gate that says no to all of them is not a risk
+        # control, it is an off switch.
+        #
+        # Widening is the honest alternative and it is what a person does. The
+        # invalidation level does not move — the trade is still wrong in the
+        # same place — it simply stops being sized as though the market cannot
+        # breathe. What it costs is reward-to-risk, and that is already
+        # measured: if the target no longer justifies the wider stop, the RR
+        # gate refuses the trade a few lines further down, on the merits.
+        idea = self._widen_stop_for_costs(idea, spec)
+
         affordable, share = self._spread_is_affordable(context, idea.entry, idea.stop_loss)
         if not affordable:
             self._record_skip(
@@ -1413,6 +1436,59 @@ class JarvisRunner:
             ],
         }
         write_json_atomic(self.health_file, payload)
+
+    def _widen_stop_for_costs(self, idea: TradeIdea, spec) -> TradeIdea:  # type: ignore[no-untyped-def]
+        """Push the stop out until commission and slippage are a small part of it.
+
+        Returns the idea unchanged when the stop is already wide enough, when
+        the check is switched off, or when the direction is missing.
+
+        The target is deliberately left where the analysis put it. Widening the
+        stop lowers reward-to-risk, and that loss is the honest price of making
+        the trade viable — `min_risk_reward` then decides whether it is still
+        worth taking. Moving the target to preserve the ratio would be
+        inventing a level the chart never offered.
+        """
+        limit = self.settings.risk.max_cost_share_of_risk
+        if limit <= 0 or idea.direction is None:
+            return idea
+
+        risk = abs(idea.entry - idea.stop_loss)
+        if risk <= 0:
+            return idea
+        sizer = PositionSizer(self.settings)
+        commission = self.settings.risk.commission_per_lot(spec.asset_class.value)
+        if sizer._cost_share(spec, risk, commission) <= limit:
+            return idea
+
+        # The distance at which cost is exactly the limit — solved rather than
+        # stepped outward, so it lands on the boundary instead of near it.
+        #
+        # And then a hair past it. Aiming at exactly the limit leaves the gate
+        # re-testing `cost > limit` on a number that has since been through a
+        # price normalisation and a float division, and it loses: a nine-pip
+        # stop arrived back as 8.99999 pips and was refused by the very rule
+        # the widening exists to satisfy. Widening that fails to clear the gate
+        # is worse than not widening, because it moves the stop as well.
+        cost_per_lot = commission + spec.money_per_lot(
+            spec.pips_to_price(
+                self.settings.risk.stop_slippage_pips.get(spec.asset_class.value, 0.0)
+            )
+        )
+        per_price_unit = spec.money_per_lot(risk) / risk
+        needed = cost_per_lot / (limit * _COST_MARGIN) / per_price_unit
+        widened = idea.entry - needed * int(idea.direction)
+
+        log.info(
+            "widening the stop so the costs are not the trade",
+            extra={
+                "event": "stop_widened_for_costs",
+                "symbol": idea.symbol,
+                "from_pips": round(spec.price_to_pips(risk), 1),
+                "to_pips": round(spec.price_to_pips(needed), 1),
+            },
+        )
+        return replace(idea, stop_loss=spec.normalize_price(widened))
 
     def _spread_is_affordable(
         self, context: MarketContext, entry: float, stop: float
