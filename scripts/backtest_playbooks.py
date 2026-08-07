@@ -53,6 +53,8 @@ from backtesting.playbook_replay import (
     evidence_by_playbook,
     render,
     render_comparison,
+    render_targets,
+    sweep_targets,
 )
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.data_manager import DataManager
@@ -105,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
         "only part that says whether the analysis is worth anything",
     )
     parser.add_argument(
+        "--targets",
+        action="store_true",
+        help="also sweep the target distance, each with its own coin. Answers "
+        "whether reaching for less turns any of this positive",
+    )
+    parser.add_argument(
         "--stride",
         type=int,
         default=1,
@@ -132,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     start = end - timedelta(days=args.days)
     everything = []
     against_chance = []
+    target_rows = []
     try:
         for symbol in args.symbols:
             print(f"  replaying {symbol} …", flush=True)
@@ -157,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
             if not args.no_baseline:
                 print("    shuffling the directions …", flush=True)
                 against_chance.extend(compare_to_chance(orders, frames[Timeframe.M5], evidence))
+            if args.targets:
+                print("    sweeping the target distance …", flush=True)
+                target_rows.extend(sweep_targets(orders, frames[Timeframe.M5]))
     finally:
         with contextlib.suppress(Exception):
             connector.shutdown()
@@ -215,6 +227,26 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         print(render_comparison(merged_comparisons, window=window))
+
+    if target_rows:
+        # Pooled across symbols per (theory, target), same reasoning again.
+        by_key: dict[tuple[str, float], list] = {}
+        for row in target_rows:
+            by_key.setdefault((row.playbook, row.r_multiple), []).append(row)
+        pooled_targets = []
+        for (name, multiple), items in by_key.items():
+            trades = sum(i.trades for i in items) or 1
+            pooled_targets.append(
+                type(items[0])(
+                    playbook=name,
+                    r_multiple=multiple,
+                    trades=sum(i.trades for i in items),
+                    win_rate=sum(i.win_rate * i.trades for i in items) / trades,
+                    expectancy_r=sum(i.expectancy_r * i.trades for i in items) / trades,
+                    coin_expectancy_r=sum(i.coin_expectancy_r * i.trades for i in items) / trades,
+                )
+            )
+        print(render_targets(pooled_targets, window=window))
     return 0
 
 
