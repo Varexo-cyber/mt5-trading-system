@@ -13,6 +13,7 @@ No orders, no API calls, nothing written. The only thing it spends is time.
     python scripts/backtest_playbooks.py --days 180
     python scripts/backtest_playbooks.py --symbols EURUSD.i XAUUSD
     python scripts/backtest_playbooks.py --min-conviction 75  # the live floor
+    python scripts/backtest_playbooks.py --exits             # when should it get out
 
 Read the per-theory rows, not the total. A theory that is negative over a real
 sample should be switched off, and doing that is worth more — and is far more
@@ -45,6 +46,13 @@ from analysis.playbooks import (
     RangeFade,
     ScalpConfig,
     TrendPullback,
+)
+from backtesting.exit_study import (
+    give_back_curve,
+    hold_table,
+    render_give_back,
+    render_hold_table,
+    study,
 )
 from backtesting.playbook_replay import (
     REPLAY_TIMEFRAMES,
@@ -113,6 +121,12 @@ def main(argv: list[str] | None = None) -> int:
         "whether reaching for less turns any of this positive",
     )
     parser.add_argument(
+        "--exits",
+        action="store_true",
+        help="measure what an extra minute of patience was worth at every in-profit "
+        "moment, instead of choosing exit thresholds by argument",
+    )
+    parser.add_argument(
         "--stride",
         type=int,
         default=1,
@@ -141,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     everything = []
     against_chance = []
     target_rows = []
+    walked = []
     try:
         for symbol in args.symbols:
             print(f"  replaying {symbol} …", flush=True)
@@ -169,6 +184,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.targets:
                 print("    sweeping the target distance …", flush=True)
                 target_rows.extend(sweep_targets(orders, frames[Timeframe.M5]))
+            if args.exits:
+                print("    walking every position bar by bar …", flush=True)
+                walked.extend(study(orders, frames[Timeframe.M5]))
     finally:
         with contextlib.suppress(Exception):
             connector.shutdown()
@@ -247,6 +265,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         print(render_targets(pooled_targets, window=window))
+
+    # Pooled across symbols like everything else here, and for the same reason
+    # a third time: the question is what patience is worth at a given state,
+    # and four thin per-symbol tables answer it four times badly.
+    if walked:
+        print(render_give_back(give_back_curve(walked)))
+        print(render_hold_table(hold_table(walked)))
+        print(
+            "  Every row where waiting is negative is money the account had in hand\n"
+            "  and gave back. That is what the exit rules should be reading, instead\n"
+            "  of the fixed numbers they read today.\n"
+        )
     return 0
 
 
