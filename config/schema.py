@@ -750,6 +750,20 @@ class CurrencyExposureConfig(Base):
     #: on it, and it was believed to be two independent trades right up until
     #: both moved together.
     max_positions_per_currency: int = Field(default=1, ge=1, le=10)
+    #: The same limit for instruments the currency decomposition cannot see.
+    #:
+    #: An index quoted in its own currency has no currency leg — correctly, it
+    #: is a bet on equities and not on the euro — which leaves FRA40 long and
+    #: UK100 long looking like two unrelated trades to the filter above. They
+    #: are one risk-on bet with a second lot on it, and on 7 August the account
+    #: held three European index longs inside twenty minutes.
+    max_positions_per_asset_class: int = Field(default=1, ge=1, le=10)
+    #: Which classes that limit applies to.
+    #:
+    #: Forex is absent on purpose: the currency legs already describe it
+    #: exactly, and capping FX by class would refuse EURUSD beside USDJPY,
+    #: which are genuinely different trades.
+    grouped_asset_classes: tuple[str, ...] = ("index", "metal", "commodity", "crypto", "stock")
 
 
 class LossCooldownConfig(Base):

@@ -92,7 +92,15 @@ _NOT_CURRENCIES = frozenset({"XAU", "XAG", "XPT", "XPD", "BTC", "ETH", "LTC", "X
 
 
 class CurrencyExposureFilter(Filter):
-    """Refuses a second position that doubles a currency bet already on."""
+    """Refuses a second position that doubles a bet the book already carries.
+
+    Two accountings, because one cannot cover both cases. Crosses decompose
+    into currency legs exactly, and that is an identity. Instruments quoted in
+    their own currency have no legs to decompose — correctly, a long FRA40 is a
+    bet on French equities and not on the euro — so for those the group is the
+    asset class, and two index longs are one risk-on bet with a second lot on
+    it however different their tickers look.
+    """
 
     name = "currency_exposure"
 
@@ -122,6 +130,49 @@ class CurrencyExposureFilter(Filter):
                 totals[code] += sign
         return totals
 
+    def grouped(self, ctx: FilterContext) -> Counter[str]:
+        """Net directional exposure per asset class, for the ungrouped classes.
+
+        Only the classes the currency accounting is blind to. Forex is absent
+        deliberately: its legs describe it exactly, and capping FX by class
+        would refuse EURUSD beside USDJPY, which are genuinely different bets.
+        """
+        totals: Counter[str] = Counter()
+        for position in ctx.open_positions:
+            try:
+                spec = self.spec_provider(position.symbol)
+            except Exception as exc:  # noqa: BLE001 - an unreadable spec is not fatal
+                log.warning(
+                    "cannot read spec for sector accounting",
+                    extra={"symbol": position.symbol, "reason": str(exc)},
+                )
+                continue
+            klass = spec.asset_class.value
+            if klass in self.config.grouped_asset_classes:
+                totals[klass] += int(position.direction)
+        return totals
+
+    def _sector_verdict(self, ctx: FilterContext) -> FilterVerdict | None:
+        klass = ctx.spec.asset_class.value
+        if klass not in self.config.grouped_asset_classes:
+            return None
+        assert ctx.direction is not None  # checked by the caller
+        sign = int(ctx.direction)
+        already = self.grouped(ctx).get(klass, 0)
+        if sign * already < self.config.max_positions_per_asset_class:
+            return None
+        side = "long" if sign > 0 else "short"
+        return FilterVerdict.block(
+            self.name,
+            Reason.SECTOR_CONCENTRATION,
+            f"already {side} {klass} on {abs(already)} open position(s); this would "
+            f"make it {abs(already) + 1}. FRA40 long beside UK100 long is not two "
+            f"trades, it is one bet on equities with a second lot on it",
+            asset_class=klass,
+            standing=already,
+            would_be=already + sign,
+        )
+
     def check(self, ctx: FilterContext) -> FilterVerdict:
         if not self.config.enabled or not ctx.open_positions:
             return FilterVerdict.allow(
@@ -137,6 +188,10 @@ class CurrencyExposureFilter(Filter):
                 "currency exposure needs the intended direction; which currency a "
                 "cross is long is not defined without it"
             )
+
+        sector = self._sector_verdict(ctx)
+        if sector is not None:
+            return sector
 
         standing = self.standing(ctx)
         adding = legs(ctx.spec, ctx.direction)
@@ -160,6 +215,12 @@ class CurrencyExposureFilter(Filter):
                 would_be=already + sign,
             )
 
+        if not adding:
+            return FilterVerdict.allow(
+                self.name,
+                f"{ctx.spec.asset_class.value} carries no currency leg, and the book is "
+                f"not already leaning that way on its class",
+            )
         return FilterVerdict.allow(
             self.name,
             "adds no currency the book is already leaning on: "
