@@ -255,6 +255,35 @@ ai:
 # shortens the leash after losses. The setups also still have to survive every
 # filter and Claude's veto, which is what makes "more trades" mean "more good
 # trades" rather than "more trades".
+filters:
+  session:
+    # De Aziatische sessie erbij, op verzoek van de eigenaar: de VPS is er om
+    # 24/7 te draaien en de rekening stond 's nachts stil.
+    #
+    # Dit gaat van 7 handelbare uren per dag naar 21. De unie van de drie
+    # sessies is 00:00-21:00 UTC. Wat dicht blijft is 21:00-00:00, en dat is
+    # geen conservatisme maar de rollover: de swap-omslag valt daarin, de
+    # spread is er een veelvoud van normaal, en `rollover_block` en de
+    # avond-uitfasering staan er al. In dat gat "handelen" toestaan zou
+    # toneelspel zijn - het spread-filter weigert daar toch bijna alles.
+    #
+    # Waarom dit veilig genoeg is om aan te zetten, en niet omdat de nacht
+    # rustig is: het spread-filter meet per instrument *per uur van de dag* en
+    # doet dat elke cyclus, ook in de uren waarin nooit gehandeld werd. Er ligt
+    # dus al een gemeten nachtnormaal per markt om tegen af te wegen, en 03:00
+    # wordt beoordeeld tegen 03:00 en niet tegen de Londense ochtend. Het
+    # liveliness-filter doet hetzelfde voor "de markt is in slaap gevallen".
+    #
+    # De conviction-vloer staat inmiddels op 75 voor alle uren, dus de nacht
+    # krijgt geen eigen soepelere lat - hij krijgt dezelfde strengere.
+    #
+    # Wat hier mis kan gaan: dun boek in de Aziatische uren op EUR-crosses en
+    # Europese indices. ASX200 en JPY-paren zijn er juist het levendigst. De
+    # twee filters hierboven horen dat onderscheid per markt te maken; als
+    # `why_no_trades` na een paar nachten laat zien dat het toch de dunne
+    # markten zijn die erdoor komen, gaat asia er weer af.
+    tradable_sessions: [asia, london, newyork]
+
 risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
   posture_throttle: false
