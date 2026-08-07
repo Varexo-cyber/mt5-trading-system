@@ -780,8 +780,65 @@ class LossCooldownConfig(Base):
     minutes: float = Field(default=20.0, ge=0.0, le=1440.0)
 
 
+class HeadlineFilterConfig(Base):
+    """Unscheduled news, as a reason to keep still. Never as a direction.
+
+    The calendar next door knows what is coming. This knows what is happening,
+    and it is the layer that catches the central bank moving between meetings
+    and the story that breaks at 03:00 with the afternoon showing clear.
+
+    There is no sentiment setting here and there will not be one.
+    `filters.newsfeed.items.NewsPressure` carries the argument: by the time a
+    story reaches a public feed the move it describes has happened, so trading
+    its direction from a retail VPS is buying what somebody else already
+    bought. What survives the latency is that something is going on, and that
+    is what these numbers describe.
+    """
+
+    #: Off until `scripts/verify_newsfeed.py` has been run on the machine that
+    #: will use it. None of the default feed URLs could be reached from the
+    #: environment this was written in, so no response shape has been confirmed
+    #: — and a layer that silently returns nothing reports a quiet market,
+    #: which is the one answer it must never invent.
+    enabled: bool = False
+    #: Feed name to URL. Empty uses `filters.newsfeed.providers.DEFAULT_FEEDS`.
+    feeds: dict[str, str] = Field(default_factory=dict)
+    #: How often every feed is pulled. Once per two minutes is roughly as fast
+    #: as public wires publish, and pulling harder mostly re-reads the same
+    #: items while spending a one-core VPS's attention.
+    refresh_interval_seconds: float = Field(default=120.0, ge=30.0, le=3600.0)
+    #: The recent window "how busy is it right now" is measured over.
+    window_minutes: float = Field(default=20.0, ge=5.0, le=240.0)
+    #: The long window that window is compared against. Per instrument, because
+    #: EUR and NZD do not carry comparable traffic on any wire and one absolute
+    #: threshold over both means blocking EUR always or NZD never.
+    baseline_hours: float = Field(default=12.0, ge=1.0, le=72.0)
+    #: How stale the held window may get before it stops being evidence.
+    max_age_minutes: float = Field(default=30.0, ge=5.0, le=360.0)
+    #: Both must hold to block: enough stories to mean anything, and enough
+    #: above normal to be unusual. Either alone misfires — three headlines is
+    #: nothing on EUR and a storm on NZD, and a tenfold rise from 0.1 is one
+    #: routine mention.
+    min_headlines: int = Field(default=3, ge=1, le=50)
+    spike_multiple: float = Field(default=3.0, ge=1.0, le=20.0)
+    #: A market-wide story blocks on its own. It touches every pair equally, so
+    #: it never looks like a spike on any single one and the test above would
+    #: wave all of them through at the worst possible moment.
+    block_on_systemic: bool = True
+    #: Stand down when the feeds are dark. Off by default, and the departure
+    #: from "no data, no trade" is argued in `HeadlineFilter._unavailable`: the
+    #: calendar's fail-closed rule is untouched, and with this layer dark the
+    #: system is at the safety level it has run at all along.
+    block_when_unavailable: bool = False
+    #: Headlines handed to the reviewer with an open position. The one place
+    #: the text itself is worth carrying — a language model reads a headline
+    #: better than any regex here, and it is being asked anyway.
+    headlines_for_reviewer: int = Field(default=6, ge=0, le=25)
+
+
 class FiltersConfig(Base):
     news: NewsFilterConfig = NewsFilterConfig()
+    headlines: HeadlineFilterConfig = HeadlineFilterConfig()
     session: SessionFilterConfig = SessionFilterConfig()
     runway: RunwayFilterConfig = RunwayFilterConfig()
     liveliness: LivelinessFilterConfig = LivelinessFilterConfig()
