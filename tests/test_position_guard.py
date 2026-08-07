@@ -83,6 +83,12 @@ class BrokerStub:
                 return round(price, 5)
 
             @staticmethod
+            def money_per_lot(distance: float) -> float:
+                """A round 1.0 per price unit, so a 2.0 stop is 2.00 a lot and
+                the commission-in-R arithmetic below is readable by hand."""
+                return abs(distance)
+
+            @staticmethod
             def round_volume_down(volume: float) -> float:
                 return round(volume, 2)
 
@@ -1051,23 +1057,50 @@ class TestTheClosingHour:
     supplies for free.
 
     A live ASX200 long: opened 20:41, carried past the cash close, shut at
-    22:27 for -0.76. The operator's reading was the right one — spread up,
-    market slow, you are in profit, get out.
+    22:27 for -0.76.
+
+    There is no R threshold in this rule and there must not be one. It asks
+    whether the rest of the target is reachable in the session that is left,
+    and whether what is on the table beats the spread and commission it costs
+    to collect. A number chosen in advance can answer neither.
     """
 
     #: Inside the closing hour for forex (wind-down 20:15 UTC), outside the
     #: flatten window itself.
     CLOSING = datetime(2026, 8, 4, 19, 40, tzinfo=UTC)
 
-    def test_a_profit_is_taken_into_the_closing_hour(self) -> None:
+    @staticmethod
+    def far_target(broker: BrokerStub) -> Position:
+        """A target far enough away that this market cannot reach it today.
+
+        The stub's ATR is 1.0 on the speed timeframe, and displacement grows
+        with the square root of the bars, so 10 units away is 100 bars — well
+        past the 35 minutes of session left at `CLOSING`.
+        """
+        del broker
+        return replace(position(), tp=ENTRY + 10.0)
+
+    def test_a_profit_is_taken_when_the_rest_is_out_of_reach(self) -> None:
         broker, journal = BrokerStub(), JournalStub()
         manager = manager_for(broker, journal)
 
         at(broker, 0.5)
-        events = manager.manage([position()], self.CLOSING)
+        events = manager.manage([self.far_target(broker)], self.CLOSING)
 
         assert [event.action for event in events] == ["SESSION_DECAY"]
         assert broker.closed == [(555, None)]
+
+    def test_a_target_still_within_reach_is_held(self) -> None:
+        """The point of measuring instead of thresholding: same clock, same R,
+        and the answer flips because the target is close enough to happen."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+
+        at(broker, 0.5)
+        near = replace(position(), tp=broker.price + 0.5)
+        events = manager.manage([near], self.CLOSING)
+
+        assert not any(event.action == "SESSION_DECAY" for event in events)
 
     def test_a_loser_is_left_to_the_rules_that_understand_it(self) -> None:
         """Closing a losing trade because it is late is the time exit's job,
@@ -1076,16 +1109,19 @@ class TestTheClosingHour:
         manager = manager_for(broker, journal)
 
         at(broker, -0.4)
-        events = manager.manage([position()], self.CLOSING)
+        events = manager.manage([self.far_target(broker)], self.CLOSING)
 
         assert not any(event.action == "SESSION_DECAY" for event in events)
 
-    def test_a_scratch_is_not_worth_the_spread_to_bank(self) -> None:
+    def test_a_profit_smaller_than_the_cost_of_taking_it_is_not_taken(self) -> None:
+        """Banking below the exit cost hands the broker the profit and calls it
+        discipline. The floor is measured, not chosen."""
         broker, journal = BrokerStub(), JournalStub()
+        broker.spread = (ENTRY - STOP) * 0.40  # 40% of the stop, just to leave
         manager = manager_for(broker, journal)
 
-        at(broker, 0.05)
-        events = manager.manage([position()], self.CLOSING)
+        at(broker, 0.2)
+        events = manager.manage([self.far_target(broker)], self.CLOSING)
 
         assert not any(event.action == "SESSION_DECAY" for event in events)
 
@@ -1094,34 +1130,10 @@ class TestTheClosingHour:
         manager = manager_for(broker, journal)
 
         at(broker, 0.5)
-        events = manager.manage([position()], AFTERNOON)
+        events = manager.manage([self.far_target(broker)], AFTERNOON)
 
         assert not any(event.action == "SESSION_DECAY" for event in events)
         assert broker.closed == []
-
-    def test_a_blown_spread_brings_the_rule_forward(self) -> None:
-        """Twice as far out, and on any profit at all. Not a forecast then —
-        the cost of leaving has visibly started rising, which is the evidence
-        the time-based clause is only anticipating."""
-        early = datetime(2026, 8, 4, 18, 40, tzinfo=UTC)  # 95 min out
-        broker, journal = BrokerStub(), JournalStub()
-        broker.spread = (ENTRY - STOP) * 0.30  # 30% of the stop
-        manager = manager_for(broker, journal)
-
-        at(broker, 0.1)
-        events = manager.manage([position()], early)
-
-        assert [event.action for event in events] == ["SESSION_DECAY"]
-
-    def test_an_ordinary_spread_that_far_out_waits(self) -> None:
-        early = datetime(2026, 8, 4, 18, 40, tzinfo=UTC)
-        broker, journal = BrokerStub(), JournalStub()
-        manager = manager_for(broker, journal)
-
-        at(broker, 0.5)
-        events = manager.manage([position()], early)
-
-        assert not any(event.action == "SESSION_DECAY" for event in events)
 
     def test_it_outranks_the_peak_stall_and_the_give_back(self) -> None:
         """Neither of those knows the session is ending, so both would sit on
@@ -1130,18 +1142,18 @@ class TestTheClosingHour:
         manager = manager_for(broker, journal, giveback_arm_r=0.4, giveback_fraction=0.4)
 
         at(broker, 1.5)
-        manager.manage([position()], AFTERNOON)  # records the peak
+        manager.manage([self.far_target(broker)], AFTERNOON)  # records the peak
         at(broker, 0.8)
-        events = manager.manage([position()], self.CLOSING)
+        events = manager.manage([self.far_target(broker)], self.CLOSING)
 
         assert [event.action for event in events] == ["SESSION_DECAY"]
 
     def test_switching_it_off_restores_the_old_behaviour(self) -> None:
         broker, journal = BrokerStub(), JournalStub()
-        manager = manager_for(broker, journal, session_decay_window_minutes=0.0)
+        manager = manager_for(broker, journal, session_decay_enabled=False)
 
         at(broker, 0.5)
-        events = manager.manage([position()], self.CLOSING)
+        events = manager.manage([self.far_target(broker)], self.CLOSING)
 
         assert not any(event.action == "SESSION_DECAY" for event in events)
 
@@ -1153,6 +1165,6 @@ class TestTheClosingHour:
         manager = manager_for(broker, journal)
 
         at(broker, 0.5)
-        events = manager.manage([position()], self.CLOSING)
+        events = manager.manage([self.far_target(broker)], self.CLOSING)
 
         assert not any(event.action == "SESSION_DECAY" for event in events)

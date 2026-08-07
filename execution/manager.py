@@ -13,6 +13,7 @@ from analysis.position_health import PositionHealth, assess_position
 from config.schema import Settings, TradeManagementConfig
 from core.broker import Broker
 from core.data_manager import DataManager
+from core.data_manager import atr as _atr_of
 from core.types import Direction, Position, Timeframe
 from filters.news_filter import NewsFilter
 from filters.session_filter import SessionFilter
@@ -495,51 +496,52 @@ class PositionManager:
     def _session_decay_exit(
         self, position: Position, now: datetime, r_now: float, risk: float, tick
     ) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
-        """Bank a profit into a dying session instead of carrying it to the bell.
+        """Bank a profit whose target the session can no longer deliver.
 
         `_evening_flatten` closes everything at the wind-down whatever it is
-        worth. That is the backstop. This is the hour before it, and it is the
-        part a person does without thinking: the book is thinning, the spread
-        is drifting out, the session is ending, you are up — you take it. What
-        you do not do is hold a winner for the last third of a target while the
-        market that has to deliver it goes home.
+        worth. That is the backstop. This is the judgement before it, and it is
+        the one a person makes without calling it a rule: there are forty
+        minutes of session left, the target is three hours away at the pace
+        this market is actually moving, and you are up. The rest is not coming.
+        Take the money.
 
-        A live ASX200 long says it plainly: opened 20:41, carried past the
-        close, shut at 22:27 for -0.76. Nothing in the file objected, because
-        the only evening rule fired at the deadline and everything before it
-        treated 21:00 like any other hour.
+        Deliberately *not* "close if R exceeds some number". A threshold like
+        that is the behaviour this system keeps being criticised for and the
+        criticism is right: it does not know how far the target is, how fast
+        the market is going, or how much of the day is left, so it fires on a
+        trade two pips from a target it will reach and holds one that has no
+        chance. Both questions here are measured:
 
-        Two ways in, and they are different claims:
+        * **Is the rest reachable?** The same estimate the entry gate uses, so
+          a target ruled reachable at 14:00 and unreachable at 19:40 has moved
+          for a reason rather than because two formulas disagree. Displacement
+          over n bars grows with `sqrt(n) * ATR`, not with n, so covering d
+          takes `(d / ATR)^2` bars — which is why a target that looks forty
+          minutes away on a straight line is really three hours away.
 
-        * In profit, and the session is nearly over. Time alone is enough —
-          this is the ordinary case and needs no other symptom.
-        * In *any* profit, twice as far out, when the spread has already gone.
-          Not a forecast then: the cost of leaving has visibly started rising,
-          which is the evidence the first clause is only anticipating.
+        * **Is what is left worth collecting?** The floor is the measured cost
+          of leaving — the spread you cross plus the commission on the exit —
+          and not an invented R. Below that, banking hands the broker the
+          profit and calls it discipline.
 
-        Never fires on a loser. Closing a losing trade because it is late is
-        `_time_exit_verdict`'s job and it weighs things this rule cannot see.
+        Nothing about a widening spread here. `_spread_squeeze_exit` already
+        owns that, and two rules watching one symptom is how they end up
+        disagreeing.
         """
-        config = self.settings.trade_management
-        if config.session_decay_window_minutes <= 0 or r_now <= 0:
+        if not self.settings.trade_management.session_decay_enabled or r_now <= 0:
             return None
         asset_class = self.broker.spec(position.symbol).asset_class.value
         runway = self._runway_minutes(now, asset_class)
         if runway is None:
             return None
 
-        window = config.session_decay_window_minutes
-        if runway <= window and r_now >= config.session_decay_min_r:
-            why = f"{runway:.0f} min of session left and {r_now:.2f}R on the table"
-        else:
-            spread = getattr(tick, "spread", 0.0)
-            share = spread / risk if risk > 0 else 0.0
-            if runway > window * 2 or share < config.session_decay_spread_share:
-                return None
-            why = (
-                f"{runway:.0f} min of session left and the spread is already "
-                f"{share:.0%} of the stop"
-            )
+        needed = self._minutes_to_target(position, tick)
+        if needed is None or needed <= runway:
+            return None
+
+        cost_r = self._cost_of_leaving(position, risk, tick)
+        if r_now <= cost_r:
+            return None
 
         result = self.broker.close_position(position)
         if not result.ok:
@@ -547,11 +549,55 @@ class PositionManager:
         return ManagementEvent(
             position.ticket,
             "SESSION_DECAY",
-            f"{why}; the book thins from here and the target has to be paid for twice",
+            f"target is ~{needed:.0f} min away at the pace this market is actually moving "
+            f"and {runway:.0f} min of session remain; {r_now:.2f}R on the table against "
+            f"{cost_r:.2f}R to collect it",
             result.filled_price,
             position.profit + position.swap,
             r_at_action=r_now,
         )
+
+    def _minutes_to_target(self, position: Position, tick) -> float | None:  # type: ignore[no-untyped-def]
+        """How long the *remaining* distance would take at this market's pace.
+
+        Measured from where price is now, not from the entry: half a target
+        already covered is half a target that does not need covering again.
+        """
+        config = self.settings.filters.runway
+        if position.tp == 0.0:
+            return None
+        try:
+            timeframe = Timeframe.parse(config.speed_timeframe)
+        except ValueError:
+            return None
+        frame = self._bars(position.symbol, timeframe, 60)
+        if frame is None:
+            return None
+        speed = _atr_of(frame)
+        price = tick.bid if position.direction is Direction.LONG else tick.ask
+        distance = abs(position.tp - price)
+        if speed <= 0 or distance <= 0:
+            return None
+        atr_units = distance / speed / config.travel_efficiency
+        return atr_units**2 * timeframe.duration.total_seconds() / 60.0
+
+    def _cost_of_leaving(self, position: Position, risk: float, tick) -> float:  # type: ignore[no-untyped-def]
+        """What it costs to take the money, in R.
+
+        The spread crossed on the way out plus the commission on that side.
+        Volume cancels out of the commission ratio, so this is a property of
+        the trade's shape rather than of its size — which is why a tight stop
+        makes leaving expensive however few lots are on.
+        """
+        if risk <= 0:
+            return 0.0
+        spec = self.broker.spec(position.symbol)
+        cost = getattr(tick, "spread", 0.0) / risk
+        per_side = self.settings.risk.commission_per_lot(spec.asset_class.value) / 2.0
+        money = spec.money_per_lot(risk)
+        if money > 0:
+            cost += per_side / money
+        return cost
 
     def _spread_squeeze_exit(
         self, position: Position, tick, r_now: float
