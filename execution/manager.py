@@ -232,6 +232,15 @@ class PositionManager:
             if wind_down is not None:
                 events.append(wind_down)
                 continue
+            # Then the hour before that deadline. Placed above every other
+            # profit rule because none of them know the session is ending: the
+            # peak stall waits six minutes for a peak that will not come, and
+            # the give-back waits for a drain the closing spread supplies for
+            # free.
+            decaying = self._session_decay_exit(position, now, r_now, risk, tick)
+            if decaying is not None:
+                events.append(decaying)
+                continue
             # Next, because it is about to happen to us rather than about what
             # the trade is worth: a spread wide enough to trigger the stop on
             # its own.
@@ -483,6 +492,67 @@ class PositionManager:
             r_at_action=r_now,
         )
 
+    def _session_decay_exit(
+        self, position: Position, now: datetime, r_now: float, risk: float, tick
+    ) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
+        """Bank a profit into a dying session instead of carrying it to the bell.
+
+        `_evening_flatten` closes everything at the wind-down whatever it is
+        worth. That is the backstop. This is the hour before it, and it is the
+        part a person does without thinking: the book is thinning, the spread
+        is drifting out, the session is ending, you are up — you take it. What
+        you do not do is hold a winner for the last third of a target while the
+        market that has to deliver it goes home.
+
+        A live ASX200 long says it plainly: opened 20:41, carried past the
+        close, shut at 22:27 for -0.76. Nothing in the file objected, because
+        the only evening rule fired at the deadline and everything before it
+        treated 21:00 like any other hour.
+
+        Two ways in, and they are different claims:
+
+        * In profit, and the session is nearly over. Time alone is enough —
+          this is the ordinary case and needs no other symptom.
+        * In *any* profit, twice as far out, when the spread has already gone.
+          Not a forecast then: the cost of leaving has visibly started rising,
+          which is the evidence the first clause is only anticipating.
+
+        Never fires on a loser. Closing a losing trade because it is late is
+        `_time_exit_verdict`'s job and it weighs things this rule cannot see.
+        """
+        config = self.settings.trade_management
+        if config.session_decay_window_minutes <= 0 or r_now <= 0:
+            return None
+        asset_class = self.broker.spec(position.symbol).asset_class.value
+        runway = self._runway_minutes(now, asset_class)
+        if runway is None:
+            return None
+
+        window = config.session_decay_window_minutes
+        if runway <= window and r_now >= config.session_decay_min_r:
+            why = f"{runway:.0f} min of session left and {r_now:.2f}R on the table"
+        else:
+            spread = getattr(tick, "spread", 0.0)
+            share = spread / risk if risk > 0 else 0.0
+            if runway > window * 2 or share < config.session_decay_spread_share:
+                return None
+            why = (
+                f"{runway:.0f} min of session left and the spread is already "
+                f"{share:.0%} of the stop"
+            )
+
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "SESSION_DECAY",
+            f"{why}; the book thins from here and the target has to be paid for twice",
+            result.filled_price,
+            position.profit + position.swap,
+            r_at_action=r_now,
+        )
+
     def _spread_squeeze_exit(
         self, position: Position, tick, r_now: float
     ) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
@@ -546,6 +616,18 @@ class PositionManager:
         if self._session_filter is None:
             return None
         return self._session_filter.evening_flat_window(asset_class)
+
+    def _runway_minutes(self, now: datetime, asset_class: str) -> float | None:
+        """Minutes before we force this instrument flat, or None if never.
+
+        The same `SessionFilter` instance the wind-down uses, for the same
+        reason: two independently derived deadlines would drift, and the hour
+        before the close is exactly where that gap would hurt.
+        """
+        self._session_windows(asset_class)  # builds the filter on first use
+        if self._session_filter is None:
+            return None
+        return self._session_filter.minutes_of_runway(now, asset_class)
 
     def _worth_moving(self, position: Position, candidate: float, risk: float) -> bool:
         """Whether moving the stop to `candidate` is worth a broker round-trip.
