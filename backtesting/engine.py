@@ -15,8 +15,24 @@ from core.types import Direction
 
 @dataclass(frozen=True, slots=True)
 class BacktestAssumptions:
-    entry_slippage_bps: float = 0.5
+    #: Measured, not assumed. `scripts/execution_noise.py` read every live
+    #: entry fill on this account and found slippage of exactly 0.00 pips on
+    #: all of them — market orders on FX majors at 0.01 lots simply do not slip
+    #: at a retail broker outside news.
+    #:
+    #: It was 0.5 bps, which is 0.55 pips on EURUSD, and on an eight-pip scalp
+    #: stop that is 7% of the risk charged for something that never happened.
+    #: Small in isolation, and this is the term a backtest of tight-stop
+    #: strategies is most sensitive to.
+    entry_slippage_bps: float = 0.0
+    #: Still charged, because it has never been measured. `record_order_attempt`
+    #: only runs on the entry path, so a broker-initiated exit leaves no
+    #: telemetry and the honest position is that we do not know. Assuming zero
+    #: for something unmeasured would be the mistake this docstring is about,
+    #: in the other direction.
     exit_slippage_bps: float = 0.5
+    #: Verified against the account: EUR 5.50 per lot round trip is EUR 0.055
+    #: on 0.01 lots, which is 0.55 pips on EURUSD at 1.10 — 0.5 bps exactly.
     round_trip_commission_bps: float = 0.5
     max_holding_bars: int = 500
 
