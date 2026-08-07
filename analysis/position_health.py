@@ -205,6 +205,26 @@ def structure_broken(
     )
 
 
+def drift_score(frame: pd.DataFrame, sign: int, *, bars: int = 12) -> float | None:
+    """How hard the market is running in `sign`, in random-walk units.
+
+    A least-squares slope over the last `bars` closes, totalled and divided by
+    `sqrt(bars) * ATR` — roughly how far a market wanders over that many bars
+    for no reason at all. Positive means running our way, negative against.
+
+    One definition, used twice. `momentum_turned` asks whether this is
+    strongly negative; the banking rule asks whether it is strongly positive.
+    Two separately derived versions of "is this still moving" would eventually
+    disagree, and they would disagree while a position was open.
+    """
+    atr = _atr(frame)
+    if atr <= 0 or len(frame) < bars:
+        return None
+    closes = frame["close"].tail(bars).to_numpy(dtype=float)
+    slope = float(np.polyfit(np.arange(len(closes), dtype=float), closes, 1)[0])
+    return slope * sign * bars / atr / np.sqrt(bars)
+
+
 def momentum_turned(
     frame: pd.DataFrame,
     sign: int,
@@ -232,13 +252,11 @@ def momentum_turned(
     stopped distinguishing a drift from a collapse. A reader that always says
     the same thing is not evidence.
     """
-    atr = _atr(frame)
-    if atr <= 0 or len(frame) < bars:
+    against = drift_score(frame, -sign, bars=bars)
+    if against is None:
         return None
-    closes = frame["close"].tail(bars).to_numpy(dtype=float)
-    slope = float(np.polyfit(np.arange(len(closes), dtype=float), closes, 1)[0])
-    total_atr = -slope * sign * bars / atr  # ATR moved against us across the window
-    drift = total_atr / np.sqrt(bars)
+    drift = against
+    total_atr = drift * np.sqrt(bars)
     if drift < threshold:
         return None
     fraction = min(1.0, (drift - threshold) / max(saturate - threshold, 1e-9))

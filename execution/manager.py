@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from advisory.providers import Supervision
-from analysis.position_health import PositionHealth, assess_position
+from analysis.position_health import PositionHealth, assess_position, drift_score
 from config.schema import Settings, TradeManagementConfig
 from core.broker import Broker
 from core.data_manager import DataManager
@@ -92,6 +92,14 @@ class PositionManager:
         #: snapshot of the moment it happened to be asked, and by the deck.
         self.last_health: dict[int, PositionHealth] = {}
         self._session_filter: object = _UNSET
+        #: Account equity, refreshed by the runner once a cycle. Zero switches
+        #: the banking rule off, which is the safe default: a threshold that is
+        #: a share of an equity nobody set would be a share of nothing.
+        #:
+        #: Not read from the broker on every guard pass — that is a round trip
+        #: a second to watch a number that moves in cents, and the rule only
+        #: needs it to the nearest euro.
+        self.equity: float = 0.0
         #: ticket -> (highest R seen, when it was first reached). In memory on
         #: purpose: a restart resets the clock, which errs toward holding.
         self._peak_seen: dict[int, tuple[float, datetime]] = {}
@@ -232,6 +240,14 @@ class PositionManager:
             wind_down = self._evening_flatten(position, now, r_now)
             if wind_down is not None:
                 events.append(wind_down)
+                continue
+            # Before the hour-before-the-close rule and before every other
+            # profit rule, because it is the only one that acts while the money
+            # is plainly on the table rather than after something has started to
+            # go wrong.
+            banked = self._bank_worthwhile_profit(position, r_now, risk)
+            if banked is not None:
+                events.append(banked)
                 continue
             # Then the hour before that deadline. Placed above every other
             # profit rule because none of them know the session is ending: the
@@ -492,6 +508,71 @@ class PositionManager:
             position.profit + position.swap,
             r_at_action=r_now,
         )
+
+    def _bank_worthwhile_profit(
+        self, position: Position, r_now: float, risk: float
+    ) -> ManagementEvent | None:
+        """Take a sum worth taking, unless the move is clearly still running.
+
+        Every other rule in this file holds by default and acts on evidence of
+        trouble. This one is the other way round on purpose, and the operator
+        put it plainly: on a hundred-euro account, sixty or eighty cents is a
+        fine amount to bank, and a profit you can see beats a bigger one you
+        are hoping for. So the default is to take it, and only a market still
+        visibly running our way earns the right to keep going.
+
+        The threshold is a share of equity rather than an amount, because "80
+        cents on 100 euro" and "10 euro on 1000" are one rule said twice. It
+        scales on its own after a deposit, with nobody editing anything.
+
+        A live USDCHF long is the case: entered 0.81009, peaked 7.1 pips up —
+        about 76 cents — never reached a target 14.5 pips away, and closed at
+        +2.7 pips for 29 cents. It kept 38% of its best moment while a rule
+        that simply took the 76 cents was sitting there unwritten.
+        """
+        config = self.settings.trade_management
+        if not config.bank_enabled or self.equity <= 0 or risk <= 0:
+            return None
+        profit = position.profit + position.swap
+        worth_taking = self.equity * config.bank_at_equity_pct / 100.0
+        if profit < worth_taking or profit <= 0:
+            return None
+
+        running = self._still_running(position)
+        if running is not None and running >= config.bank_still_running_drift:
+            return None
+
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        pace = "the move has stopped running" if running is not None else "no read on the pace"
+        return ManagementEvent(
+            position.ticket,
+            "PROFIT_BANKED",
+            f"{profit:.2f} is {profit / self.equity * 100:.2f}% of the account at "
+            f"{r_now:.2f}R and {pace}; a profit you can see beats one you are hoping for",
+            result.filled_price,
+            profit,
+            r_at_action=r_now,
+        )
+
+    def _still_running(self, position: Position) -> float | None:
+        """How hard the market is going our way, or None when it cannot be read.
+
+        The same `drift_score` the health reader uses to decide the opposite
+        question. Two separately derived answers to "is this still moving"
+        would eventually disagree, and they would disagree while a position was
+        open with money on it.
+        """
+        frame = self._bars(
+            position.symbol, Timeframe.M1, self.settings.trade_management.health_fast_bars
+        )
+        if frame is None:
+            return None
+        try:
+            return drift_score(frame, int(position.direction))
+        except Exception:  # noqa: BLE001 - no read is not a crash, see _minutes_to_target
+            return None
 
     def _session_decay_exit(
         self, position: Position, now: datetime, r_now: float, risk: float, tick
