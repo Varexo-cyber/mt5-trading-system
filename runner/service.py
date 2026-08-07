@@ -458,6 +458,10 @@ class JarvisRunner:
                     "candidates_allowed": self.posture.max_candidates,
                 },
             )
+        # Once a cycle, not once a guard tick: the banking rule needs equity to
+        # the nearest euro and a broker round trip every second to watch a
+        # number that moves in cents is a poor trade.
+        self.manager.equity = account.equity
         self._record_management(
             self.manager.manage(positions, self.clock.now(), self.posture.patience_multiplier)
         )

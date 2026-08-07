@@ -1179,6 +1179,35 @@ class TradeManagementConfig(Base):
     #: At or above this R, a single warning tightens the stop instead.
     health_tighten_at_r: float = Field(default=0.2, ge=0.0)
 
+    #: Take a sum worth taking, unless the move is clearly still running.
+    #:
+    #: The operator's rule, in their words: on a EUR 100 account, 50 to 90 cents
+    #: is a fine amount to bank; on EUR 1000 it is five to twenty euro. That is
+    #: the same thing said twice — a share of the account — so it is expressed
+    #: as one, and it scales without anybody editing it after a deposit.
+    #:
+    #: The posture is deliberately inverted from every other rule in this file.
+    #: The rest hold by default and act on evidence of trouble. This one *banks*
+    #: by default and holds only on evidence the move is still running, because
+    #: "prima bedragen om te stationen" is the whole point: a profit you can see
+    #: beats a bigger one you are hoping for.
+    #:
+    #: BE HONEST ABOUT THE ARITHMETIC. At 2% risk per trade, 0.6% of equity is
+    #: 0.3R. Banking at 0.3R against a 1R stop needs a win rate near 77% to
+    #: break even, and the backtest measured 24-33% on these theories. This does
+    #: not fix a negative edge and it is not meant to; it stops handing back
+    #: what the account has already earned. Whether it helps is measurable with
+    #: `backtest.cmd --targets`, which sweeps exactly this question.
+    bank_enabled: bool = True
+    #: Share of account equity that counts as worth taking.
+    bank_at_equity_pct: float = Field(default=0.6, ge=0.0, le=10.0)
+    #: How hard the market must still be running our way to earn a hold, in
+    #: random-walk units — see `analysis.position_health.drift_score`. Above
+    #: this the trade keeps going; anything less and the money comes off. Not
+    #: zero: "not visibly falling apart" is the absence of bad news, and this
+    #: rule asks for the presence of good news.
+    bank_still_running_drift: float = Field(default=0.5, ge=0.0, le=3.0)
+
     #: Bank a profit whose target the session can no longer deliver.
     #:
     #: No threshold to set, deliberately. The rule asks two measured questions

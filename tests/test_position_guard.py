@@ -1191,3 +1191,130 @@ def test_the_closing_hour_estimate_cannot_take_the_guard_down() -> None:
     events = manager.manage([replace(position(), tp=ENTRY + 10.0)], TestTheClosingHour.CLOSING)
 
     assert not any(event.action == "SESSION_DECAY" for event in events)
+
+
+class TestBankingAProfitWorthTaking:
+    """Take a sum worth taking, unless the move is clearly still running.
+
+    Every other rule here holds by default and acts on evidence of trouble.
+    This one is the other way round on purpose. The operator put it plainly:
+    on a hundred-euro account, sixty or eighty cents is a fine amount to bank,
+    and a profit you can see beats a bigger one you are hoping for.
+
+    The live case: USDCHF long entered 0.81009, peaked 7.1 pips up — about 76
+    cents — never reached a target 14.5 pips away, and closed at +2.7 pips for
+    29 cents. It kept 38% of its best moment while a rule that simply took the
+    76 cents sat there unwritten.
+    """
+
+    EQUITY = 123.43
+
+    @staticmethod
+    def running(broker: BrokerStub, *, with_us: bool) -> None:
+        """Point the M1 series with the long or against it."""
+        broker.drift = 0.25 if with_us else -0.25
+
+    def manager(self, broker: BrokerStub, journal: JournalStub, **overrides):  # type: ignore[no-untyped-def]
+        made = manager_for(broker, journal, **overrides)
+        made.equity = self.EQUITY
+        return made
+
+    def test_a_worthwhile_profit_on_a_stalling_move_is_taken(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = self.manager(broker, journal)
+
+        at(broker, 0.5)
+        # 0.74 on 123.43 is 0.60% of the account — exactly the threshold.
+        events = manager.manage([replace(position(), profit=0.80)], NOW)
+
+        assert [event.action for event in events] == ["PROFIT_BANKED"]
+        assert broker.closed == [(555, None)]
+
+    def test_a_move_still_running_hard_keeps_going(self) -> None:
+        """The one thing that earns a hold. Not "nothing looks wrong" — that is
+        the absence of bad news, and this rule wants the presence of good."""
+        broker, journal = BrokerStub(), JournalStub()
+        self.running(broker, with_us=True)
+        manager = self.manager(broker, journal)
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=0.80)], NOW)
+
+        assert not any(event.action == "PROFIT_BANKED" for event in events)
+
+    def test_a_profit_too_small_to_bother_with_is_left_alone(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = self.manager(broker, journal)
+
+        at(broker, 0.3)
+        events = manager.manage([replace(position(), profit=0.20)], NOW)
+
+        assert not any(event.action == "PROFIT_BANKED" for event in events)
+
+    def test_the_threshold_scales_with_the_account(self) -> None:
+        """ "Eighty cents on a hundred euro" and "ten euro on a thousand" are one
+        rule said twice, so it is written once and nobody edits it after a
+        deposit."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = self.manager(broker, journal)
+        manager.equity = 1000.0
+
+        at(broker, 0.5)
+        small = manager.manage([replace(position(), profit=0.80)], NOW)
+        assert not any(event.action == "PROFIT_BANKED" for event in small)
+
+        events = manager.manage([replace(position(), profit=8.00)], NOW)
+        assert [event.action for event in events] == ["PROFIT_BANKED"]
+
+    def test_a_losing_position_is_never_banked(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = self.manager(broker, journal)
+
+        at(broker, -0.5)
+        events = manager.manage([replace(position(), profit=-1.50)], NOW)
+
+        assert not any(event.action == "PROFIT_BANKED" for event in events)
+
+    def test_without_an_equity_reading_the_rule_is_off(self) -> None:
+        """A share of an equity nobody set is a share of nothing, and the safe
+        reading of that is to do nothing rather than to bank everything."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)  # equity left at 0
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=5.00)], NOW)
+
+        assert not any(event.action == "PROFIT_BANKED" for event in events)
+
+    def test_it_can_be_switched_off(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = self.manager(broker, journal, bank_enabled=False)
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=5.00)], NOW)
+
+        assert not any(event.action == "PROFIT_BANKED" for event in events)
+
+    def test_it_outranks_the_stop_moving_rules(self) -> None:
+        """Banking real money beats adjusting a stop. Break-even would
+        otherwise fire first and the position would still be open."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = self.manager(broker, journal)
+
+        at(broker, 0.9)
+        events = manager.manage([replace(position(), profit=1.20)], NOW)
+
+        assert [event.action for event in events] == ["PROFIT_BANKED"]
+        assert broker.modified == [], "no stop moves on the way out"
+
+    def test_a_refused_close_is_not_recorded_as_banked(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        broker.close_position = lambda _p, volume=None: OrderResult(  # type: ignore[assignment]
+            ok=False, filled_price=None
+        )
+        manager = self.manager(broker, journal)
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=0.80)], NOW)
+
+        assert not any(event.action == "PROFIT_BANKED" for event in events)
