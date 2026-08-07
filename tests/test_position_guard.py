@@ -1318,3 +1318,80 @@ class TestBankingAProfitWorthTaking:
         events = manager.manage([replace(position(), profit=0.80)], NOW)
 
         assert not any(event.action == "PROFIT_BANKED" for event in events)
+
+
+class TestTheFridayGap:
+    """Seventy-five minutes on a Friday where the system refused to open a
+    position and left the ones it had.
+
+    `block_friday_after` stops entries at 19:00 UTC because of the weekend, and
+    `minutes_of_runway` correctly reported zero from then. But the flatten only
+    knew about the generic evening window at 20:15, so between the two the
+    system was saying "there is no time left to open anything" while a losing
+    position sat in exactly the thin Friday book the gate exists to avoid.
+    """
+
+    FRIDAY = datetime(2026, 8, 7, 19, 30, tzinfo=UTC)  # inside the old gap
+    THURSDAY = datetime(2026, 8, 6, 19, 30, tzinfo=UTC)  # the same clock time
+    FRIDAY_EARLY = datetime(2026, 8, 7, 18, 30, tzinfo=UTC)  # before the cut-off
+
+    def test_a_position_is_flattened_at_the_friday_cut_off(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+
+        at(broker, -0.3)
+        events = manager.manage([position()], self.FRIDAY)
+
+        assert [event.action for event in events] == ["EVENING_FLAT"]
+        assert "Friday cut-off" in events[0].detail
+
+    def test_the_same_hour_on_a_thursday_is_left_alone(self) -> None:
+        """The fix must reach the Friday deadline and nothing else."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+
+        at(broker, -0.3)
+        events = manager.manage([position()], self.THURSDAY)
+
+        assert not any(event.action == "EVENING_FLAT" for event in events)
+
+    def test_before_the_cut_off_friday_trades_normally(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+
+        at(broker, -0.3)
+        events = manager.manage([position()], self.FRIDAY_EARLY)
+
+        assert not any(event.action == "EVENING_FLAT" for event in events)
+
+    def test_a_winner_goes_flat_too(self) -> None:
+        """Same reasoning as the evening rule. "Let this one run over the
+        weekend" is how a gap turns a good trade into a bad one."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+
+        at(broker, 1.4)
+        events = manager.manage([position()], self.FRIDAY)
+
+        assert [event.action for event in events] == ["EVENING_FLAT"]
+
+    def test_a_continuous_market_is_still_exempt(self) -> None:
+        """Crypto has no FX rollover and no weekend."""
+        broker = BrokerStub(asset_class=AssetClass.CRYPTO)
+        manager = manager_for(broker, JournalStub())
+
+        at(broker, 0.3)
+        events = manager.manage([replace(position(), symbol="BTCUSD")], self.FRIDAY)
+
+        assert not any(event.action == "EVENING_FLAT" for event in events)
+
+    def test_the_flatten_and_the_runway_agree(self) -> None:
+        """The bug was two definitions of one deadline. Zero runway and "stay
+        in the market" must never both be true again."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+
+        for moment in (self.FRIDAY, self.FRIDAY_EARLY, self.THURSDAY):
+            runway = manager._runway_minutes(moment, "forex")
+            flat = manager._should_be_flat(moment, "forex")
+            assert not (runway == 0 and not flat), f"{moment}: no runway yet still holding"
