@@ -1192,15 +1192,25 @@ class TradeManagementConfig(Base):
     #: "prima bedragen om te stationen" is the whole point: a profit you can see
     #: beats a bigger one you are hoping for.
     #:
-    #: BE HONEST ABOUT THE ARITHMETIC. At 2% risk per trade, 0.6% of equity is
-    #: 0.3R. Banking at 0.3R against a 1R stop needs a win rate near 77% to
-    #: break even, and the backtest measured 24-33% on these theories. This does
+    #: BE HONEST ABOUT THE ARITHMETIC. `bank_at_r` holds this to 0.3R whatever
+    #: the lot rounded to. Banking at 0.3R against a 1R stop needs a win rate
+    #: near 77% to break even, and the backtest measured 24-33%. This does
     #: not fix a negative edge and it is not meant to; it stops handing back
     #: what the account has already earned. Whether it helps is measurable with
     #: `backtest.cmd --targets`, which sweeps exactly this question.
     bank_enabled: bool = True
     #: Share of account equity that counts as worth taking.
     bank_at_equity_pct: float = Field(default=0.6, ge=0.0, le=10.0)
+    #: The same sentence said in R, and the trade banks at whichever is lower.
+    #:
+    #: Needed because the equity share alone is not stable from trade to trade.
+    #: The sizer rounds the lot *down* to the broker's step, so the risk really
+    #: carried sits under the intended 2% and varies by instrument — 0.66% to
+    #: 1.95% of equity across the last twenty live trades. A fixed 0.6%-of-
+    #: equity threshold therefore lands anywhere between 0.31R and 0.91R, and at
+    #: the top of that range it is not a banking rule: it demands nearly the
+    #: whole trade. See `PositionManager._worth_taking`.
+    bank_at_r: float = Field(default=0.3, ge=0.0, le=3.0)
     #: How hard the market must still be running our way to earn a hold, in
     #: random-walk units — see `analysis.position_health.drift_score`. Above
     #: this the trade keeps going; anything less and the money comes off. Not
