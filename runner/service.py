@@ -1426,6 +1426,11 @@ class JarvisRunner:
                 {
                     "operation": self.operation.value,
                     "account_currency": self.broker.account().currency,
+                    # Without this the reviewer is told "you are 0.76 up" and
+                    # has no way to know whether that is most of a good day or
+                    # a rounding error. It is the difference between judging
+                    # money and judging a number.
+                    "account_equity": self.broker.account().equity,
                     "account_posture": self.posture.brief(),
                     "learned_so_far": self.memory.briefing(
                         position.symbol, position.direction.name
