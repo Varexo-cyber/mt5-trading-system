@@ -1168,3 +1168,26 @@ class TestTheClosingHour:
         events = manager.manage([self.far_target(broker)], self.CLOSING)
 
         assert not any(event.action == "SESSION_DECAY" for event in events)
+
+
+def test_the_closing_hour_estimate_cannot_take_the_guard_down() -> None:
+    """`atr` raises on a frame too short to measure, and this runs every second
+    on every open position. I shipped it without the guard and the replay suite
+    caught it: no estimate must mean "do not act", never an exception out of
+    the loop that is watching the money.
+    """
+    broker, journal = BrokerStub(), JournalStub()
+    full = broker.copy_rates
+
+    def thin(symbol, timeframe, count):  # type: ignore[no-untyped-def]
+        """Too few M5 bars to measure a pace with, everything else normal."""
+        rows = full(symbol, timeframe, count)
+        return rows[:3] if timeframe == Timeframe.M5.mt5_value else rows
+
+    broker.copy_rates = thin  # type: ignore[assignment]
+    manager = manager_for(broker, journal)
+
+    at(broker, 0.5)
+    events = manager.manage([replace(position(), tp=ENTRY + 10.0)], TestTheClosingHour.CLOSING)
+
+    assert not any(event.action == "SESSION_DECAY" for event in events)

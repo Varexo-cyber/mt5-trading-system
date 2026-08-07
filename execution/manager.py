@@ -573,7 +573,14 @@ class PositionManager:
         frame = self._bars(position.symbol, timeframe, 60)
         if frame is None:
             return None
-        speed = _atr_of(frame)
+        try:
+            speed = _atr_of(frame)
+        except Exception:  # noqa: BLE001 - too little history is no estimate, not a crash
+            # `atr` raises on a short frame, and this runs inside the guard loop
+            # every second on every open position. No estimate must mean "do not
+            # act", never "take the whole loop down" — the wind-down backstop is
+            # still there and still unconditional.
+            return None
         price = tick.bid if position.direction is Direction.LONG else tick.ask
         distance = abs(position.tp - price)
         if speed <= 0 or distance <= 0:
