@@ -137,6 +137,33 @@ class SessionFilter(Filter):
         current = moment.timetz().replace(tzinfo=None)
         return min(_minutes_until(current, deadline) for deadline in deadlines)
 
+    def should_be_flat(self, moment: datetime, asset_class: str) -> bool:
+        """Is this a moment we have already decided not to be in the market for?
+
+        The same deadline set `minutes_of_runway` counts down to, asked as a
+        yes or no. Both have to be one definition, and they were not.
+
+        The hole: `block_friday_after` refuses entries from 19:00 on a Friday
+        because of the weekend, and the runway correctly reports zero minutes
+        left from then. But the flatten only knew about the generic evening
+        window at 20:15, so for seventy-five minutes the system refused to open
+        anything — on the grounds that there was no time left to open it in —
+        while leaving whatever was already on to sit there. A losing position
+        in particular just waited, in exactly the thin Friday book the gate
+        exists to avoid.
+
+        Continuous markets are exempt here as everywhere: crypto has no FX
+        rollover and no weekend.
+        """
+        if asset_class in self.config.continuous_asset_classes:
+            return False
+        window = self.evening_flat_window(asset_class)
+        if window is not None and window.contains(moment):
+            return True
+        if self.friday_cutoff is None or moment.weekday() != 4:
+            return False
+        return moment.timetz().replace(tzinfo=None) >= self.friday_cutoff
+
     def active_sessions(self, moment: datetime) -> tuple[str, ...]:
         """Sessions currently open. Overlaps are real and reported as such."""
         return tuple(name for name, window in self.sessions.items() if window.contains(moment))

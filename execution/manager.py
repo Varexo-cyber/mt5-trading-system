@@ -494,16 +494,25 @@ class PositionManager:
         # the forex wind-down at 20:15 leaves it in the widest spread of the day
         # for a final quarter of an hour.
         window = self._session_windows(asset_class)
-        if window is None or not window.contains(now):
+        # `should_be_flat`, not `window.contains`. The window only knows about
+        # the evening; the Friday cut-off is a deadline too, and asking the
+        # window alone left positions open for the seventy-five minutes between
+        # the Friday gate closing and the evening window opening.
+        if window is None or not self._should_be_flat(now, asset_class):
             return None
         result = self.broker.close_position(position)
         if not result.ok:
             return None
+        friday = now.weekday() == 4 and not window.contains(now)
+        why = (
+            "Friday cut-off; nothing opens after this and nothing should still be on"
+            if friday
+            else f"evening wind-down ({window.describe()} UTC)"
+        )
         return ManagementEvent(
             position.ticket,
             "EVENING_FLAT",
-            f"evening wind-down ({window.describe()} UTC) at {r_now:.2f}R; "
-            "spreads widen from here",
+            f"{why} at {r_now:.2f}R; spreads widen from here",
             result.filled_price,
             position.profit + position.swap,
             r_at_action=r_now,
@@ -750,6 +759,19 @@ class PositionManager:
         if self._session_filter is None:
             return None
         return self._session_filter.evening_flat_window(asset_class)
+
+    def _should_be_flat(self, now: datetime, asset_class: str) -> bool:
+        """Whether we have already decided not to be in this market right now.
+
+        Shares the `SessionFilter` instance with the entry gate for the same
+        reason everything else here does: two independently derived answers to
+        "is this a moment to be out" would drift apart, and the gap between
+        them is where a position sits unattended.
+        """
+        self._session_windows(asset_class)  # builds the filter on first use
+        if self._session_filter is None:
+            return False
+        return self._session_filter.should_be_flat(now, asset_class)
 
     def _runway_minutes(self, now: datetime, asset_class: str) -> float | None:
         """Minutes before we force this instrument flat, or None if never.
