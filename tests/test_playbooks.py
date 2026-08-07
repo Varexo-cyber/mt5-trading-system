@@ -681,3 +681,47 @@ def test_a_range_that_was_never_left_produces_no_failed_break() -> None:
         )
         is None
     )
+
+
+class TestTheAtrRewrite:
+    """The numpy form must be the pandas form, not merely close to it.
+
+    Every threshold in every theory is denominated in ATR, so a rewrite that
+    drifted in the fourth decimal would retune all five at once and nothing in
+    the output would look wrong. Asserted against the formulation it replaced
+    rather than against remembered numbers.
+    """
+
+    @staticmethod
+    def pandas_atr(frame: pd.DataFrame, period: int = 14) -> float:
+        """The implementation this replaced, kept here as the oracle."""
+        previous = frame["close"].shift(1)
+        ranges = pd.concat(
+            [
+                frame["high"] - frame["low"],
+                (frame["high"] - previous).abs(),
+                (frame["low"] - previous).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        value = ranges.rolling(period).mean().iloc[-1]
+        return 0.0 if pd.isna(value) else float(value)
+
+    @pytest.mark.parametrize("seed", [1, 7, 42, 1000])
+    def test_it_matches_the_implementation_it_replaced(self, seed: int) -> None:
+        rng = np.random.default_rng(seed)
+        closes = (1.10 + rng.normal(0, 0.0004, 300).cumsum()).tolist()
+        frame = series(Timeframe.M15, closes).df
+
+        assert _atr(frame) == pytest.approx(self.pandas_atr(frame), rel=0, abs=1e-15)
+
+    def test_a_gap_still_counts_as_true_range(self) -> None:
+        """The whole reason true range is not just high minus low."""
+        gapped = series(Timeframe.M15, [1.1000] * 20 + [1.2000]).df
+
+        assert _atr(gapped) == pytest.approx(self.pandas_atr(gapped), rel=0, abs=1e-15)
+
+    def test_too_little_history_is_zero_rather_than_a_guess(self) -> None:
+        """Every caller treats a zero ATR as "no reading" and returns None. A
+        partial average from three bars would be a number they would act on."""
+        assert _atr(series(Timeframe.M15, [1.1000] * 5).df) == 0.0
