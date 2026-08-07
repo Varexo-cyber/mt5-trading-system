@@ -77,6 +77,22 @@ _PEAK_EPSILON_R = 0.02
 _STOP_IMPROVEMENT_R = 0.02
 
 
+def _risk_money(row) -> float:  # type: ignore[no-untyped-def]
+    """The money behind 1R on this trade, or 0.0 when the row cannot say.
+
+    `trades.risk_money` is NOT NULL and written at open, so in production this
+    always answers. It is read defensively anyway because it runs inside the
+    guard loop: a recovered or hand-repaired row missing the column must cost
+    the banking rule its money cap, not take down the loop that is watching
+    every open position. Zero reads downstream as "no cap", which is exactly
+    the behaviour this had before the cap existed.
+    """
+    try:
+        return float(row["risk_money"] or 0.0)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 0.0
+
+
 class PositionManager:
     def __init__(self, broker: Broker, journal: Journal, settings: Settings) -> None:
         self.broker = broker
@@ -245,7 +261,7 @@ class PositionManager:
             # profit rule, because it is the only one that acts while the money
             # is plainly on the table rather than after something has started to
             # go wrong.
-            banked = self._bank_worthwhile_profit(position, r_now, risk)
+            banked = self._bank_worthwhile_profit(position, r_now, risk, _risk_money(row))
             if banked is not None:
                 events.append(banked)
                 continue
@@ -519,7 +535,7 @@ class PositionManager:
         )
 
     def _bank_worthwhile_profit(
-        self, position: Position, r_now: float, risk: float
+        self, position: Position, r_now: float, risk: float, risk_money: float
     ) -> ManagementEvent | None:
         """Take a sum worth taking, unless the move is clearly still running.
 
@@ -543,7 +559,7 @@ class PositionManager:
         if not config.bank_enabled or self.equity <= 0 or risk <= 0:
             return None
         profit = position.profit + position.swap
-        worth_taking = self.equity * config.bank_at_equity_pct / 100.0
+        worth_taking = self._worth_taking(risk_money)
         if profit < worth_taking or profit <= 0:
             return None
 
@@ -564,6 +580,42 @@ class PositionManager:
             profit,
             r_at_action=r_now,
         )
+
+    def _worth_taking(self, risk_money: float) -> float:
+        """The sum this account considers worth banking, in account currency.
+
+        Two ways of saying the same sentence, and the trade gets the smaller.
+
+        The first is the operator's: on a hundred-euro account, sixty to ninety
+        cents is a fine amount to take. That is `bank_at_equity_pct`, and it is
+        the right shape because it rescales itself after a deposit.
+
+        The second exists because the first one quietly broke. Its docstring
+        claimed "at 2% risk per trade, 0.6% of equity is 0.3R" — true only if
+        the account actually risks 2%. It does not. The sizer rounds the lot
+        *down* to the broker's 0.01 step (`round_volume_down`, and rounding up
+        is forbidden), so what is really at risk is whatever fits under the
+        intention. Across the last twenty live trades the risk taken ran from
+        EUR 1.00 to EUR 2.94 on a EUR 151 account: 0.66% to 1.95% against a
+        2.0% intent.
+
+        Divide 0.6% of equity by that and the threshold lands between 0.31R and
+        0.91R depending on nothing but how the lot happened to round. On the
+        AUDCAD long, 1R was EUR 1.00 and the rule wanted EUR 0.91 — it was not
+        a banking rule on that trade, it was "hold to nearly the full target".
+        It fired zero times in those twenty trades while ten of them kept under
+        half of their best moment.
+
+        So the threshold is also expressed against the risk the trade actually
+        carries, which is the denominator of every other R in this system, and
+        the lower of the two wins. `bank_at_r` is not a new invented number: it
+        is the 0.3R the code already claimed to be doing.
+        """
+        config = self.settings.trade_management
+        worth_taking = self.equity * config.bank_at_equity_pct / 100.0
+        if risk_money > 0:
+            worth_taking = min(worth_taking, risk_money * config.bank_at_r)
+        return worth_taking
 
     def _still_running(self, position: Position) -> float | None:
         """How hard the market is going our way, or None when it cannot be read.

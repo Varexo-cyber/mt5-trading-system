@@ -131,9 +131,21 @@ class JournalStub:
     peak_r: float = 0.0
     trough_r: float = 0.0
     partial_taken: bool = False
+    #: What 1R is worth in account currency. NOT NULL in the real table, and
+    #: the denominator of every R the account reports. Generous enough here
+    #: that the banking rule's money cap does not bind by accident — the tests
+    #: that care about the cap set it themselves.
+    risk_money: float = 10.0
 
     def open_trade_by_ticket(self, ticket: int):  # type: ignore[no-untyped-def]
-        return {"id": 1, "ticket": ticket, "sl": STOP, "volume": 0.02, "mfe_r": self.peak_r}
+        return {
+            "id": 1,
+            "ticket": ticket,
+            "sl": STOP,
+            "volume": 0.02,
+            "mfe_r": self.peak_r,
+            "risk_money": self.risk_money,
+        }
 
     def management_action_exists(self, _ticket, _actions) -> bool:  # type: ignore[no-untyped-def]
         return self.partial_taken
@@ -1264,6 +1276,63 @@ class TestBankingAProfitWorthTaking:
         assert not any(event.action == "PROFIT_BANKED" for event in small)
 
         events = manager.manage([replace(position(), profit=8.00)], NOW)
+        assert [event.action for event in events] == ["PROFIT_BANKED"]
+
+    def test_a_lot_rounded_down_does_not_disarm_the_rule(self) -> None:
+        """The live AUDCAD long, and the reason this rule had never once fired.
+
+        The sizer rounds the lot *down* to the broker's 0.01 step, so the risk
+        actually carried is whatever fits under the intended 2%. On that trade
+        it was EUR 1.00 on a EUR 151 account — 0.66%, not 2%. Six tenths of a
+        percent of equity is then EUR 0.91, which is 0.91R: the rule was not
+        banking anything, it was waiting for nearly the whole target. The trade
+        peaked in profit and closed at -1.61R, and PROFIT_BANKED appears
+        nowhere in the last twenty trades.
+
+        Capping the threshold against the risk the trade actually carries
+        restores the 0.3R the configuration always claimed to be doing.
+        """
+        broker, journal = BrokerStub(), JournalStub(risk_money=1.00)
+        manager = self.manager(broker, journal)
+        manager.equity = 151.0
+
+        assert manager.equity * 0.6 / 100.0 > 0.50, "the equity share alone would refuse this"
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=0.50)], NOW)
+
+        assert [event.action for event in events] == ["PROFIT_BANKED"]
+
+    def test_the_r_cap_never_banks_more_eagerly_than_the_account_allows(self) -> None:
+        """Both readings have to agree, and the lower one wins. On a well-sized
+        position 0.3R is the larger of the two and the account's own sense of a
+        sum worth having is what binds — otherwise a deposit-scaled rule would
+        quietly start taking three cents off a big trade on a small account."""
+        broker, journal = BrokerStub(), JournalStub(risk_money=100.0)
+        manager = self.manager(broker, journal)
+        manager.equity = 50.0  # 0.6% is EUR 0.30; 0.3R would be EUR 30.00
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=0.40)], NOW)
+
+        assert [event.action for event in events] == ["PROFIT_BANKED"]
+
+    def test_a_row_without_a_recorded_risk_leaves_the_cap_off(self) -> None:
+        """A recovered row missing the column must cost the rule its cap, not
+        take down the loop watching every open position."""
+        broker, journal = BrokerStub(), JournalStub()
+        journal.open_trade_by_ticket = lambda ticket: {  # type: ignore[assignment]
+            "id": 1,
+            "ticket": ticket,
+            "sl": STOP,
+            "volume": 0.02,
+            "mfe_r": 0.0,
+        }
+        manager = self.manager(broker, journal)
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=0.80)], NOW)
+
         assert [event.action for event in events] == ["PROFIT_BANKED"]
 
     def test_a_losing_position_is_never_banked(self) -> None:
