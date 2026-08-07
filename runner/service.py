@@ -1696,6 +1696,23 @@ class JarvisRunner:
             )
         if not chosen:
             return None
+        # A floor above what any theory can express switches them all off while
+        # reading like a tightening. "Only take nine-out-of-ten setups" is an
+        # instruction nothing in this file can satisfy, because the highest
+        # score any of them returns is 95 and most cap in the eighties.
+        ceiling = max(playbook.max_conviction for playbook in chosen)
+        if config.min_conviction > ceiling:
+            log.warning(
+                "conviction floor %.0f is above every playbook's ceiling (%.0f); "
+                "no short-horizon theory can ever qualify",
+                config.min_conviction,
+                ceiling,
+                extra={
+                    "event": "conviction_floor_unreachable",
+                    "min_conviction": config.min_conviction,
+                    "highest_ceiling": ceiling,
+                },
+            )
         log.info(
             "short-horizon playbooks active: %s",
             ", ".join(playbook.name for playbook in chosen),

@@ -99,6 +99,13 @@ class Playbook(Protocol):
 
     name: str
     horizon_minutes: int
+    #: The highest conviction this theory can ever return.
+    #:
+    #: Declared rather than inferred so a conviction floor set above it fails
+    #: loudly at startup instead of silently switching the theory off. "Only
+    #: take nine-out-of-ten setups" sounds like strictness and is an off switch
+    #: when nothing in the file can score nine.
+    max_conviction: float
 
     def propose(self, ctx: MarketContext, mode: TradingMode) -> Play | None: ...
 
@@ -190,6 +197,7 @@ class MomentumScalp:
     """
 
     name = "momentum_scalp"
+    max_conviction = 95.0
     horizon_minutes = 60
 
     def __init__(self, config: ScalpConfig) -> None:
@@ -330,6 +338,7 @@ class RangeFade:
     """
 
     name = "range_fade"
+    max_conviction = 90.0
     horizon_minutes = 180
 
     def __init__(self, config: FadeConfig) -> None:
@@ -460,6 +469,7 @@ class RangeBreak:
     """
 
     name = "range_break"
+    max_conviction = 88.0
     horizon_minutes = 120
 
     def __init__(self, config: BreakConfig) -> None:
@@ -602,6 +612,7 @@ class TrendPullback:
     """
 
     name = "trend_pullback"
+    max_conviction = 86.0
     horizon_minutes = 240
 
     def __init__(self, config: PullbackConfig) -> None:
@@ -729,6 +740,7 @@ class FailedBreak:
     """
 
     name = "failed_break"
+    max_conviction = 84.0
     horizon_minutes = 150
 
     def __init__(self, config: FailedBreakConfig) -> None:
