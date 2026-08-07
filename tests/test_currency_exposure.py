@@ -190,3 +190,49 @@ def test_standing_exposure_is_netted_across_the_book() -> None:
     assert totals["GBP"] == -2
     assert totals["AUD"] == 1
     assert totals["JPY"] == 1
+
+
+class TestAnIndexIsNotACurrencyBet:
+    """An instrument quoted in its own base currency has no currency leg.
+
+    `legs` wrote the base and then the quote into the same dict, so when they
+    were the same code the second overwrote the first and a *long* FRA40 came
+    out as a *short* on EUR. Wrong twice over: it hid the concentration when
+    two European index longs were held together, and it invented one against
+    any unrelated EURUSD short.
+
+    Seen live on 7 August — FRA40 long, UK100 long and FRA40 long again inside
+    twenty minutes, with this filter recording nothing worth objecting to.
+    """
+
+    FRA40 = replace(spec_for("FRA40", "EUR", "EUR"), asset_class=AssetClass.INDEX, is_forex=False)
+
+    def test_a_long_index_is_not_a_short_on_its_own_currency(self) -> None:
+        assert legs(self.FRA40, Direction.LONG) == {}
+
+    def test_nor_is_a_short_one_a_long(self) -> None:
+        assert legs(self.FRA40, Direction.SHORT) == {}
+
+    def test_it_leaves_an_unrelated_fx_trade_alone(self) -> None:
+        """The false positive. A EUR-denominated index long recorded as a EUR
+        short would have refused a genuine EURUSD short standing next to it."""
+        assert "EUR" not in legs(self.FRA40, Direction.LONG)
+
+    def test_a_real_cross_still_decomposes(self) -> None:
+        """The fix must not reach past the case it is for."""
+        assert legs(spec_for("GBPAUD", "GBP", "AUD"), Direction.SHORT) == {"GBP": -1, "AUD": 1}
+
+    def test_two_european_index_longs_are_still_invisible_here(self) -> None:
+        """Stated so nobody reads the fix as more than it is.
+
+        FRA40 and UK100 held long together is one bet on European equities
+        sized twice, and this filter now correctly says nothing about it —
+        because it is not a currency concentration. The only thing standing
+        between the account and that trade is the correlation filter next
+        door, and that is a measurement with a threshold rather than an
+        identity. A sector limit is the missing piece, not this.
+        """
+        uk100 = replace(
+            spec_for("UK100", "GBP", "GBP"), asset_class=AssetClass.INDEX, is_forex=False
+        )
+        assert legs(self.FRA40, Direction.LONG) == legs(uk100, Direction.LONG) == {}
