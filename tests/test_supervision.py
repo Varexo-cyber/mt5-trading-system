@@ -17,6 +17,57 @@ LONG = 1
 SHORT = -1
 
 
+def _position():  # type: ignore[no-untyped-def]
+    """A EURUSD long 6 pips up on a 10-pip stop, 20 pips from its target."""
+    from datetime import UTC, datetime
+
+    from core.types import Direction, Position
+
+    return Position(
+        ticket=1,
+        symbol="EURUSD",
+        direction=Direction.LONG,
+        volume=0.01,
+        price_open=1.10000,
+        sl=1.09900,
+        tp=1.10200,
+        profit=0.60,
+        swap=0.0,
+        opened_at=datetime(2026, 8, 7, 10, 0, tzinfo=UTC),
+    )
+
+
+def _context():  # type: ignore[no-untyped-def]
+    from datetime import UTC, datetime, timedelta
+
+    import numpy as np
+    import pandas as pd
+
+    from core.types import MarketContext, Series, Tick, Timeframe
+
+    now = datetime(2026, 8, 7, 11, 0, tzinfo=UTC)
+    bars = 60
+    closes = 1.10000 + np.linspace(0, 0.0006, bars)
+    index = pd.date_range(end=now, periods=bars, freq=Timeframe.H1.duration, tz=UTC)
+    frame = pd.DataFrame(
+        {
+            "open": closes,
+            "high": closes + 0.0002,
+            "low": closes - 0.0002,
+            "close": closes,
+            "tick_volume": np.full(bars, 500),
+        },
+        index=index,
+    )
+    del timedelta
+    return MarketContext(
+        symbol="EURUSD",
+        now=now,
+        series={Timeframe.H1: Series("EURUSD", Timeframe.H1, frame, now)},
+        tick=Tick("EURUSD", now, bid=1.10060, ask=1.10072),
+    )
+
+
 # --------------------------------------------------------------- the guard ---
 
 
@@ -217,3 +268,61 @@ def test_the_action_ladder_is_ordered_by_protection() -> None:
     order = list(SUPERVISION_ACTIONS)
     assert order.index("hold") < order.index("tighten_stop") < order.index("close")
     assert order.index("tighten_stop") < order.index("partial_close")
+
+
+class TestTheReviewerIsToldWhatTheMoneyMeans:
+    """It was given `unrealised_money: 0.76` and the account currency, and
+    nothing else. No account size, so no way to know whether that is most of a
+    good day or a rounding error — on a hundred euro it is the first, on ten
+    thousand the second, and the payload could not tell them apart.
+
+    The operator's framing, which is the correct instinct: on a hundred euro,
+    fifty to ninety cents is worth banking; on a thousand, five to twenty.
+    """
+
+    @staticmethod
+    def payload(**extra):  # type: ignore[no-untyped-def]
+        from advisory.providers import build_supervision_payload
+
+        return build_supervision_payload(_position(), _context(), extra)
+
+    def test_the_account_size_reaches_the_reviewer(self) -> None:
+        state = self.payload(account_equity=123.43)
+
+        assert state["account_equity"] == pytest.approx(123.43)
+
+    def test_the_profit_is_expressed_as_a_share_of_the_account(self) -> None:
+        """The number the judgement actually turns on."""
+        state = self.payload(account_equity=100.0)
+
+        money = state["unrealised_money"]
+        assert state["unrealised_pct_of_account"] == pytest.approx(money, abs=0.02)
+
+    def test_without_an_equity_the_shares_are_absent_rather_than_wrong(self) -> None:
+        """A percentage of an unknown account would be a made-up number, and a
+        made-up number in a prompt is worse than a missing one."""
+        state = self.payload()
+
+        assert state["account_equity"] is None
+        assert state["unrealised_pct_of_account"] is None
+
+    def test_what_is_still_to_win_is_stated_in_money(self) -> None:
+        """ "Keep waiting or take it" is a comparison, and it cannot be made
+        against a target expressed only as a price."""
+        state = self.payload(account_equity=100.0)
+
+        assert state["money_still_to_win_if_target_hit"] is not None
+        assert state["money_if_the_current_stop_is_hit"] is not None
+
+    def test_the_instructions_carry_the_operators_own_framing(self) -> None:
+        from advisory.providers import _SUPERVISION_INSTRUCTIONS
+
+        assert "JUDGE THE MONEY AGAINST THE ACCOUNT" in _SUPERVISION_INSTRUCTIONS
+        assert "fifty to ninety cents" in _SUPERVISION_INSTRUCTIONS
+
+    def test_the_reviewer_is_asked_to_look_forward_not_only_back(self) -> None:
+        """Every mechanical rule fires on damage already done. This is the only
+        part that can say where price is going, and it was never asked to."""
+        from advisory.providers import _SUPERVISION_INSTRUCTIONS
+
+        assert "ANTICIPATE, DO NOT ONLY REACT" in _SUPERVISION_INSTRUCTIONS

@@ -828,6 +828,31 @@ def build_supervision_payload(
     signal = context.series.get(Timeframe.H1)
     atr = _atr(signal.df) if signal is not None else 0.0
 
+    # What the position is worth in money, at the three prices that matter.
+    #
+    # The payload used to carry `unrealised_money` and the account currency and
+    # nothing else, so the reviewer was told "you are 0.76 up" with no way to
+    # know whether that is a real result or a rounding error. On a hundred-euro
+    # account it is most of a good day; on ten thousand it is noise. Judging it
+    # needs the size of the account, and judging whether to keep waiting needs
+    # to know what is still on the table against what is already in hand.
+    money = position.profit + position.swap
+    equity = float((extra or {}).get("account_equity") or 0.0)
+    per_unit = None
+    moved = (price - position.price_open) * sign
+    if price and abs(moved) > 1e-12:
+        per_unit = money / moved
+    to_target = (
+        round(abs(position.tp - price) * per_unit, 2)
+        if per_unit and position.tp and price
+        else None
+    )
+    at_stop = (
+        round((position.sl - position.price_open) * sign * per_unit, 2)
+        if per_unit and position.sl
+        else None
+    )
+
     return {
         "symbol": position.symbol,
         "direction": position.direction.name,
@@ -837,7 +862,12 @@ def build_supervision_payload(
         "current_stop": position.sl,
         "current_target": position.tp,
         "price_now": price,
-        "unrealised_money": round(position.profit + position.swap, 2),
+        "unrealised_money": round(money, 2),
+        #: The three numbers the "should I take it" question actually turns on.
+        "account_equity": round(equity, 2) if equity else None,
+        "unrealised_pct_of_account": (round(money / equity * 100, 2) if equity else None),
+        "money_still_to_win_if_target_hit": to_target,
+        "money_if_the_current_stop_is_hit": at_stop,
         "unrealised_r": round(r_now, 2) if r_now is not None else None,
         "initial_risk_distance": round(risk, 6),
         "distance_to_stop_in_atr": (
@@ -1254,6 +1284,35 @@ from the weekly down to the one-minute with each frame's ATR. Each frame is a ta
 names the fields, `rows` holds one array per bar in that order, oldest first, contiguous at
 `bar_interval` between `oldest_bar_opened` and `last_closed_bar`. The bars are what changed since
 the trade was opened. Read them.
+
+JUDGE THE MONEY AGAINST THE ACCOUNT, NOT AGAINST ZERO. This is the part that used to be missing
+and it changed real outcomes. You are given `account_equity`, `unrealised_pct_of_account`,
+`money_still_to_win_if_target_hit` and `money_if_the_current_stop_is_hit`. Use all four together.
+
+The owner of this account put it in their own words, and it is the correct instinct: on a hundred
+euro, fifty to ninety cents is an attractive amount to bank. On a thousand, five to twenty euro
+is. Those are the same statement — roughly half a percent to one percent of the account — and it
+is a real result, not small change, because it is what compounding is made of.
+
+So the question on a profitable position is never "is 0.76 a lot of money". It is:
+
+    what is already in hand      (unrealised_pct_of_account)
+    against what is still to win (money_still_to_win_if_target_hit)
+    against how likely that is   (the bars in front of you)
+
+When what is in hand is around half a percent of the account or more, and the remaining reach is
+not clearly coming, take it. Safe beats greedy. A live USDCHF long is the case this is written
+against: it peaked seventy-six cents up on a hundred-and-twenty-euro account with a target
+fourteen pips away that price never went near, and it closed at twenty-nine cents. Nothing was
+wrong with the trade. It was asked to reach for something the market was not offering.
+
+ANTICIPATE, DO NOT ONLY REACT. Every other rule in this system fires on damage that has already
+happened — the peak stopped rising, the gain drained away, the structure broke. You are the only
+part that can look at the chart and say where this is *going*. Do that explicitly. Is the next
+level above going to be sold into? Is the session about to thin out? Is price grinding into a
+range it has been rejected from three times? If the honest read is "this probably stalls here",
+that is a reason to bank now, at a good price, rather than to wait for the give-back rule to
+confirm it at a worse one.
 
 HOW TO THINK ABOUT IT — this is the part that matters. A good trade manager is not a stop-loss
 calculator, and is not looking for reasons to fiddle. Ask:
