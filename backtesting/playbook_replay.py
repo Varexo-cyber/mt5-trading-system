@@ -156,11 +156,16 @@ class PlaybookReplay:
         series: dict[Timeframe, Series] = {}
         for timeframe in REPLAY_TIMEFRAMES:
             frame = frames[timeframe]
-            available = frame[frame.index + timeframe.duration <= decided_at].tail(
-                self.history_bars
-            )
-            if len(available) < 120:
+            # "Every bar whose close time has passed" — the same rule as a
+            # boolean mask over `index + duration <= decided_at`, found by
+            # binary search instead of by comparing every row. Identical
+            # output, and the mask was a fifth of the total runtime because it
+            # walked twenty six thousand rows on every one of eighteen
+            # thousand decisions.
+            end = frame.index.searchsorted(pd.Timestamp(decided_at) - timeframe.duration, "right")
+            if end < 120:
                 return None
+            available = frame.iloc[max(0, end - self.history_bars) : end]
             series[timeframe] = Series(symbol, timeframe, available, decided_at)
 
         executable = series[DECISION_TIMEFRAME].df.iloc[-1]
