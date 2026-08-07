@@ -53,9 +53,22 @@ def legs(spec: InstrumentSpec, direction: Direction) -> dict[str, int]:
     the leg that is one. The pseudo-currency is left out rather than tracked,
     because two gold positions are not a currency concentration and pretending
     otherwise would block a legitimate second trade.
+
+    An instrument quoted in its own base currency has no currency leg at all.
+    A long FRA40 is a bet on French equities, not on the euro; the buy and the
+    settlement are in the same money and cancel exactly.
+
+    That case used to fall through the two writes below, and because both used
+    the same dict key the second overwrote the first: a long FRA40 was recorded
+    as a *short* on EUR. Wrong in both directions at once — it hid the real
+    concentration when FRA40 and UK100 were held long together, and it invented
+    one against any unrelated EURUSD short. Seen live on 7 August, three
+    European index longs inside twenty minutes with nothing objecting.
     """
     sign = int(direction)
     base, quote = spec.currency_base.upper(), spec.currency_profit.upper()
+    if base == quote:
+        return {}
     exposure: dict[str, int] = {}
     if _is_currency(base):
         exposure[base] = sign
