@@ -23,11 +23,15 @@ from backtesting.playbook_replay import (
     Comparison,
     PlaybookEvidence,
     PlaybookReplay,
+    TargetRow,
     coin_flip,
     compare_to_chance,
     evidence_by_playbook,
     render,
     render_comparison,
+    render_targets,
+    retarget,
+    sweep_targets,
 )
 from config.loader import load_settings
 from core.types import Direction, Timeframe
@@ -408,3 +412,79 @@ def test_a_coin_on_a_random_walk_lands_where_theory_says_it_should() -> None:
     assert 0.25 < result.win_rate < 0.45, f"a coin won {result.win_rate:.0%}, theory says ~33%"
     # Slightly negative: the same slippage and commission every trade pays.
     assert -0.2 < result.expectancy_r < 0.05
+
+
+class TestReachingForLess:
+    """The operator's chart, stated as arithmetic.
+
+    A USDCHF long entered at 0.81009 with its target 14.5 pips away peaked 7.1
+    pips up, never got there, and closed at +2.7. It kept 38% of its best
+    moment because the target was somewhere the market was not going. Their
+    reading — take the seven pips — is the right instinct, and the question is
+    whether it is enough.
+    """
+
+    def test_only_the_target_moves(self, frames) -> None:  # type: ignore[no-untyped-def]
+        decided = frames[DECISION_TIMEFRAME].index[3000].to_pydatetime()
+        original = [order("range_fade", decided), order("range_fade", decided, up=False)]
+
+        moved = retarget(original, 1.0)
+
+        for before, after in zip(original, moved, strict=True):
+            assert after.stop_loss == before.stop_loss
+            assert after.entry == before.entry
+            assert after.direction == before.direction
+            assert after.decided_at == before.decided_at
+
+    def test_the_target_lands_at_the_requested_multiple(self, frames) -> None:  # type: ignore[no-untyped-def]
+        decided = frames[DECISION_TIMEFRAME].index[3000].to_pydatetime()
+        for up in (True, False):
+            original = order("range_fade", decided, up=up)
+            moved = retarget([original], 0.75)[0]
+            risk = abs(moved.entry - moved.stop_loss)
+            reward = abs(moved.take_profit - moved.entry)
+            assert reward / risk == pytest.approx(0.75)
+            # And on the correct side, or a "closer target" is a stop.
+            assert (moved.take_profit - moved.entry) * int(moved.direction) > 0
+
+    def test_the_coin_is_swept_too(self, frames) -> None:  # type: ignore[no-untyped-def]
+        """The entire point. A closer target raises anybody's win rate, so a
+        theory that improves has shown nothing unless it improves more than the
+        coin does. Without this column the table is a machine for talking
+        yourself into a shorter target."""
+        decided = frames[DECISION_TIMEFRAME].index[3000].to_pydatetime()
+        orders = [order("range_fade", decided)]
+
+        rows = sweep_targets(orders, frames[DECISION_TIMEFRAME], multiples=(0.5, 2.0), seeds=2)
+
+        assert len(rows) == 2
+        assert all(row.coin_expectancy_r == row.coin_expectancy_r for row in rows)  # not NaN
+        assert all(row.edge_r == row.expectancy_r - row.coin_expectancy_r for row in rows)
+
+    def test_a_sweep_where_nothing_works_says_so_plainly(self) -> None:
+        rows = [TargetRow("range_fade", m, 400, 0.4, -0.20, -0.15) for m in (0.5, 1.0, 2.0)]
+
+        printed = render_targets(rows)
+
+        assert "No target distance makes any theory both profitable" in printed
+        assert "right instinct" in printed
+
+    def test_a_winner_is_reported_with_the_warning_it_needs(self) -> None:
+        rows = [
+            TargetRow("trend_pullback", 0.75, 400, 0.62, 0.080, -0.20),
+            TargetRow("trend_pullback", 2.00, 300, 0.28, -0.150, -0.30),
+        ]
+
+        printed = render_targets(rows)
+
+        assert "trend_pullback at 0.75R" in printed
+        assert "Read the shape and not the maximum" in printed
+
+    def test_a_profitable_row_that_loses_to_the_coin_is_not_celebrated(self) -> None:
+        """Beating zero is not the test. If the coin does better at the same
+        target then the closer target is doing the work, not the analysis."""
+        rows = [TargetRow("range_fade", 0.5, 500, 0.70, 0.020, 0.090)]
+
+        printed = render_targets(rows)
+
+        assert "No target distance makes any theory both profitable" in printed

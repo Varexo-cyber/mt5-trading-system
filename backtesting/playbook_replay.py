@@ -312,6 +312,143 @@ def compare_to_chance(
     return comparisons
 
 
+@dataclass(frozen=True, slots=True)
+class TargetRow:
+    """One theory at one target distance, beside the coin at the same distance."""
+
+    playbook: str
+    r_multiple: float
+    trades: int
+    win_rate: float
+    expectancy_r: float
+    coin_expectancy_r: float
+
+    @property
+    def edge_r(self) -> float:
+        return self.expectancy_r - self.coin_expectancy_r
+
+
+def retarget(orders: list[BacktestOrder], r_multiple: float) -> list[BacktestOrder]:
+    """The same trades with the target moved to a fixed multiple of the stop.
+
+    The stop is untouched. Only the question "how far are we reaching" changes,
+    which is the operator's complaint stated as arithmetic: a USDCHF long
+    entered at 0.81009 with its target 14.5 pips away peaked 7.1 pips up, never
+    reached it, and closed at +2.7. It kept 38% of its best moment because the
+    target was somewhere the market was not going.
+    """
+    moved: list[BacktestOrder] = []
+    for order in orders:
+        risk = abs(order.entry - order.stop_loss)
+        sign = int(order.direction)
+        moved.append(replace(order, take_profit=order.entry + risk * r_multiple * sign))
+    return moved
+
+
+def sweep_targets(
+    orders: list[BacktestOrder],
+    frame: pd.DataFrame,
+    *,
+    multiples: tuple[float, ...] = (0.5, 0.75, 1.0, 1.5, 2.0, 3.0),
+    seeds: int = 3,
+    backtester: PessimisticBacktester | None = None,
+) -> list[TargetRow]:
+    """Every theory at every target distance, each beside its own coin.
+
+    The coin is swept too, and that is the entire point. A closer target raises
+    any win rate — a coin reaching for 0.5R wins far more often than one
+    reaching for 3R — so a theory that improves at a closer target has shown
+    nothing unless it improves *more than the coin does*. Without that column
+    this table would be a machine for talking yourself into a shorter target.
+
+    This is a parameter search and parameter searches fit noise. Read the
+    shape, not the maximum: a broad stretch of target distances where the edge
+    is positive is worth something, and a single spike surrounded by negatives
+    is the curve fitting itself to ninety days.
+    """
+    engine = backtester or PessimisticBacktester()
+    grouped: dict[str, list[BacktestOrder]] = {}
+    for order in orders:
+        grouped.setdefault(order.modules[0] if order.modules else "unknown", []).append(order)
+
+    rows: list[TargetRow] = []
+    for name, group in sorted(grouped.items()):
+        for multiple in multiples:
+            moved = retarget(group, multiple)
+            real = engine.run_non_overlapping(frame, moved)
+            coins = [
+                engine.run_non_overlapping(frame, coin_flip(moved, seed)).expectancy_r
+                for seed in range(seeds)
+            ]
+            rows.append(
+                TargetRow(
+                    playbook=name,
+                    r_multiple=multiple,
+                    trades=real.sample_size,
+                    win_rate=real.win_rate,
+                    expectancy_r=real.expectancy_r,
+                    coin_expectancy_r=float(np.mean(coins)),
+                )
+            )
+    return rows
+
+
+def render_targets(rows: list[TargetRow], *, window: str = "") -> str:
+    """Does reaching for less turn any of this positive?"""
+    lines = [
+        "",
+        "=" * 78,
+        f"  THE SAME TRADES, REACHING FOR LESS{('  ' + window) if window else ''}",
+        "=" * 78,
+        "",
+        "  Stop unchanged, target moved. The coin is moved with it, because a",
+        "  closer target raises anybody's win rate — only beating the coin by more",
+        "  than before means the analysis got better rather than the arithmetic.",
+        "",
+    ]
+    if not rows:
+        lines.extend(["  Nothing to sweep.", ""])
+        return "\n".join(lines)
+
+    for name in sorted({row.playbook for row in rows}):
+        mine = [row for row in rows if row.playbook == name]
+        lines.append(f"  {name}")
+        lines.append(
+            f"  {'target':>10}{'trades':>9}{'won':>7}{'per trade':>12}{'coin':>11}{'edge':>10}"
+        )
+        lines.append("  " + "-" * 60)
+        for row in sorted(mine, key=lambda r: r.r_multiple):
+            lines.append(
+                f"  {row.r_multiple:>9.2f}R{row.trades:>9}{row.win_rate:>7.0%}"
+                f"{row.expectancy_r:>+11.3f}R{row.coin_expectancy_r:>+10.3f}R"
+                f"{row.edge_r:>+9.3f}R"
+            )
+        lines.append("")
+
+    positive = [row for row in rows if row.expectancy_r > 0 and row.edge_r > 0]
+    lines.append("-" * 78)
+    if not positive:
+        lines.append("  No target distance makes any theory both profitable and better than")
+        lines.append("  a coin. Taking profit sooner is the right instinct and it is not")
+        lines.append("  enough on its own: it raises the win rate and shrinks the wins by")
+        lines.append("  the same arithmetic that raises the coin's.")
+    else:
+        best = sorted(positive, key=lambda r: -r.edge_r)
+        lines.append("  Positive and beating the coin:")
+        for row in best[:6]:
+            lines.append(
+                f"    {row.playbook} at {row.r_multiple:.2f}R — "
+                f"{row.expectancy_r:+.3f}R a trade over {row.trades} trades, "
+                f"edge {row.edge_r:+.3f}R"
+            )
+        lines.append("")
+        lines.append("  Read the shape and not the maximum. A run of neighbouring targets")
+        lines.append("  that are all positive is worth something; one spike between")
+        lines.append("  negatives is this curve fitting itself to ninety days.")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_comparison(comparisons: list[Comparison], *, window: str = "") -> str:
     """The only table that answers whether the analysis is worth anything."""
     lines = [
