@@ -209,3 +209,24 @@ def test_the_backtester_is_the_shared_pessimistic_one(frames) -> None:  # type: 
     )
 
     assert len(evidence) == 1
+
+
+def test_the_binary_search_slice_matches_the_mask_it_replaced(engine, frames) -> None:  # type: ignore[no-untyped-def]
+    """The optimisation must be a pure speedup, not a change of meaning.
+
+    The original walked every row testing `index + duration <= decided_at`.
+    This asserts the binary search selects exactly the same bars, because an
+    off-by-one here would hand a theory one bar of the future and nothing
+    about the output would look wrong.
+    """
+    replay = PlaybookReplay(engine)
+    decided_at = DECIDE_FROM
+
+    context = replay._context("EURUSD", frames, decided_at, 0.00001)
+
+    assert context is not None
+    for timeframe in REPLAY_TIMEFRAMES:
+        expected = frames[timeframe][
+            frames[timeframe].index + timeframe.duration <= decided_at
+        ].tail(300)
+        assert context.series[timeframe].df.equals(expected)
