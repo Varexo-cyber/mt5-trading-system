@@ -28,14 +28,15 @@ any rule anybody could add.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 
 from analysis.playbooks import PlaybookEngine
 from backtesting.engine import BacktestOrder, PessimisticBacktester
-from core.types import MarketContext, Series, Tick, Timeframe, TradingMode
+from core.types import Direction, MarketContext, Series, Tick, Timeframe, TradingMode
 
 #: What a playbook may read. M1 is absent deliberately — none of the five uses
 #: it, and carrying it would double the slicing cost of every decision for a
@@ -213,6 +214,148 @@ def evidence_by_playbook(
             )
         )
     return evidence
+
+
+@dataclass(frozen=True, slots=True)
+class Comparison:
+    """One theory against a coin flip that took the same trades."""
+
+    real: PlaybookEvidence
+    flip_win_rate: float
+    flip_expectancy_r: float
+    #: Best and worst expectancy across the seeds, so a single lucky shuffle
+    #: cannot be mistaken for the baseline.
+    flip_best_r: float
+    flip_worst_r: float
+
+    @property
+    def edge_r(self) -> float:
+        """What the pattern logic is worth, per trade, over guessing."""
+        return self.real.expectancy_r - self.flip_expectancy_r
+
+    @property
+    def beats_the_coin(self) -> bool:
+        """Better than every shuffle, not merely better than their average.
+
+        A theory that lands inside the range chance produces has not been shown
+        to know anything. This is a low bar deliberately — clearing it is
+        necessary, nowhere near sufficient.
+        """
+        return self.real.expectancy_r > self.flip_best_r
+
+
+def coin_flip(orders: list[BacktestOrder], seed: int) -> list[BacktestOrder]:
+    """The same trades with the direction guessed.
+
+    Identical times, identical symbols, identical stop and target distances —
+    only the one thing the theory claims to know is replaced by a coin. The
+    geometry is mirrored rather than kept, so a flipped long is a real short
+    and not a long with its stop above the entry.
+
+    This is the control the whole exercise needs. Five theories all landing
+    between 24% and 33% wins, when a 1R stop against a 2R target wins 33% by
+    chance alone, is either a coincidence or the answer.
+    """
+    rng = np.random.default_rng(seed)
+    flipped: list[BacktestOrder] = []
+    for order in orders:
+        risk = abs(order.entry - order.stop_loss)
+        reward = abs(order.take_profit - order.entry)
+        direction = Direction.LONG if rng.random() < 0.5 else Direction.SHORT
+        sign = int(direction)
+        flipped.append(
+            replace(
+                order,
+                direction=direction,
+                stop_loss=order.entry - risk * sign,
+                take_profit=order.entry + reward * sign,
+            )
+        )
+    return flipped
+
+
+def compare_to_chance(
+    orders: list[BacktestOrder],
+    frame: pd.DataFrame,
+    evidence: list[PlaybookEvidence],
+    *,
+    seeds: int = 5,
+    backtester: PessimisticBacktester | None = None,
+) -> list[Comparison]:
+    """Each theory beside the coin flip that took its trades.
+
+    Several seeds, because one shuffle is a sample of one and the question is
+    whether the theory sits outside what chance produces, not whether it beats
+    one particular coin.
+    """
+    engine = backtester or PessimisticBacktester()
+    grouped: dict[str, list[BacktestOrder]] = {}
+    for order in orders:
+        grouped.setdefault(order.modules[0] if order.modules else "unknown", []).append(order)
+
+    comparisons: list[Comparison] = []
+    for item in evidence:
+        group = grouped.get(item.playbook, [])
+        if not group:
+            continue
+        runs = [engine.run_non_overlapping(frame, coin_flip(group, seed)) for seed in range(seeds)]
+        expectancies = [run.expectancy_r for run in runs]
+        comparisons.append(
+            Comparison(
+                real=item,
+                flip_win_rate=float(np.mean([run.win_rate for run in runs])),
+                flip_expectancy_r=float(np.mean(expectancies)),
+                flip_best_r=max(expectancies),
+                flip_worst_r=min(expectancies),
+            )
+        )
+    return comparisons
+
+
+def render_comparison(comparisons: list[Comparison], *, window: str = "") -> str:
+    """The only table that answers whether the analysis is worth anything."""
+    lines = [
+        "",
+        "=" * 78,
+        f"  EACH THEORY AGAINST A COIN FLIP THAT TOOK THE SAME TRADES"
+        f"{('  ' + window) if window else ''}",
+        "=" * 78,
+        "",
+        "  Same moments, same symbols, same stops and targets. Only the direction",
+        "  is guessed. Whatever a theory beats the coin by is what its analysis is",
+        "  actually worth.",
+        "",
+        f"  {'':18}{'won':>7}{'per trade':>12}{'coin won':>10}{'coin/trade':>12}{'edge':>10}",
+        "  " + "-" * 74,
+    ]
+    if not comparisons:
+        lines.extend(["  Nothing to compare.", ""])
+        return "\n".join(lines)
+
+    for item in sorted(comparisons, key=lambda c: c.edge_r):
+        mark = "" if item.beats_the_coin else "   <- inside chance"
+        lines.append(
+            f"  {item.real.playbook:<18}{item.real.win_rate:>7.0%}"
+            f"{item.real.expectancy_r:>+11.3f}R{item.flip_win_rate:>10.0%}"
+            f"{item.flip_expectancy_r:>+11.3f}R{item.edge_r:>+9.3f}R{mark}"
+        )
+
+    beaten = [c.real.playbook for c in comparisons if c.beats_the_coin]
+    lines.append("")
+    if not beaten:
+        lines.append("  Not one theory beat guessing.")
+        lines.append("")
+        lines.append("  That is the finding, and it is not about these five theories. Every")
+        lines.append("  pattern rule in them — the compression, the shallow pullback, the")
+        lines.append("  three-times-tested edge, the rejection wick — adds nothing a coin")
+        lines.append("  does not already give you. Writing a sixth would be writing a sixth")
+        lines.append("  coin. The approach itself has to change, not the rules inside it.")
+    else:
+        lines.append(f"  Outside what chance produced: {', '.join(beaten)}.")
+        lines.append("  Necessary, nowhere near sufficient — a theory can beat a coin and")
+        lines.append("  still lose money once costs are paid. Check its `per trade` column.")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def render(evidence: list[PlaybookEvidence], *, window: str = "") -> str:

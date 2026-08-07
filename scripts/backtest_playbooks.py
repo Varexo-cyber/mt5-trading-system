@@ -49,8 +49,10 @@ from analysis.playbooks import (
 from backtesting.playbook_replay import (
     REPLAY_TIMEFRAMES,
     PlaybookReplay,
+    compare_to_chance,
     evidence_by_playbook,
     render,
+    render_comparison,
 )
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.data_manager import DataManager
@@ -97,6 +99,12 @@ def main(argv: list[str] | None = None) -> int:
         "the configuration",
     )
     parser.add_argument(
+        "--no-baseline",
+        action="store_true",
+        help="skip the coin-flip control. It roughly doubles the run and it is the "
+        "only part that says whether the analysis is worth anything",
+    )
+    parser.add_argument(
         "--stride",
         type=int,
         default=1,
@@ -123,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     end = datetime.now(UTC)
     start = end - timedelta(days=args.days)
     everything = []
+    against_chance = []
     try:
         for symbol in args.symbols:
             print(f"  replaying {symbol} …", flush=True)
@@ -141,7 +150,13 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"    skipped: {type(exc).__name__}: {exc}")
                 continue
             print(f"    {len(orders)} proposals")
-            everything.extend(evidence_by_playbook(orders, frames[Timeframe.M5]) if orders else [])
+            if not orders:
+                continue
+            evidence = evidence_by_playbook(orders, frames[Timeframe.M5])
+            everything.extend(evidence)
+            if not args.no_baseline:
+                print("    shuffling the directions …", flush=True)
+                against_chance.extend(compare_to_chance(orders, frames[Timeframe.M5], evidence))
     finally:
         with contextlib.suppress(Exception):
             connector.shutdown()
@@ -169,7 +184,37 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
 
-    print(render(combined, window=f"{args.days:g} days, {len(args.symbols)} symbols"))
+    window = f"{args.days:g} days, {len(args.symbols)} symbols"
+    print(render(combined, window=window))
+
+    # Pooled the same way and for the same reason: the question is whether the
+    # theory knows something, and four thin per-symbol comparisons answer it
+    # four times badly instead of once well.
+    if against_chance:
+        pooled: dict[str, list] = {}
+        for item in against_chance:
+            pooled.setdefault(item.real.playbook, []).append(item)
+        merged_comparisons = []
+        for name, items in pooled.items():
+            real = next(row for row in combined if row.playbook == name)
+            weights = [item.real.trades for item in items]
+            total = sum(weights) or 1
+            merged_comparisons.append(
+                type(items[0])(
+                    real=real,
+                    flip_win_rate=sum(
+                        i.flip_win_rate * w for i, w in zip(items, weights, strict=True)
+                    )
+                    / total,
+                    flip_expectancy_r=sum(
+                        i.flip_expectancy_r * w for i, w in zip(items, weights, strict=True)
+                    )
+                    / total,
+                    flip_best_r=max(i.flip_best_r for i in items),
+                    flip_worst_r=min(i.flip_worst_r for i in items),
+                )
+            )
+        print(render_comparison(merged_comparisons, window=window))
     return 0
 
 
