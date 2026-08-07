@@ -1,0 +1,464 @@
+"""The headline layer, and the traps it is built to avoid.
+
+Most of this file is about the tagger, because a tagger is the part of a news
+layer that fails without anybody noticing. If "Goldman Sachs" tags XAU, gold
+trading stops on bank stories and every log, chart and report shows a market
+that was simply busy. There is no downstream symptom. So the substring traps
+are enumerated here by name.
+
+The rest holds the two properties the layer's honesty rests on: a feed that
+half-parses is refused rather than reported as quiet, and an outage never
+empties the window into "nothing is happening".
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from config.schema import HeadlineFilterConfig
+from filters.base import FilterContext
+from filters.headline_filter import HeadlineFilter
+from filters.newsfeed.items import Headline, NewsPressure
+from filters.newsfeed.providers import (
+    FeedUnavailableError,
+    HeadlineProvider,
+    RssHeadlineProvider,
+    parse_feed,
+    parse_published,
+)
+from filters.newsfeed.service import HeadlineService
+from filters.newsfeed.tagging import currencies_in, is_systemic
+
+NOW = datetime(2026, 8, 7, 14, 0, tzinfo=UTC)
+
+
+class FrozenClock:
+    def __init__(self, at: datetime = NOW) -> None:
+        self.at = at
+
+    def now(self) -> datetime:
+        return self.at
+
+
+class StubProvider(HeadlineProvider):
+    def __init__(self, name: str, items: list[Headline] | None = None, fails: bool = False) -> None:
+        self.name = name
+        self.items = items or []
+        self.fails = fails
+        self.calls = 0
+
+    def fetch(self, now: datetime) -> list[Headline]:
+        self.calls += 1
+        if self.fails:
+            raise FeedUnavailableError(f"{self.name}: down")
+        return list(self.items)
+
+
+def headline(title: str, *, minutes_ago: float = 1.0, source: str = "wire") -> Headline:
+    return Headline(published=NOW - timedelta(minutes=minutes_ago), title=title, source=source)
+
+
+# ------------------------------------------------------------- tagging ---
+
+
+class TestTheSubstringTraps:
+    """Each of these is a real headline shape that a naive `in` test mis-tags,
+    and each one would block an instrument for a reason nobody could see."""
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Goldman Sachs downgrades Ford to neutral",
+            "Goldcorp announces merger",
+            "Marigold Resources files for bankruptcy",
+        ],
+    )
+    def test_goldman_is_not_gold(self, title: str) -> None:
+        assert "XAU" not in currencies_in(title)
+
+    def test_gold_itself_still_tags(self) -> None:
+        assert "XAU" in currencies_in("Gold hits record high on haven demand")
+        assert "XAU" in currencies_in("Bullion rallies as yields fall")
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Neural networks reshape trading desks",
+            "Amateur investors pile into meme stocks",
+        ],
+    )
+    def test_eur_does_not_match_inside_a_word(self, title: str) -> None:
+        assert "EUR" not in currencies_in(title)
+
+    def test_euro_and_its_institutions_tag(self) -> None:
+        assert "EUR" in currencies_in("Euro slips ahead of the ECB decision")
+        assert "EUR" in currencies_in("Lagarde signals patience on cuts")
+        assert "EUR" in currencies_in("Eurozone inflation cools to 2.1%")
+
+    def test_a_bare_dollar_does_not_tag_usd(self) -> None:
+        """Australian, Canadian, New Zealand and Singapore dollars all answer
+        to it. Tagging USD on 'dollar' puts a blackout on every major at once,
+        which is worse than missing the story."""
+        assert "USD" not in currencies_in("Dollar edges higher in thin trade")
+
+    def test_the_unambiguous_usd_terms_do_tag(self) -> None:
+        for title in ("US dollar firms after Powell", "Greenback rallies", "FOMC holds rates"):
+            assert "USD" in currencies_in(title), title
+
+    def test_a_headline_about_nothing_tradeable_tags_nothing(self) -> None:
+        assert currencies_in("Local council approves new cycle lane") == frozenset()
+
+    def test_one_headline_can_touch_two_currencies(self) -> None:
+        tags = currencies_in("Yen slides to a 30-year low against the US dollar")
+        assert tags == frozenset({"JPY", "USD"})
+
+    def test_case_and_punctuation_do_not_matter(self) -> None:
+        assert "GBP" in currencies_in("STERLING JUMPS; BoE hints at a hold.")
+
+
+class TestSystemicStories:
+    def test_a_market_wide_story_is_recognised(self) -> None:
+        assert is_systemic("Risk-off grips markets as invasion escalates")
+        assert is_systemic("Exchange halts trading after circuit breaker")
+
+    def test_an_ordinary_story_is_not(self) -> None:
+        assert not is_systemic("Euro slips ahead of the ECB decision")
+
+    def test_a_systemic_headline_touches_an_instrument_it_never_names(self) -> None:
+        """The tagger's most expensive miss would be here. A story naming no
+        currency and moving all of them is exactly when nothing should open."""
+        item = headline("Flight to safety as sanctions widen")
+
+        assert item.currencies == frozenset()
+        assert item.touches(frozenset({"NZD", "CAD"}))
+
+
+# ------------------------------------------------------------ parsing ---
+
+
+class TestReadingAFeed:
+    RSS = """<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>Euro slips ahead of the ECB</title>
+        <pubDate>Fri, 07 Aug 2026 13:55:00 GMT</pubDate>
+        <link>https://example.test/1</link></item>
+      <item><title>Yen firms after BoJ comments</title>
+        <pubDate>Fri, 07 Aug 2026 13:40:00 +0000</pubDate></item>
+    </channel></rss>"""
+
+    ATOM = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+      <entry><title>Gold hits record high</title>
+        <updated>2026-08-07T13:50:00Z</updated>
+        <link href="https://example.test/2"/></entry>
+    </feed>"""
+
+    def test_rss_parses(self) -> None:
+        items = parse_feed(self.RSS.encode(), "wire", now=NOW)
+
+        assert [i.title for i in items] == [
+            "Euro slips ahead of the ECB",
+            "Yen firms after BoJ comments",
+        ]
+        assert items[0].link == "https://example.test/1"
+        assert items[0].published == datetime(2026, 8, 7, 13, 55, tzinfo=UTC)
+
+    def test_atom_parses_including_the_link_attribute(self) -> None:
+        items = parse_feed(self.ATOM.encode(), "wire", now=NOW)
+
+        assert items[0].title == "Gold hits record high"
+        assert items[0].link == "https://example.test/2"
+
+    def test_a_mostly_unreadable_feed_is_refused(self) -> None:
+        """The failure this exists to prevent: three items out of forty parse,
+        the other thirty-seven are invisible, and the layer reports calm."""
+        broken = (
+            "<rss><channel>"
+            + "<item><title>x</title></item>" * 9
+            + ("<item><title>ok</title><pubDate>Fri, 07 Aug 2026 13:55:00 GMT</pubDate></item>")
+            + "</channel></rss>"
+        )
+
+        with pytest.raises(FeedUnavailableError, match="unreadable"):
+            parse_feed(broken.encode(), "wire", now=NOW)
+
+    def test_a_feed_with_no_items_is_refused(self) -> None:
+        with pytest.raises(FeedUnavailableError, match="no <item>"):
+            parse_feed(b"<rss><channel></channel></rss>", "wire", now=NOW)
+
+    def test_something_that_is_not_xml_is_refused(self) -> None:
+        with pytest.raises(FeedUnavailableError, match="not XML"):
+            parse_feed(b"403 Forbidden <<< not markup at all", "wire", now=NOW)
+
+    def test_an_error_page_that_happens_to_parse_is_still_refused(self) -> None:
+        """A CDN block page is often well-formed XML. It parses cleanly and
+        contains no items, and the only safe reading of that is a failure —
+        returning zero headlines would report the calmest hour on record."""
+        with pytest.raises(FeedUnavailableError, match="no <item>"):
+            parse_feed(b"<html><body>403 Forbidden</body></html>", "wire", now=NOW)
+
+    def test_stale_items_are_dropped_not_counted(self) -> None:
+        old = """<rss><channel><item><title>Ancient</title>
+          <pubDate>Mon, 03 Aug 2026 09:00:00 GMT</pubDate></item>
+          <item><title>Euro slips</title>
+          <pubDate>Fri, 07 Aug 2026 13:55:00 GMT</pubDate></item></channel></rss>"""
+
+        assert [i.title for i in parse_feed(old.encode(), "wire", now=NOW)] == ["Euro slips"]
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("Fri, 07 Aug 2026 13:55:00 GMT", datetime(2026, 8, 7, 13, 55, tzinfo=UTC)),
+            ("2026-08-07T13:55:00Z", datetime(2026, 8, 7, 13, 55, tzinfo=UTC)),
+            ("2026-08-07T15:55:00+02:00", datetime(2026, 8, 7, 13, 55, tzinfo=UTC)),
+            ("2026-08-07 13:55:00", datetime(2026, 8, 7, 13, 55, tzinfo=UTC)),
+        ],
+    )
+    def test_the_dialects_of_a_timestamp(self, raw: str, expected: datetime) -> None:
+        assert parse_published(raw) == expected
+
+    def test_an_unreadable_timestamp_is_not_stamped_as_now(self) -> None:
+        """An item dated 'now' because nobody could read its date is a false
+        spike this layer would then act on."""
+        assert parse_published("last Tuesday-ish") is None
+        assert parse_published("") is None
+
+    def test_a_non_https_feed_is_refused_before_it_is_fetched(self) -> None:
+        provider = RssHeadlineProvider("insecure", "http://example.test/feed")
+
+        with pytest.raises(FeedUnavailableError, match="non-HTTPS"):
+            provider.fetch(NOW)
+
+
+# ------------------------------------------------------------ service ---
+
+
+class TestTheWindow:
+    def service(self, providers: list[HeadlineProvider], **kwargs) -> HeadlineService:  # type: ignore[no-untyped-def]
+        defaults = {"window_minutes": 20.0, "baseline_hours": 12.0, "max_age_minutes": 30.0}
+        return HeadlineService(providers, FrozenClock(), **{**defaults, **kwargs})
+
+    def test_it_counts_what_touches_the_instrument(self) -> None:
+        feed = StubProvider(
+            "wire",
+            [
+                headline("Euro slips ahead of the ECB", minutes_ago=2),
+                headline("Lagarde signals patience", minutes_ago=5),
+                headline("Gold hits record high", minutes_ago=3),
+            ],
+        )
+        service = self.service([feed])
+        service.refresh()
+
+        assert service.pressure("EURUSD", frozenset({"EUR", "USD"})).recent == 2
+        assert service.pressure("XAUUSD", frozenset({"XAU", "USD"})).recent == 1
+        assert service.pressure("AUDNZD", frozenset({"AUD", "NZD"})).recent == 0
+
+    def test_the_same_story_from_two_wires_counts_once(self) -> None:
+        """This layer measures how many things are happening. A story carried
+        by three wires is one thing, and counting it three times manufactures
+        exactly the spike the filter acts on."""
+        title = "ECB cuts rates by 25bp"
+        one = StubProvider("a", [headline(title, minutes_ago=2, source="a")])
+        two = StubProvider("b", [headline(title.upper(), minutes_ago=1, source="b")])
+        service = self.service([one, two])
+        service.refresh()
+
+        assert service.pressure("EURUSD", frozenset({"EUR"})).recent == 1
+
+    def test_the_first_sighting_keeps_the_timestamp(self) -> None:
+        """A re-publication is not a fresh event, and letting the later stamp
+        win would keep resetting the story's age."""
+        service = self.service(
+            [StubProvider("a", [headline("ECB cuts rates", minutes_ago=30)])],
+            window_minutes=10.0,
+        )
+        service.refresh()
+        service.providers.append(StubProvider("b", [headline("ECB cuts rates", minutes_ago=1)]))
+        service.refresh(force=True)
+
+        assert service.pressure("EURUSD", frozenset({"EUR"})).recent == 0
+
+    def test_the_baseline_is_the_instruments_own_rate(self) -> None:
+        """Twelve EUR stories over twelve hours is one per hour, which over a
+        twenty-minute window is a third of a story."""
+        items = [headline(f"Euro note {n}", minutes_ago=60 * n + 30) for n in range(12)]
+        service = self.service([StubProvider("wire", items)])
+        service.refresh()
+
+        pressure = service.pressure("EURUSD", frozenset({"EUR"}))
+
+        assert pressure.recent == 0
+        assert pressure.baseline == pytest.approx(12 / 36)
+
+    def test_a_quiet_instrument_is_not_permanently_spiking(self) -> None:
+        """Without the floor on the baseline, one routine mention of a pair
+        nobody writes about is a fiftyfold spike and blocks it for good."""
+        service = self.service([StubProvider("wire", [headline("Kiwi steadies", minutes_ago=2)])])
+        service.refresh()
+
+        assert service.pressure("NZDUSD", frozenset({"NZD"})).multiple == pytest.approx(1.0)
+
+    def test_an_outage_holds_the_window_rather_than_emptying_it(self) -> None:
+        """An empty window reads as 'nothing is happening'. That is the one
+        conclusion an outage must never produce."""
+        feed = StubProvider("wire", [headline("Euro slips", minutes_ago=2)])
+        service = self.service([feed])
+        service.refresh()
+        feed.fails = True
+
+        assert service.refresh(force=True) is False
+        assert service.count == 1
+
+    def test_one_feed_down_does_not_stop_the_others(self) -> None:
+        service = self.service(
+            [
+                StubProvider("down", fails=True),
+                StubProvider("up", [headline("Euro slips", minutes_ago=2)]),
+            ]
+        )
+
+        assert service.refresh() is True
+        assert service.sources == ("up",)
+
+    def test_it_does_not_refetch_inside_the_interval(self) -> None:
+        """Eighty-eight symbols asking would be eighty-eight fetches for one
+        answer, on a machine with one core and a one-second guard loop."""
+        feed = StubProvider("wire", [headline("Euro slips")])
+        service = self.service([feed], refresh_interval_seconds=600.0)
+        for _ in range(20):
+            service.refresh()
+
+        assert feed.calls == 1
+
+    def test_a_window_that_has_never_filled_is_not_usable(self) -> None:
+        assert self.service([StubProvider("wire")]).is_usable() is False
+
+    def test_a_stale_window_stops_being_evidence(self) -> None:
+        clock = FrozenClock()
+        service = HeadlineService(
+            [StubProvider("wire", [headline("Euro slips")])],
+            clock,
+            max_age_minutes=30.0,
+        )
+        service.refresh()
+        assert service.is_usable()
+
+        clock.at = NOW + timedelta(minutes=31)
+        assert service.is_usable() is False
+
+    def test_a_baseline_shorter_than_the_window_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="compared against itself"):
+            HeadlineService(
+                [StubProvider("wire")], FrozenClock(), window_minutes=120.0, baseline_hours=1.0
+            )
+
+
+class TestNewsPressureArithmetic:
+    def test_the_multiple_floors_the_baseline_at_one(self) -> None:
+        quiet = NewsPressure("NZDUSD", frozenset({"NZD"}), 1, 0.02, False, 20.0)
+        assert quiet.multiple == pytest.approx(1.0)
+
+    def test_a_real_spike_reads_as_one(self) -> None:
+        busy = NewsPressure("EURUSD", frozenset({"EUR"}), 9, 3.0, False, 20.0)
+        assert busy.multiple == pytest.approx(3.0)
+
+
+# ------------------------------------------------------------- filter ---
+
+
+class Spec:
+    currency_base = "EUR"
+    currency_profit = "USD"
+
+
+class TestTheFilter:
+    def context(self) -> FilterContext:
+        return FilterContext(symbol="EURUSD.i", spec=Spec(), now=NOW)  # type: ignore[arg-type]
+
+    def build(self, items: list[Headline], **config):  # type: ignore[no-untyped-def]
+        service = HeadlineService(
+            [StubProvider("wire", items)], FrozenClock(), window_minutes=20.0, baseline_hours=12.0
+        )
+        settings = HeadlineFilterConfig(enabled=True, **config)
+        return HeadlineFilter(settings, service)
+
+    def test_a_quiet_market_passes_and_still_reports_its_numbers(self) -> None:
+        verdict = self.build([headline("Euro slips", minutes_ago=2)]).check(self.context())
+
+        assert verdict.passed
+        assert verdict.data["headline_count"] == 1
+        assert "headline_baseline" in verdict.data
+
+    def test_a_burst_on_this_instrument_blocks(self) -> None:
+        items = [headline(f"Euro headline {n}", minutes_ago=n) for n in (1, 2, 3, 4, 5)]
+        items += [headline(f"ECB story {n}", minutes_ago=60 * n) for n in range(1, 4)]
+
+        verdict = self.build(items).check(self.context())
+
+        assert not verdict.passed
+        assert str(verdict.reason) == "HEADLINE_PRESSURE"
+        assert "unusual news flow" in verdict.detail
+
+    def test_a_burst_on_another_instrument_does_not(self) -> None:
+        items = [headline(f"Kiwi tumbles {n}", minutes_ago=n) for n in (1, 2, 3, 4, 5)]
+
+        assert self.build(items).check(self.context()).passed
+
+    def test_a_market_wide_story_blocks_on_its_own(self) -> None:
+        """It touches every pair equally, so it never looks like a spike on any
+        one of them and the spike test would wave all of them through at the
+        worst possible moment."""
+        verdict = self.build([headline("Flight to safety as invasion widens")]).check(
+            self.context()
+        )
+
+        assert not verdict.passed
+        assert "market-wide" in verdict.detail
+
+    def test_three_headlines_that_are_normal_for_this_pair_pass(self) -> None:
+        """Both conditions have to hold. Enough stories to mean anything, and
+        enough above normal to be unusual."""
+        items = [headline(f"Euro headline {n}", minutes_ago=n) for n in (1, 2, 3)]
+        # Forty more across the twelve hours, all outside the recent window, so
+        # this pair's normal traffic works out above one story per window and
+        # three of them is a slow afternoon rather than an event.
+        items += [headline(f"Euro note {n}", minutes_ago=25 + 15 * n) for n in range(1, 41)]
+
+        verdict = self.build(items).check(self.context())
+
+        assert verdict.passed
+        assert verdict.data["headline_count"] == 3
+        assert verdict.data["headline_multiple"] < 3.0
+
+    def test_disabled_is_a_pass_without_a_fetch(self) -> None:
+        feed = StubProvider("wire", [headline("Flight to safety as invasion widens")])
+        service = HeadlineService([feed], FrozenClock())
+        verdict = HeadlineFilter(HeadlineFilterConfig(enabled=False), service).check(self.context())
+
+        assert verdict.passed and feed.calls == 0
+
+    def test_a_dark_feed_does_not_block_by_default(self) -> None:
+        """The departure from 'no data, no trade', and the narrow one: the
+        calendar still fails closed, so this leaves the system at the safety
+        level it ran at before the layer existed."""
+        service = HeadlineService([StubProvider("wire", fails=True)], FrozenClock())
+        verdict = HeadlineFilter(HeadlineFilterConfig(enabled=True), service).check(self.context())
+
+        assert verdict.passed
+        assert "not blocking on it" in verdict.detail
+
+    def test_a_dark_feed_blocks_when_the_operator_asks_for_it(self) -> None:
+        service = HeadlineService([StubProvider("wire", fails=True)], FrozenClock())
+        config = HeadlineFilterConfig(enabled=True, block_when_unavailable=True)
+
+        verdict = HeadlineFilter(config, service).check(self.context())
+
+        assert not verdict.passed
+        assert str(verdict.reason) == "HEADLINES_UNAVAILABLE"
+
+    def test_it_is_off_until_the_feeds_have_been_verified(self) -> None:
+        """Not one default URL could be reached from the environment this was
+        written in, so no response shape is confirmed. A layer that silently
+        returns nothing reports a quiet market."""
+        assert HeadlineFilterConfig().enabled is False

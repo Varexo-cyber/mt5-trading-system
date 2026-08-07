@@ -29,9 +29,12 @@ from filters.calendar.providers import build_providers
 from filters.calendar.service import CalendarService
 from filters.correlation_filter import CorrelationFilter
 from filters.currency_exposure import CurrencyExposureFilter
+from filters.headline_filter import HeadlineFilter
 from filters.liveliness_filter import LivelinessFilter
 from filters.loss_cooldown import LossCooldownFilter
 from filters.news_filter import NewsFilter
+from filters.newsfeed.providers import build_providers as build_headline_providers
+from filters.newsfeed.service import HeadlineService
 from filters.runway_filter import RunwayFilter
 from filters.session_filter import SessionFilter
 from filters.spread_filter import SpreadFilter
@@ -311,9 +314,25 @@ def build_filter_chain(
     # protects is this object's wind-down; a second copy could drift.
     session = SessionFilter(settings.filters.session)
 
+    headline_config = settings.filters.headlines
+    headlines = HeadlineService(
+        build_headline_providers(headline_config.feeds or None),
+        clock,
+        refresh_interval_seconds=headline_config.refresh_interval_seconds,
+        window_minutes=headline_config.window_minutes,
+        baseline_hours=headline_config.baseline_hours,
+        max_age_minutes=headline_config.max_age_minutes,
+    )
+
     return FilterChain(
         [
             NewsFilter(news_config, calendar, clock),
+            # Directly under the calendar, because it answers the same question
+            # about the part of it the calendar cannot see, and above
+            # everything below: a war breaking out is a more fundamental
+            # objection than a wide spread, and the reason that reaches the
+            # journal should be the fundamental one.
+            HeadlineFilter(headline_config, headlines),
             session,
             RunwayFilter(settings.filters.runway, session),
             # Early, and above everything that fetches bars: one indexed row

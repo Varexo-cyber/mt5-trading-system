@@ -58,6 +58,8 @@ from core.types import AccountSnapshot, MarketContext, OrderRequest, Timeframe, 
 from execution.manager import ManagementEvent, PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
+from filters.calendar.events import symbol_currencies
+from filters.headline_filter import HeadlineFilter
 from filters.news_filter import NewsFilter
 from filters.runway_filter import RunwayFilter
 from infra.atomic import write_json_atomic
@@ -1446,6 +1448,14 @@ class JarvisRunner:
                     # to be asked and cannot know the trade has been bleeding
                     # for ten minutes — the fast layer watched all of it.
                     "mechanical_health": self._health_brief(position.ticket),
+                    # The one place a headline's actual words earn their cost.
+                    # Everything in `filters.newsfeed` deliberately refuses to
+                    # read meaning, because a regex cannot and a sentiment
+                    # score at retail latency is buying what somebody else
+                    # already bought. A language model reads a headline
+                    # properly, and it is being asked about this position
+                    # anyway, so the marginal cost is a few hundred tokens.
+                    "headlines": self._headlines_for(position.symbol),
                 },
             )
             self._supervised_at[position.ticket] = now
@@ -1678,6 +1688,41 @@ class JarvisRunner:
         """The fast layer's current read, for the adviser's payload."""
         health = self.manager.last_health.get(ticket)
         return health.summary() if health is not None else dict(_UNKNOWN_HEALTH)
+
+    def _headlines_for(self, symbol: str) -> list[dict[str, object]]:
+        """Recent wire copy touching this instrument, for the reviewer.
+
+        Reaches into the chain's own `HeadlineFilter` rather than building a
+        second `HeadlineService`. Two services would each hold their own window
+        and their own fetch schedule, so the gate and the reviewer would end up
+        disagreeing about what the news was — the same reasoning as
+        `FilterChain.find`'s docstring, and the reason that method exists.
+
+        Empty is the normal answer and an honest one. The layer ships disabled
+        until its feeds have been verified on the machine running it, and an
+        empty list reads downstream as "nothing supplied" rather than as
+        "nothing is happening".
+        """
+        gate = self.filters.find(HeadlineFilter)
+        if gate is None or not gate.config.enabled or not gate.service.is_usable():
+            return []
+        limit = gate.config.headlines_for_reviewer
+        if limit <= 0:
+            return []
+        try:
+            spec = self.broker.spec(symbol)
+        except Exception:  # noqa: BLE001 - a missing spec must not skip supervision
+            return []
+        currencies = symbol_currencies(spec.currency_base, spec.currency_profit)
+        now = self.clock.now()
+        return [
+            {
+                "minutes_ago": round(item.age_minutes(now)),
+                "source": item.source,
+                "headline": item.title,
+            }
+            for item in gate.service.recent_for(currencies, limit=limit)
+        ]
 
     def _build_playbooks(self) -> PlaybookEngine | None:
         """Assemble the short-horizon theories, or None when they are off."""

@@ -71,6 +71,14 @@ class Reason(StrEnum):
     NEWS_BLACKOUT = "NEWS_BLACKOUT"
     #: No provider answered and the cache is stale. No data means no trade.
     NEWS_CALENDAR_UNAVAILABLE = "NEWS_CALENDAR_UNAVAILABLE"
+    #: Unscheduled news. The calendar showed a clear window while the wires ran
+    #: well above this instrument's own normal rate, or a market-wide story is
+    #: out. Not a view on direction — a reason to keep still.
+    HEADLINE_PRESSURE = "HEADLINE_PRESSURE"
+    #: The headline feeds are dark and the operator chose to stand down without
+    #: them. Off by default: the calendar's own fail-closed rule is untouched
+    #: and still covers everything it always covered.
+    HEADLINES_UNAVAILABLE = "HEADLINES_UNAVAILABLE"
     OUTSIDE_TRADABLE_SESSION = "OUTSIDE_TRADABLE_SESSION"
     #: Daily rollover: spreads blow out and liquidity vanishes.
     ROLLOVER_WINDOW = "ROLLOVER_WINDOW"

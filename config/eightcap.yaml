@@ -290,6 +290,51 @@ ai:
 # filter and Claude's veto, which is what makes "more trades" mean "more good
 # trades" rather than "more trades".
 filters:
+  # Ongepland nieuws. De kalender hiernaast weet wat eraan komt; deze laag weet
+  # wat er NU gebeurt - de centrale bank die tussen vergaderingen door beweegt,
+  # het verhaal dat om 03:00 uitbreekt terwijl de kalender een lege middag laat
+  # zien.
+  #
+  # ER ZIT GEEN SENTIMENT IN, EN DAT KOMT ER OOK NIET. Tegen de tijd dat een
+  # verhaal op een publieke feed staat is de beweging die het beschrijft al
+  # geweest. De richting ervan handelen vanaf een VPS is kopen wat een ander al
+  # gekocht heeft. Wat de vertraging wel overleeft is het feit DAT er iets aan
+  # de hand is, en dat is een prima reden om je handen stil te houden.
+  #
+  # STAAT UIT. Geen van de feed-URL's kon bereikt worden vanuit de omgeving
+  # waarin dit gebouwd is, dus geen enkel antwoordformaat is bevestigd. Draai
+  # eerst op de VPS:
+  #
+  #     .venv-live\Scripts\python.exe scripts\verify_newsfeed.py
+  #
+  # Dat rapporteert per feed of hij antwoordt, wat er parst en welke valuta de
+  # tagger vindt - plus precies de meting die het filter zou doen. Zet `enabled`
+  # pas op true als dat er goed uitziet, en stel de drempels af op het echte
+  # verkeer van die feeds. Een laag die stilletjes niets teruggeeft meldt een
+  # rustige markt, en dat is het enige antwoord dat hij nooit mag verzinnen.
+  headlines:
+    enabled: false
+    # Beide moeten waar zijn om te blokkeren: genoeg berichten om iets te
+    # betekenen, en genoeg boven normaal om ongewoon te zijn. Los van elkaar
+    # slaan ze mis - drie koppen is niets op EUR en een storm op NZD.
+    min_headlines: 3
+    spike_multiple: 3.0
+    window_minutes: 20.0
+    # Het normaal waar dat tegen afgezet wordt, per instrument. EUR en NZD
+    # dragen op geen enkele wire vergelijkbaar verkeer, en één absolute drempel
+    # over allebei betekent EUR altijd blokkeren of NZD nooit.
+    baseline_hours: 12.0
+    # Een marktbreed verhaal blokkeert op zichzelf. Het raakt elk paar even
+    # hard, dus het lijkt op geen enkel paar op een piek, en de test hierboven
+    # zou ze op het slechtst denkbare moment allemaal doorlaten.
+    block_on_systemic: true
+    # Afwijking van jouw regel "geen data = geen trade", en een smalle. Die
+    # regel beschermt tegen een ontbrekende KALENDER, en de kalender faalt nog
+    # steeds dicht - daar is niets aan veranderd. Staat deze laag donker, dan
+    # draait het systeem op precies het veiligheidsniveau dat het altijd al
+    # had. Op true betekent één hikkende RSS-host een dag zonder trades.
+    block_when_unavailable: false
+
   session:
     # 20:00 UTC, niet de standaard 19:00. 19:00 is 21:00 in Amsterdam en dat is
     # gewoon de New Yorkse middag - een normaal verhandelbaar uur, geen dun boek.
