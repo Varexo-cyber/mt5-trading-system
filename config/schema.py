@@ -1165,21 +1165,14 @@ class TradeManagementConfig(Base):
     #: At or above this R, a single warning tightens the stop instead.
     health_tighten_at_r: float = Field(default=0.2, ge=0.0)
 
-    #: Minutes before the forced wind-down in which a profit is simply taken.
+    #: Bank a profit whose target the session can no longer deliver.
     #:
-    #: `_evening_flatten` is the backstop and closes everything at the
-    #: deadline whatever it is worth. This is the hour before it, and it is the
-    #: part a person does without thinking: the book is thinning, the session
-    #: is ending, you are up, you take it. A live ASX200 long opened at 20:41
-    #: and was carried to 22:27 for -0.76 because nothing before the deadline
-    #: treated the closing hour as different from any other.
-    session_decay_window_minutes: float = Field(default=60.0, ge=0.0, le=480.0)
-    #: How much profit is worth taking on the clock alone.
-    session_decay_min_r: float = Field(default=0.3, ge=0.0)
-    #: Spread as a share of the stop that brings the rule forward to twice the
-    #: window. Not a forecast then — the cost of leaving has visibly started to
-    #: rise, which is the evidence the time-based clause only anticipates.
-    session_decay_spread_share: float = Field(default=0.20, gt=0.0, le=1.0)
+    #: No threshold to set, deliberately. The rule asks two measured questions
+    #: — is the remaining distance reachable in the time left, and is what is
+    #: on the table worth more than the spread and commission it costs to
+    #: collect — and an R figure chosen in advance can answer neither. The
+    #: version this replaced fired at 0.3R, which was a number I made up.
+    session_decay_enabled: bool = True
 
     #: Close a position that has gone nowhere. Dead capital still carries risk.
     time_exit_hours: float | None = Field(default=24.0, gt=0.0)
