@@ -236,3 +236,78 @@ class TestAnIndexIsNotACurrencyBet:
             spec_for("UK100", "GBP", "GBP"), asset_class=AssetClass.INDEX, is_forex=False
         )
         assert legs(self.FRA40, Direction.LONG) == legs(uk100, Direction.LONG) == {}
+
+
+class TestSectorConcentration:
+    """The hole the index fix opened up, closed.
+
+    Two European index longs are one bet on equities with a second lot on it,
+    and the currency accounting correctly says nothing about them — they have
+    no currency legs to stack. Something else has to.
+
+    On 7 August the account held FRA40 long, then UK100 long beside it, then
+    FRA40 long again, inside twenty minutes. The only thing between it and
+    that book was the correlation filter, which is a measurement with a
+    threshold rather than an identity.
+    """
+
+    FRA40 = replace(spec_for("FRA40", "EUR", "EUR"), asset_class=AssetClass.INDEX, is_forex=False)
+    UK100 = replace(spec_for("UK100", "GBP", "GBP"), asset_class=AssetClass.INDEX, is_forex=False)
+
+    def filter_for(self, **overrides) -> CurrencyExposureFilter:  # type: ignore[no-untyped-def]
+        specs = {"FRA40": self.FRA40, "UK100": self.UK100, **SPECS}
+        return CurrencyExposureFilter(
+            CurrencyExposureConfig(**overrides), lambda symbol: specs[symbol]
+        )
+
+    def context(self, symbol: str, direction: Direction, open_symbols: list[tuple[str, Direction]]):  # type: ignore[no-untyped-def]
+        specs = {"FRA40": self.FRA40, "UK100": self.UK100, **SPECS}
+        return FilterContext(
+            symbol=symbol,
+            spec=specs[symbol],
+            now=datetime(2026, 8, 7, 10, 16, tzinfo=UTC),
+            direction=direction,
+            open_positions=tuple(held(name, side) for name, side in open_symbols),
+        )
+
+    def test_a_second_index_long_is_refused(self) -> None:
+        verdict = self.filter_for().check(
+            self.context("UK100", Direction.LONG, [("FRA40", Direction.LONG)])
+        )
+
+        assert not verdict.passed
+        assert verdict.reason is Reason.SECTOR_CONCENTRATION
+
+    def test_the_other_side_is_still_allowed(self) -> None:
+        """Shorting equities while long equities reduces the bet. That is what
+        a book should be permitted to do."""
+        verdict = self.filter_for().check(
+            self.context("UK100", Direction.SHORT, [("FRA40", Direction.LONG)])
+        )
+
+        assert verdict.passed
+
+    def test_an_index_beside_an_fx_position_is_fine(self) -> None:
+        """Different bets. The whole point of the class grouping is that it
+        does not reach past its own class."""
+        verdict = self.filter_for().check(
+            self.context("FRA40", Direction.LONG, [("EURUSD.i", Direction.SHORT)])
+        )
+
+        assert verdict.passed
+
+    def test_forex_is_not_capped_by_class(self) -> None:
+        """EURUSD beside USDJPY are genuinely different trades, and the
+        currency legs already describe them exactly."""
+        verdict = self.filter_for().check(
+            self.context("AUDUSD.i", Direction.LONG, [("EURUSD.i", Direction.LONG)])
+        )
+
+        assert verdict.passed or verdict.reason is Reason.CURRENCY_CONCENTRATION
+
+    def test_the_limit_can_be_raised(self) -> None:
+        verdict = self.filter_for(max_positions_per_asset_class=2).check(
+            self.context("UK100", Direction.LONG, [("FRA40", Direction.LONG)])
+        )
+
+        assert verdict.passed

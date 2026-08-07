@@ -110,6 +110,11 @@ class Reason(StrEnum):
     #: short reopened at 18:54:58, lost again. The read that produced the first
     #: was wrong, and seventy-five seconds is not new information.
     LOSS_COOLDOWN = "LOSS_COOLDOWN"
+    #: Two positions leaning the same way on one asset class. The currency
+    #: decomposition is structurally blind to these — an index quoted in its
+    #: own currency has no currency leg — so FRA40 long beside UK100 long is
+    #: one bet on equities with a second lot on it and nothing said so.
+    SECTOR_CONCENTRATION = "SECTOR_CONCENTRATION"
 
     # -- exposure limits ---------------------------------------------------
     MAX_POSITIONS_REACHED = "MAX_POSITIONS_REACHED"
