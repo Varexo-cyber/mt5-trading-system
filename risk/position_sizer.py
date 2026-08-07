@@ -107,6 +107,7 @@ class PositionSizer:
         sl: float,
         tp: float = 0.0,
         risk_multiplier: float = 1.0,
+        spread_price: float = 0.0,
     ) -> SizingResult:
         """Compute the lot size for one setup.
 
@@ -114,6 +115,11 @@ class PositionSizer:
             risk_multiplier: anti-martingale scaling from `RiskManager`. Must be
                 <= 1.0 — increasing risk after a loss is a forbidden practice
                 and is rejected here rather than trusted to the caller.
+            spread_price: the live bid-ask gap, in price. Part of the cost of
+                being wrong and the largest part of it on this account, so the
+                cost gate is blind without it. Zero means "not supplied" and
+                understates the true cost — the live path passes the tick's own
+                spread and `test_cost_share_gate` holds it to that.
         """
         if risk_multiplier > 1.0:
             raise ValueError(
@@ -207,15 +213,25 @@ class PositionSizer:
         # Placed after the broker's own stop level and before reward:risk,
         # because it is the same kind of statement — a fact about this
         # instrument that no quality of setup can argue with.
-        cost_share = self._cost_share(spec, sl_distance, commission_per_lot)
+        #
+        # THE SPREAD IS PART OF THIS AND WAS MISSING. The gate counted
+        # commission and slippage and stopped there, while the largest term on
+        # this account went uncounted: at the 8-12 pip stops the playbooks
+        # produce, the spread alone is 17-26% of the risk. The playbooks do
+        # have their own `max_spread_share_of_stop` at 12-15%, but nobody ever
+        # added the two together, so a setup could clear a 12% spread gate and
+        # a 25% commission-and-slippage gate while its real total cost was
+        # 37-41% of R. On the live AUDCAD long that is exactly what happened.
+        # Two gates, both satisfied, one unaffordable trade.
+        cost_share = self._cost_share(spec, sl_distance, commission_per_lot, spread_price)
         limit = self.settings.risk.max_cost_share_of_risk
         if limit > 0 and cost_share > limit:
             return result(
                 RiskDecision.block(
                     Reason.SL_TOO_TIGHT_FOR_COSTS,
-                    f"commission and slippage would be {cost_share:.0%} of the risk on a "
-                    f"{sl_pips:.1f} pip stop, above the {limit:.0%} limit; a full stop-out "
-                    f"would cost about {1 + cost_share:.2f}R rather than 1.00R",
+                    f"spread, commission and slippage would be {cost_share:.0%} of the risk "
+                    f"on a {sl_pips:.1f} pip stop, above the {limit:.0%} limit; a full "
+                    f"stop-out would cost about {1 + cost_share:.2f}R rather than 1.00R",
                 )
             )
 
@@ -319,25 +335,40 @@ class PositionSizer:
     # -- helpers -----------------------------------------------------------
 
     def _cost_share(
-        self, spec: InstrumentSpec, sl_distance: float, commission_per_lot: float
+        self,
+        spec: InstrumentSpec,
+        sl_distance: float,
+        commission_per_lot: float,
+        spread_price: float = 0.0,
     ) -> float:
-        """Commission plus expected slippage, as a fraction of the price risk.
+        """Everything a round trip costs, as a fraction of the price risk.
 
-        Per lot on both terms, so the volume cancels and the answer depends
+        Three terms, all per lot so the volume cancels and the answer depends
         only on the instrument and how wide the stop is — which is the whole
         point. The same commission is a fifth of a 2-pip stop and a rounding
         error on a 40-pip one.
 
+        The spread counts once, not twice: a long is filled at the ask and
+        closed at the bid, so one crossing is what the round trip costs.
+        `analysis.playbooks._spread_is_affordable` measures it the same way,
+        and two definitions of the same cost would eventually disagree.
+
         Slippage is counted in price rather than as a ratio because that is how
         it was measured: a stop at 1.19722 filled at 1.19705. Multiplying it by
         `money_per_lot` puts it in the same units as everything else.
+
+        Note what is still missing: `stop_slippage_pips` has no crypto row, so
+        crypto is priced with the spread and the commission but with zero
+        slippage. That is an assumption, not a measurement, and it makes this
+        number optimistic there until a crypto fill exists to measure.
         """
         price_risk = spec.money_per_lot(sl_distance)
         if price_risk <= 0:
             return 1.0
         slip_pips = self.settings.risk.stop_slippage_pips.get(spec.asset_class.value, 0.0)
         slip_cost = spec.money_per_lot(spec.pips_to_price(slip_pips)) if slip_pips > 0 else 0.0
-        return (commission_per_lot + slip_cost) / price_risk
+        spread_cost = spec.money_per_lot(spread_price) if spread_price > 0 else 0.0
+        return (commission_per_lot + slip_cost + spread_cost) / price_risk
 
     @staticmethod
     def _validate_stop(

@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from analysis.position_health import PositionHealth
 from config.loader import load_settings
 from core.instrument import AssetClass
 from core.types import Direction, Position, Tick, Timeframe
@@ -91,6 +92,12 @@ class BrokerStub:
             @staticmethod
             def round_volume_down(volume: float) -> float:
                 return round(volume, 2)
+
+            @staticmethod
+            def pips_to_price(pips: float) -> float:
+                """One price unit per pip, matching `money_per_lot` above so
+                the cost arithmetic stays readable by hand."""
+                return pips
 
         return Spec()
 
@@ -1464,3 +1471,129 @@ class TestTheFridayGap:
             runway = manager._runway_minutes(moment, "forex")
             flat = manager._should_be_flat(moment, "forex")
             assert not (runway == 0 and not flat), f"{moment}: no runway yet still holding"
+
+
+class TestPayingToLeaveWhenTheStopIsAlreadyThere:
+    """A health reading is a reason to want out. It is not an argument that
+    leaving is affordable, and on this account the two come apart often.
+
+    There is already a guaranteed exit sitting at the broker, costing nothing
+    to keep. So closing at market is never "get out" — it is "get out *here*
+    instead of *there*", and all it can win is the gap between the two. The
+    live AUDCAD long closed on a health reading for -1.61R against a -1.00R
+    plan with its stop 10.9 pips away: most of that last stretch was bought,
+    not suffered.
+
+    Driven through `_act_on_health` directly. Coaxing the stub's bar series
+    into producing a genuine `exit` reading would be testing the health engine,
+    which has its own suite; what needs pinning here is that a reading asking
+    to close does not get to.
+    """
+
+    @staticmethod
+    def reading(action: str) -> PositionHealth:
+        return PositionHealth("broken", 1.0, action, (), "momentum turned")
+
+    def manager(self, broker: BrokerStub, journal: JournalStub, **risk):  # type: ignore[no-untyped-def]
+        settings = load_settings(env_overrides=False)
+        if risk:
+            settings = settings.model_copy(update={"risk": settings.risk.model_copy(update=risk)})
+        return PositionManager(broker, journal, settings)  # type: ignore[arg-type]
+
+    def act(self, broker: BrokerStub, manager, action: str = "exit"):  # type: ignore[no-untyped-def]
+        return manager._act_on_health(
+            position(), self.reading(action), -0.5, ENTRY - STOP, broker.tick("EURUSD")
+        )
+
+    def test_a_far_stop_and_a_thin_spread_still_closes(self) -> None:
+        """0.75R of room to the stop against 0.05R to cross it. The reading
+        wins, and it should."""
+        broker, journal = BrokerStub(spread=0.2), JournalStub()
+        at(broker, -0.25)
+
+        event = self.act(broker, self.manager(broker, journal))
+
+        assert event is not None and event.action == "HEALTH_EXIT"
+        assert broker.closed == [(555, None)]
+
+    def test_a_near_stop_and_a_wide_spread_is_left_to_the_stop(self) -> None:
+        """0.05R of room against 0.25R to collect it. Closing here buys 5% of
+        the risk for 25% of it, and the stop was going to do it for free."""
+        broker, journal = BrokerStub(spread=0.5), JournalStub()
+        at(broker, -0.95)
+
+        assert self.act(broker, self.manager(broker, journal)) is None
+        assert broker.closed == [], "nothing may be sold to save less than the sale costs"
+
+    def test_it_applies_to_securing_a_profit_too(self) -> None:
+        """A trade at +0.05R over a stop that has been pulled to break even is
+        the same arithmetic wearing a happier face."""
+        broker, journal = BrokerStub(spread=0.5), JournalStub()
+        at(broker, -0.95)
+
+        assert self.act(broker, self.manager(broker, journal), "secure") is None
+        assert broker.closed == []
+
+    def test_the_slippage_the_stop_would_suffer_counts_for_leaving(self) -> None:
+        """Running to the stop is not free either. An AUDNZD stop at 1.19722
+        filled at 1.19705, and comparing a certain market fill against a stop
+        fill that never happens would be dishonest in the broker's favour."""
+        broker, journal = BrokerStub(spread=0.5), JournalStub()
+        at(broker, -0.95)
+
+        blind = self.manager(broker, journal)
+        measured = self.manager(broker, journal, stop_slippage_pips={"forex": 1.0})
+
+        assert self.act(broker, blind) is None
+        assert self.act(broker, measured) is not None, "0.55R saved now beats 0.25R to leave"
+
+    def test_a_tighten_is_never_blocked_by_this(self) -> None:
+        """Moving a stop costs nothing to place and risks less afterwards.
+        There is no crossing to buy, so there is nothing to weigh."""
+        broker, journal = BrokerStub(spread=0.5), JournalStub()
+        at(broker, -0.95)
+
+        event = self.act(broker, self.manager(broker, journal), "tighten")
+
+        assert event is None or event.action == "HEALTH_TIGHTEN"
+        assert broker.closed == []
+
+    def test_a_hold_is_still_a_hold(self) -> None:
+        broker, journal = BrokerStub(spread=0.2), JournalStub()
+        at(broker, -0.25)
+
+        assert self.act(broker, self.manager(broker, journal), "hold") is None
+        assert broker.closed == []
+
+    def test_without_a_stop_the_reading_stands(self) -> None:
+        """Nothing to compare against. A position with no stop is the one case
+        where a market close genuinely is the only exit there is."""
+        broker, journal = BrokerStub(spread=0.5), JournalStub()
+        at(broker, -0.95)
+        manager = self.manager(broker, journal)
+
+        event = manager._act_on_health(
+            replace(position(), sl=0.0),
+            self.reading("exit"),
+            -0.95,
+            ENTRY - STOP,
+            broker.tick("EURUSD"),
+        )
+
+        assert event is not None and broker.closed == [(555, None)]
+
+    def test_without_a_price_the_reading_stands(self) -> None:
+        """No read on where we are is not an argument for staying in."""
+        broker, journal = BrokerStub(spread=0.5), JournalStub()
+        at(broker, -0.95)
+        manager = self.manager(broker, journal)
+
+        event = manager._act_on_health(position(), self.reading("exit"), -0.95, ENTRY - STOP, None)
+
+        assert event is not None and broker.closed == [(555, None)]
+
+    def test_a_zero_risk_position_does_not_divide_by_it(self) -> None:
+        broker, journal = BrokerStub(spread=0.5), JournalStub()
+        manager = self.manager(broker, journal)
+
+        assert manager._worth_paying_to_leave(position(), 0.0, broker.tick("EURUSD")) is True

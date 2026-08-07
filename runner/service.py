@@ -888,6 +888,12 @@ class JarvisRunner:
             sl=spec.normalize_price(idea.stop_loss),
             tp=spec.normalize_price(idea.take_profit),
             risk_multiplier=self.risk.risk_multiplier(state),
+            # The largest single cost of being wrong on this account, and the
+            # gate cannot weigh it against commission and slippage unless it is
+            # handed the live number. A setup cannot exist without a tick — the
+            # playbooks refuse to score one — so the zero branch is a belt on a
+            # path that does not reach here.
+            spread_price=context.tick.spread if context.tick else 0.0,
         )
         if not sizing.approved:
             cycle_pk = self._record_skip(

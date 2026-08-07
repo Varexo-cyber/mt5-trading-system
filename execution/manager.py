@@ -300,7 +300,7 @@ class PositionManager:
             if giveback is not None:
                 events.append(giveback)
                 continue
-            reacted = self._act_on_health(position, health, r_now, risk)
+            reacted = self._act_on_health(position, health, r_now, risk, tick)
             if reacted is not None:
                 events.append(reacted)
                 if reacted.exit_price is not None:
@@ -440,15 +440,24 @@ class PositionManager:
         )
 
     def _act_on_health(
-        self, position: Position, health: PositionHealth, r_now: float, risk: float
-    ) -> ManagementEvent | None:
+        self, position: Position, health: PositionHealth, r_now: float, risk: float, tick
+    ) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
         """Carry out the one thing the reading permits, and nothing more.
 
         `secure` and `exit` both close; they are kept apart because the journal
         reason is the only record of *why*, and "banked a profit as it turned"
         and "cut it before it got worse" are different lessons to learn from.
+
+        Neither closes when the stop is nearer than the exit costs — see
+        `_worth_paying_to_leave`. A reading is a reason to want out; it is not
+        an argument that leaving is affordable, and on this account those come
+        apart often.
         """
         if health.action == "hold":
+            return None
+        if health.action in ("secure", "exit") and not self._worth_paying_to_leave(
+            position, risk, tick
+        ):
             return None
         if health.action in ("secure", "exit"):
             result = self.broker.close_position(position)
@@ -747,6 +756,47 @@ class PositionManager:
         if money > 0:
             cost += per_side / money
         return cost
+
+    def _worth_paying_to_leave(self, position: Position, risk: float, tick) -> bool:  # type: ignore[no-untyped-def]
+        """Is closing at market worth more than letting the stop do it?
+
+        There is already a guaranteed exit on this position, sitting at the
+        broker, costing nothing to keep. So a discretionary market close is not
+        "get out" — it is "get out *here* instead of *there*", and the only
+        thing it can win is the distance between the two. When that distance is
+        smaller than the spread and commission it costs to collect, the rule is
+        paying to lose more.
+
+        The live AUDCAD long is the case. Stop 10.9 pips out, and it closed on
+        a health reading for -1.61R against a plan of -1.00R. Whatever the last
+        stretch of that gap was, most of it was bought rather than suffered:
+        the stop was already there and already free.
+
+        Running to the stop is not free either, so it is charged honestly.
+        `stop_slippage_pips` is a measured figure — an AUDNZD stop at 1.19722
+        filled at 1.19705 — and leaving it out would compare a certain market
+        fill against a stop fill that never happens.
+
+        This deliberately has no threshold. It is two costs compared, and it
+        answers the same way on a trade at +0.1R above a break-even stop as on
+        one at -0.9R above its original: in both, the stop is close and the
+        crossing is not worth buying.
+        """
+        if risk <= 0:
+            return True
+        price = getattr(tick, "bid" if position.direction is Direction.LONG else "ask", 0.0)
+        if not price or position.sl <= 0:
+            # No read on where we are or where the stop is. The reading asked
+            # for an exit and nothing here can argue it down, so it stands.
+            return True
+        spec = self.broker.spec(position.symbol)
+        slip = self.settings.risk.stop_slippage_pips.get(spec.asset_class.value, 0.0)
+        # Guarded rather than called flat, because this runs once a second on
+        # every open position and an asset class with no measured figure must
+        # cost the comparison its slippage term, not take down the loop.
+        slip_price = spec.pips_to_price(slip) if slip > 0 else 0.0
+        saved_r = (abs(price - position.sl) + slip_price) / risk
+        return saved_r > self._cost_of_leaving(position, risk, tick)
 
     def _spread_squeeze_exit(
         self, position: Position, tick, r_now: float

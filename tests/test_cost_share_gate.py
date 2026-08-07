@@ -40,7 +40,9 @@ def settings_with(**overrides: object) -> Settings:
     return base.model_copy(update={"risk": risk})
 
 
-def size(settings: Settings, spec: InstrumentSpec, stop_pips: float):  # type: ignore[no-untyped-def]
+def size(  # type: ignore[no-untyped-def]
+    settings: Settings, spec: InstrumentSpec, stop_pips: float, spread_pips: float = 0.0
+):
     entry = 1.08500
     return PositionSizer(settings).size(
         spec=spec,
@@ -49,6 +51,7 @@ def size(settings: Settings, spec: InstrumentSpec, stop_pips: float):  # type: i
         entry=entry,
         sl=entry - stop_pips * 0.0001,
         tp=entry + stop_pips * 0.0003,
+        spread_price=spread_pips * 0.0001,
     )
 
 
@@ -116,3 +119,83 @@ class TestItIsAboutCostNotQuality:
         """Guarded rather than dividing by zero; `_validate_stop` rejects it
         first in practice, but this must not be the thing that raises."""
         assert PositionSizer(settings_with())._cost_share(spec, 0.0, 5.50) == 1.0
+
+
+class TestTheSpreadIsPartOfTheCost:
+    """The term the gate used to leave out, and the largest one on this account.
+
+    Two gates existed and neither saw the whole bill. The playbooks refuse a
+    setup whose spread is more than 12-15% of the stop; this one refused
+    commission plus slippage over 25%. Nobody added them together, so a trade
+    could satisfy both while costing nearly 40% of its own risk to place. That
+    is the shape of every tight-stop loss in the last twenty trades.
+    """
+
+    def test_a_stop_that_passes_without_the_spread_fails_with_it(
+        self, spec: InstrumentSpec
+    ) -> None:
+        """Ten pips: 22.5% on commission and slippage alone, under the 25%
+        limit. Add the 1.5-pip spread the playbooks would happily allow at that
+        width and the real bill is 37.5%."""
+        assert size(settings_with(), spec, 10.0).approved
+        refused = size(settings_with(), spec, 10.0, spread_pips=1.5)
+
+        assert not refused.approved
+        assert str(refused.reason) == "SL_TOO_TIGHT_FOR_COSTS"
+
+    def test_the_refusal_names_the_spread(self, spec: InstrumentSpec) -> None:
+        detail = size(settings_with(), spec, 10.0, spread_pips=1.5).decision.detail
+        assert "spread" in detail
+        assert "1.38R rather than 1.00R" in detail
+
+    def test_a_wide_stop_still_absorbs_a_normal_spread(self, spec: InstrumentSpec) -> None:
+        """The point is not to refuse everything. A 30-pip stop pays the same
+        spread and barely notices it — which is the argument for wider stops
+        rather than for a stricter gate."""
+        assert size(settings_with(), spec, 30.0, spread_pips=1.5).approved
+
+    def test_the_spread_counts_once_not_twice(self, spec: InstrumentSpec) -> None:
+        """Filled at the ask, closed at the bid: one crossing per round trip.
+        `analysis.playbooks._spread_is_affordable` measures it the same way."""
+        sizer = PositionSizer(settings_with())
+        without = sizer._cost_share(spec, 0.0010, 5.50, 0.0)
+        with_spread = sizer._cost_share(spec, 0.0010, 5.50, 0.00015)
+
+        assert with_spread - without == pytest.approx(0.00015 / 0.0010, abs=1e-9)
+
+    def test_not_supplying_it_leaves_the_old_answer(self, spec: InstrumentSpec) -> None:
+        """Backtests and older callers pass nothing. That understates the cost
+        and is documented as doing so; it must not change what they measured."""
+        sizer = PositionSizer(settings_with())
+
+        assert sizer._cost_share(spec, 0.0010, 5.50) == sizer._cost_share(spec, 0.0010, 5.50, 0.0)
+
+    def test_the_share_still_falls_as_the_stop_widens(self, spec: InstrumentSpec) -> None:
+        sizer = PositionSizer(settings_with())
+        shares = [
+            sizer._cost_share(spec, pips * 0.0001, 5.50, 0.00015) for pips in (2.0, 5.0, 10.0, 30.0)
+        ]
+
+        assert shares == sorted(shares, reverse=True)
+        assert shares[-1] < 0.15
+
+
+class TestTheLiveCallerHandsOverTheRealSpread:
+    """A gate that reads the spread is worthless if the runner passes zero.
+
+    This is the wiring, checked by reading the call rather than by running a
+    cycle: `JarvisRunner` is the only production caller and it has to be
+    passing `spread_price`, or the whole change is decoration.
+    """
+
+    def test_the_runner_passes_the_ticks_spread(self) -> None:
+        import inspect
+
+        from runner import service
+
+        source = inspect.getsource(service.JarvisRunner)
+        call = source[source.index("PositionSizer(self.settings).size(") :]
+        call = call[: call.index(")\n")]
+
+        assert "spread_price=" in call, "the sizer is being called without the spread"
+        assert "context.tick.spread" in call, "it must be the live tick, not a constant"
