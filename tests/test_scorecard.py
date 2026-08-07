@@ -1,0 +1,135 @@
+"""What this account is bad at, asked of data it has always had.
+
+The journal records everything and nothing ever asked it the question a trader
+answers about themselves within a month. The half that matters most is the
+second one: every gate against what the setups it blocked went on to do, which
+is the only honest way to find out whether a gate — including Claude's veto —
+earns its keep.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from scripts.scorecard import main, session_of
+
+
+@pytest.fixture
+def journal(tmp_path: Path) -> Path:
+    path = tmp_path / "trading.db"
+    db = sqlite3.connect(path)
+    db.executescript("""
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY, symbol TEXT, direction TEXT, pnl_r REAL,
+            pnl_money REAL, mfe_r REAL, exit_reason TEXT, opened_at TEXT, closed_at TEXT);
+        CREATE TABLE shadow_trades (
+            id INTEGER PRIMARY KEY, blocked_by TEXT, outcome TEXT, pnl_r REAL,
+            opened_at TEXT);
+    """)
+    now = "2026-08-07T09:30:00+00:00"
+    db.executemany(
+        "INSERT INTO trades (symbol, direction, pnl_r, pnl_money, mfe_r, exit_reason, "
+        "opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?)",
+        [
+            ("FRA40", "LONG", 0.6, 0.68, 1.2, "SESSION_DECAY", now, now),
+            ("UK100", "LONG", -1.0, -1.55, 0.1, "BROKER_SL", now, now),
+            ("UK100", "LONG", -0.8, -1.10, 0.2, "BROKER_SL", now, now),
+            ("EURUSD.i", "SHORT", 0.4, 0.50, 0.5, "PROFIT_LOCK", now, now),
+        ],
+    )
+    db.executemany(
+        "INSERT INTO shadow_trades (blocked_by, outcome, pnl_r, opened_at) VALUES (?,?,?,?)",
+        [
+            ("AI_VETO", "SL", -1.0, now),
+            ("AI_VETO", "SL", -1.0, now),
+            ("LOSS_COOLDOWN", "TP", 1.8, now),
+            ("SPREAD_TOO_WIDE", None, None, now),
+        ],
+    )
+    db.commit()
+    db.close()
+    return path
+
+
+def run(journal: Path, *args: str, capsys) -> str:  # type: ignore[no-untyped-def]
+    assert main(["--db", str(journal), *args]) == 0
+    return capsys.readouterr().out
+
+
+def test_the_instrument_that_loses_is_named(journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    printed = run(journal, capsys=capsys)
+
+    assert "UK100" in printed
+    assert "-1.80R" in printed
+
+
+def test_a_gate_that_saved_money_is_credited(journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """Two setups Claude refused both went on to hit their stop."""
+    printed = run(journal, capsys=capsys)
+
+    assert "AI_VETO" in printed
+    assert "saved us 2.00R" in printed
+
+
+def test_a_gate_that_cost_money_is_named_as_such(journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """The finding this half exists for. A gate is not automatically right
+    because it is a gate."""
+    printed = run(journal, capsys=capsys)
+
+    assert "cost us 1.80R" in printed
+
+
+def test_an_unresolved_shadow_is_excluded_and_counted(journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """Counting a setup whose outcome is still unknown as a zero would flatter
+    every gate toward neutral."""
+    printed = run(journal, capsys=capsys)
+
+    assert "1 blocked setup(s) not yet resolved" in printed
+
+
+def test_it_refuses_to_let_four_trades_read_as_a_result(journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    printed = run(journal, capsys=capsys)
+
+    assert "Not a sample" in printed
+
+
+def test_thin_buckets_can_be_hidden(journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    """A bucket with one trade in it is an anecdote, and the temptation to act
+    on one is exactly what this flag is for."""
+    printed = run(journal, "--min-sample", "2", capsys=capsys)
+
+    assert "UK100" in printed  # two trades
+    assert "FRA40" not in printed  # one
+
+
+def test_an_empty_window_says_so(journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    printed = run(journal, "--days", "0.001", capsys=capsys)
+
+    assert "Nothing closed in this window" in printed
+
+
+def test_a_missing_journal_is_reported_not_raised() -> None:
+    assert main(["--db", "journal/nowhere.db"]) == 1
+
+
+class TestSessionBuckets:
+    """A bucket here must mean the same window as the session filter, or the
+    report says "london" about hours london does not cover."""
+
+    def test_the_night_is_asia(self) -> None:
+        assert session_of(3) == "asia"
+
+    def test_the_morning_is_london(self) -> None:
+        assert session_of(9) == "london"
+
+    def test_the_afternoon_is_the_overlap(self) -> None:
+        assert session_of(14) == "overlap"
+
+    def test_the_evening_is_new_york(self) -> None:
+        assert session_of(19) == "newyork"
+
+    def test_the_dead_hours_are_named_rollover(self) -> None:
+        assert session_of(22) == "rollover"
