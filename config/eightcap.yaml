@@ -181,7 +181,22 @@ analysis:
     # Also refuse when a short-horizon theory contradicts the swing engine.
     require_method_agreement: true
     max_spread_share_of_stop: 0.15
-    min_conviction: 60.0
+
+    # Van 60 naar 75, op verzoek van de eigenaar: liever weinig trades waar hij
+    # zeker van is dan veel marginale.
+    #
+    # Dit is de knop die dat echt doet. De plafonds van de vijf theorieen zijn
+    # 95, 90, 88, 86 en 84, dus 75 vraagt ongeveer de bovenste kwart van wat ze
+    # ueberhaupt kunnen uitdrukken. Boven ~84 vallen ze een voor een stil, en
+    # boven 95 kan er geen enkele meer door - `_build_playbooks` waarschuwt nu
+    # bij het opstarten als de vloer boven elk plafond ligt, want dat leest als
+    # strengheid en is een uitknop.
+    #
+    # Dit is een risicovoorkeur, geen gemeten optimum. Met negen gesloten trades
+    # is er geen verdeling om 75 uit af te leiden; het is de keuze van de
+    # eigenaar en die is legitiem. Wat het kost is wel meetbaar: `why_no_trades`
+    # laat zien hoeveel setups eronder sneuvelen.
+    min_conviction: 75.0
 
 # Experimental live uses Claude as a mandatory final veto gate. The API key
 # stays in config/.env, is never committed, and is never sent to the dashboard.
