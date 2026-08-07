@@ -70,7 +70,21 @@ data:
     H1: 2000
     M15: 2000
     M5: 2000
-    M1: 1200      # ~20 hours; entry-timing context, not a history for analysis
+    # 300, niet 1200. M1 is de enige reeks die zijn cache elke cyclus verliest
+    # - een minuutbar sluit elke minuut, en een cyclus duurt er ongeveer een -
+    # dus dit is de enige regel in deze tabel die per cyclus 67 keer opnieuw
+    # over de lijn moet. De rest wordt pas opgehaald als er echt een nieuwe bar
+    # gesloten is, en dat is bij H1 een keer per uur en bij D1 een keer per dag.
+    #
+    # Wie leest hem eigenlijk:
+    #   momentum_scalp    15 bars (een M1-ATR plus vijf bars drift)
+    #   de adviseur       30 bars (_BARS_SENT)
+    #   de bewakingslus   haalt zijn eigen bars direct op, los van deze tabel
+    #
+    # Er werden er dus 1200 opgehaald voor een verbruik van 30. De vloer is
+    # `min_bars_required: 200`, en 300 laat daar wat lucht boven voor een
+    # weekendgat zonder de rest van de dag mee te slepen.
+    M1: 300
 
   # 200 closed bars is a fair floor for an intraday indicator and an absurd one
   # on a weekly series: it demands four years of history that a broker does not
