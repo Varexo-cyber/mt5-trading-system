@@ -46,7 +46,27 @@ instruments:
   # for a week. That is the real cost of the slow markets, not their quality.
   #
   # Values: forex, metal, index, commodity, stock, crypto.
-  asset_classes: [forex, metal, index]
+  #
+  # Crypto hoort hier, en het stond er ten onrechte niet in. Het is de enige
+  # klasse die in het weekend doorloopt, en de rest van de configuratie kende
+  # hem al: het spread-filter kapt crypto op 5 bps, de tick-leeftijd op 180
+  # seconden, `continuous_asset_classes` stelt hem vrij van de avonduitfasering
+  # en er is een onderhoudsvenster van 23:55 tot 00:10.
+  #
+  # WAT HIER ANDERS IS, EN HET IS EEN ECHT VERSCHIL. Een cryptopositie die
+  # vrijdagavond openstaat gaat het weekend in. Elke andere klasse wordt om
+  # 20:00 platgelegd; deze niet, want er is geen rollover en geen sluiting om
+  # tegen af te dekken. Zolang Jarvis draait wordt hij elke seconde bewaakt.
+  # Draait Jarvis niet - herstart van de VPS, proces omgevallen - dan hangt hij
+  # aan zijn broker-stop alleen, twee dagen lang, in een markt die dan het
+  # dunst is. Dat is de prijs van een klasse die nooit dichtgaat.
+  #
+  # En wat het model nog niet weet: `stop_slippage_pips` heeft geen regel voor
+  # crypto, dus de kostenpoort rekent daar met nul slippage. Voor forex is die
+  # nul gemeten op elke echte fill; voor crypto is hij niet gemeten maar
+  # aangenomen, en dat is niet hetzelfde. Zodra er cryptofills in het journal
+  # staan hoort daar een gemeten getal te komen in plaats van een aanname.
+  asset_classes: [forex, metal, index, crypto]
 
   # Or watch a single instrument. Leave empty for the list above; set e.g.
   # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded
@@ -271,6 +291,22 @@ ai:
 # trades" rather than "more trades".
 filters:
   session:
+    # 20:00 UTC, niet de standaard 19:00. 19:00 is 21:00 in Amsterdam en dat is
+    # gewoon de New Yorkse middag - een normaal verhandelbaar uur, geen dun boek.
+    #
+    # Wat die vrijdaggrens hoort te beschermen is een positie die het weekend in
+    # gedragen wordt, en dat kan sowieso niet: de avonduitfasering sluit alles om
+    # 20:15 (indices al om 20:00), ruim voor de sluiting om 21:00. En een trade
+    # openen die de tijd niet meer heeft om zijn target te halen wordt al
+    # geweigerd door `INSUFFICIENT_RUNWAY`, dat de resterende minuten tegen de
+    # afstand tot het doel afweegt in plaats van tegen een vast uur.
+    #
+    # Er bleef dus een uur handelstijd liggen voor een risico dat twee andere
+    # regels al dekken. Op 20:00 valt de grens samen met de uitfasering van de
+    # indices en vijftien minuten voor die van forex, wat betekent dat hij nog
+    # bindt zonder een normaal uur weg te gooien.
+    block_friday_after: "20:00"
+
     # De Aziatische sessie erbij, op verzoek van de eigenaar: de VPS is er om
     # 24/7 te draaien en de rekening stond 's nachts stil.
     #
