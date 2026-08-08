@@ -169,12 +169,31 @@ class Brain:
     def _connect(self) -> Any:
         import psycopg  # imported here so the package is optional
 
+        # NOT `options="-c statement_timeout=..."`. That is the obvious way to
+        # bound a query and Neon's POOLED endpoint refuses the whole connection
+        # over it:
+        #
+        #   unsupported startup parameter in options: statement_timeout
+        #   Please use unpooled connection or remove this parameter
+        #
+        # pgbouncer cannot pass arbitrary startup parameters through to the
+        # server it hands you, so it rejects rather than silently ignores. The
+        # DSN in use has `-pooler` in the host, which is the right endpoint for
+        # a long-running process that reconnects, so the timeout moves instead
+        # of the endpoint.
         connection = psycopg.connect(
             self.dsn,
             connect_timeout=self.connect_timeout,
             autocommit=True,
-            options=f"-c statement_timeout={STATEMENT_TIMEOUT_MS}",
         )
+        # Best effort, and it says so. In pgbouncer's transaction-pooling mode
+        # a bare SET may not survive to the next statement, because the next
+        # one can land on a different server connection. Attempting it costs a
+        # round trip and helps on the unpooled endpoint and on plain Postgres;
+        # where it does not stick, `connect_timeout` and the fail-soft wrapper
+        # are what keep a slow database from holding up a trading cycle.
+        with contextlib.suppress(Exception):
+            connection.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
         self.status.connected = True
         self.status.last_error = ""
         return connection
