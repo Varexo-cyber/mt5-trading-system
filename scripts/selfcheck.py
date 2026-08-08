@@ -126,12 +126,23 @@ def check_journal(now: datetime) -> Check:
         # Read-only, so a running system's writer is never blocked by this.
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5) as conn:
             conn.row_factory = sqlite3.Row
+            # A file with no schema is a different situation from a corrupt
+            # one, and "no such table: trades" is a poor way to say "this has
+            # never been initialised". The operator's next step differs.
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trades'"
+            ).fetchone():
+                return Check("journal", WARN, "the journal file has no tables yet; never started")
             open_trades = conn.execute(
                 "SELECT COUNT(*) FROM trades WHERE closed_at IS NULL AND ticket IS NOT NULL"
             ).fetchone()[0]
             last = conn.execute("SELECT MAX(opened_at) FROM trades").fetchone()[0]
+            # `analysis_cycles`, not `cycles`. The first run of this check
+            # reported "journal FAIL: no such table: cycles" on a perfectly
+            # healthy journal — a self-check that invents faults is worse than
+            # no self-check, because the next real one gets ignored with it.
             cycles = conn.execute(
-                "SELECT COUNT(*) FROM cycles WHERE ts > ?",
+                "SELECT COUNT(*) FROM analysis_cycles WHERE ts > ?",
                 ((now - timedelta(hours=24)).isoformat(),),
             ).fetchone()[0]
     except sqlite3.Error as exc:
@@ -145,8 +156,27 @@ def check_journal(now: datetime) -> Check:
     )
 
 
+def runner_is_alive(now: datetime) -> bool:
+    """Is anything actually driving the system right now?
+
+    Several checks below only mean something in the light of this. A stale
+    calendar with the runner up is an emergency — every entry is blocked and
+    nobody knows. The same staleness with the runner down is arithmetic: the
+    thing that refreshes it is not running.
+    """
+    return check_heartbeat(now).state == OK
+
+
 def check_calendar(now: datetime) -> Check:
-    """The one layer that stops all trading when it goes dark, by design."""
+    """The one layer that stops all trading when it goes dark, by design.
+
+    Judged against whether the runner is up. The first run of this check
+    reported FAIL on a Saturday with the system deliberately switched off —
+    true in the letter ("entries would be blocked") and useless, because
+    nothing was trying to enter and the refresher was not running. A check
+    that cries wolf on a quiet weekend is a check that gets ignored on the
+    Tuesday it matters.
+    """
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml")
     path = ROOT / settings.filters.news.cache_path
     if not path.exists():
@@ -154,10 +184,17 @@ def check_calendar(now: datetime) -> Check:
     age = _age(datetime.fromtimestamp(path.stat().st_mtime, UTC), now)
     limit = timedelta(minutes=settings.filters.news.max_calendar_age_minutes)
     if age is not None and age > limit:
+        if not runner_is_alive(now):
+            return Check(
+                "calendar",
+                OK,
+                f"{_minutes(age)} old, which follows from the runner being down",
+            )
         return Check(
             "calendar",
             FAIL,
-            f"{_minutes(age)} old against a {_minutes(limit)} limit — entries are blocked",
+            f"{_minutes(age)} old against a {_minutes(limit)} limit "
+            f"while the runner is up — every entry is being blocked",
         )
     return Check("calendar", OK, f"refreshed {_minutes(age)} ago" if age else "fresh")
 
@@ -201,6 +238,12 @@ def check_headlines(now: datetime) -> Check:
     if row is None:
         return Check("headlines", WARN, "cannot read the headline table")
     if not row[0]:
+        # Same reasoning as the calendar: the runner is what polls the feeds,
+        # so with it down an empty table is arithmetic rather than a fault.
+        if not runner_is_alive(now):
+            return Check(
+                "headlines", OK, "nothing stored, which follows from the runner being down"
+            )
         return Check("headlines", FAIL, "no headline stored in six hours; the feeds are dark")
     return Check("headlines", OK, f"{row[0]} headlines in the last six hours")
 
