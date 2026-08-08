@@ -290,7 +290,10 @@ class JarvisRunner:
         )
         self.filters = build_filter_chain(self.broker, self.settings, self.journal, self.clock)
         self.scanner = UniverseScanner(self.broker, self.settings, self.clock)
-        self.manager = PositionManager(self.broker, self.journal, self.settings)
+        # The brain is handed over so the banking rule can consult what this
+        # account's own closed trades say about when to take profit. It can
+        # only ever lower the threshold — see `PositionManager._worth_taking`.
+        self.manager = PositionManager(self.broker, self.journal, self.settings, self.brain)
         self.alerts = AlertSender(self.settings.monitoring)
         self.reports = DailyReportGenerator(
             self.journal,
@@ -1579,9 +1582,27 @@ class JarvisRunner:
                 # No audit, no action. Every other decision in this system is
                 # reconstructable from the ledger and this one must be too.
                 continue
-            if verdict.action == "hold":
-                continue
-            event = self.manager.apply_supervision(position, verdict)
+            event = (
+                None
+                if verdict.action == "hold"
+                else self.manager.apply_supervision(position, verdict)
+            )
+            # Written whether or not it was a hold, and whether or not the risk
+            # layer carried it out. A "hold" that preceded a full stop-out is
+            # the most informative row this table can hold, and marking a
+            # refused verdict as acted-upon would credit the adviser for
+            # something that never happened.
+            self.brain.record_supervision(
+                trade_id=self._brain_trades.get(position.ticket),
+                asked_at=now,
+                symbol=position.symbol,
+                action=verdict.action,
+                confidence=verdict.confidence,
+                reasoning=verdict.reason,
+                applied=event is not None,
+                latency_ms=latency_ms,
+                model=verdict.model,
+            )
             if event is not None:
                 self._record_management([event])
 

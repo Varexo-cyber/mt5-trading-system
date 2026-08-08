@@ -1619,3 +1619,100 @@ class TestPayingToLeaveWhenTheStopIsAlreadyThere:
         manager = self.manager(broker, journal)
 
         assert manager._worth_paying_to_leave(position(), 0.0, broker.tick("EURUSD")) is True
+
+
+class TestTheAccountLearningWhenToTakeIt:
+    """The one thing the database is allowed to move, and the bound that makes
+    it safe.
+
+    Everywhere else the rule is absolute: nothing read from Postgres may change
+    a threshold, because a learning system that can rewrite its own risk
+    controls is how an account dies. This is the exception, and it is bounded
+    by direction rather than by trust — `_worth_taking` takes the MINIMUM, so
+    the learned value can only ever bank sooner. Earlier is less exposure. The
+    worst case is money left on the table.
+    """
+
+    #: Deliberately large, so the equity share never binds and each test
+    #: measures the R terms it is about. `test_the_equity_share_still_caps_it`
+    #: drops it back to the real account to check the other direction.
+    EQUITY = 1000.0
+
+    class Learned:
+        """A brain that has made up its mind."""
+
+        def __init__(self, take_at_r: float | None) -> None:
+            self.take_at_r = take_at_r
+            self.calls = 0
+
+        def learned_bank_threshold(self, **_: object) -> float | None:
+            self.calls += 1
+            return self.take_at_r
+
+    def manager(self, brain=None, **overrides):  # type: ignore[no-untyped-def]
+        settings = load_settings(env_overrides=False)
+        if overrides:
+            management = settings.trade_management.model_copy(update=overrides)
+            settings = settings.model_copy(update={"trade_management": management})
+        made = PositionManager(BrokerStub(), JournalStub(), settings, brain)  # type: ignore[arg-type]
+        made.equity = self.EQUITY
+        return made
+
+    def test_a_lower_learned_level_is_used(self) -> None:
+        """0.18R against a configured 0.3R: the account's own history says take
+        it sooner, and sooner is always allowed."""
+        made = self.manager(self.Learned(0.18), bank_at_r=0.3)
+
+        assert made._worth_taking(risk_money=10.0) == pytest.approx(1.8)
+
+    def test_a_higher_learned_level_is_ignored(self) -> None:
+        """The bound. If the database ever answered 0.9R — from a bug, a bad
+        migration, or a stretch of luck — honouring it would mean holding
+        positions longer than the operator configured, on the say-so of a
+        remote table nobody reviewed."""
+        made = self.manager(self.Learned(0.9), bank_at_r=0.3)
+
+        assert made._worth_taking(risk_money=10.0) == pytest.approx(3.0)
+
+    def test_no_brain_leaves_the_configured_threshold_alone(self) -> None:
+        assert self.manager(None, bank_at_r=0.3)._worth_taking(10.0) == pytest.approx(3.0)
+
+    def test_a_brain_with_too_little_evidence_changes_nothing(self) -> None:
+        """It returns None until forty trades have closed, and None must read
+        as 'no opinion' rather than as zero."""
+        assert self.manager(self.Learned(None), bank_at_r=0.3)._worth_taking(10.0) == pytest.approx(
+            3.0
+        )
+
+    def test_the_equity_share_still_caps_it(self) -> None:
+        """Three sentences now say the same thing and the trade gets the
+        smallest. A learned level must not be able to talk past the operator's
+        own sense of a sum worth having."""
+        made = self.manager(self.Learned(0.9), bank_at_r=0.9)
+        made.equity = 151.0
+
+        # 0.6% of 151 is 0.906, well under 0.9R of a EUR 10 risk.
+        assert made._worth_taking(risk_money=10.0) == pytest.approx(0.906, abs=1e-3)
+
+    def test_it_is_asked_once_and_then_cached(self) -> None:
+        """The guard runs every second on every position and this is a GROUP BY
+        over the whole trade history."""
+        brain = self.Learned(0.2)
+        made = self.manager(brain)
+        for _ in range(50):
+            made._worth_taking(risk_money=10.0)
+
+        assert brain.calls == 1
+
+    def test_a_brain_that_raises_does_not_reach_the_guard(self) -> None:
+        """`Brain` already swallows its own failures, but the manager must not
+        depend on that: a null object, a stub or a future implementation could
+        all throw, and this runs inside the loop watching real money."""
+
+        class Broken:
+            def learned_bank_threshold(self, **_: object) -> float | None:
+                raise RuntimeError("boom")
+
+        made = self.manager(Broken(), bank_at_r=0.3)
+
+        assert made._worth_taking(risk_money=10.0) == pytest.approx(3.0)
