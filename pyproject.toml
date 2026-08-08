@@ -25,6 +25,10 @@ ai = ["openai>=1.50", "anthropic>=0.40"]
 # short memory in a local JSON file exactly as it always has, and
 # `brain.build_brain` returns a null object rather than failing to start.
 brain = ["psycopg[binary]>=3.2"]
+# Python on Windows does not read the OS certificate store for `ssl`, so the
+# headline feeds fail verification without a CA bundle on disk. Declared here
+# rather than relied on as a transitive dependency of `anthropic`.
+news = ["certifi>=2024.2.2"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",

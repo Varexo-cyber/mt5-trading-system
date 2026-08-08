@@ -14,6 +14,7 @@ empties the window into "nothing is happening".
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -537,7 +538,8 @@ class TestPollingPolitely:
             def __exit__(self, *_: object) -> bool:
                 return False
 
-        def fake_urlopen(request, timeout=None):  # type: ignore[no-untyped-def]
+        def fake_urlopen(request, timeout=None, context=None):  # type: ignore[no-untyped-def]
+            del context
             sent.append({key.lower(): value for key, value in request.headers.items()})
             nxt = queue.pop(0)
             if isinstance(nxt, urllib.error.HTTPError):
@@ -602,7 +604,7 @@ class TestPollingPolitely:
         a minute. Hitting one URL every second instead gets the address
         blocked, and a blocked address reports a permanently quiet market."""
         assert HeadlineFilterConfig().refresh_interval_seconds == 20.0
-        assert len(DEFAULT_FEEDS) >= 20
+        assert len(DEFAULT_FEEDS) >= 18
 
 
 class TestStaggeringTheFeeds:
@@ -691,3 +693,86 @@ class TestStaggeringTheFeeds:
         service.refresh()
 
         assert service.providers[0].calls == 2  # type: ignore[attr-defined]
+
+
+class TestVerifyingCertificates:
+    """Seventeen of twenty-one feeds failed on the VPS with
+    CERTIFICATE_VERIFY_FAILED. Python on Windows does not read the OS
+    certificate store for `ssl`, so without a CA bundle on disk it cannot
+    verify most hosts — and the few that worked were the ones whose chain
+    reached a root it happened to have. That pattern reads as "the feeds are
+    down" rather than "this client cannot verify anybody", which is why it
+    needs a test rather than a comment.
+    """
+
+    def test_the_context_uses_certifis_bundle(self) -> None:
+        import certifi
+
+        from filters.newsfeed.providers import ssl_context
+
+        context = ssl_context()
+
+        assert context.verify_mode.name == "CERT_REQUIRED"
+        assert context.get_ca_certs(), "the bundle has to actually be loaded"
+        assert certifi.where()  # the dependency is declared and importable
+
+    def test_verification_is_never_switched_off(self) -> None:
+        """The one-line fix for this error is an unverified context, and it
+        would make every feed work immediately. It would also let anything on
+        the path feed this system invented headlines — a strange thing to
+        accept for a layer whose job is deciding when not to trade."""
+        from filters.newsfeed.providers import ssl_context
+
+        context = ssl_context()
+
+        assert context.check_hostname is True
+        assert context.verify_mode == __import__("ssl").CERT_REQUIRED
+
+    def test_the_source_never_reaches_for_the_escape_hatch(self) -> None:
+        from filters.newsfeed.providers import __file__ as source_path
+
+        source = Path(source_path).read_text(encoding="utf-8")
+
+        assert "_create_unverified_context" not in source
+        assert "CERT_NONE" not in source
+
+    def test_the_context_is_built_once(self) -> None:
+        """It is reached on every poll of every feed, and building one parses
+        the whole bundle."""
+        from filters.newsfeed.providers import ssl_context
+
+        assert ssl_context() is ssl_context()
+
+    def test_the_fetch_passes_it_to_urlopen(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A context nobody hands to `urlopen` verifies nothing."""
+        import filters.newsfeed.providers as module
+
+        seen: dict[str, object] = {}
+
+        class Response:
+            def __init__(self) -> None:
+                self.headers: dict[str, str] = {}
+
+            def read(self) -> bytes:
+                return TestReadingAFeed.RSS.encode()
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_: object) -> bool:
+                return False
+
+        def fake_urlopen(request, timeout=None, context=None):  # type: ignore[no-untyped-def]
+            seen["context"] = context
+            return Response()
+
+        monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+        RssHeadlineProvider("wire", "https://example.test/feed").fetch(NOW)
+
+        assert seen["context"] is module.ssl_context()
+
+    def test_the_blocked_feeds_were_removed(self) -> None:
+        """fxstreet answered HTTP 403, which is a deliberate block and not a
+        transport problem. A feed that will never answer costs a slot in the
+        rotation every twenty seconds forever."""
+        assert not any("fxstreet" in url for _, url in DEFAULT_FEEDS)

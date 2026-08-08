@@ -26,11 +26,13 @@ reason, as the calendar's.
 from __future__ import annotations
 
 import re
+import ssl
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from xml.etree import ElementTree
 
 from core.errors import TradingSystemError
@@ -38,6 +40,46 @@ from filters.newsfeed.items import Headline
 from infra.logging import get_logger
 
 log = get_logger(__name__)
+
+
+@lru_cache(maxsize=1)
+def ssl_context() -> ssl.SSLContext:
+    """A context that can actually verify these hosts on Windows.
+
+    Seventeen of twenty-one feeds failed on the VPS with:
+
+        CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate
+
+    Python on Windows does not read the OS certificate store for `ssl`. It
+    looks for a CA bundle on disk, an embedded install often ships without
+    one, and the handful of feeds that did work were the ones whose chain
+    happened to reach a root Python already had. That pattern — most hosts
+    failing, a few working — is what makes this look like the feeds being down
+    rather than the client being unable to verify anybody.
+
+    `certifi` is the same bundle `requests` uses and is a hard dependency of
+    the `anthropic` package, so it is already installed wherever the adviser
+    runs. Falling back to the default context if it somehow is not: that
+    reproduces today's behaviour rather than turning a verification problem
+    into an import error.
+
+    VERIFICATION IS NEVER DISABLED. The tempting one-line fix is an unverified
+    context, and it would make every feed work immediately. It would also mean
+    anything on the path could feed this system invented headlines, which is a
+    strange thing to accept for a layer whose entire job is deciding when the
+    market is not safe to trade.
+    """
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:  # pragma: no cover - certifi is a transitive dependency
+        log.warning(
+            "certifi is not installed; falling back to the default SSL context",
+            extra={"event": "newsfeed_no_certifi"},
+        )
+        return ssl.create_default_context()
+
 
 #: Browsers get served; bespoke agents get filtered by the CDNs in front of
 #: most of these. The calendar providers learned the same thing.
@@ -69,8 +111,10 @@ MAX_ITEM_AGE = timedelta(hours=12)
 DEFAULT_FEEDS: tuple[tuple[str, str], ...] = (
     # -- FX and macro ------------------------------------------------------
     ("forexlive", "https://www.forexlive.com/feed/news"),
-    ("fxstreet", "https://www.fxstreet.com/rss/news"),
-    ("fxstreet-analysis", "https://www.fxstreet.com/rss/analysis"),
+    # fxstreet.com/rss/news and /rss/analysis were here and are gone: both
+    # answered HTTP 403 on the VPS, which is a deliberate block rather than a
+    # transport problem, and a feed that will never answer costs a slot in the
+    # rotation every twenty seconds forever.
     ("investing-forex", "https://www.investing.com/rss/news_1.rss"),
     ("investing-economy", "https://www.investing.com/rss/news_14.rss"),
     ("investing-economic-indicators", "https://www.investing.com/rss/news_95.rss"),
@@ -254,7 +298,9 @@ class RssHeadlineProvider(HeadlineProvider):
 
         request = urllib.request.Request(self.url, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout, context=ssl_context()
+            ) as response:
                 body = response.read()
                 self._etag = response.headers.get("ETag", "") or self._etag
                 self._modified = response.headers.get("Last-Modified", "") or self._modified
