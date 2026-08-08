@@ -160,3 +160,56 @@ class TestItNeverEchoesTheValue:
 
         assert module.main(["MT5_PASSWORD"]) == 1
         assert path.read_text() == "MT5_LOGIN=1\n"
+
+
+class TestTheSuiteNeverTouchesTheRealEnvFile:
+    """This is not hypothetical. An earlier version of `write_secret` bound
+    `ENV_PATH` as a default argument, which captures it at import time, so
+    monkeypatching the module global had no effect and `main()` wrote the test
+    fixtures straight into the operator's own config/.env — `hunter2` and sixty
+    x's, on top of the MT5 password and the Claude key.
+
+    On a developer machine that is an annoyance. On the VPS, running the suite
+    would destroy the credentials the account logs in with, and the failure
+    would not appear until the next restart.
+    """
+
+    def test_write_secret_resolves_its_path_at_call_time(  # type: ignore[no-untyped-def]
+        self, module, monkeypatch, tmp_path
+    ) -> None:
+        """The specific defect: a default argument would still point at the
+        real file no matter what the test set."""
+        target = tmp_path / "redirected.env"
+        monkeypatch.setattr(module, "ENV_PATH", target)
+
+        module.write_secret("MT5_SERVER", "Eightcap-Live")
+
+        assert target.exists(), "the module global has to be honoured"
+        assert "Eightcap-Live" in target.read_text()
+
+    def test_the_default_is_not_frozen_into_the_signature(self, module) -> None:
+        """Read from the signature directly, because the behavioural test above
+        passes for the wrong reason if someone reintroduces the default and
+        happens to import before the patch."""
+        import inspect
+
+        default = inspect.signature(module.write_secret).parameters["path"].default
+
+        assert default is None, "path must default to None and resolve inside the function"
+
+    def test_running_main_writes_only_where_it_was_pointed(  # type: ignore[no-untyped-def]
+        self, module, monkeypatch, tmp_path
+    ) -> None:
+        """End to end, through the entry point that caused the damage."""
+        from pathlib import Path
+
+        real = Path(module.ROOT) / "config" / ".env"
+        before = real.read_bytes() if real.exists() else None
+
+        monkeypatch.setattr(module, "ENV_PATH", tmp_path / ".env")
+        monkeypatch.setattr(module, "getpass", lambda _prompt: "postgresql://u:p@h/db")
+        module.main(["NEON_DATABASE_URL"])
+
+        after = real.read_bytes() if real.exists() else None
+        assert after == before, "the real config/.env was modified by a test"
+        assert (tmp_path / ".env").exists()
