@@ -118,7 +118,9 @@ DEFAULT_FEEDS: tuple[tuple[str, str], ...] = (
     ("investing-forex", "https://www.investing.com/rss/news_1.rss"),
     ("investing-economy", "https://www.investing.com/rss/news_14.rss"),
     ("investing-economic-indicators", "https://www.investing.com/rss/news_95.rss"),
-    ("dailyfx", "https://www.dailyfx.com/feeds/market-news"),
+    # dailyfx was here and answered HTTP 403, the same deliberate block as
+    # fxstreet. Removed for the same reason: a feed that will never answer
+    # costs a slot in the rotation every twenty seconds forever.
     ("actionforex", "https://www.actionforex.com/feed/"),
     # -- central banks, straight from the source ---------------------------
     #
