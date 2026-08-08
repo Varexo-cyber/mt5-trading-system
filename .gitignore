@@ -15,6 +15,13 @@ logs/
 *.sqlite3
 data_cache/
 data/history/
+# The live calendar cache is rewritten every thirty minutes by the running
+# system. Tracked, it left the working tree permanently dirty -- which is
+# cosmetic until `auto_update.py` refuses to touch a dirty tree, and then it
+# blocks every unattended update forever. The archive next to it is committed
+# on purpose: it is the historical record the replay reads, it grows only when
+# the weekly task appends to it, and it is worth surviving a rebuilt VPS.
+data/calendar/cache.json
 STOP
 runtime/
 
