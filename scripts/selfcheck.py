@@ -37,6 +37,7 @@ sys.path.insert(0, str(ROOT))
 
 from brain import Brain, build_brain
 from config.loader import load_credentials, load_settings
+from monitoring.operation_ledger import LEDGER_FILENAME
 
 #: How long the runner may go without touching the ledger before that is a
 #: problem. A scan cycle takes under a minute and the guard runs every second,
@@ -92,7 +93,7 @@ def check_heartbeat(now: datetime) -> Check:
     keeps growing whether or not anything useful happened — a process stuck in
     a retry loop writes more, not less.
     """
-    path = ROOT / "runtime" / "operations.json"
+    path = ROOT / "runtime" / LEDGER_FILENAME
     if not path.exists():
         return Check("runner", WARN, "no operations ledger yet; has it ever started?")
     try:

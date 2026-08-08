@@ -73,7 +73,7 @@ from learning.config_control import ShadowRecorder
 from learning.memory import TradingMemory
 from main import build_filter_chain
 from monitoring.alerts import AlertSender
-from monitoring.operation_ledger import OperationLedger
+from monitoring.operation_ledger import LEDGER_FILENAME, OperationLedger
 from monitoring.scan_activity import ScanActivityLedger
 from promotion.audit import PromotionAudit
 from promotion.experimental import (
@@ -221,7 +221,7 @@ class JarvisRunner:
         self.advisor = advisor or build_advisor(self.settings.ai)
         self.ai_ledger = AIReviewLedger(root / "runtime" / "ai_reviews.jsonl")
         self.cursor = self._load_cursor()
-        self.operation_ledger = OperationLedger(root / "runtime" / "operation_history.json")
+        self.operation_ledger = OperationLedger(root / "runtime" / LEDGER_FILENAME)
         self.scan_activity = ScanActivityLedger(root / "runtime" / "scan_activity.json")
         self.experimental_contract: ExperimentalLiveContract | None = None
         # (symbol, direction, fastest-timeframe bar close) -> the verdict given.
