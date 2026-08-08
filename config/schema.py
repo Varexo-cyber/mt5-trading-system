@@ -803,21 +803,21 @@ class HeadlineFilterConfig(Base):
     enabled: bool = False
     #: Feed name to URL. Empty uses `filters.newsfeed.providers.DEFAULT_FEEDS`.
     feeds: dict[str, str] = Field(default_factory=dict)
-    #: How often every feed is polled.
+    #: How often EACH FEED is polled -- not how often the layer checks.
     #:
-    #: Fifteen seconds, not the two minutes this shipped with and not the five
-    #: the operator asked for. The reason is the conditional GET in
-    #: `RssHeadlineProvider`: a poll that finds nothing new costs a couple of
-    #: hundred bytes and no work at the far end, so fifteen seconds is polite
-    #: and effectively real-time against wires that publish every few minutes.
+    #: The distinction is the whole design. `HeadlineService` staggers the
+    #: feeds across this interval, so with twenty feeds at twenty seconds
+    #: something is fetched roughly every second while no single host sees
+    #: more than three requests a minute. The operator asked for one-second
+    #: scraping and that is what the batch does; what it does not do is hit
+    #: one URL every second, which gets the VPS rate-limited and then blocked.
+    #: A blocked address reports a permanently quiet market, which is the
+    #: worst failure this layer has because nothing downstream can tell.
     #:
-    #: Five would not buy anything. Nothing on a public feed changes inside
-    #: five seconds -- the story is written, edited and pushed on a scale of
-    #: minutes -- so the extra polls return 304 and the only thing gained is a
-    #: higher chance of the VPS address being rate-limited or blocked. A
-    #: blocked address is the worst outcome available, because the layer then
-    #: reports a permanently quiet market and nothing downstream can tell.
-    refresh_interval_seconds: float = Field(default=15.0, ge=5.0, le=3600.0)
+    #: Cheap on top of that: `RssHeadlineProvider` sends an ETag, so a poll
+    #: that finds nothing new costs a couple of hundred bytes and no work at
+    #: the far end.
+    refresh_interval_seconds: float = Field(default=20.0, ge=5.0, le=3600.0)
     #: The recent window "how busy is it right now" is measured over.
     window_minutes: float = Field(default=20.0, ge=5.0, le=240.0)
     #: The long window that window is compared against. Per instrument, because

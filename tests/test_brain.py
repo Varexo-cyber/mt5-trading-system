@@ -340,3 +340,55 @@ def test_the_retention_of_a_lesson_survives_a_timezone_round_trip() -> None:
 
     assert stamp.tzinfo is not None
     assert Lesson("x", 1, None, stamp).last_seen.tzinfo is not None
+
+
+class TestNothingIsEverDeleted:
+    """The operator's requirement, stated plainly: this data must never be
+    thrown away. The local JSON memory prunes on a retention window, which is
+    the behaviour the database exists to replace — a market regime from three
+    months ago is weak evidence about this morning, but it is still evidence,
+    and it is the operator's to discard rather than the system's.
+    """
+
+    def source(self) -> str:
+        from brain.store import SCHEMA_PATH
+
+        return (SCHEMA_PATH.parent / "store.py").read_text(encoding="utf-8")
+
+    def test_the_store_issues_no_delete_of_any_kind(self) -> None:
+        text = self.source().upper()
+
+        for destructive in ("DELETE FROM", "TRUNCATE", "DROP TABLE", "DROP VIEW"):
+            assert destructive not in text, destructive
+
+    def test_there_is_no_retention_window(self) -> None:
+        """`learning/memory.py` has RETENTION_DAYS and prunes against it. This
+        deliberately has no equivalent, and adding one would be a decision to
+        make the account forget."""
+        text = self.source().lower()
+
+        assert "retention" not in text
+        assert "_prune" not in text
+
+    def test_the_schema_creates_but_never_drops(self) -> None:
+        from brain.store import SCHEMA_PATH
+
+        sql = SCHEMA_PATH.read_text(encoding="utf-8").upper()
+
+        assert "DROP " not in sql
+        assert "TRUNCATE" not in sql
+
+    def test_a_repeated_decision_updates_rather_than_replaces(self) -> None:
+        """`ON CONFLICT DO UPDATE` on the detail only. A retry must not be able
+        to overwrite the equity, the verdict or the headlines that were true at
+        the moment the decision was first made."""
+        from brain.store import SCHEMA_PATH
+
+        sql = (SCHEMA_PATH.parent / "store.py").read_text(encoding="utf-8")
+
+        assert "ON CONFLICT (fingerprint) DO UPDATE SET detail = EXCLUDED.detail" in sql
+
+    def test_a_repeated_headline_is_ignored_rather_than_rewritten(self) -> None:
+        """First sighting keeps the timestamp. A story re-published by a fourth
+        wire is not a fresh event."""
+        assert "ON CONFLICT (fingerprint) DO NOTHING" in self.source()

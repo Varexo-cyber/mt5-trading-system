@@ -625,6 +625,34 @@ class Journal:
         ).fetchone()
         return row is not None
 
+    def management_actions_for(self, trade_id: int) -> list[dict[str, object]]:
+        """Everything the guard did to this position, oldest first.
+
+        The trade's own story, and until now nothing read it back. The
+        post-trade reflection was handed entry, exit and P&L and asked what
+        went wrong — which is like reviewing a journey from the departure and
+        arrival boards. A trade that reached +0.9R, had its stop pulled to
+        break even, drifted for forty minutes and closed flat looks, in that
+        summary, exactly like one that never moved at all.
+        """
+        rows = self.conn.execute(
+            "SELECT ts, action, old_sl, new_sl, volume_closed, r_at_action, note "
+            "FROM management_actions WHERE trade_id = ? ORDER BY ts, id",
+            (trade_id,),
+        ).fetchall()
+        return [
+            {
+                "at": row["ts"],
+                "action": row["action"],
+                "r_at_the_time": row["r_at_action"],
+                "stop_moved_from": row["old_sl"],
+                "stop_moved_to": row["new_sl"],
+                "volume_closed": row["volume_closed"],
+                "why": row["note"],
+            }
+            for row in rows
+        ]
+
     def update_excursions(self, trade_id: int, *, mae_r: float, mfe_r: float) -> None:
         """Ratchet MAE/MFE while a trade is open.
 

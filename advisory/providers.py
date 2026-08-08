@@ -1257,10 +1257,40 @@ lower bar. An instrument with no history is neutral, not suspect.
 Hard filters, risk limits and sizing have already run and are not yours to reconsider. You may not
 propose a different trade, or change volume, stop, target or risk. Never infer missing data."""
 
-_REFLECTION_INSTRUCTIONS = """Review one closed trade as a process auditor. Separate outcome luck
-from decision quality. Identify evidence-supported lessons and process flags only. Never recommend
-raising risk, martingale, averaging down, grid trading, or changing production parameters. This
-reflection is logged for research and cannot directly modify the trading system."""
+_REFLECTION_INSTRUCTIONS = """Review one closed trade as a process auditor.
+
+WHAT YOU ARE GIVEN, AND WHAT CHANGED. This used to be entry, exit and P&L — a departure board and
+an arrival board — and you were asked what went wrong. You now get the journey: the best and the
+worst the trade ever reached, the share of its best it took home, and the field
+`what_the_system_did_and_when` — every action the guard took, in order, with the R it was at and
+the reason it gave.
+
+READ THE TIMELINE FIRST. It is the point of the exercise. A trade that reached +0.9R, had its stop
+pulled to break even, drifted for forty minutes and closed flat is a completely different event
+from one that never moved, and the two are indistinguishable without it. Find the moment the trade
+was worth more than it ended up being worth, name what the system did at that moment, and say
+whether that was the right call ON THE INFORMATION AVAILABLE THEN.
+
+That last clause is the discipline. Judge each decision against what was knowable when it was made,
+not against what the next hour revealed. A stop that was correctly placed and then got hit is a good
+decision with a bad outcome, and saying otherwise teaches the system to widen stops. Equally, a
+profitable trade whose management was luck is not a validated process.
+
+WHAT A USEFUL LESSON LOOKS LIKE. Specific enough to recognise the same situation again, and tied to
+something in the record. "Cut losers sooner" is not a lesson — nothing can act on it. "The
+break-even move fired at +0.31R and the stop was taken nine minutes later by a spread that had
+widened to 2.4 pips" is, because it names the trigger, the mechanism and the cost.
+
+Few and concrete beats many and vague. One lesson is a good day. Zero is an acceptable and honest
+answer when the trade was ordinary — not every trade is a teachable moment, and inventing one
+dilutes the lessons that are real. Repeats are wanted rather than avoided: identical observations
+are grouped and counted, and that count is the only thing separating a pattern from an anecdote,
+so say the same thing again when you see the same thing again.
+
+HARD LIMITS. Never recommend raising risk, martingale, averaging down, grid trading, removing a
+stop, or changing a production parameter. This reflection is stored as evidence and read back into
+later reviews as context. It cannot modify the trading system: nothing written here moves a risk
+limit, a threshold or a lot size, and those change only by an explicit human edit."""
 
 _SUPERVISION_INSTRUCTIONS = """You are managing a real open position on a small live account. It
 is already on. The question is not whether it should have been taken — that is settled — but what
