@@ -61,6 +61,10 @@ class HeadlineService:
         self._headlines: dict[str, Headline] = {}
         self._fetched_at: datetime | None = None
         self._sources: tuple[str, ...] = ()
+        # Per feed, so each is polled on its own rotation rather than the whole
+        # list firing together. See `_is_due`.
+        self._polled_at: dict[str, datetime] = {}
+        self._started = clock.now()
 
     # -- state -------------------------------------------------------------
 
@@ -105,13 +109,14 @@ class HeadlineService:
         one conclusion an outage must never produce.
         """
         now = self.clock.now()
-        fresh = self._fetched_at is not None and now - self._fetched_at < self.refresh_interval
-        if fresh and not force:
+        due = [p for p in self.providers if force or self._is_due(p, now)]
+        if not due:
             return False
 
         collected: list[Headline] = []
         answered: list[str] = []
-        for provider in self.providers:
+        for provider in due:
+            self._polled_at[provider.name] = now
             try:
                 items = provider.fetch(now)
             except FeedUnavailableError as exc:
@@ -158,6 +163,39 @@ class HeadlineService:
             },
         )
         return True
+
+    def _is_due(self, provider: HeadlineProvider, now: datetime) -> bool:
+        """Is this one feed's own turn yet?
+
+        Per feed rather than for the batch, and staggered across the interval,
+        which is how "check every second" is delivered without any single host
+        being polled every second.
+
+        The operator asked for one-second scraping. Hitting one URL every
+        second gets the VPS rate-limited and then blocked, and a blocked
+        address reports a permanently quiet market — the worst failure this
+        layer has, because nothing downstream can tell. But polling twenty
+        feeds on a rotation, each one every twenty seconds, means something is
+        being fetched every second and no host sees more than three requests a
+        minute. That is what a wire service expects, and the freshness the
+        operator actually wanted is a property of the batch, not of any one
+        source.
+
+        Each feed's slot is its own position in the list, spread evenly across
+        the interval. Without the offset all twenty fire together every twenty
+        seconds, which is the same total traffic arriving as a thundering herd
+        on a one-core VPS.
+        """
+        interval = self.refresh_interval.total_seconds()
+        if interval <= 0:
+            return True
+        last = self._polled_at.get(provider.name)
+        if last is None:
+            # Stagger the very first poll too, or the whole list still starts
+            # together on the first cycle after a restart.
+            slot = self.providers.index(provider) / max(len(self.providers), 1)
+            return (now - self._started).total_seconds() >= slot * interval
+        return (now - last).total_seconds() >= interval
 
     def _prune(self, now: datetime) -> None:
         cutoff = now - self.baseline

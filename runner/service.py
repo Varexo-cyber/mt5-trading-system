@@ -2247,6 +2247,24 @@ class JarvisRunner:
             "exit_reason": exit_reason,
             "opened_at": str(row["opened_at"]),
             "closed_at": closed_at.isoformat() if closed_at is not None else None,
+            # -- what actually happened, rather than only how it ended --------
+            #
+            # Everything above is a departure and an arrival board. A trade
+            # that reached +0.9R, had its stop pulled to break even, drifted
+            # for forty minutes and closed flat is, in that summary, identical
+            # to one that never moved — and the reflection was being asked what
+            # went wrong with only that to look at. No wonder the lessons were
+            # thin.
+            #
+            # These four are the journey.
+            "best_it_ever_reached_r": float(row["mfe_r"]) if row["mfe_r"] is not None else None,
+            "worst_it_ever_reached_r": float(row["mae_r"]) if row["mae_r"] is not None else None,
+            "share_of_its_best_it_kept": (
+                round(realised_r / float(row["mfe_r"]), 2)
+                if row["mfe_r"] and float(row["mfe_r"]) > 0
+                else None
+            ),
+            "what_the_system_did_and_when": self.journal.management_actions_for(int(row["id"])),
         }
         reflection = self.advisor.reflect(outcome)
         # This is the step that was missing. The reflection used to be written

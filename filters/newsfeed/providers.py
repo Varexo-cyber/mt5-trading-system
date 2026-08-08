@@ -56,12 +56,49 @@ MAX_UNPARSEABLE_FRACTION = 0.25
 MAX_ITEM_AGE = timedelta(hours=12)
 
 #: Candidate feeds. Every one of these needs `verify_newsfeed.py` run against
-#: it on the VPS before it is worth anything — see the module docstring.
+#: it on the VPS before it is worth anything — see the module docstring, and
+#: expect some of them to be dead. That is fine and is why there are this many:
+#: `HeadlineService` polls them on a rotation and one going quiet costs a slice
+#: of coverage rather than the whole layer.
+#:
+#: Breadth is the point. Twenty feeds on a rotation means something is fetched
+#: roughly every second while no single host sees more than a few requests a
+#: minute — which is how "scrape constantly" and "do not get the VPS blocked"
+#: are both satisfied. A wire that publishes twice an hour still contributes;
+#: it is the union that has to be continuous, not any one source.
 DEFAULT_FEEDS: tuple[tuple[str, str], ...] = (
+    # -- FX and macro ------------------------------------------------------
     ("forexlive", "https://www.forexlive.com/feed/news"),
     ("fxstreet", "https://www.fxstreet.com/rss/news"),
+    ("fxstreet-analysis", "https://www.fxstreet.com/rss/analysis"),
     ("investing-forex", "https://www.investing.com/rss/news_1.rss"),
+    ("investing-economy", "https://www.investing.com/rss/news_14.rss"),
+    ("investing-economic-indicators", "https://www.investing.com/rss/news_95.rss"),
+    ("dailyfx", "https://www.dailyfx.com/feeds/market-news"),
+    ("actionforex", "https://www.actionforex.com/feed/"),
+    # -- central banks, straight from the source ---------------------------
+    #
+    # Worth more than any wire covering them: no delay, no editorial layer,
+    # and a rate decision appears here before it appears anywhere else.
+    ("federalreserve", "https://www.federalreserve.gov/feeds/press_monetary.xml"),
+    ("ecb", "https://www.ecb.europa.eu/rss/press.html"),
+    ("bankofengland", "https://www.bankofengland.co.uk/rss/news"),
+    # -- markets, indices, equities ----------------------------------------
+    ("investing-stocks", "https://www.investing.com/rss/news_25.rss"),
+    ("marketwatch-top", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+    ("marketwatch-markets", "https://feeds.content.dowjones.io/public/rss/mw_marketpulse"),
+    (
+        "cnbc-markets",
+        "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+    ),
+    ("yahoo-finance", "https://finance.yahoo.com/news/rssindex"),
+    # -- commodities and energy --------------------------------------------
+    ("investing-commodities", "https://www.investing.com/rss/news_11.rss"),
+    ("oilprice", "https://oilprice.com/rss/main"),
+    # -- crypto -------------------------------------------------------------
     ("cointelegraph", "https://cointelegraph.com/rss"),
+    ("coindesk", "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+    ("decrypt", "https://decrypt.co/feed"),
 )
 
 

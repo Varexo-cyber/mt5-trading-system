@@ -22,6 +22,7 @@ from filters.base import FilterContext
 from filters.headline_filter import HeadlineFilter
 from filters.newsfeed.items import Headline, NewsPressure
 from filters.newsfeed.providers import (
+    DEFAULT_FEEDS,
     FeedUnavailableError,
     HeadlineProvider,
     RssHeadlineProvider,
@@ -311,6 +312,9 @@ class TestTheWindow:
         assert service.count == 1
 
     def test_one_feed_down_does_not_stop_the_others(self) -> None:
+        """`force` polls the whole list at once. Without it the feeds are
+        staggered and only the first is due on the opening call, which is the
+        subject of `TestStaggeringTheFeeds` below rather than of this test."""
         service = self.service(
             [
                 StubProvider("down", fails=True),
@@ -318,7 +322,7 @@ class TestTheWindow:
             ]
         )
 
-        assert service.refresh() is True
+        assert service.refresh(force=True) is True
         assert service.sources == ("up",)
 
     def test_it_does_not_refetch_inside_the_interval(self) -> None:
@@ -592,8 +596,98 @@ class TestPollingPolitely:
         with pytest.raises(FeedUnavailableError, match="HTTP 403"):
             provider.fetch(NOW)
 
-    def test_the_default_cadence_is_fast_but_not_absurd(self) -> None:
-        """Nothing on a public wire changes inside five seconds; the story is
-        written, edited and pushed on a scale of minutes. Extra polls return
-        304 and buy only a higher chance of being rate-limited."""
-        assert HeadlineFilterConfig().refresh_interval_seconds == 15.0
+    def test_the_default_cadence_is_per_feed_not_per_check(self) -> None:
+        """Twenty seconds each, across twenty feeds on a rotation: something is
+        fetched roughly every second and no host sees more than three requests
+        a minute. Hitting one URL every second instead gets the address
+        blocked, and a blocked address reports a permanently quiet market."""
+        assert HeadlineFilterConfig().refresh_interval_seconds == 20.0
+        assert len(DEFAULT_FEEDS) >= 20
+
+
+class TestStaggeringTheFeeds:
+    """How "scrape every second" is delivered without any host being hit every
+    second. Twenty feeds on a twenty-second rotation: something is fetched
+    roughly every second, each host sees three requests a minute.
+
+    Hitting one URL every second instead gets the address rate-limited and then
+    blocked, and a blocked address reports a permanently quiet market — the
+    worst failure available here, because nothing downstream can detect it.
+    """
+
+    def service(self, count: int, clock: FrozenClock, interval: float = 20.0) -> HeadlineService:
+        providers = [
+            StubProvider(f"feed{n}", [headline(f"Euro note {n}", minutes_ago=1)])
+            for n in range(count)
+        ]
+        return HeadlineService(providers, clock, refresh_interval_seconds=interval)  # type: ignore[arg-type]
+
+    def test_the_first_call_does_not_poll_every_feed_at_once(self) -> None:
+        """Twenty simultaneous HTTPS requests on a one-core VPS is a thundering
+        herd, and it repeats every interval forever."""
+        clock = FrozenClock()
+        service = self.service(20, clock)
+
+        service.refresh()
+
+        assert sum(p.calls for p in service.providers) == 1  # type: ignore[attr-defined]
+
+    def test_the_whole_list_is_covered_within_one_interval(self) -> None:
+        clock = FrozenClock()
+        service = self.service(20, clock)
+
+        for second in range(21):
+            clock.at = NOW + timedelta(seconds=second)
+            service.refresh()
+
+        assert all(p.calls >= 1 for p in service.providers), "every feed had its turn"  # type: ignore[attr-defined]
+
+    def test_no_single_feed_is_polled_faster_than_its_interval(self) -> None:
+        """The property that keeps the address unblocked."""
+        clock = FrozenClock()
+        service = self.service(20, clock)
+
+        for second in range(60):
+            clock.at = NOW + timedelta(seconds=second)
+            service.refresh()
+
+        for provider in service.providers:
+            assert provider.calls <= 4, f"{provider.name} polled {provider.calls} times a minute"  # type: ignore[attr-defined]
+
+    def test_something_is_fetched_almost_every_second(self) -> None:
+        """The freshness the operator asked for, as a property of the batch."""
+        clock = FrozenClock()
+        service = self.service(20, clock)
+        busy = 0
+
+        for second in range(40):
+            clock.at = NOW + timedelta(seconds=second)
+            before = sum(p.calls for p in service.providers)  # type: ignore[attr-defined]
+            service.refresh()
+            if sum(p.calls for p in service.providers) > before:  # type: ignore[attr-defined]
+                busy += 1
+
+        assert busy >= 30, f"only {busy} of 40 seconds fetched anything"
+
+    def test_force_still_polls_everything(self) -> None:
+        """`verify_newsfeed.py` needs one complete sweep, not a slice of one."""
+        clock = FrozenClock()
+        service = self.service(20, clock)
+
+        service.refresh(force=True)
+
+        assert all(p.calls == 1 for p in service.providers)  # type: ignore[attr-defined]
+
+    def test_a_single_feed_still_polls_on_the_interval(self) -> None:
+        """With one feed there is nothing to stagger against, and the rotation
+        must not accidentally make it slower than configured."""
+        clock = FrozenClock()
+        service = self.service(1, clock, interval=20.0)
+
+        service.refresh()
+        clock.at = NOW + timedelta(seconds=19)
+        service.refresh()
+        clock.at = NOW + timedelta(seconds=21)
+        service.refresh()
+
+        assert service.providers[0].calls == 2  # type: ignore[attr-defined]
