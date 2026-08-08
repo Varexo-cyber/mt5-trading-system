@@ -604,7 +604,7 @@ class TestPollingPolitely:
         a minute. Hitting one URL every second instead gets the address
         blocked, and a blocked address reports a permanently quiet market."""
         assert HeadlineFilterConfig().refresh_interval_seconds == 20.0
-        assert len(DEFAULT_FEEDS) >= 18
+        assert len(DEFAULT_FEEDS) >= 17
 
 
 class TestStaggeringTheFeeds:
@@ -775,4 +775,113 @@ class TestVerifyingCertificates:
         """fxstreet answered HTTP 403, which is a deliberate block and not a
         transport problem. A feed that will never answer costs a slot in the
         rotation every twenty seconds forever."""
-        assert not any("fxstreet" in url for _, url in DEFAULT_FEEDS)
+        for blocked in ("fxstreet", "dailyfx"):
+            assert not any(blocked in url for _, url in DEFAULT_FEEDS), blocked
+
+
+class TestHeadlinesTheLiveFeedsActuallyServed:
+    """Real titles from a real run over eighteen feeds, and what the tagger
+    made of them at the time. Every case here was a miss.
+
+    Synthetic fixtures had the tagger looking healthy while it recognised none
+    of the wire copy it would meet. These are the corrective, kept verbatim so
+    the next change is measured against what the feeds publish rather than
+    against what is easy to imagine them publishing.
+    """
+
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            # actionforex served fifteen of these and none were tagged. The
+            # table had "euro" and "sterling" and no ISO codes at all.
+            ("EUR/USD Weekly Outlook", {"EUR", "USD"}),
+            ("USD/JPY Weekly Outlook", {"USD", "JPY"}),
+            ("GBP/USD Weekly Outlook", {"GBP", "USD"}),
+            ("USD/CHF Weekly Outlook", {"USD", "CHF"}),
+            ("AUD/USD Weekly Report", {"AUD", "USD"}),
+            ("USD/CAD Weekly Outlook", {"USD", "CAD"}),
+            ("GBP/JPY Weekly Outlook", {"GBP", "JPY"}),
+            ("EUR/AUD Weekly Outlook", {"EUR", "AUD"}),
+        ],
+    )
+    def test_a_currency_pair_in_the_title_tags_both_legs(
+        self, title: str, expected: set[str]
+    ) -> None:
+        assert currencies_in(title) == frozenset(expected)
+
+    def test_an_oil_story_that_never_says_crude(self) -> None:
+        """oilprice.com, and the table only had 'oil prices'."""
+        assert "OIL" in currencies_in(
+            "Oil Traders Stay Bearish Despite Deepening Middle East Disruptions"
+        )
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Domestic stablecoins could boost demand for dollar-backed tokens: IMF",
+            "Donald Trump's media company to terminate Crypto.com deal",
+        ],
+    )
+    def test_a_crypto_story_naming_no_coin_still_reaches_both(self, title: str) -> None:
+        """Cointelegraph served three of these and none were tagged. A story
+        about the asset class moves BTCUSD and ETHUSD together."""
+        tags = currencies_in(title)
+
+        assert "BTC" in tags
+        assert "ETH" in tags
+
+    def test_the_ones_that_were_tagged_correctly_still_are(self) -> None:
+        """Regression guard on the ones that did work.
+
+        The first title is quoted in full deliberately. The terminal truncated
+        it at "...fire Lisa Cook again", and that fragment tags nothing — it is
+        the "Fed" further along that does the work. A fixture copied from the
+        visible part of a screenshot would have failed here and looked like a
+        bug in the tagger.
+        """
+        assert "USD" in currencies_in(
+            "Trump is trying to fire Lisa Cook again. He still wants to stack the Fed with allies"
+        )
+        assert "XAU" in currencies_in(
+            "The smart way to invest in gold right now as the dollar slips"
+        )
+        assert "USD" in currencies_in(
+            "Trump renews effort to fire Fed's Cook, continuing attacks on central bank"
+        )
+
+    def test_company_news_is_still_left_alone(self) -> None:
+        """investing-stocks served ten of these and tagged none, which is the
+        intended behaviour rather than a gap — the ticker space is half
+        ordinary English and the substring traps are worse there."""
+        for title in (
+            "India warned Diageo that its whisky's 'matured in American oak casks' claim",
+            "Senate Republicans narrowly confirm Todd Blanche as attorney general",
+            "Delaware court blocks Verisk's exit from $2.35 billion AccuLynx deal",
+        ):
+            assert currencies_in(title) == frozenset(), title
+
+
+class TestTheIsoCodesDidNotBreakTheBoundaryRule:
+    """Adding three-letter codes is where a naive tagger starts firing on
+    everything. Each of these is a word that contains one."""
+
+    @pytest.mark.parametrize(
+        ("title", "must_not_tag"),
+        [
+            ("Neural networks reshape trading desks", "EUR"),
+            ("Auditors flag the accounts", "AUD"),
+            ("Audio streaming revenue climbs", "AUD"),
+            ("Cadence Design beats estimates", "CAD"),
+            ("Turmoil in the bond market", "OIL"),
+            ("The boiler order book thins", "OIL"),
+            ("Ethics committee opens an inquiry", "ETH"),
+            ("Crypto.com is a sponsor", "USD"),
+        ],
+    )
+    def test_a_code_inside_a_word_does_not_fire(self, title: str, must_not_tag: str) -> None:
+        assert must_not_tag not in currencies_in(title)
+
+    def test_a_bare_dollar_still_tags_nothing(self) -> None:
+        """Four currencies answer to it, and tagging USD would black out every
+        major at once."""
+        assert "USD" not in currencies_in("Dollar edges higher in thin trade")

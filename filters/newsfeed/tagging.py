@@ -45,10 +45,22 @@ from collections.abc import Iterable, Mapping
 #: answer to it, and a headline about the Australian dollar tagging USD would
 #: put a blackout on every major. "greenback" and "us dollar" are unambiguous
 #: and are what the row carries instead.
+#: THE ISO CODE ITSELF IS A TERM, and leaving it out was the tagger's largest
+#: hole. A live run over eighteen feeds found actionforex serving fifteen items
+#: — "EUR/USD Weekly Outlook", "USD/JPY Weekly Outlook", "GBP/USD Weekly
+#: Outlook" and so on — and the tagger recognised none of them. The table had
+#: "euro" and "sterling" and "yen" and every central bank, and not one of the
+#: three-letter codes those headlines are actually written in.
+#:
+#: Safe because every term is matched on word boundaries: `eur` cannot fire
+#: inside "neural", `aud` cannot fire inside "audit", and the slash in a pair
+#: is a non-word character, so "EUR/USD" reads as two clean tokens.
 CURRENCY_TERMS: Mapping[str, tuple[str, ...]] = {
     "USD": (
+        "usd",
         "us dollar",
         "u.s. dollar",
+        "u.s.",
         "greenback",
         "federal reserve",
         "fed",
@@ -59,6 +71,7 @@ CURRENCY_TERMS: Mapping[str, tuple[str, ...]] = {
         "non-farm",
     ),
     "EUR": (
+        "eur",
         "euro",
         "eurozone",
         "euro zone",
@@ -68,14 +81,19 @@ CURRENCY_TERMS: Mapping[str, tuple[str, ...]] = {
         "bundesbank",
     ),
     "GBP": (
+        "gbp",
         "sterling",
         "pound",
+        "uk",
+        "britain",
+        "british",
         "bank of england",
         "boe",
         "gilt",
         "gilts",
     ),
     "JPY": (
+        "jpy",
         "yen",
         "bank of japan",
         "boj",
@@ -83,24 +101,28 @@ CURRENCY_TERMS: Mapping[str, tuple[str, ...]] = {
         "jgb",
     ),
     "CHF": (
+        "chf",
         "swiss franc",
         "franc",
         "swiss national bank",
         "snb",
     ),
     "AUD": (
+        "aud",
         "aussie",
         "australian dollar",
         "reserve bank of australia",
         "rba",
     ),
     "NZD": (
+        "nzd",
         "kiwi",
         "new zealand dollar",
         "reserve bank of new zealand",
         "rbnz",
     ),
     "CAD": (
+        "cad",
         "loonie",
         "canadian dollar",
         "bank of canada",
@@ -115,14 +137,31 @@ CURRENCY_TERMS: Mapping[str, tuple[str, ...]] = {
         "silver",
         "xag",
     ),
+    # The crypto-wide terms sit on both rows on purpose. A story about
+    # stablecoin regulation or an exchange failure moves BTCUSD and ETHUSD
+    # together, and the live run showed why it matters: three Cointelegraph
+    # items, none of which said "bitcoin" or "ethereum", all of which were
+    # plainly about the asset class.
     "BTC": (
-        "bitcoin",
         "btc",
+        "bitcoin",
+        "crypto",
+        "cryptocurrency",
+        "stablecoin",
+        "stablecoins",
+        "digital asset",
+        "digital assets",
     ),
     "ETH": (
+        "eth",
         "ethereum",
         "ether",
-        "eth",
+        "crypto",
+        "cryptocurrency",
+        "stablecoin",
+        "stablecoins",
+        "digital asset",
+        "digital assets",
     ),
     # Not currencies, and in here anyway. An index and a barrel of oil have no
     # ISO code, but `InstrumentSpec.currency_base` carries a pseudo-code for
@@ -145,7 +184,11 @@ CURRENCY_TERMS: Mapping[str, tuple[str, ...]] = {
     "FRA40": ("cac 40", "cac40"),
     "JP225": ("nikkei",),
     "AUS200": ("asx 200", "asx200"),
-    "OIL": ("crude", "brent", "wti", "opec", "oil prices"),
+    # Bare "oil" as well as the grades. The live run had oilprice.com serving
+    # "Oil Traders Stay Bearish Despite Deepening Middle East Disruptions" and
+    # the tagger missed it, because the table only had "oil prices". Word
+    # boundaries keep it out of "turmoil" and "boiler".
+    "OIL": ("oil", "crude", "brent", "wti", "opec"),
     "NGAS": ("natural gas",),
 }
 
