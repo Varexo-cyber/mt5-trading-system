@@ -52,6 +52,18 @@ DSN_ENV = "NEON_DATABASE_URL"
 #: table accumulating sightings until they are worth saying.
 BRIEFED_LESSONS = 10
 
+#: Closed trades needed before the account is allowed to move its own exit
+#: threshold. Forty is not many, and it is deliberately not fewer: a level
+#: learned from fifteen trades is a level learned from one week's weather.
+MIN_TRADES_TO_LEARN = 40
+
+#: Floor on the learned threshold, in R. Below this the profit does not clear
+#: the spread and commission it costs to collect, so banking there converts a
+#: small win into a small loss. `_cost_of_leaving` measures the real figure per
+#: trade; this is the blunt guard that keeps the learned value in the region
+#: where that measurement can even apply.
+MIN_LEARNED_BANK_R = 0.15
+
 #: Everything here runs inside a trading cycle. A database that has gone slow
 #: must cost a cycle a couple of seconds, not a minute.
 CONNECT_TIMEOUT = 8
@@ -490,6 +502,57 @@ class Brain:
             )
             self.status.writes += 1
 
+    def record_supervision(
+        self,
+        *,
+        trade_id: int | None,
+        asked_at: datetime,
+        symbol: str,
+        action: str,
+        confidence: float | None = None,
+        reasoning: str = "",
+        r_at_the_time: float | None = None,
+        applied: bool = False,
+        latency_ms: float | None = None,
+        model: str = "",
+    ) -> None:
+        """What the reviewer said about an open position, and whether it was
+        carried out.
+
+        The loop this closes is the one the system could not see. Every other
+        table records the account grading its own rules; this records it
+        grading its own adviser. With `supervision_outcomes` beside it, "the
+        reviewer said hold at +0.4R and the trade ended at -1R" becomes a
+        query instead of a hunch.
+
+        `applied` matters and is not the same as the action being non-hold: a
+        verdict the risk layer refused is still evidence about the adviser, and
+        counting it as acted-upon would credit or blame it for something that
+        never happened.
+        """
+        self._run(
+            """
+            INSERT INTO supervisions (
+                trade_id, account, asked_at, symbol, action, confidence,
+                reasoning, r_at_the_time, applied, latency_ms, model
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                trade_id,
+                self.account,
+                asked_at,
+                symbol,
+                action,
+                confidence,
+                reasoning,
+                r_at_the_time,
+                applied,
+                int(latency_ms) if latency_ms is not None else None,
+                model,
+            ),
+        )
+        self.status.writes += 1
+
     def record_headlines(self, items: Sequence[Any]) -> int:
         """Keep wire copy past the few hours a feed carries.
 
@@ -584,6 +647,67 @@ class Brain:
             for row in rows
         ]
 
+    def learned_bank_threshold(self, *, minimum_trades: int = MIN_TRADES_TO_LEARN) -> float | None:
+        """Where this account's own trades say profit should be taken, in R.
+
+        THE ONE THING THE DATABASE IS ALLOWED TO MOVE, and the exception is
+        narrow enough to state exactly. Everywhere else in this file the rule
+        is absolute: nothing read from Postgres may change a risk limit, a
+        threshold, a weight or a lot size. That rule exists to stop a learning
+        system quietly making itself more dangerous.
+
+        This one cannot. `PositionManager._worth_taking` takes the MINIMUM of
+        the configured threshold and this, so the only move available is taking
+        profit sooner. A position closed earlier is less exposure, never more.
+        The worst case is money left on the table; the worst case of the rule
+        it is constrained by is the account.
+
+        WHAT IT MEASURES. The journal knows, for every closed trade, the best
+        it ever reached and what it actually returned. The difference is what
+        was handed back. Grouped by where the peak was, the question is the
+        operator's own — at what point does taking it beat holding on — and
+        the answer is the lowest peak band where banking would have beaten
+        what the account really did.
+
+        Lowest rather than largest, because the rule fires on the way up. A
+        threshold only ever acts at the first level price crosses, so choosing
+        the band with the biggest gap would be choosing a level most trades
+        never reach.
+
+        Conservative in three ways, each because the alternative is a
+        threshold learned from one week's weather: it needs `minimum_trades`
+        before it says anything, it is clamped so it can never demand less
+        than the round trip is worth, and it returns None rather than a guess
+        when the evidence is thin or the database is unreachable — which
+        leaves the configured value in charge, exactly as before it existed.
+        """
+        rows = self._run(
+            """
+            SELECT
+                width_bucket(mfe_r, 0.25, 2.0, 7) AS band,
+                COUNT(*)      AS trades,
+                AVG(mfe_r)    AS mean_peak,
+                AVG(pnl_r)    AS mean_result
+            FROM trade_history
+            WHERE account = %s AND mfe_r > 0 AND pnl_r IS NOT NULL
+            GROUP BY band
+            HAVING COUNT(*) >= %s
+            ORDER BY band
+            """,
+            (self.account, max(3, minimum_trades // 4)),
+            fetch="all",
+        )
+        if not rows:
+            return None
+        if sum(int(row[1]) for row in rows) < minimum_trades:
+            return None
+
+        for _band, _trades, mean_peak, mean_result in rows:
+            peak, result = float(mean_peak), float(mean_result)
+            if peak > result:
+                return max(MIN_LEARNED_BANK_R, round(peak, 2))
+        return None
+
     def briefing(self, symbol: str = "", direction: str = "") -> dict[str, Any]:
         """Everything worth telling the reviewer before it judges a setup.
 
@@ -648,8 +772,14 @@ class NullBrain:
     def record_lessons(self, _lessons: Sequence[str] = (), **_kwargs: Any) -> None:
         return None
 
+    def record_supervision(self, **_: Any) -> None:
+        return None
+
     def record_headlines(self, _items: Sequence[Any] = ()) -> int:
         return 0
+
+    def learned_bank_threshold(self, **_: Any) -> float | None:
+        return None
 
     def lessons(self, **_: Any) -> list[Lesson]:
         return []

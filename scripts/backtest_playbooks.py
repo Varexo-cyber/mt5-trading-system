@@ -52,7 +52,9 @@ from backtesting.exit_study import (
     hold_table,
     render_give_back,
     render_hold_table,
+    render_policies,
     study,
+    sweep_policies,
 )
 from backtesting.playbook_replay import (
     REPLAY_TIMEFRAMES,
@@ -277,6 +279,12 @@ def main(argv: list[str] | None = None) -> int:
             "  and gave back. That is what the exit rules should be reading, instead\n"
             "  of the fixed numbers they read today.\n"
         )
+        # The table above cannot answer "so where should the threshold be":
+        # each of its rows is conditional on having reached that level, and a
+        # rule that banks at 0.15R deletes the 1.50R rows rather than
+        # collecting them. This replays whole rules over each position's own
+        # path and reports what the account would actually have made.
+        print(render_policies(sweep_policies(walked)))
     return 0
 
 

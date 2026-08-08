@@ -185,3 +185,57 @@ SELECT
 FROM trades t
 LEFT JOIN decisions d ON d.id = t.decision_id
 WHERE t.closed_at IS NOT NULL;
+
+-- What the reviewer said about a position that was already open, and what the
+-- position went on to do. The loop this closes is the one the system could not
+-- see: every other table records the account grading its own rules, and this
+-- one records it grading its own adviser.
+--
+-- Held apart from `decisions` on purpose. A decision is asked once, before
+-- anything exists; a supervision is asked repeatedly of a position that is
+-- already running, and folding the two together would make "how often was the
+-- reviewer right" a query nobody could write correctly.
+CREATE TABLE IF NOT EXISTS supervisions (
+    id              BIGSERIAL PRIMARY KEY,
+    trade_id        BIGINT      REFERENCES trades (id) ON DELETE CASCADE,
+    account         TEXT        NOT NULL,
+    asked_at        TIMESTAMPTZ NOT NULL,
+    symbol          TEXT        NOT NULL,
+    -- hold, tighten_stop, pull_target_in, partial_close, close.
+    action          TEXT        NOT NULL,
+    confidence      NUMERIC(5, 3),
+    reasoning       TEXT,
+    -- Where the trade stood when the question was asked, so the answer can be
+    -- judged against what was knowable rather than against the ending.
+    r_at_the_time   NUMERIC(10, 4),
+    -- Whether the manager carried it out. A verdict the risk layer refused is
+    -- still evidence about the adviser, and counting it as acted-upon would
+    -- credit or blame it for something that never happened.
+    applied         BOOLEAN     NOT NULL DEFAULT FALSE,
+    latency_ms      INTEGER,
+    model           TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS supervisions_trade ON supervisions (trade_id, asked_at);
+CREATE INDEX IF NOT EXISTS supervisions_action ON supervisions (action, asked_at DESC);
+
+-- Every verdict beside what the trade finally did. "The reviewer said hold at
+-- +0.4R and the trade ended at -1R" is one row here and an unwritable join
+-- without it.
+CREATE OR REPLACE VIEW supervision_outcomes AS
+SELECT
+    s.id,
+    s.account,
+    s.symbol,
+    s.asked_at,
+    s.action,
+    s.confidence,
+    s.r_at_the_time,
+    s.applied,
+    t.pnl_r        AS trade_ended_at_r,
+    t.exit_reason,
+    t.closed_at
+FROM supervisions s
+JOIN trades t ON t.id = s.trade_id
+WHERE t.closed_at IS NOT NULL;

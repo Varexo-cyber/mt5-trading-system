@@ -128,8 +128,21 @@ def main(argv: list[str] | None = None) -> int:
         pnl_r=0.72,
         trade_id=trade_id,
     )
+    brain.record_supervision(
+        trade_id=trade_id,
+        asked_at=now - timedelta(minutes=10),
+        symbol="__VERIFY__",
+        action="hold",
+        confidence=0.62,
+        reasoning="written by verify_brain.py",
+        r_at_the_time=0.55,
+        applied=False,
+        latency_ms=1234,
+        model="verify",
+    )
     print("  close      ok")
     print("  lesson     ok")
+    print("  supervision ok")
 
     # Read back through the exact queries the runner uses, not through
     # hand-written SELECTs. A schema that stores fine and cannot be read by the
@@ -146,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"               {lesson.summary()}")
 
     if not args.keep:
+        brain._run("DELETE FROM supervisions WHERE symbol = '__VERIFY__'")
         brain._run("DELETE FROM lessons WHERE symbol = '__VERIFY__'")
         brain._run("DELETE FROM trades WHERE symbol = '__VERIFY__'")
         brain._run("DELETE FROM decisions WHERE symbol = '__VERIFY__'")
@@ -155,7 +169,14 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print("  WHAT IS STORED")
         print("  " + "-" * 70)
-        for table in ("decisions", "trades", "trade_events", "lessons", "headlines"):
+        for table in (
+            "decisions",
+            "trades",
+            "trade_events",
+            "supervisions",
+            "lessons",
+            "headlines",
+        ):
             row = brain._run(f"SELECT COUNT(*) FROM {table}", fetch="one")
             print(f"  {table:<16}{row[0] if row else '?':>10}")
 

@@ -392,3 +392,130 @@ class TestNothingIsEverDeleted:
         """First sighting keeps the timestamp. A story re-published by a fourth
         wire is not a fresh event."""
         assert "ON CONFLICT (fingerprint) DO NOTHING" in self.source()
+
+
+class TestLearningWhenToTakeIt:
+    """The account reading its own history to decide when profit is enough.
+
+    The query needs a real Postgres to run, so what is held here is the
+    contract around it: how little evidence is too little, what None means,
+    and that the floor cannot be argued below the cost of collecting.
+    """
+
+    def brain_answering(self, rows) -> Brain:  # type: ignore[no-untyped-def]
+        made = Brain("postgresql://u:p@host/db", account="test")
+        made._run = lambda *_args, **_kwargs: rows  # type: ignore[assignment]
+        return made
+
+    def test_it_says_nothing_until_there_are_enough_trades(self) -> None:
+        """A threshold learned from fifteen trades is a threshold learned from
+        one week's weather, and it would then govern real exits."""
+        thin = [(1, 12, 0.40, -0.30), (2, 9, 0.80, -0.10)]
+
+        assert self.brain_answering(thin).learned_bank_threshold() is None
+
+    def test_it_answers_once_the_evidence_is_there(self) -> None:
+        rows = [(1, 25, 0.40, -0.30), (2, 20, 0.80, 0.10)]
+
+        assert self.brain_answering(rows).learned_bank_threshold() == pytest.approx(0.40)
+
+    def test_it_takes_the_lowest_band_that_pays_not_the_best_one(self) -> None:
+        """The rule fires on the way up, so it only ever acts at the first
+        level price crosses. Choosing the band with the biggest gap would be
+        choosing a level most trades never reach."""
+        rows = [(1, 20, 0.35, 0.10), (2, 20, 1.60, -0.90)]  # both pay, 1.60 pays more
+
+        assert self.brain_answering(rows).learned_bank_threshold() == pytest.approx(0.35)
+
+    def test_a_band_where_holding_won_is_skipped(self) -> None:
+        rows = [(1, 20, 0.30, 0.55), (2, 25, 0.90, 0.20)]  # first band did better held
+
+        assert self.brain_answering(rows).learned_bank_threshold() == pytest.approx(0.90)
+
+    def test_it_says_nothing_when_holding_won_everywhere(self) -> None:
+        """None leaves the configured value in charge, which is the same
+        behaviour as before this existed."""
+        rows = [(1, 25, 0.30, 0.55), (2, 25, 0.90, 1.20)]
+
+        assert self.brain_answering(rows).learned_bank_threshold() is None
+
+    def test_it_never_goes_below_what_the_round_trip_costs(self) -> None:
+        """Banking under the spread and commission converts a small win into a
+        small loss, however confidently the history points there."""
+        from brain.store import MIN_LEARNED_BANK_R
+
+        rows = [(1, 50, 0.02, -0.90)]
+
+        answer = self.brain_answering(rows).learned_bank_threshold()
+
+        assert answer == pytest.approx(MIN_LEARNED_BANK_R)
+
+    def test_an_unreachable_database_has_no_opinion(self) -> None:
+        assert brain_that_cannot_connect().learned_bank_threshold() is None
+
+    def test_the_null_brain_has_no_opinion_either(self) -> None:
+        assert NullBrain().learned_bank_threshold() is None
+
+    def test_no_rows_at_all_is_no_opinion(self) -> None:
+        assert self.brain_answering([]).learned_bank_threshold() is None
+
+
+class TestGradingTheAdviser:
+    """The loop nothing could see. Every other table records the account
+    grading its own rules; this records it grading its own adviser."""
+
+    def test_the_schema_keeps_supervisions_apart_from_decisions(self) -> None:
+        """A decision is asked once, before anything exists. A supervision is
+        asked repeatedly of a position already running. Folding them together
+        would make "how often was the reviewer right" a query nobody could
+        write correctly."""
+        from brain.store import SCHEMA_PATH
+
+        sql = SCHEMA_PATH.read_text(encoding="utf-8")
+
+        assert "CREATE TABLE IF NOT EXISTS supervisions" in sql
+        assert "CREATE OR REPLACE VIEW supervision_outcomes" in sql
+
+    def test_the_view_joins_the_verdict_to_what_the_trade_did(self) -> None:
+        from brain.store import SCHEMA_PATH
+
+        sql = SCHEMA_PATH.read_text(encoding="utf-8")
+        view = sql[sql.index("CREATE OR REPLACE VIEW supervision_outcomes") :]
+
+        assert "trade_ended_at_r" in view
+        assert "JOIN trades" in view
+
+    def test_it_records_whether_the_verdict_was_carried_out(self) -> None:
+        """A verdict the risk layer refused is still evidence about the
+        adviser. Counting it as acted-upon would credit or blame it for
+        something that never happened."""
+        source = (
+            __import__("pathlib").Path(__file__).resolve().parent.parent / "brain" / "store.py"
+        ).read_text(encoding="utf-8")
+
+        assert "applied: bool = False" in source
+
+    def test_a_hold_is_written_too(self) -> None:
+        """The most informative row this table can carry is a hold that
+        preceded a full stop-out, and the old code returned before recording
+        anything on a hold."""
+        source = (
+            __import__("pathlib").Path(__file__).resolve().parent.parent / "runner" / "service.py"
+        ).read_text(encoding="utf-8")
+        call = source[source.index("self.brain.record_supervision(") :]
+
+        # The early `continue` on hold is gone: the verdict is recorded first
+        # and the action decides only whether an event was applied.
+        assert 'if verdict.action == "hold"' in source
+        assert "applied=event is not None" in call[:600]
+
+    def test_it_stays_quiet_against_a_dead_database(self) -> None:
+        brain = brain_that_cannot_connect()
+
+        assert (
+            brain.record_supervision(trade_id=1, asked_at=NOW, symbol="EURUSD", action="hold")
+            is None
+        )
+
+    def test_the_null_brain_accepts_it(self) -> None:
+        assert NullBrain().record_supervision(trade_id=1, action="hold") is None

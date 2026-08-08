@@ -468,3 +468,192 @@ def render_give_back(rows: list[GiveBack]) -> str:
         )
     out.append("  " + "-" * 62)
     return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------- policies ---
+#
+# The hold-or-take table above answers "given the position is here, is waiting
+# worth it". It cannot answer "where should the threshold be", and the two get
+# confused constantly. Every row in it is conditional on having REACHED that
+# level, so a rule that banks at 0.15R does not collect the 1.50R rows — it
+# deletes them. Averaging per moment and reading a threshold off the result is
+# how a backtest talks itself into taking profit far too early.
+#
+# What follows answers the threshold question properly: it replays a whole
+# rule over each position's own path, in order, takes the first moment the rule
+# fires, and reports what the account would have made per trade. Nothing is
+# averaged that did not happen.
+
+
+@dataclass(frozen=True, slots=True)
+class ExitPolicy:
+    """One complete rule for when to take a profit.
+
+    Shaped to match what `PositionManager._bank_worthwhile_profit` can actually
+    do at 4am with a tick and a drift reading, because a policy this measures
+    and the guard cannot run is a policy that was never evaluated.
+    """
+
+    take_at_r: float
+    #: Which pace readings the rule is willing to act on. The 90-day
+    #: measurement said running is the worst state to hold in and a retrace is
+    #: the only one that pays, which is why the defaults are what they are.
+    act_when_running: bool = True
+    act_when_stalled: bool = True
+    act_when_against: bool = False
+    #: Before twelve bars have passed there is no drift reading at all. Acting
+    #: is the safer default: it is early in the trade, the profit is small, and
+    #: "no information" is not a reason to hold money on the table.
+    act_when_unknown: bool = True
+
+    @property
+    def name(self) -> str:
+        states = "".join(
+            letter
+            for letter, on in (
+                ("R", self.act_when_running),
+                ("S", self.act_when_stalled),
+                ("A", self.act_when_against),
+            )
+            if on
+        )
+        return f"{self.take_at_r:.2f}R/{states or '-'}"
+
+    def fires(self, sample: ExitSample) -> bool:
+        if sample.take_now_r < self.take_at_r:
+            return False
+        return {
+            "running": self.act_when_running,
+            "stalled": self.act_when_stalled,
+            "against": self.act_when_against,
+            "unknown": self.act_when_unknown,
+        }[_pace(sample.drift)]
+
+
+#: Doing nothing, so every policy has something honest to be measured against.
+HOLD_EVERYTHING = ExitPolicy(
+    take_at_r=float("inf"),
+    act_when_running=False,
+    act_when_stalled=False,
+    act_when_against=False,
+    act_when_unknown=False,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyOutcome:
+    """What one rule would have returned across every replayed position."""
+
+    policy: ExitPolicy
+    trades: int
+    banked: int
+    total_r: float
+    win_rate: float
+    worst_r: float
+
+    @property
+    def per_trade(self) -> float:
+        return self.total_r / self.trades if self.trades else 0.0
+
+    @property
+    def banked_share(self) -> float:
+        return self.banked / self.trades if self.trades else 0.0
+
+
+def apply_policy(positions: list[ReplayedPosition], policy: ExitPolicy) -> PolicyOutcome:
+    """Replay one rule over every position and report what it returned.
+
+    The first moment the rule fires ends that trade at that bar's close.
+    Positions the rule never fires on run to their natural stop or target,
+    which is what makes the comparison against `HOLD_EVERYTHING` meaningful:
+    the same trades, the same bars, one rule applied or not applied.
+    """
+    returns: list[float] = []
+    banked = 0
+    for position in positions:
+        hit = next((sample for sample in position.samples if policy.fires(sample)), None)
+        if hit is None:
+            returns.append(position.final_r)
+        else:
+            returns.append(hit.take_now_r)
+            banked += 1
+    if not returns:
+        return PolicyOutcome(policy, 0, 0, 0.0, 0.0, 0.0)
+    values = np.asarray(returns, dtype=float)
+    return PolicyOutcome(
+        policy=policy,
+        trades=len(values),
+        banked=banked,
+        total_r=float(values.sum()),
+        win_rate=float((values > 0).mean()),
+        worst_r=float(values.min()),
+    )
+
+
+#: Thresholds swept. Fine at the bottom because that is where the operator's
+#: instinct points and where the answer actually changes; coarse above 1R,
+#: where these trades rarely get to.
+POLICY_THRESHOLDS = (0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50, 0.75, 1.00, 1.50)
+
+
+def sweep_policies(positions: list[ReplayedPosition]) -> list[PolicyOutcome]:
+    """Every threshold, against both pace rules, plus doing nothing.
+
+    Two pace variants only. More would be a parameter search, and a parameter
+    search over one 90-day window finds the noise — the whole discipline of
+    this project is measuring a small number of pre-committed questions rather
+    than picking the winner out of a hundred.
+    """
+    outcomes = [apply_policy(positions, HOLD_EVERYTHING)]
+    for threshold in POLICY_THRESHOLDS:
+        outcomes.append(apply_policy(positions, ExitPolicy(take_at_r=threshold)))
+        outcomes.append(
+            apply_policy(
+                positions,
+                ExitPolicy(take_at_r=threshold, act_when_against=True),
+            )
+        )
+    return outcomes
+
+
+def render_policies(outcomes: list[PolicyOutcome]) -> str:
+    """The threshold question, answered end to end rather than per moment."""
+    if not outcomes:
+        return "\n  Nothing to replay.\n"
+
+    baseline = outcomes[0]
+    out = [
+        "",
+        "  WHAT A WHOLE EXIT RULE WOULD HAVE RETURNED",
+        "  " + "-" * 76,
+        f"  {'rule':<14}{'trades':>8}{'banked':>9}{'won':>7}{'per trade':>12}"
+        f"{'vs holding':>13}{'worst':>9}",
+        "  " + "-" * 76,
+        f"  {'hold to stop':<14}{baseline.trades:>8}{'-':>9}{baseline.win_rate:>6.0%}"
+        f"{baseline.per_trade:>+11.3f}R{'-':>13}{baseline.worst_r:>+8.2f}R",
+    ]
+    best = baseline
+    for outcome in outcomes[1:]:
+        if outcome.per_trade > best.per_trade:
+            best = outcome
+        out.append(
+            f"  {outcome.policy.name:<14}{outcome.trades:>8}{outcome.banked_share:>8.0%}"
+            f"{outcome.win_rate:>7.0%}{outcome.per_trade:>+11.3f}R"
+            f"{outcome.per_trade - baseline.per_trade:>+12.3f}R{outcome.worst_r:>+8.2f}R"
+        )
+    out.append("  " + "-" * 76)
+    out.append(
+        "  R = act while running, S = while stalled, A = while retracing.\n"
+        "  'vs holding' is the whole point: what the rule adds over letting every\n"
+        "  trade run to its stop or target. Positive means taking profit earlier\n"
+        "  was worth doing on these entries."
+    )
+    if best is baseline:
+        out.append("\n  No threshold beat holding. Taking profit earlier is not the answer here.")
+    else:
+        out.append(
+            f"\n  Best on this window: {best.policy.name} at {best.per_trade:+.3f}R per trade,\n"
+            f"  {best.per_trade - baseline.per_trade:+.3f}R better than holding, banking "
+            f"{best.banked_share:.0%} of trades early."
+        )
+    return "\n".join(out) + "\n"

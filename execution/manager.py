@@ -94,10 +94,20 @@ def _risk_money(row) -> float:  # type: ignore[no-untyped-def]
 
 
 class PositionManager:
-    def __init__(self, broker: Broker, journal: Journal, settings: Settings) -> None:
+    def __init__(
+        self,
+        broker: Broker,
+        journal: Journal,
+        settings: Settings,
+        brain: object | None = None,
+    ) -> None:
         self.broker = broker
         self.journal = journal
         self.settings = settings
+        #: Optional, and only ever consulted to bank SOONER — see
+        #: `_worth_taking`. None keeps every threshold exactly as configured.
+        self.brain = brain
+        self._learned_bank: object = _UNSET
         # symbol+period -> (monotonic deadline, value). Deliberately monotonic
         # rather than wall-clock: a simulated or rewound clock must not be able
         # to hold a stale ATR alive forever.
@@ -644,12 +654,61 @@ class PositionManager:
         carries, which is the denominator of every other R in this system, and
         the lower of the two wins. `bank_at_r` is not a new invented number: it
         is the 0.3R the code already claimed to be doing.
+
+        AND A THIRD, LEARNED FROM THE ACCOUNT'S OWN TRADES. `Brain.
+        learned_bank_threshold` reads every closed trade in Postgres, compares
+        the best each one reached against what it actually took home, and
+        returns the lowest peak level where banking would have beaten holding.
+        It needs forty closed trades before it says anything and returns None
+        when the database is unreachable, so a system without it behaves
+        exactly as it did before.
+
+        THE MINIMUM IS WHAT MAKES THIS SAFE. The brain is otherwise forbidden
+        from moving any threshold, because a learning system that can rewrite
+        its own risk controls is how an account dies. This is the one exception
+        and it is bounded by direction: taking the minimum means the learned
+        value can only ever bank SOONER. Closing a position earlier is less
+        exposure, never more. The worst case is money left on the table; the
+        worst case of letting it raise the threshold would be the account.
         """
         config = self.settings.trade_management
         worth_taking = self.equity * config.bank_at_equity_pct / 100.0
         if risk_money > 0:
             worth_taking = min(worth_taking, risk_money * config.bank_at_r)
+            learned = self._learned_bank_r()
+            if learned is not None:
+                worth_taking = min(worth_taking, risk_money * learned)
         return worth_taking
+
+    def _learned_bank_r(self) -> float | None:
+        """The account's own answer, cached for the life of the process.
+
+        Cached because the guard runs once a second on every open position and
+        this is a GROUP BY over the whole trade history. Recomputing it at that
+        rate would be a query a second to watch a number that moves when a
+        trade closes — and the cache clearing on restart is the right cadence
+        anyway: a threshold that shifted mid-session would mean two positions
+        opened minutes apart were managed by different rules.
+        """
+        if self._learned_bank is _UNSET:
+            # `Brain` already swallows its own failures, and this does not rely
+            # on that. A null object, a stub, or a future implementation could
+            # all throw, and this runs inside the loop watching real money —
+            # where the safe answer to any surprise is the configured value.
+            try:
+                self._learned_bank = self.brain.learned_bank_threshold() if self.brain else None
+            except Exception:  # noqa: BLE001 - no opinion is not a crash
+                log.warning(
+                    "could not read the learned banking threshold; using the configured one",
+                    extra={"event": "bank_threshold_unavailable"},
+                )
+                self._learned_bank = None
+            if self._learned_bank is not None:
+                log.info(
+                    "banking threshold learned from this account's own trades",
+                    extra={"event": "bank_threshold_learned", "take_at_r": self._learned_bank},
+                )
+        return self._learned_bank  # type: ignore[return-value]
 
     def _pace(self, position: Position) -> float | None:
         """How hard the market is moving, signed for this position.
