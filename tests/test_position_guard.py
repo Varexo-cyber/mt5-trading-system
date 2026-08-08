@@ -1249,11 +1249,33 @@ class TestBankingAProfitWorthTaking:
         assert [event.action for event in events] == ["PROFIT_BANKED"]
         assert broker.closed == [(555, None)]
 
-    def test_a_move_still_running_hard_keeps_going(self) -> None:
-        """The one thing that earns a hold. Not "nothing looks wrong" — that is
-        the absence of bad news, and this rule wants the presence of good."""
+    def test_a_move_running_hard_is_banked_because_that_is_exhaustion(self) -> None:
+        """This test asserted the opposite, and the opposite was wrong.
+
+        `backtest.cmd --exits --days 90` walked every position the theories
+        would have opened and measured what an extra minute of patience was
+        worth at each in-profit moment. A running move is negative at all
+        seven profit levels, on 2,300 to 6,300 observations each: -0.092R at
+        0.00-0.15R, -0.192R at 0.30-0.50R, still -0.086R at 1.50R and above.
+
+        A hard run is exhaustion, not confirmation. Holding through one is the
+        single most expensive thing this rule used to do.
+        """
         broker, journal = BrokerStub(), JournalStub()
         self.running(broker, with_us=True)
+        manager = self.manager(broker, journal)
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=0.80)], NOW)
+
+        assert [event.action for event in events] == ["PROFIT_BANKED"]
+
+    def test_a_move_retracing_hard_is_the_one_thing_that_earns_a_hold(self) -> None:
+        """The other side of the same measurement. Against the position is the
+        only pace where waiting paid: +0.036R at 0.00-0.15R rising to +0.242R
+        above 1.50R. Price coming back is where it comes back from."""
+        broker, journal = BrokerStub(), JournalStub()
+        self.running(broker, with_us=False)
         manager = self.manager(broker, journal)
 
         at(broker, 0.5)

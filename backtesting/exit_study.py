@@ -49,7 +49,7 @@ import pandas as pd
 from backtesting.engine import BacktestAssumptions, BacktestOrder
 
 #: Where the drift reading is cut into "running our way", "going nowhere" and
-#: "turning against us". Not a new invention: `bank_still_running_drift` is
+#: "turning against us". Not a new invention: `bank_while_retracing_drift` is
 #: already 0.5 in the live configuration and `momentum_turned` already treats
 #: 0.25 as a quarter of an ordinary excursion. Using the live number keeps the
 #: table's rows meaning the same thing as the rule that will read it.

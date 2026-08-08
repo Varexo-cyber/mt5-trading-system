@@ -572,14 +572,39 @@ class PositionManager:
         if profit < worth_taking or profit <= 0:
             return None
 
-        running = self._still_running(position)
-        if running is not None and running >= config.bank_still_running_drift:
+        # THE SIGN HERE IS MEASURED, AND IT IS THE OPPOSITE OF WHAT IT WAS.
+        #
+        # This read `running >= threshold: return None` — hold while the move
+        # is still going our way. It is the intuitive rule and it is wrong.
+        # `backtest.cmd --exits --days 90` walked every position the theories
+        # would have opened and reported what an extra minute of patience was
+        # worth at each moment, split by pace:
+        #
+        #     in profit    running   stalled   against
+        #     0.00-0.15R    -0.092    -0.019    +0.036
+        #     0.15-0.30R    -0.096    -0.041    +0.023
+        #     0.30-0.50R    -0.192    -0.137    -0.010
+        #     0.50-0.75R    -0.136    -0.161    +0.078
+        #     0.75-1.00R    -0.149    -0.146    +0.039
+        #     1.00-1.50R    -0.133    -0.103    +0.121
+        #     1.50+         -0.086    +0.137    +0.242
+        #
+        # Running is negative at every one of the seven levels, on 2,300 to
+        # 6,300 observations each. A hard run is exhaustion, not confirmation,
+        # and the old rule held on precisely when holding cost the most. Where
+        # patience pays is when price is coming back against the position —
+        # which is the reading that used to trigger an immediate exit.
+        #
+        # So the condition inverts: bank by default, and hold only while the
+        # move is retracing.
+        retracing = self._pace(position)
+        if retracing is not None and retracing <= -config.bank_while_retracing_drift:
             return None
 
         result = self.broker.close_position(position)
         if not result.ok:
             return None
-        pace = "the move has stopped running" if running is not None else "no read on the pace"
+        pace = "the move is not retracing" if retracing is not None else "no read on the pace"
         return ManagementEvent(
             position.ticket,
             "PROFIT_BANKED",
@@ -626,13 +651,24 @@ class PositionManager:
             worth_taking = min(worth_taking, risk_money * config.bank_at_r)
         return worth_taking
 
-    def _still_running(self, position: Position) -> float | None:
-        """How hard the market is going our way, or None when it cannot be read.
+    def _pace(self, position: Position) -> float | None:
+        """How hard the market is moving, signed for this position.
 
-        The same `drift_score` the health reader uses to decide the opposite
-        question. Two separately derived answers to "is this still moving"
-        would eventually disagree, and they would disagree while a position was
-        open with money on it.
+        Positive is running our way, negative is coming back against us, None
+        is no read. Named for what it returns rather than for what one caller
+        does with it: it used to be `_still_running`, and that name quietly
+        argued for the interpretation that turned out to be backwards.
+
+        The same `drift_score` the health reader uses. Two separately derived
+        answers to "is this still moving" would eventually disagree, and they
+        would disagree while a position was open with money on it.
+
+        A NOTE ON THE OTHER READER. `momentum_turned` treats a strongly
+        negative reading as a reason to exit, which is the opposite of what
+        the banking rule now does with it. That is not necessarily a
+        contradiction — the health reader also judges losing positions, and
+        the exit study only measured moments in profit — but it has not been
+        measured, and it is the obvious next thing to point the study at.
         """
         frame = self._bars(
             position.symbol, Timeframe.M1, self.settings.trade_management.health_fast_bars

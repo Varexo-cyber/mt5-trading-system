@@ -1279,12 +1279,21 @@ class TradeManagementConfig(Base):
     #: the top of that range it is not a banking rule: it demands nearly the
     #: whole trade. See `PositionManager._worth_taking`.
     bank_at_r: float = Field(default=0.3, ge=0.0, le=3.0)
-    #: How hard the market must still be running our way to earn a hold, in
-    #: random-walk units — see `analysis.position_health.drift_score`. Above
-    #: this the trade keeps going; anything less and the money comes off. Not
-    #: zero: "not visibly falling apart" is the absence of bad news, and this
-    #: rule asks for the presence of good news.
-    bank_still_running_drift: float = Field(default=0.5, ge=0.0, le=3.0)
+    #: How hard price must be coming BACK against the position to earn a hold,
+    #: in random-walk units — see `analysis.position_health.drift_score`.
+    #:
+    #: Renamed from `bank_still_running_drift`, and the rename is the finding.
+    #: The old field held the trade while the move was running our way, which
+    #: is the intuitive rule and is measurably backwards.
+    #: `backtest.cmd --exits --days 90` reports what an extra minute of
+    #: patience was worth at every in-profit moment, split by pace, and a
+    #: running move is negative at all seven profit levels on thousands of
+    #: observations each. A hard run is exhaustion. The state where waiting
+    #: pays is a retrace, which the old rule treated as a reason to leave.
+    #:
+    #: Still not zero, for the same reason as before inverted: "not obviously
+    #: running" is the absence of news, and holding needs the presence of it.
+    bank_while_retracing_drift: float = Field(default=0.5, ge=0.0, le=3.0)
 
     #: Bank a profit whose target the session can no longer deliver.
     #:
