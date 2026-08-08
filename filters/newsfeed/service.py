@@ -193,6 +193,17 @@ class HeadlineService:
             latest=tuple(sorted(recent, key=lambda item: item.published, reverse=True)[:5]),
         )
 
+    def newest(self, *, limit: int = 200) -> tuple[Headline, ...]:
+        """Everything currently held, newest first.
+
+        For the archive rather than for a decision. A feed carries a few hours;
+        keeping the copy is the only way "what was being written when this
+        trade opened" is still answerable next year, and that link is the one
+        worth learning from.
+        """
+        ordered = sorted(self._headlines.values(), key=lambda item: item.published, reverse=True)
+        return tuple(ordered[:limit])
+
     def recent_for(self, currencies: frozenset[str], *, limit: int = 8) -> tuple[Headline, ...]:
         """The newest headlines touching these currencies, for a reader.
 

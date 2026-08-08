@@ -124,6 +124,29 @@ CURRENCY_TERMS: Mapping[str, tuple[str, ...]] = {
         "ether",
         "eth",
     ),
+    # Not currencies, and in here anyway. An index and a barrel of oil have no
+    # ISO code, but `InstrumentSpec.currency_base` carries a pseudo-code for
+    # exactly these and the calendar's `symbol_currencies` already passes it
+    # through untouched. Putting them in the same table means one lookup and
+    # one set of word-boundary rules rather than a second mechanism that would
+    # drift.
+    #
+    # A note on what is NOT here: individual equities. "Apple misses on
+    # revenue" is a real story about a real instrument, but the ticker space is
+    # tens of thousands of names, half of them ordinary English words -- Gap,
+    # Ford, Target, Shell, Visa -- and the substring traps this module exists
+    # to avoid get very much worse. Index-level terms cover the same risk for
+    # the instruments this account actually trades.
+    "US500": ("s&p 500", "s&p500", "spx", "wall street", "wall st"),
+    "US100": ("nasdaq", "ndx"),
+    "US30": ("dow jones", "the dow"),
+    "UK100": ("ftse",),
+    "DE40": ("dax",),
+    "FRA40": ("cac 40", "cac40"),
+    "JP225": ("nikkei",),
+    "AUS200": ("asx 200", "asx200"),
+    "OIL": ("crude", "brent", "wti", "opec", "oil prices"),
+    "NGAS": ("natural gas",),
 }
 
 #: Terms whose subject is every market at once, tagged onto every currency the

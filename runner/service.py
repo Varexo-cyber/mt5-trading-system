@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -48,6 +49,7 @@ from analysis.playbooks import (
     ScalpConfig,
     TrendPullback,
 )
+from brain import build_brain
 from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
@@ -232,6 +234,24 @@ class JarvisRunner:
         self.veto_patterns = VetoPatterns(root / "runtime" / "veto_patterns.json")
         # What the account has taught itself, fed back into every review.
         self.memory = TradingMemory(root / "runtime" / "trading_memory.json")
+        # The long half of the same memory. The JSON file above keeps forty
+        # lessons on one machine and forgets past its retention window; this
+        # keeps every decision, every guard action and every lesson for the
+        # life of the account, and survives the VPS being rebuilt. It is
+        # deliberately optional and deliberately fail-soft — no write here can
+        # stop a trade, and `brain.store` sets out why at length. Returns a
+        # `NullBrain` when no DSN is configured, which is the developer case.
+        # Scoped by account number, so a demo and a live account writing to the
+        # same database never pool their statistics into one misleading total.
+        self.brain = build_brain(account=os.getenv("MT5_LOGIN", "") or self.settings.mode.value)
+        if self.brain.enabled and not self.brain.migrate():
+            log.warning(
+                "brain schema could not be applied; running without long-term memory",
+                extra={"event": "brain_migrate_failed", "why": self.brain.status.last_error},
+            )
+        # Broker ticket -> the brain's own trade row, so a guard action can be
+        # attached to the right position without a lookup on every event.
+        self._brain_trades: dict[int, int | None] = {}
         # The fast layer's live read, published for the deck. The manager holds
         # it in memory; the dashboard is a separate process and cannot see that.
         self.health_file = root / "runtime" / "position_health.json"
@@ -1051,6 +1071,14 @@ class JarvisRunner:
 
         if self.memory.has_evidence():
             briefing["learned_so_far"] = self.memory.briefing(symbol, idea.direction.name)
+        # The long memory on top of the local one. It reaches back past the JSON
+        # file's retention window and past the forty lessons it can hold, so the
+        # reviewer sees "this lesson has now arrived from nine separate trades"
+        # rather than the last handful. Empty when no database is configured,
+        # which leaves the payload exactly as it was.
+        remembered = self.brain.briefing(symbol, idea.direction.name)
+        if remembered:
+            briefing["learned_over_the_account_lifetime"] = remembered
         # Every theory's reading of this chart, including the ones that did not
         # win. What the losing theories saw is evidence the reviewer cannot get
         # anywhere else, and it is the part most likely to change the answer.
@@ -1229,6 +1257,44 @@ class JarvisRunner:
             ticket=result.position_ticket,
             entry_price=result.filled_price,
         )
+        # The taken side of the same record. Written after the broker confirms
+        # rather than beside the intent, so the long-term memory never carries
+        # a position that does not exist — the journal owns the crash window
+        # and is the thing reconciliation reads.
+        decision_id = self.brain.record_decision(
+            decided_at=self.clock.now(),
+            symbol=symbol,
+            reason=str(Reason.OK),
+            mode=self.settings.mode.value,
+            direction=idea.direction.name,
+            detail=f"opened at {result.filled_price:g}",
+            taken=True,
+            equity=account.equity,
+            conviction=idea.score,
+            playbook=(idea.signals[0] if idea.signals else ""),
+            entry=result.filled_price,
+            stop_loss=sizing.sl,
+            take_profit=sizing.tp,
+            filters=dict(filter_data),
+            ai={
+                "verdict": "approved",
+                "confidence": advice.confidence,
+                "reasoning": advice.thesis,
+            },
+            headlines=self._headlines_for(symbol),
+        )
+        self._brain_trades[result.position_ticket] = self.brain.record_trade_opened(
+            ticket=result.position_ticket,
+            decision_id=decision_id,
+            symbol=symbol,
+            direction=idea.direction.name,
+            volume=sizing.volume,
+            opened_at=self.clock.now(),
+            entry=result.filled_price,
+            stop_loss=sizing.sl,
+            take_profit=sizing.tp,
+            risk_money=sizing.actual_risk_money,
+        )
         self.recorder.record_order_attempt(
             trade_id=trade_id, kind="ENTRY", symbol=symbol, result=result
         )
@@ -1281,6 +1347,22 @@ class JarvisRunner:
             detail,
             self.clock.now(),
         )
+        # The refusals are the bulk of the evidence, and there are roughly two
+        # thousand of them for every trade taken. Without them the question
+        # "is this system refusing the right things" cannot be asked at all,
+        # and right now it is the question with the most money behind it.
+        self.brain.record_decision(
+            decided_at=self.clock.now(),
+            symbol=symbol,
+            reason=str(reason),
+            mode=self.settings.mode.value,
+            detail=detail,
+            taken=False,
+            equity=equity,
+            conviction=total_score,
+            filters=dict(extra or {}),
+            headlines=self._headlines_for(symbol),
+        )
         return cycle_pk
 
     def _record_paper_closures(self, events) -> None:  # type: ignore[no-untyped-def]
@@ -1327,6 +1409,21 @@ class JarvisRunner:
                 r_at_action=event.r_at_action,
                 note=event.detail,
             )
+            # "What happened, when, and why" in the operator's words: BREAK_EVEN
+            # at 13:42 on +0.31R, PROFIT_BANKED at 13:58 because the move had
+            # stopped running. The journal holds this already; here it survives
+            # the machine and can be grouped across months.
+            brain_trade = self._brain_trades.get(event.ticket)
+            if brain_trade is not None:
+                self.brain.record_trade_event(
+                    trade_id=brain_trade,
+                    happened_at=self.clock.now(),
+                    action=event.action,
+                    reason=event.detail,
+                    r_at_action=event.r_at_action,
+                    price=event.exit_price,
+                    money=event.pnl_money,
+                )
             if event.remaining_volume is not None:
                 self.journal.update_open_trade_volume(event.ticket, event.remaining_volume)
             if event.exit_price is not None and event.pnl_money is not None:
@@ -2111,12 +2208,25 @@ class JarvisRunner:
         # configured. It is the account's own arithmetic, not an opinion, and
         # it is the part of the record that matters most: switching the adviser
         # off should not blind the system to its own P&L.
+        realised_r = pnl_money / risk_money if risk_money > 0 else 0.0
         self.memory.record_outcome(
             str(row["symbol"]),
             str(row["direction"]),
-            pnl_money / risk_money if risk_money > 0 else 0.0,
+            realised_r,
             self.clock.now(),
         )
+        ticket = int(row["ticket"]) if row["ticket"] is not None else None
+        if ticket is not None:
+            self.brain.record_trade_closed(
+                ticket=ticket,
+                closed_at=closed_at or self.clock.now(),
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                pnl_money=pnl_money,
+                pnl_r=realised_r,
+                mfe_r=float(row["mfe_r"]) if row["mfe_r"] is not None else None,
+                mae_r=float(row["mae_r"]) if row["mae_r"] is not None else None,
+            )
         if isinstance(self.advisor, DisabledAdvisor):
             return
         outcome = {
@@ -2145,6 +2255,19 @@ class JarvisRunner:
         # start from more than zero.
         if not reflection.error and reflection.lessons:
             self.memory.record_reflection(outcome, reflection.lessons, self.clock.now())
+            # And into the long memory, one row per lesson rather than one blob
+            # per reflection. One row each is what turns "this has now arrived
+            # from nine separate trades" into a GROUP BY, which is the whole
+            # difference between a pattern and an anecdote.
+            self.brain.record_lessons(
+                reflection.lessons,
+                learned_at=self.clock.now(),
+                symbol=str(row["symbol"]),
+                direction=str(row["direction"]),
+                pnl_r=realised_r,
+                trade_id=self._brain_trades.get(int(row["ticket"] or 0)),
+            )
+            self._brain_trades.pop(int(row["ticket"] or 0), None)
         try:
             self.ai_ledger.append(
                 "posttrade_reflection",
