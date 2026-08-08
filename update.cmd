@@ -12,7 +12,7 @@ if not exist ".venv-live\Scripts\python.exe" (
   echo.
   echo  Missing .venv-live. Create it once with:
   echo    py -m venv .venv-live
-  echo    .venv-live\Scripts\python.exe -m pip install -e ".[live,dashboard]"
+  echo    .venv-live\Scripts\python.exe -m pip install -e ".[live,dashboard,brain]"
   echo.
   pause
   exit /b 1
@@ -35,7 +35,10 @@ if errorlevel 1 (
 
 echo.
 echo  Installing any new dependencies...
-".venv-live\Scripts\python.exe" -m pip install -q -e ".[live,dashboard]"
+REM `brain` is in here so the Postgres driver arrives with every update. Left
+REM out, `build_brain` quietly returns the null object and the long-term memory
+REM stays off after each pull - with nothing failing and nothing saying so.
+".venv-live\Scripts\python.exe" -m pip install -q -e ".[live,dashboard,brain]"
 
 echo.
 echo  Checking the configuration loads...
