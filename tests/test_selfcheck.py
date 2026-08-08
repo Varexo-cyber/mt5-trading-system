@@ -44,7 +44,9 @@ def module(monkeypatch, tmp_path):  # type: ignore[no-untyped-def]
 
 
 def heartbeat(tmp_path: Path, *, minutes_ago: float, ended: bool = False) -> None:
-    path = tmp_path / "runtime" / "operations.json"
+    from monitoring.operation_ledger import LEDGER_FILENAME
+
+    path = tmp_path / "runtime" / LEDGER_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
     seen = (NOW - timedelta(minutes=minutes_ago)).isoformat()
     path.write_text(
@@ -243,3 +245,24 @@ class TestTheRuntimeCalendarCacheIsNotTracked:
         grows only when the weekly task appends, and it should survive a
         rebuilt VPS."""
         assert (ROOT / "data" / "calendar" / "archive.json").exists()
+
+
+class TestTheHeartbeatFileIsNamedInOnePlace:
+    """Three of the four bugs in this script were a name guessed wrong — a
+    table, a config attribute, and this file. Two modules writing and reading
+    the same path from two string literals is how the heartbeat check spent its
+    first day reporting "has it ever started?" at a system with thirty thousand
+    decisions in its journal."""
+
+    def test_the_runner_and_the_check_use_the_same_constant(self) -> None:
+        runner = (ROOT / "runner" / "service.py").read_text(encoding="utf-8")
+        check = (ROOT / "scripts" / "selfcheck.py").read_text(encoding="utf-8")
+
+        assert 'runtime" / LEDGER_FILENAME' in runner
+        assert 'runtime" / LEDGER_FILENAME' in check
+        assert "operations.json" not in check, "the wrong name must not come back"
+
+    def test_the_constant_matches_what_is_on_disk_in_practice(self) -> None:
+        from monitoring.operation_ledger import LEDGER_FILENAME
+
+        assert LEDGER_FILENAME == "operation_history.json"
