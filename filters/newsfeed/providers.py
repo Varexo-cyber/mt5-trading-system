@@ -179,23 +179,58 @@ class HeadlineProvider(ABC):
 
 
 class RssHeadlineProvider(HeadlineProvider):
-    """A single RSS or Atom URL."""
+    """A single RSS or Atom URL, polled with a conditional GET.
+
+    The conditional GET is what makes fast polling defensible. Every response
+    carries an `ETag` or a `Last-Modified`; sending it back means the server
+    answers `304 Not Modified` in a couple of hundred bytes and does no work
+    when nothing has changed, which on a wire is most of the time. That is the
+    difference between checking often and hammering somebody's CDN until the
+    VPS address is blocked — and a blocked address is the worst outcome
+    available here, because the layer then reports a permanently quiet market.
+
+    A 304 returns the previous parse rather than an empty list. Empty would
+    read downstream as "nothing is being published", which is the one thing
+    this must never invent.
+    """
 
     def __init__(self, name: str, url: str, *, timeout_seconds: float = 10.0) -> None:
         self.name = name
         self.url = url
         self.timeout = timeout_seconds
+        self._etag = ""
+        self._modified = ""
+        self._last: list[Headline] = []
+        #: How many polls came back 304. Worth seeing: a feed that is always
+        #: 304 is either genuinely quiet or quietly broken, and the count next
+        #: to the fetch count is what tells them apart.
+        self.not_modified = 0
 
     def fetch(self, now: datetime) -> list[Headline]:
-        request = urllib.request.Request(self.url, headers=FEED_HEADERS)
         if not self.url.lower().startswith("https://"):
             raise FeedUnavailableError(f"{self.name}: refusing a non-HTTPS feed URL")
+        headers = dict(FEED_HEADERS)
+        if self._etag:
+            headers["If-None-Match"] = self._etag
+        if self._modified:
+            headers["If-Modified-Since"] = self._modified
+
+        request = urllib.request.Request(self.url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 body = response.read()
+                self._etag = response.headers.get("ETag", "") or self._etag
+                self._modified = response.headers.get("Last-Modified", "") or self._modified
+        except urllib.error.HTTPError as exc:
+            if exc.code == 304:
+                self.not_modified += 1
+                return list(self._last)
+            raise FeedUnavailableError(f"{self.name}: HTTP {exc.code}") from exc
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise FeedUnavailableError(f"{self.name}: {type(exc).__name__}: {exc}") from exc
-        return parse_feed(body, self.name, now=now)
+
+        self._last = parse_feed(body, self.name, now=now)
+        return list(self._last)
 
 
 def build_providers(

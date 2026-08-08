@@ -803,10 +803,21 @@ class HeadlineFilterConfig(Base):
     enabled: bool = False
     #: Feed name to URL. Empty uses `filters.newsfeed.providers.DEFAULT_FEEDS`.
     feeds: dict[str, str] = Field(default_factory=dict)
-    #: How often every feed is pulled. Once per two minutes is roughly as fast
-    #: as public wires publish, and pulling harder mostly re-reads the same
-    #: items while spending a one-core VPS's attention.
-    refresh_interval_seconds: float = Field(default=120.0, ge=30.0, le=3600.0)
+    #: How often every feed is polled.
+    #:
+    #: Fifteen seconds, not the two minutes this shipped with and not the five
+    #: the operator asked for. The reason is the conditional GET in
+    #: `RssHeadlineProvider`: a poll that finds nothing new costs a couple of
+    #: hundred bytes and no work at the far end, so fifteen seconds is polite
+    #: and effectively real-time against wires that publish every few minutes.
+    #:
+    #: Five would not buy anything. Nothing on a public feed changes inside
+    #: five seconds -- the story is written, edited and pushed on a scale of
+    #: minutes -- so the extra polls return 304 and the only thing gained is a
+    #: higher chance of the VPS address being rate-limited or blocked. A
+    #: blocked address is the worst outcome available, because the layer then
+    #: reports a permanently quiet market and nothing downstream can tell.
+    refresh_interval_seconds: float = Field(default=15.0, ge=5.0, le=3600.0)
     #: The recent window "how busy is it right now" is measured over.
     window_minutes: float = Field(default=20.0, ge=5.0, le=240.0)
     #: The long window that window is compared against. Per instrument, because

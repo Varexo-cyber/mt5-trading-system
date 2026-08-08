@@ -22,6 +22,8 @@ gate that only knows how to say no.
 
 from __future__ import annotations
 
+from typing import Any
+
 from config.schema import HeadlineFilterConfig
 from filters.base import Filter, FilterContext, FilterVerdict
 from filters.calendar.events import symbol_currencies
@@ -37,9 +39,20 @@ class HeadlineFilter(Filter):
 
     name = "headlines"
 
-    def __init__(self, config: HeadlineFilterConfig, service: HeadlineService) -> None:
+    def __init__(
+        self,
+        config: HeadlineFilterConfig,
+        service: HeadlineService,
+        brain: Any | None = None,
+    ) -> None:
         self.config = config
         self.service = service
+        # Optional and fail-soft, like everything else that touches it. Wire
+        # copy is kept past the few hours a feed carries so that "what was
+        # being written when this trade opened" stays answerable a year later
+        # — which is the only way the link between news and outcome can ever
+        # be measured.
+        self.brain = brain
 
     def check(self, ctx: FilterContext) -> FilterVerdict:
         if not self.config.enabled:
@@ -49,7 +62,8 @@ class HeadlineFilter(Filter):
         # elapsed. Driving it from the filter rather than from a separate task
         # keeps the fetch on the same thread as the decision that needs it, so
         # there is no window where the two disagree about what is held.
-        self.service.refresh()
+        if self.service.refresh() and self.brain is not None:
+            self.brain.record_headlines(self.service.newest())
 
         if not self.service.is_usable():
             return self._unavailable()

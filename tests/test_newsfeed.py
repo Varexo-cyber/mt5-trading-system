@@ -462,3 +462,138 @@ class TestTheFilter:
         written in, so no response shape is confirmed. A layer that silently
         returns nothing reports a quiet market."""
         assert HeadlineFilterConfig().enabled is False
+
+
+class TestBeyondCurrencies:
+    """The operator asked whether it was only currency news. It was."""
+
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            ("Nasdaq tumbles as chip stocks slide", "US100"),
+            ("S&P 500 closes at a record", "US500"),
+            ("FTSE lags European peers", "UK100"),
+            ("DAX rallies on factory orders", "DE40"),
+            ("Nikkei jumps after the BoJ holds", "JP225"),
+            ("Brent crude slips below $70", "OIL"),
+            ("OPEC extends production cuts", "OIL"),
+            ("Natural gas spikes on a cold snap", "NGAS"),
+        ],
+    )
+    def test_indices_and_commodities_tag(self, title: str, expected: str) -> None:
+        assert expected in currencies_in(title)
+
+    def test_a_story_can_reach_an_index_and_a_currency_at_once(self) -> None:
+        tags = currencies_in("Nikkei jumps as the yen weakens")
+
+        assert tags == frozenset({"JP225", "JPY"})
+
+    def test_individual_equities_are_deliberately_absent(self) -> None:
+        """Half the ticker space is ordinary English -- Gap, Ford, Target,
+        Shell, Visa -- and the substring traps get very much worse. Index-level
+        terms cover the same risk for what this account actually trades."""
+        assert currencies_in("Ford beats on revenue") == frozenset()
+        assert currencies_in("Shell announces a buyback") == frozenset()
+
+    def test_the_word_boundary_rule_still_holds_for_the_new_terms(self) -> None:
+        assert "OIL" not in currencies_in("The spoiled batch was recalled")
+        assert "OIL" not in currencies_in("Turmoil in the bond market")
+
+
+class TestPollingPolitely:
+    """Fifteen-second polling is only defensible because of the conditional
+    GET. Without it this is hammering somebody's CDN until the VPS address is
+    blocked, and a blocked address reports a permanently quiet market."""
+
+    @staticmethod
+    def install(monkeypatch: pytest.MonkeyPatch, responses: list[object]):  # type: ignore[no-untyped-def]
+        """Queue up what the network will answer, and record what was asked.
+
+        Through `monkeypatch` rather than by assigning to the module, so the
+        real `urlopen` is restored even when a test fails. A leaked patch here
+        would make some later test's network call return a fixture.
+        """
+        import urllib.error
+
+        import filters.newsfeed.providers as module
+
+        queue = list(responses)
+        sent: list[dict[str, str]] = []
+
+        class Response:
+            def __init__(self, body: bytes, headers: dict[str, str]) -> None:
+                self.body, self.headers = body, headers
+
+            def read(self) -> bytes:
+                return self.body
+
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *_: object) -> bool:
+                return False
+
+        def fake_urlopen(request, timeout=None):  # type: ignore[no-untyped-def]
+            sent.append({key.lower(): value for key, value in request.headers.items()})
+            nxt = queue.pop(0)
+            if isinstance(nxt, urllib.error.HTTPError):
+                raise nxt
+            return Response(*nxt)  # type: ignore[misc]
+
+        monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+        return RssHeadlineProvider("wire", "https://example.test/feed"), sent
+
+    def test_the_etag_comes_back_on_the_next_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        body = TestReadingAFeed.RSS.encode()
+        provider, sent = self.install(monkeypatch, [(body, {"ETag": '"abc123"'}), (body, {})])
+
+        provider.fetch(NOW)
+        provider.fetch(NOW)
+
+        assert "if-none-match" not in sent[0], "nothing to send on the first poll"
+        assert sent[1]["if-none-match"] == '"abc123"'
+
+    def test_last_modified_is_used_when_there_is_no_etag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        body = TestReadingAFeed.RSS.encode()
+        stamp = "Fri, 07 Aug 2026 13:55:00 GMT"
+        provider, sent = self.install(monkeypatch, [(body, {"Last-Modified": stamp}), (body, {})])
+
+        provider.fetch(NOW)
+        provider.fetch(NOW)
+
+        assert sent[1]["if-modified-since"] == stamp
+
+    def test_a_304_returns_the_previous_parse_not_an_empty_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty would read downstream as 'nothing is being published', which
+        is the one thing this layer must never invent."""
+        import urllib.error
+
+        not_modified = urllib.error.HTTPError(
+            "https://example.test/feed", 304, "Not Modified", {}, None
+        )
+        provider, _ = self.install(monkeypatch, [(TestReadingAFeed.RSS.encode(), {}), not_modified])
+
+        first = provider.fetch(NOW)
+        second = provider.fetch(NOW)
+
+        assert [i.title for i in second] == [i.title for i in first]
+        assert provider.not_modified == 1
+
+    def test_a_real_http_error_is_still_a_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import urllib.error
+
+        forbidden = urllib.error.HTTPError("https://example.test/feed", 403, "Forbidden", {}, None)
+        provider, _ = self.install(monkeypatch, [forbidden])
+
+        with pytest.raises(FeedUnavailableError, match="HTTP 403"):
+            provider.fetch(NOW)
+
+    def test_the_default_cadence_is_fast_but_not_absurd(self) -> None:
+        """Nothing on a public wire changes inside five seconds; the story is
+        written, edited and pushed on a scale of minutes. Extra polls return
+        304 and buy only a higher chance of being rate-limited."""
+        assert HeadlineFilterConfig().refresh_interval_seconds == 15.0

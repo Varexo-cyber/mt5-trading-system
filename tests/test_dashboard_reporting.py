@@ -30,10 +30,20 @@ def test_clear_stop_confirmation_ignores_case_and_extra_spaces() -> None:
     assert not stop_confirmation_matches("stop")
 
 
+#: A Wednesday, 14:00 UTC. Pinned, and the pin is the point.
+#:
+#: This test used to seed the fake with `datetime.now(UTC) + 3h` and then
+#: assert the newest bar was within two hours of the real clock. That holds
+#: from Monday to Friday and fails every Saturday and Sunday: `_bar_times`
+#: correctly skips weekends, so on a Saturday morning the newest bar it can
+#: produce is Friday evening — twelve hours away, and growing until Monday.
+#: A suite that goes red on its own at the weekend teaches everyone to ignore
+#: a red suite, which is the expensive part.
+MIDWEEK = datetime(2026, 8, 5, 14, 0, tzinfo=UTC)
+
+
 def test_dashboard_reads_catalogue_bars_and_builds_pdf() -> None:
-    connector = MT5Connector(
-        MT5Config(), mt5_module=FakeMT5(now=datetime.now(UTC) + timedelta(hours=3))
-    )
+    connector = MT5Connector(MT5Config(), mt5_module=FakeMT5(now=MIDWEEK + timedelta(hours=3)))
     service = DashboardService(connector, load_settings(env_overrides=False))
     try:
         account = service.connect()
@@ -45,7 +55,11 @@ def test_dashboard_reads_catalogue_bars_and_builds_pdf() -> None:
         assert any(item.name == "EURUSD" for item in symbols)
         assert catalogue_asset_class("Cryptos\\High Cap\\BTCUSD").value == "crypto"
         assert len(frame) == 50
-        assert abs((frame.index[-1].to_pydatetime() - datetime.now(UTC)).total_seconds()) < 7200
+        # Still the real assertion — the connector must serve bars that reach
+        # up to the present, not stale history — measured against the clock the
+        # fake was actually given.
+        newest = frame.index[-1].to_pydatetime()
+        assert abs((newest - (MIDWEEK + timedelta(hours=3))).total_seconds()) < 7200
 
         pdf = build_pdf_report(account, [], "EURUSD", spec, tick, {"H1": frame})
         assert pdf.startswith(b"%PDF")
