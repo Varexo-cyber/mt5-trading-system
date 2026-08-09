@@ -9,6 +9,7 @@ from pathlib import Path
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
 from infra.logging import setup_logging
+from infra.process_lock import AlreadyRunningError, ProcessLock
 from runner.profiles import PROFILES, apply_profile
 from runner.service import JarvisRunner, OperationMode
 
@@ -55,6 +56,12 @@ def main() -> int:
             f"  markets  : {', '.join(profile.symbols_only or profile.asset_classes) or 'all'}\n"
             f"  positions: {settings.effective_max_positions()}"
         )
+    process_lock = ProcessLock(ROOT / "runtime" / "jarvis.lock")
+    try:
+        process_lock.acquire()
+    except AlreadyRunningError as exc:
+        print(f"JARVIS_ALREADY_RUNNING: {exc}")
+        return 2
     runner = JarvisRunner(connector, settings, ROOT, OperationMode(args.operation))
     pid_path = ROOT / "runtime" / "jarvis.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,7 +77,13 @@ def main() -> int:
         else:
             runner.run_forever()
     finally:
-        pid_path.unlink(missing_ok=True)
+        try:
+            if pid_path.exists() and pid_path.read_text(encoding="utf-8").strip() == str(
+                os.getpid()
+            ):
+                pid_path.unlink(missing_ok=True)
+        finally:
+            process_lock.release()
     return 0
 
 

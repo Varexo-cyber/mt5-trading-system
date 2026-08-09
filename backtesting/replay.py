@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -116,7 +117,10 @@ class HistoricalContextReplay:
             active = tuple(
                 signal.module
                 for signal in idea.signals
-                if signal.score * int(idea.direction) > 0 and signal.confidence > 0
+                if signal.score * int(idea.direction) > 0
+                and signal.confidence > 0
+                and self.engine.config.weights.get(signal.module, 0.0) > 0
+                and signal.confidence >= self.engine.config.minimum_confidence
             )
             orders.append(
                 BacktestOrder(
@@ -182,6 +186,58 @@ def archive_frame(frame: pd.DataFrame, path: Path) -> None:
     combined.to_csv(path, index_label="time")
 
 
+def frame_digest(frame: pd.DataFrame) -> str:
+    """Stable identity of the exact bars used by an evidence report."""
+    hashed = pd.util.hash_pandas_object(frame, index=True).to_numpy().tobytes()
+    columns = "|".join(str(column) for column in frame.columns).encode()
+    return hashlib.sha256(columns + hashed).hexdigest()
+
+
+def evidence_digest(payload: dict[str, object]) -> str:
+    """Content address an evidence report, excluding its own digest field."""
+    body = {key: value for key, value in payload.items() if key != "evidence_digest"}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def implementation_digest(root: Path) -> str:
+    """Identify the executable research implementation behind a report.
+
+    Data and configuration hashes are insufficient when strategy or replay
+    code changes. This covers production Python and schema files while
+    excluding tests, runtime state and generated evidence.
+    """
+    locations = (
+        "advisory",
+        "analysis",
+        "backtesting",
+        "config",
+        "core",
+        "execution",
+        "filters",
+        "learning",
+        "promotion",
+        "risk",
+        "runner",
+    )
+    files = sorted(
+        path for location in locations for path in (root / location).rglob("*.py") if path.is_file()
+    )
+    validator = root / "scripts" / "validate_strategy.py"
+    if validator.is_file():
+        files.append(validator)
+        files.sort()
+    digest = hashlib.sha256()
+    for path in files:
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(4, "big"))
+        digest.update(relative)
+        content = path.read_bytes()
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
 def build_segment_evidence(
     name: str,
     execution_frame: pd.DataFrame,
@@ -226,5 +282,9 @@ def write_evidence_report(
     segments: list[SegmentEvidence],
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"metadata": metadata, "segments": [asdict(segment) for segment in segments]}
+    payload: dict[str, object] = {
+        "metadata": metadata,
+        "segments": [asdict(segment) for segment in segments],
+    }
+    payload["evidence_digest"] = evidence_digest(payload)
     path.write_text(json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8")

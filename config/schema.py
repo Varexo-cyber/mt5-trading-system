@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from core.types import TradingMode
+from core.types import Timeframe, TradingMode
 
 Pct = Annotated[float, Field(gt=0, le=100)]
 NonNegInt = Annotated[int, Field(ge=0)]
@@ -74,6 +74,10 @@ class MT5Config(Base):
 
     order_max_attempts: int = Field(default=3, ge=1, le=10)
     order_retry_delay_ms: int = Field(default=250, ge=0, le=5_000)
+    #: Read-only IPC calls may be repeated after a transient terminal transport
+    #: failure. Orders have their own stricter retcode-based retry policy.
+    read_max_attempts: int = Field(default=3, ge=1, le=10)
+    read_retry_delay_ms: int = Field(default=50, ge=0, le=5_000)
     #: Maximum acceptable slippage on a market order, in points.
     deviation_points: int = Field(default=10, ge=0, le=200)
     #: Warn if a single MT5 call blocks longer than this.
@@ -501,6 +505,21 @@ class SessionFilterConfig(Base):
     #: A missing/stale broker tick still blocks them later in the chain.
     continuous_asset_classes: tuple[str, ...] = ("crypto",)
     continuous_maintenance_block: tuple[str, str] = ("23:55", "00:10")
+    #: Exchange/CFD markets follow the broker's actual quote rather than the FX
+    #: London/New York preference. Quote freshness and spread remain hard gates,
+    #: so a closed exchange is still rejected without pretending every stock,
+    #: index, metal and commodity shares one FX timetable.
+    broker_hours_asset_classes: tuple[str, ...] = (
+        "stock",
+        "index",
+        "metal",
+        "commodity",
+        "unknown",
+    )
+    #: Only these asset classes are forcibly flattened by the FX evening rule.
+    #: Applying it to every non-crypto CFD closed healthy stock and metal swing
+    #: positions for a calendar they do not follow.
+    evening_flat_asset_classes: tuple[str, ...] = ("forex",)
 
 
 class SpreadFilterConfig(Base):
@@ -588,6 +607,146 @@ class MarketStructureConfig(Base):
         return self
 
 
+class TrendMomentumConfig(Base):
+    bias_timeframe: str = "H4"
+    signal_timeframe: str = "H1"
+    fast_ema: int = Field(default=20, ge=2, le=500)
+    slow_ema: int = Field(default=50, ge=3, le=1000)
+    slope_lookback: int = Field(default=5, ge=1, le=100)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    invalidation_lookback: int = Field(default=12, ge=2, le=500)
+    score: float = Field(default=65.0, gt=0.0, le=100.0)
+    base_confidence: float = Field(default=0.50, ge=0.0, le=1.0)
+    separation_confidence_scale: float = Field(default=0.20, ge=0.0, le=5.0)
+    maximum_confidence: float = Field(default=0.90, ge=0.0, le=1.0)
+
+    @field_validator("bias_timeframe", "signal_timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _coherent(self) -> TrendMomentumConfig:
+        if self.fast_ema >= self.slow_ema:
+            raise ValueError("trend momentum fast EMA must be below slow EMA")
+        if self.bias_timeframe == self.signal_timeframe:
+            raise ValueError("trend momentum bias and signal timeframes must differ")
+        if self.base_confidence > self.maximum_confidence:
+            raise ValueError("trend momentum base confidence exceeds maximum")
+        return self
+
+
+class LiquiditySweepConfig(Base):
+    primary_timeframe: str = "M15"
+    fallback_timeframe: str = "H1"
+    range_lookback: int = Field(default=20, ge=5, le=500)
+    minimum_bars: int = Field(default=25, ge=10, le=5000)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    minimum_depth_atr: float = Field(default=0.0, ge=0.0, le=5.0)
+    score: float = Field(default=75.0, gt=0.0, le=100.0)
+    base_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    depth_confidence_scale: float = Field(default=0.25, ge=0.0, le=5.0)
+    maximum_confidence: float = Field(default=0.90, ge=0.0, le=1.0)
+
+    @field_validator("primary_timeframe", "fallback_timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _coherent(self) -> LiquiditySweepConfig:
+        if self.primary_timeframe == self.fallback_timeframe:
+            raise ValueError("liquidity sweep primary and fallback timeframes must differ")
+        if self.base_confidence > self.maximum_confidence:
+            raise ValueError("liquidity sweep base confidence exceeds maximum")
+        return self
+
+
+class LevelReactionConfig(Base):
+    timeframe: str = "H1"
+    history_lookback: int = Field(default=50, ge=20, le=1000)
+    minimum_bars: int = Field(default=60, ge=20, le=5000)
+    support_quantile: float = Field(default=0.05, ge=0.0, lt=0.5)
+    resistance_quantile: float = Field(default=0.95, gt=0.5, le=1.0)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    proximity_atr: float = Field(default=0.35, gt=0.0, le=5.0)
+    wick_ratio: float = Field(default=1.5, gt=1.0, le=20.0)
+    score: float = Field(default=55.0, gt=0.0, le=100.0)
+    base_confidence: float = Field(default=0.50, ge=0.0, le=1.0)
+    wick_confidence_scale: float = Field(default=0.20, ge=0.0, le=5.0)
+    maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+    @field_validator("timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _coherent(self) -> LevelReactionConfig:
+        if self.support_quantile >= self.resistance_quantile:
+            raise ValueError("support quantile must be below resistance quantile")
+        if self.base_confidence > self.maximum_confidence:
+            raise ValueError("level reaction base confidence exceeds maximum")
+        return self
+
+
+class VolatilityRegimeConfig(Base):
+    timeframe: str = "H1"
+    minimum_bars: int = Field(default=120, ge=20, le=5000)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    percentile_lookback: int = Field(default=100, ge=20, le=2000)
+    compressed_percentile: float = Field(default=0.20, ge=0.0, lt=1.0)
+    extreme_percentile: float = Field(default=0.95, gt=0.0, le=1.0)
+
+    @field_validator("timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _coherent(self) -> VolatilityRegimeConfig:
+        if self.compressed_percentile >= self.extreme_percentile:
+            raise ValueError("compressed volatility percentile must be below extreme")
+        return self
+
+
+class MarketRegimeConfig(Base):
+    """Non-directional context used for ranking and Claude briefing.
+
+    It deliberately has no veto switch and no directional weight. A regime is
+    an imperfect description of recent closed bars, not permission to trade.
+    The existing strategy remains the source of candidates; this layer only
+    helps compare those candidates and explain the surrounding conditions.
+    """
+
+    enabled: bool = True
+    fast_timeframe: str = "H1"
+    slow_timeframe: str = "H4"
+    efficiency_lookback: int = Field(default=24, ge=10, le=200)
+    atr_period: int = Field(default=14, ge=2, le=100)
+    atr_percentile_lookback: int = Field(default=100, ge=20, le=1000)
+    extreme_atr_percentile: float = Field(default=0.95, ge=0.80, le=1.0)
+    trend_efficiency_min: float = Field(default=0.30, ge=0.0, le=1.0)
+    range_fast_efficiency_max: float = Field(default=0.20, ge=0.0, le=1.0)
+    range_slow_efficiency_max: float = Field(default=0.25, ge=0.0, le=1.0)
+    #: Maximum positive or negative contribution to ordering. It is never
+    #: added to confluence and therefore cannot turn NO_SIGNAL into a trade.
+    ranking_modifier_cap: float = Field(default=12.0, ge=0.0, le=30.0)
+
+    @field_validator("fast_timeframe", "slow_timeframe")
+    @classmethod
+    def _supported_regime_timeframe(cls, value: str) -> str:
+        from core.types import Timeframe
+
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _thresholds_do_not_overlap(self) -> MarketRegimeConfig:
+        if self.range_fast_efficiency_max >= self.trend_efficiency_min:
+            raise ValueError("range fast-efficiency maximum must be below trend minimum")
+        return self
+
+
 class PlaybooksConfig(Base):
     """Short-horizon theories that run alongside the swing engine.
 
@@ -598,6 +757,10 @@ class PlaybooksConfig(Base):
 
     #: Run the short-horizon playbooks at all.
     enabled: bool = False
+    #: Keep unvalidated playbooks observable in live operation without giving
+    #: them authority to create or veto a real-money order. Paper/backtest may
+    #: still execute them so evidence continues to accumulate.
+    live_execution_enabled: bool = False
     #: M5 impulse continuation. Tight stop under the impulse leg, ~1 hour.
     momentum_scalp: bool = True
     #: M15 range-extreme rejection targeting the midpoint, ~3 hours.
@@ -731,11 +894,33 @@ class ConfluenceConfig(Base):
 
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
+    trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
+    liquidity_sweep: LiquiditySweepConfig = LiquiditySweepConfig()
+    level_reaction: LevelReactionConfig = LevelReactionConfig()
+    volatility_regime: VolatilityRegimeConfig = VolatilityRegimeConfig()
+    market_regime: MarketRegimeConfig = MarketRegimeConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
 
 
 # ------------------------------------------------------ trade management ---
+
+
+class PositionHealthProfile(Base):
+    """Closed-candle health horizons for one asset class."""
+
+    fast_timeframe: str = "M1"
+    structure_timeframe: str = "M5"
+    fast_bars: int = Field(default=40, ge=10, le=500)
+    structure_bars: int = Field(default=60, ge=20, le=500)
+
+    @field_validator("fast_timeframe", "structure_timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        normalised = value.strip().upper()
+        if normalised not in {item.value for item in Timeframe}:
+            raise ValueError(f"unsupported health timeframe {value!r}")
+        return normalised
 
 
 class TradeManagementConfig(Base):
@@ -823,6 +1008,28 @@ class TradeManagementConfig(Base):
     health_secure_at_r: float = Field(default=0.5, ge=0.0)
     #: At or above this R, a single warning tightens the stop instead.
     health_tighten_at_r: float = Field(default=0.2, ge=0.0)
+    #: Asset-specific horizons. Forex keeps the established M1/M5 behaviour;
+    #: continuously traded and exchange products use slower confirmation so a
+    #: single noisy one-minute print cannot masquerade as structural failure.
+    health_profiles: dict[str, PositionHealthProfile] = Field(
+        default_factory=lambda: {
+            "forex": PositionHealthProfile(),
+            "crypto": PositionHealthProfile(
+                fast_timeframe="M5", structure_timeframe="M15", fast_bars=48, structure_bars=64
+            ),
+            "stock": PositionHealthProfile(
+                fast_timeframe="M5", structure_timeframe="M15", fast_bars=48, structure_bars=64
+            ),
+            "index": PositionHealthProfile(),
+            "metal": PositionHealthProfile(),
+            "commodity": PositionHealthProfile(
+                fast_timeframe="M5", structure_timeframe="M15", fast_bars=48, structure_bars=64
+            ),
+            "unknown": PositionHealthProfile(
+                fast_timeframe="M5", structure_timeframe="M15", fast_bars=48, structure_bars=64
+            ),
+        }
+    )
 
     #: Close a position that has gone nowhere. Dead capital still carries risk.
     time_exit_hours: float | None = Field(default=24.0, gt=0.0)
@@ -839,6 +1046,24 @@ class TradeManagementConfig(Base):
     #: this interval is roughly eight reviews an hour.
     supervision_interval_minutes: float = Field(default=15.0, ge=0.0, le=240.0)
 
+    #: The ordinary review remains deliberately slow, but a material change in
+    #: the position may bring the next review forward. This is different from
+    #: polling an LLM every second: the cheap local layer watches every tick and
+    #: only escalates a changed situation to the expensive judgement layer.
+    supervision_event_driven: bool = True
+    #: Minimum spacing between two paid reviews, even when several triggers
+    #: arrive together. It bounds cost and prevents one noisy candle from
+    #: making the adviser repeatedly reconsider the same evidence.
+    supervision_min_interval_minutes: float = Field(default=2.0, ge=0.25, le=60.0)
+    #: A newly reached profit band is material evidence. The supervisor may
+    #: bank it, protect it, or explicitly decide that intact structure deserves
+    #: more room.
+    supervision_profit_step_r: float = Field(default=0.25, gt=0.0, le=5.0)
+    #: Once a profitable position gives this fraction of its recorded peak
+    #: back, ask the judgement layer early. The hard mechanical give-back rule
+    #: remains in force and does not wait for the API.
+    supervision_giveback_trigger_fraction: float = Field(default=0.25, gt=0.0, le=1.0)
+
     #: How far back an unrecorded broker position may reach to claim a matching
     #: entry intent, in minutes. Beyond this it is treated as an orphan and
     #: closed.
@@ -850,6 +1075,18 @@ class TradeManagementConfig(Base):
     #: wrong plan, which is worse than closing a position that should have
     #: lived.
     adoption_window_minutes: float = Field(default=10.0, ge=0.0, le=1440.0)
+
+    @model_validator(mode="after")
+    def _supervision_cadence_is_coherent(self) -> TradeManagementConfig:
+        if (
+            self.supervision_interval_minutes > 0
+            and self.supervision_min_interval_minutes > self.supervision_interval_minutes
+        ):
+            raise ValueError(
+                "trade_management.supervision_min_interval_minutes may not exceed "
+                "supervision_interval_minutes"
+            )
+        return self
 
 
 # --------------------------------------------------------------- journal ---
@@ -878,6 +1115,21 @@ class MonitoringConfig(Base):
     report_directory: str = "runtime/reports"
 
 
+class LearningConfig(Base):
+    """Evidence required before a shadow configuration may replace production."""
+
+    shadow_min_days: int = Field(default=30, ge=7, le=365)
+    shadow_min_paired_outcomes: int = Field(default=100, ge=30, le=10_000)
+    shadow_min_unique_days: int = Field(default=20, ge=5, le=365)
+    shadow_min_symbols: int = Field(default=3, ge=1, le=500)
+    #: A challenger must beat the champion by more than a rounding error even
+    #: before uncertainty is considered. Results are measured in R so this is
+    #: comparable across account sizes.
+    shadow_min_expectancy_lift_r: float = Field(default=0.05, ge=0.0, le=1.0)
+    shadow_confidence_level: float = Field(default=0.95, ge=0.80, le=0.999)
+    shadow_resolution_hours: int = Field(default=72, ge=1, le=720)
+
+
 class ScannerConfig(Base):
     """How much of the broker catalogue is inspected per cycle.
 
@@ -904,6 +1156,19 @@ class ScannerConfig(Base):
     deep_candidates: int = Field(default=12, ge=1, le=2000)
 
 
+class MarketScoutConfig(Base):
+    """Bounded independent Claude scan over compact cross-market evidence."""
+
+    enabled: bool = False
+    cooldown_minutes: int = Field(default=30, ge=5, le=1440)
+    max_calls_per_day: int = Field(default=24, ge=1, le=200)
+    max_markets_per_call: int = Field(default=12, ge=3, le=50)
+    minimum_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    #: Agreement can move a deterministic candidate earlier in the queue. It
+    #: never changes eligibility and disagreement is not a veto.
+    ranking_bonus: float = Field(default=8.0, ge=0.0, le=25.0)
+
+
 class AIConfig(Base):
     """Optional second-opinion layer; it can veto but never bypass hard gates."""
 
@@ -914,6 +1179,7 @@ class AIConfig(Base):
     minimum_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
     fail_closed: Literal[True] = True
+    market_scout: MarketScoutConfig = MarketScoutConfig()
 
 
 # -------------------------------------------------------------- settings ---
@@ -932,6 +1198,7 @@ class Settings(Base):
     filters: FiltersConfig = FiltersConfig()
     analysis: AnalysisConfig = AnalysisConfig()
     trade_management: TradeManagementConfig = TradeManagementConfig()
+    learning: LearningConfig = LearningConfig()
     journal: JournalConfig = JournalConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
     scanner: ScannerConfig = ScannerConfig()

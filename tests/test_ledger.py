@@ -17,9 +17,12 @@ import pytest
 from dashboard.ledger import (
     closed_trades,
     day_start,
+    management_baseline_report,
     recent_management,
     starting_equity,
     summarise,
+    timeline_candidates,
+    trade_timeline,
     week_start,
 )
 from journal.database import Journal, iso
@@ -300,6 +303,37 @@ def test_the_management_log_reads_newest_first(database: Path) -> None:
     assert [row["Wat"] for row in rows] == ["winst veiliggesteld", "stop naar break-even"]
     assert rows[0]["R"] == pytest.approx(0.7)
     assert rows[0]["Markt"] == "EURUSD"
+
+
+def test_the_trade_timeline_contains_plan_actions_and_exit(database: Path) -> None:
+    write_trade(database, ticket=77, pnl=1.0, pnl_r=0.5, exit_reason="GIVEBACK_EXIT")
+    write_action(database, trade_id=1, action="BREAK_EVEN", note="protected", r=0.6)
+
+    candidates = timeline_candidates(database)
+    timeline = trade_timeline(database, 77)
+
+    assert [row["ticket"] for row in candidates] == [77]
+    assert [row["Gebeurtenis"] for row in timeline["events"]] == [
+        "positie geopend",
+        "stop naar break-even",
+        "positie definitief gesloten",
+    ]
+
+
+def test_management_baseline_report_adds_the_measured_lift(database: Path) -> None:
+    write_trade(database, ticket=88, pnl=1.0, pnl_r=0.5, exit_reason="HEALTH_SECURE")
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            "INSERT INTO management_baselines (trade_id, observed_at, resolved_at, outcome, "
+            "baseline_pnl_r, actual_pnl_r, lift_r) VALUES (1,?,?,?,?,?,?)",
+            (iso(NOW), iso(NOW), "SL", -1.0, 0.5, 1.5),
+        )
+
+    report = management_baseline_report(database)
+
+    assert report["summary"]["n"] == 1
+    assert report["summary"]["lift_r"] == pytest.approx(1.5)
+    assert report["rows"][0]["ticket"] == 88
 
 
 def test_an_unmapped_action_shows_its_own_token(database: Path) -> None:

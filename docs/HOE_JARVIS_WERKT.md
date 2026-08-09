@@ -102,6 +102,31 @@ veiligheidsregel dat verlangt. Hij vergelijkt bovendien MT5 met zijn journaal,
 zodat een onverwacht gesloten order niet stil verdwijnt. Handmatige posities
 zonder Jarvis' magic number worden door de noodstop niet aangeraakt.
 
+Tussen volledige scans controleert de snelle bewaker ongeveer iedere seconde.
+De gezondheidslezing gebruikt uitsluitend **afgesloten** candles: de lopende
+candle mag via de verse tick waarschuwen, maar kan niet zelfstandig doorgaan
+voor een bevestigde structuurbreuk. Forex gebruikt M1/M5; crypto, aandelen en
+langzamere CFD-producten krijgen hun eigen, meestal tragere profiel. De vaste
+avondsluiting geldt alleen voor forex en wordt niet meer blind op aandelen,
+metalen of commodities toegepast.
+
+Claude mag een open positie alleen minder riskant maken. Een niet-HOLD-advies
+onder de ingestelde confidence-drempel wordt hard geweigerd. Ook wordt een door
+Eightcap geweigerde sluitorder nooit meer als een gesloten positie geboekt:
+Jarvis vermeldt expliciet dat hij nog openstaat en blokkeert bij een onopgeloste
+reconciliatiefout nieuwe entries.
+
+Claude krijgt bij zo'n beheerbeoordeling niet alleen de actuele candles. Hij
+krijgt ook het oorspronkelijke instapplan, de module-redenen en Claude-review
+van de entry, de oorspronkelijke SL/TP, de hoogste bereikte winst in R en alle
+eerdere beheeracties. Daardoor kan hij expliciet bepalen of de **oorspronkelijke
+trade-these** nog intact, verzwakt of ongeldig is. De normale beoordeling is om
+de 15 minuten; een verslechterende gezondheidslezing, een nieuwe winstzone of
+het teruggeven van winst kan hem vanaf twee minuten na de vorige beoordeling
+eerder wakker maken. De goedkope lokale bewaker blijft intussen ongeveer iedere
+seconde werken. Er wordt dus niet iedere seconde een dure, inconsistente
+Claude-call gedaan.
+
 Iedere analysecyclus, afwijzing, orderpoging, fill, fout en sluiting wordt
 opgeslagen. Rapporten beschrijven dus ook waarom er géén trade kwam.
 
@@ -139,7 +164,8 @@ geen nette stopmethode; gebruik de rode noodstop.
 - **AI exchange**: het exacte veilige voorstel aan Claude, `PENDING` tijdens de
   aanvraag, Claude's antwoord en kandidaten die vóór Claude zijn afgewezen.
 - **Charts**: door jou gekozen markt en maximaal vier timeframes tegelijk.
-- **Positions**: open broker- en paperposities.
+- **Positions**: open broker- en paperposities, iedere beheeractie, de volledige
+  tijdlijn per trade en de passieve vergelijking met de oorspronkelijke SL/TP.
 - **PDF report**: een momentopname die je kunt downloaden.
 - **Control**: starten, harde STOP, Claude-status en de laatste heartbeat.
 

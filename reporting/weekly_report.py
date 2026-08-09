@@ -59,6 +59,19 @@ class WeeklyReportGenerator:
             )
         if not postmortem.modules:
             lines.append("- No closed module-attributed trades.")
+        lines.extend(["", "## Rejected-plan counterfactuals", ""])
+        lines.append(
+            "These are passive original-SL/TP paths, not executed trades. Under 100 "
+            "observations per reason is descriptive only."
+        )
+        for item in postmortem.counterfactuals:
+            status = "minimum sample reached" if item.observations >= 100 else "inconclusive"
+            lines.append(
+                f"- {item.blocked_by}: n={item.observations}, win rate={item.win_rate:.1%}, "
+                f"expectancy={item.expectancy_r:+.3f}R; {status}"
+            )
+        if not postmortem.counterfactuals:
+            lines.append("- No resolved rejected-plan observations in this window.")
         self.directory.mkdir(parents=True, exist_ok=True)
         stem = self.directory / f"weekly-{now.date().isoformat()}"
         markdown, pdf = stem.with_suffix(".md"), stem.with_suffix(".pdf")

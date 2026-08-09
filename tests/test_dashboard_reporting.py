@@ -12,6 +12,7 @@ from core.types import Timeframe
 from dashboard.service import (
     DashboardService,
     catalogue_asset_class,
+    load_market_intelligence,
     load_paper_snapshot,
     stop_confirmation_matches,
 )
@@ -45,7 +46,8 @@ def test_dashboard_reads_catalogue_bars_and_builds_pdf() -> None:
         assert any(item.name == "EURUSD" for item in symbols)
         assert catalogue_asset_class("Cryptos\\High Cap\\BTCUSD").value == "crypto"
         assert len(frame) == 50
-        assert abs((frame.index[-1].to_pydatetime() - datetime.now(UTC)).total_seconds()) < 7200
+        # A Saturday dashboard correctly shows Friday's final FX bar.
+        assert abs((frame.index[-1].to_pydatetime() - datetime.now(UTC)).total_seconds()) < 259200
 
         pdf = build_pdf_report(account, [], "EURUSD", spec, tick, {"H1": frame})
         assert pdf.startswith(b"%PDF")
@@ -63,3 +65,13 @@ def test_dashboard_reads_persistent_paper_positions(tmp_path) -> None:  # type: 
     assert snapshot is not None
     assert snapshot.equity == 99.5
     assert snapshot.currency == "EUR"
+
+
+def test_dashboard_reads_market_brain_snapshot(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "market_intelligence.json"
+    path.write_text('{"world":{"risk_tone":"mixed"}}', encoding="utf-8")
+
+    snapshot = load_market_intelligence(path)
+
+    assert snapshot is not None
+    assert snapshot["world"] == {"risk_tone": "mixed"}

@@ -72,8 +72,10 @@ class TestSchema:
             "trades",
             "order_attempts",
             "management_actions",
+            "management_baselines",
             "shadow_trades",
             "bar_snapshots",
+            "ai_events",
             "equity_marks",
             "config_snapshots",
             "schema_version",
@@ -276,6 +278,50 @@ class TestTradeLifecycle:
         assert len(journal.open_trades()) == 1
         assert journal.has_open_position_in("EURUSD")
         assert not journal.has_open_position_in("GBPUSD")
+
+    def test_supervisor_can_reconstruct_the_original_trade_thesis(
+        self, recorder: Recorder, journal: Journal, settings: Settings, spec: InstrumentSpec
+    ) -> None:
+        cycle_pk = recorder.record_cycle(
+            cycle_id="entry-1",
+            context=CycleContext(
+                symbol="EURUSD",
+                equity=10_000.0,
+                session="london",
+                volatility_regime="trending",
+                extra={"trade_thesis": "higher-low continuation"},
+            ),
+            reason=Reason.OK,
+            detail="H1 structure continued higher",
+            traded=True,
+            direction=Direction.LONG,
+            total_score=72.0,
+            score_threshold=65.0,
+            signals=[Signal("market_structure", 80.0, 0.8, "higher high and higher low")],
+            weights={"market_structure": 1.0},
+        )
+        trade_id = recorder.record_trade_open(
+            cycle_pk=cycle_pk,
+            sizing=make_sizing(settings, spec),
+            ticket=77,
+            entry_price=1.085,
+            equity_before=10_000.0,
+        )
+        recorder.record_management_action(
+            trade_id,
+            action="BREAK_EVEN",
+            old_sl=1.083,
+            new_sl=1.0851,
+            r_at_action=0.6,
+            note="protected",
+        )
+
+        context = journal.supervision_context(77)
+
+        assert context["original_plan"]["stop_loss"] == pytest.approx(1.083)
+        assert context["entry_thesis"]["trade_thesis"] == "higher-low continuation"
+        assert context["entry_thesis"]["modules"][0]["module"] == "market_structure"
+        assert context["management_history"][0]["action"] == "BREAK_EVEN"
 
     def test_duplicate_tickets_are_rejected(
         self, recorder: Recorder, settings: Settings, spec: InstrumentSpec

@@ -36,6 +36,17 @@ class TestShippedConfig:
         settings = load_settings(env_overrides=False)
         assert not settings.mode.is_live
 
+    def test_eightcap_overlay_covers_every_surviving_catalogue_symbol(self) -> None:
+        overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"
+        settings = load_settings(overlay=overlay, env_overrides=False)
+        assert settings.instruments.asset_classes == ()
+        assert settings.instruments.symbols_only == ()
+        assert settings.scanner.batch_size is None
+        assert settings.scanner.deep_candidates >= 847
+        assert settings.ai.market_scout.enabled
+        assert settings.analysis.playbooks.enabled
+        assert not settings.analysis.playbooks.live_execution_enabled
+
     def test_micro_live_whitelist_is_majors_only(self, raw: dict[str, Any]) -> None:
         assert set(raw["instruments"]["whitelist"]["micro_live"]) == {
             "EURUSD",
@@ -46,6 +57,25 @@ class TestShippedConfig:
 
     def test_gold_requires_more_equity(self, raw: dict[str, Any]) -> None:
         assert raw["instruments"]["min_equity_for_symbol"]["XAUUSD"] >= 500
+
+    def test_ai_management_cooldown_cannot_exceed_routine_cadence(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        data = copy.deepcopy(raw)
+        data["trade_management"]["supervision_interval_minutes"] = 5.0
+        data["trade_management"]["supervision_min_interval_minutes"] = 6.0
+        with pytest.raises(ConfigError):
+            load_settings(write(tmp_path, data), env_overrides=False)
+
+    def test_analysis_parameter_relationships_are_validated(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        data = copy.deepcopy(raw)
+        data["analysis"]["trend_momentum"]["fast_ema"] = 100
+        data["analysis"]["trend_momentum"]["slow_ema"] = 50
+
+        with pytest.raises(ConfigError, match="fast EMA"):
+            load_settings(write(tmp_path, data), env_overrides=False)
 
 
 class TestHardRules:
@@ -370,6 +400,11 @@ class TestTradeFrequency:
         )
         assert settings.instruments.symbol_suffix == ".i"
         assert settings.instruments.universe_mode == "affordable"
+        # Empty means no asset-class narrowing: symbols_get() remains the source
+        # of truth, so all current and future supported Eightcap catalogue rows
+        # are inspected rather than only FX, metals and indices.
+        assert settings.instruments.asset_classes == ()
+        assert settings.instruments.symbols_only == ()
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
         assert settings.ai.anthropic_model == "claude-sonnet-5"
         # Large enough to cover everything the cheap scan lets through on a full

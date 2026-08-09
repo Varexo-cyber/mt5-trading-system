@@ -24,6 +24,17 @@ class ModuleEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class CounterfactualEvidence:
+    """What happened to executable plans rejected by one gate."""
+
+    blocked_by: str
+    observations: int
+    wins: int
+    win_rate: float
+    expectancy_r: float
+
+
+@dataclass(frozen=True, slots=True)
 class Postmortem:
     trades: int
     more_trades_needed: int
@@ -31,6 +42,7 @@ class Postmortem:
     average_mae_r: float | None
     average_mfe_r: float | None
     modules: tuple[ModuleEvidence, ...]
+    counterfactuals: tuple[CounterfactualEvidence, ...]
 
 
 class PostmortemAnalyzer:
@@ -67,6 +79,26 @@ class PostmortemAnalyzer:
                 (float(row["pnl_r"] or 0.0), datetime.fromisoformat(row["opened_at"]))
             )
         evidence = tuple(self._module(name, values) for name, values in sorted(grouped.items()))
+        shadow_rows = self.journal.query(
+            "SELECT blocked_by, pnl_r FROM shadow_trades "
+            "WHERE outcome IS NOT NULL AND opened_at >= ? AND opened_at < ?",
+            (iso(start), iso(end)),
+        )
+        counterfactual_values: dict[str, list[float]] = {}
+        for row in shadow_rows:
+            if row["pnl_r"] is None:
+                continue
+            counterfactual_values.setdefault(str(row["blocked_by"]), []).append(float(row["pnl_r"]))
+        counterfactuals = tuple(
+            CounterfactualEvidence(
+                blocked_by=reason,
+                observations=len(values),
+                wins=sum(value > 0 for value in values),
+                win_rate=sum(value > 0 for value in values) / len(values),
+                expectancy_r=float(np.mean(values)),
+            )
+            for reason, values in sorted(counterfactual_values.items())
+        )
         maes = [float(row["mae_r"]) for row in trades if row["mae_r"] is not None]
         mfes = [float(row["mfe_r"]) for row in trades if row["mfe_r"] is not None]
         return Postmortem(
@@ -82,6 +114,7 @@ class PostmortemAnalyzer:
             average_mae_r=float(np.mean(maes)) if maes else None,
             average_mfe_r=float(np.mean(mfes)) if mfes else None,
             modules=evidence,
+            counterfactuals=counterfactuals,
         )
 
     def _module(self, module: str, values: list[tuple[float, datetime]]) -> ModuleEvidence:

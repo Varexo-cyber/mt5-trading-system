@@ -423,6 +423,31 @@ class Recorder:
             ),
         )
 
+    def record_management_baseline(
+        self,
+        *,
+        trade_id: int,
+        outcome: str,
+        baseline_pnl_r: float,
+        actual_pnl_r: float,
+        observed_at: datetime,
+    ) -> None:
+        """Persist the passive original-SL/TP comparison for one closed trade."""
+        self.journal.conn.execute(
+            "INSERT OR IGNORE INTO management_baselines "
+            "(trade_id, observed_at, resolved_at, outcome, baseline_pnl_r, "
+            "actual_pnl_r, lift_r) VALUES (?,?,?,?,?,?,?)",
+            (
+                trade_id,
+                iso(observed_at),
+                iso(self.clock.now()),
+                outcome,
+                baseline_pnl_r,
+                actual_pnl_r,
+                actual_pnl_r - baseline_pnl_r,
+            ),
+        )
+
     # -- shadow trades -----------------------------------------------------
 
     def record_shadow_trade(
@@ -461,6 +486,32 @@ class Recorder:
             ),
         )
         return int(cursor.lastrowid or 0)
+
+    def has_unresolved_shadow_trade(self, symbol: str, direction: Direction) -> bool:
+        """Avoid recording the same still-running hypothetical every cycle."""
+        row = self.journal.conn.execute(
+            """
+            SELECT 1 FROM shadow_trades
+            WHERE symbol = ? AND direction = ? AND outcome IS NULL
+            LIMIT 1
+            """,
+            (symbol, direction.name),
+        ).fetchone()
+        return row is not None
+
+    def unresolved_shadow_trades(self, limit: int = 50) -> list[Any]:
+        """Return a bounded oldest-first queue for passive outcome resolution."""
+        return list(
+            self.journal.conn.execute(
+                """
+                SELECT * FROM shadow_trades
+                WHERE outcome IS NULL
+                ORDER BY opened_at ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        )
 
     def resolve_shadow_trade(self, shadow_id: int, *, outcome: str, pnl_r: float) -> None:
         self.journal.conn.execute(

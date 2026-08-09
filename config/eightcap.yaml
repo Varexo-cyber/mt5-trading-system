@@ -15,8 +15,9 @@ instruments:
   # EUR 100 account can actually express. This is not the loosening it looks
   # like: the whitelist was a hand-written guess at affordability, while the
   # sizer measures it exactly, per symbol, at the current equity and the
-  # setup's real stop distance. Anything it cannot size at 1% risk is still
-  # skipped as TRADE_SKIPPED_UNDERCAPITALIZED.
+  # setup's real stop distance. Anything it cannot size within the active risk
+  # contract (2% in Experimental Live) is still skipped as
+  # TRADE_SKIPPED_UNDERCAPITALIZED.
   universe_mode: affordable
   blocklist: []
 
@@ -46,7 +47,13 @@ instruments:
   # for a week. That is the real cost of the slow markets, not their quality.
   #
   # Values: forex, metal, index, commodity, stock, crypto.
-  asset_classes: [forex, metal, index]
+  # Empty is deliberate: ask MT5 for the live account's complete catalogue on
+  # every cycle. This currently covers RAW FX, metals, indices, commodities,
+  # stocks and every crypto Eightcap exposes, and automatically includes future
+  # additions without maintaining a hand-written symbol list. Closed,
+  # untradeable, stale or excessively expensive markets are still inspected and
+  # reported, but remain blocked before deep analysis or order execution.
+  asset_classes: []
 
   # Or watch a single instrument. Leave empty for the list above; set e.g.
   # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded
@@ -104,7 +111,10 @@ scanner:
   # protected here. If cycle time climbs into the tens of seconds on a slow
   # terminal, lower this rather than the batch size — the log line reports both
   # the count and the duration.
-  deep_candidates: 400
+  # Above Eightcap's complete current catalogue (847 rows): every symbol that
+  # survives the cheap tradability/quote/spread/history screen receives the
+  # full timeframe ladder. This is a coverage choice, not a looser trade gate.
+  deep_candidates: 2000
 
 analysis:
   confluence:
@@ -173,6 +183,10 @@ analysis:
   # far more setups than the pattern logic does.
   playbooks:
     enabled: true
+    # The supplied 90-day matched-control test was negative. Keep these
+    # theories running as research/context, but do not let them create or veto
+    # a real-money order until new OOS evidence clears the promotion protocol.
+    live_execution_enabled: false
     momentum_scalp: true
     range_fade: true
     # Two theories reading the same bars in opposite directions is a market
@@ -214,21 +228,30 @@ ai:
   minimum_confidence: 0.55
   timeout_seconds: 60
   fail_closed: true
+  # Independent cross-market opinion. It is intentionally not another gate:
+  # agreement can promote an existing deterministic candidate in the queue,
+  # while WAIT, disagreement or an API failure changes nothing. That gives
+  # Claude a genuine detection role without making an outage equal zero trades.
+  market_scout:
+    enabled: true
+    cooldown_minutes: 30
+    max_calls_per_day: 24
+    max_markets_per_call: 12
+    minimum_confidence: 0.65
+    ranking_bonus: 8.0
 
 # No cap on how many trades a good day may produce.
 #
-# The counter was never the thing protecting this account. At 2% risk against
-# micro_live's 4% daily stop the day halts after the second loser, so on a bad
-# day the count never gets a say — the loss limit has already stopped
-# everything. The only day a six-trade cap ever bit was a day that was going
-# well, which is exactly the day it should not.
+# The counter was removed at the owner's explicit instruction. This increases
+# exposure on both good and bad days because the daily and weekly pacing limits
+# below are also off; it must not be described as if those limits still bound it.
 #
-# What still bounds an uncapped day, none of it changed: 2% fixed risk per
-# trade, the 4% daily stop, the 6% weekly stop, the 15% drawdown breaker, two
-# concurrent positions maximum, and the posture that raises the entry bar and
-# shortens the leash after losses. The setups also still have to survive every
-# filter and Claude's veto, which is what makes "more trades" mean "more good
-# trades" rather than "more trades".
+# What still bounds an uncapped day: 2% fixed risk per trade, two concurrent
+# positions maximum, every market/filter/order constraint and Claude's veto.
+# Daily, weekly and peak-drawdown breakers are explicitly off in this owner-set
+# experiment; the fixed EUR 50 experimental equity floor is the unconditional
+# capital backstop. These comments describe the effective settings below and
+# must change with them.
 risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
   posture_throttle: false
@@ -267,17 +290,11 @@ risk:
   # a day that goes wrong is paused, not ended. Switching them off means a bad
   # day can run its full course.
   #
-  # The backstop is unchanged and is a different kind of gate. The 15% drawdown
-  # breaker measures from the all-time equity peak, so it never resets, cannot
-  # be waited out, and reaching it closes every position and halts the system
-  # until a human restarts it. It is also bound to the armed experimental
-  # contract and cannot be edited without re-arming. On EUR 100 that floor sits
-  # at EUR 85.00.
-  #
-  # Also unchanged: 2% fixed risk per trade, two concurrent positions, the
-  # anti-martingale multiplier that halves size after three losses, the posture
-  # that takes only the single best setup per cycle while in drawdown, every
-  # filter, and Claude's veto.
+  # The peak-to-current breaker is also explicitly off in the armed
+  # Experimental Live contract. The remaining unconditional capital backstop is
+  # the fixed EUR 50 floor in promotion/experimental.py. Re-arming does not move
+  # that floor. Also retained: 2% fixed risk per trade, two concurrent
+  # positions, every filter and Claude's veto.
   daily_loss_limit_pct: 0
   weekly_loss_limit_pct: 0
 

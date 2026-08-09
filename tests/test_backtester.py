@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -16,8 +17,15 @@ from backtesting.engine import (
     monte_carlo_drawdown_probability,
     walk_forward_split,
 )
-from backtesting.replay import REPLAY_TIMEFRAMES, HistoricalContextReplay
-from core.types import Direction, Timeframe
+from backtesting.replay import (
+    REPLAY_TIMEFRAMES,
+    HistoricalContextReplay,
+    evidence_digest,
+    frame_digest,
+    implementation_digest,
+    write_evidence_report,
+)
+from core.types import Direction, Signal, Timeframe
 
 
 def frame(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:
@@ -118,6 +126,47 @@ def test_historical_context_never_contains_an_unclosed_bar() -> None:
     assert spy.calls > 0
 
 
+def test_replay_attributes_orders_only_to_modules_that_carried_weight() -> None:
+    end = datetime(2026, 8, 1, tzinfo=UTC)
+    frames = {}
+    for timeframe in REPLAY_TIMEFRAMES:
+        index = pd.date_range(end=end, periods=150, freq=timeframe.duration, tz=UTC)
+        frames[timeframe] = pd.DataFrame(
+            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "spread": 2},
+            index=index,
+        )
+
+    class AttributionEngine:
+        config = SimpleNamespace(weights={"causal": 1.0, "passive": 0.0}, minimum_confidence=0.5)
+
+        def evaluate(self, context, _mode):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                approved=True,
+                direction=Direction.LONG,
+                entry=context.tick.ask,
+                stop_loss=99.0,
+                take_profit=102.0,
+                score=70.0,
+                confidence=0.8,
+                signals=(
+                    Signal("causal", 70.0, 0.8),
+                    Signal("passive", 90.0, 0.9),
+                ),
+            )
+
+    replay = HistoricalContextReplay(AttributionEngine(), history_bars=120)  # type: ignore[arg-type]
+    orders = replay.orders(
+        "TEST",
+        frames,
+        point=0.01,
+        start=end - Timeframe.H1.duration * 2,
+        end=end + Timeframe.H1.duration,
+    )
+
+    assert orders
+    assert all(item.modules == ("causal",) for item in orders)
+
+
 def test_risk_diagnostics_include_streak_duration_and_monte_carlo() -> None:
     returns = [1.0, -1.0, -1.0, -1.0, 2.0]
 
@@ -130,3 +179,27 @@ def test_risk_diagnostics_include_streak_duration_and_monte_carlo() -> None:
         drawdown_threshold_pct=15.0,
     )
     assert 0.0 <= probability <= 1.0
+
+
+def test_historical_data_and_report_contents_are_content_addressed(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    bars = frame([(100, 101, 99, 100), (100, 102, 99, 101)])
+    changed = bars.copy()
+    changed.iloc[-1, changed.columns.get_loc("close")] = 102
+    assert frame_digest(bars) != frame_digest(changed)
+
+    path = tmp_path / "evidence.json"
+    write_evidence_report(path, metadata={"source": "test"}, segments=[])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["evidence_digest"] == evidence_digest(payload)
+
+
+def test_implementation_digest_changes_with_production_source(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    source = tmp_path / "analysis"
+    source.mkdir()
+    module = source / "strategy.py"
+    module.write_text("EDGE = 1\n", encoding="utf-8")
+    before = implementation_digest(tmp_path)
+
+    module.write_text("EDGE = 2\n", encoding="utf-8")
+
+    assert implementation_digest(tmp_path) != before

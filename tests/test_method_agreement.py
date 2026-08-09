@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from analysis.confluence import TradeIdea
 from analysis.playbooks import Play, PlaybookVerdict
-from core.types import Direction
+from core.types import Direction, TradingMode
 from runner.service import JarvisRunner
 
 FLOOR = 60.0
@@ -129,3 +129,17 @@ def test_the_short_side_is_mirrored() -> None:
 
 def test_it_can_be_switched_off() -> None:
     assert gate(require=False)(idea(Direction.LONG), verdict(play(Direction.SHORT))) is None
+
+
+def test_research_only_playbooks_cannot_veto_a_live_trade() -> None:
+    instance = JarvisRunner.__new__(JarvisRunner)
+    instance.settings = SimpleNamespace(mode=TradingMode.MICRO_LIVE)  # type: ignore[assignment]
+    instance.playbook_config = SimpleNamespace(  # type: ignore[assignment]
+        live_execution_enabled=False,
+        require_method_agreement=True,
+        min_conviction=FLOOR,
+    )
+
+    assert (
+        instance._method_disagreement(idea(Direction.LONG), verdict(play(Direction.SHORT))) is None
+    )

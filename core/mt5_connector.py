@@ -71,6 +71,25 @@ _OFFSET_MAX_AGE = timedelta(minutes=15)
 #: call. A full-catalogue scan on a slow terminal produces hundreds.
 _SLOW_CALL_SUMMARY_SECONDS = 60.0
 
+# Only idempotent reads belong here. In particular, ``order_send`` must never
+# be repeated because an IPC acknowledgement was lost: the broker may already
+# have accepted it. Order retries are governed by explicit trade retcodes in
+# ``order_send`` instead.
+_RETRYABLE_READS = frozenset(
+    {
+        "account_info",
+        "positions_get",
+        "history_deals_get",
+        "order_calc_margin",
+        "symbols_get",
+        "symbol_info",
+        "symbol_info_tick",
+        "copy_rates_from_pos",
+        "copy_rates_range",
+    }
+)
+_TRANSIENT_IPC_ERRORS = frozenset({-10001, -10003, -10005})
+
 
 def import_mt5() -> ModuleType:
     """Import the MetaTrader5 package, with a message that explains the failure.
@@ -825,6 +844,21 @@ class MT5Connector:
         retcode = int(raw.retcode)
         filled_price = float(getattr(raw, "price", 0.0) or 0.0)
         ok = retcode in SUCCESS_RETCODES
+        deal_ticket = int(getattr(raw, "deal", 0)) or None
+        order_ticket = int(getattr(raw, "order", 0)) or None
+        position_ticket = order_ticket
+        filled_volume = float(getattr(raw, "volume", 0.0) or 0.0)
+        # Eightcap's market-execution result can report price=0 even though the
+        # deal was accepted. Zero is not zero slippage; it is missing telemetry.
+        # Recover the authoritative fill from the deal ledger before anything
+        # is written to the journal or shown in an execution report.
+        if ok and deal_ticket is not None and (filled_price <= 0 or filled_volume <= 0):
+            recovered_price, recovered_volume, recovered_position = self._recover_deal_fill(
+                deal_ticket
+            )
+            filled_price = recovered_price or filled_price
+            filled_volume = recovered_volume or filled_volume
+            position_ticket = recovered_position or position_ticket
 
         # Signed so that positive always means "worse than we asked for",
         # whichever way the trade points. Averaging raw price deltas across
@@ -839,11 +873,11 @@ class MT5Connector:
             retcode=retcode,
             retcode_name=describe_retcode(retcode),
             comment=str(getattr(raw, "comment", "")),
-            order_ticket=int(getattr(raw, "order", 0)) or None,
-            deal_ticket=int(getattr(raw, "deal", 0)) or None,
-            position_ticket=int(getattr(raw, "order", 0)) or None,
+            order_ticket=order_ticket,
+            deal_ticket=deal_ticket,
+            position_ticket=position_ticket,
             requested_volume=request.volume,
-            filled_volume=float(getattr(raw, "volume", 0.0) or 0.0),
+            filled_volume=filled_volume,
             requested_price=requested_price,
             filled_price=filled_price,
             slippage_pips=slippage,
@@ -852,6 +886,39 @@ class MT5Connector:
             attempts=attempts,
             sent_at=sent_at,
         )
+
+    def _recover_deal_fill(self, deal_ticket: int) -> tuple[float, float, int | None]:
+        """Read the exact broker deal when MqlTradeResult omits its fill.
+
+        The deal ledger can lag the order response by a few milliseconds, so a
+        bounded retry is used. Failure remains visible as zero instead of being
+        replaced with the requested quote; inventing a fill would corrupt the
+        slippage report more quietly than missing data does.
+        """
+        for attempt in range(3):
+            raw = self._call("history_deals_get", ticket=deal_ticket)
+            deals = list(raw or ())
+            if deals:
+                volume = sum(float(getattr(deal, "volume", 0.0) or 0.0) for deal in deals)
+                weighted = sum(
+                    float(getattr(deal, "price", 0.0) or 0.0)
+                    * float(getattr(deal, "volume", 0.0) or 0.0)
+                    for deal in deals
+                )
+                price = (
+                    weighted / volume
+                    if volume > 0
+                    else float(getattr(deals[-1], "price", 0.0) or 0.0)
+                )
+                position = int(getattr(deals[-1], "position_id", 0) or 0) or None
+                return price, volume, position
+            if attempt < 2:
+                time.sleep(0.05)
+        log.warning(
+            "accepted deal fill was not yet available in broker history",
+            extra={"event": "fill_recovery_missing", "deal_ticket": deal_ticket},
+        )
+        return 0.0, 0.0, None
 
     def modify_stops(self, position: Position, *, sl: float, tp: float) -> OrderResult:
         """Move SL/TP on an existing position (break-even, trailing, partials)."""
@@ -936,6 +1003,12 @@ class MT5Connector:
         retcode = int(raw.retcode) if raw is not None else None
         ok = retcode in SUCCESS_RETCODES if retcode is not None else False
         filled_price = float(getattr(raw, "price", 0.0) or 0.0) if raw is not None else 0.0
+        filled_volume = float(getattr(raw, "volume", 0.0) or 0.0) if raw is not None else 0.0
+        deal_ticket = int(getattr(raw, "deal", 0)) or None if raw is not None else None
+        if ok and deal_ticket is not None and (filled_price <= 0 or filled_volume <= 0):
+            recovered_price, recovered_volume, _ = self._recover_deal_fill(deal_ticket)
+            filled_price = recovered_price or filled_price
+            filled_volume = recovered_volume or filled_volume
 
         # Exit slippage is signed the same way as entry: positive is worse. On a
         # close, "worse" is the mirror of the position's direction.
@@ -964,10 +1037,10 @@ class MT5Connector:
             retcode_name=describe_retcode(retcode),
             comment=str(getattr(raw, "comment", "")) if raw is not None else self._error_text(),
             order_ticket=int(getattr(raw, "order", 0)) or None if raw is not None else None,
-            deal_ticket=int(getattr(raw, "deal", 0)) or None if raw is not None else None,
+            deal_ticket=deal_ticket,
             position_ticket=position.ticket,
             requested_volume=close_volume,
-            filled_volume=float(getattr(raw, "volume", 0.0) or 0.0) if raw is not None else 0.0,
+            filled_volume=filled_volume,
             requested_price=price,
             filled_price=filled_price,
             slippage_pips=slippage,
@@ -990,7 +1063,26 @@ class MT5Connector:
         # retcode 0), the permissions were in place, and the same payload
         # placed a real trade when called as `mt5.order_send(payload)` without
         # the empty mapping. Only pass kwargs when there are some.
-        result = func(*args, **kwargs) if kwargs else func(*args)
+        maximum = self.config.read_max_attempts if function in _RETRYABLE_READS else 1
+        result = None
+        for attempt in range(1, maximum + 1):
+            result = func(*args, **kwargs) if kwargs else func(*args)
+            if result is not None:
+                break
+            code, description = self._last_error_tuple()
+            if code not in _TRANSIENT_IPC_ERRORS or attempt >= maximum:
+                break
+            log.warning(
+                "transient MT5 read failed; retrying",
+                extra={
+                    "event": "mt5_read_retry",
+                    "function": function,
+                    "attempt": attempt,
+                    "error_code": code,
+                    "error": description,
+                },
+            )
+            time.sleep(self.config.read_retry_delay_ms / 1000.0)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if elapsed_ms > self.config.slow_call_warn_ms:
             self._slow_calls += 1

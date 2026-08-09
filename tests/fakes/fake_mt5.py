@@ -136,6 +136,9 @@ class FakeMT5:
     order_retcodes: list[int] = field(default_factory=list)
     #: Fill price offset, in price units, applied to every fill (slippage).
     fill_offset: float = 0.0
+    #: Simulate brokers that confirm a market deal but omit the fill price from
+    #: MqlTradeResult. The authoritative price remains available in history.
+    zero_result_price: bool = False
 
     initialize_failures: int = 0
     error: tuple[int, str] = (0, "Success")
@@ -283,9 +286,13 @@ class FakeMT5:
             return tuple(self.positions)
         return tuple(p for p in self.positions if p.symbol == symbol)
 
-    def history_deals_get(self, *, position: int) -> tuple[SimpleNamespace, ...]:
-        self.calls.append(("history_deals_get", (position,)))
-        return tuple(deal for deal in self.deals if int(deal.position_id) == position)
+    def history_deals_get(
+        self, *, position: int | None = None, ticket: int | None = None
+    ) -> tuple[SimpleNamespace, ...]:
+        self.calls.append(("history_deals_get", (position, ticket)))
+        if ticket is not None:
+            return tuple(deal for deal in self.deals if int(deal.ticket) == ticket)
+        return tuple(deal for deal in self.deals if int(deal.position_id) == int(position or 0))
 
     def order_calc_margin(
         self, action: int, symbol: str, volume: float, price: float
@@ -306,12 +313,21 @@ class FakeMT5:
 
         price = float(request.get("price", 0.0))
         filled = price + self.fill_offset if retcode == int(Retcode.DONE) else 0.0
+        if retcode == int(Retcode.DONE) and self.zero_result_price:
+            self.deals.append(
+                SimpleNamespace(
+                    ticket=555_001,
+                    position_id=555_002,
+                    price=filled,
+                    volume=float(request.get("volume", 0.0)),
+                )
+            )
         return SimpleNamespace(
             retcode=retcode,
             deal=555_001 if retcode == int(Retcode.DONE) else 0,
             order=555_002 if retcode == int(Retcode.DONE) else 0,
             volume=float(request.get("volume", 0.0)) if retcode == int(Retcode.DONE) else 0.0,
-            price=filled,
+            price=0.0 if self.zero_result_price else filled,
             bid=price,
             ask=price,
             comment="Request executed" if retcode == int(Retcode.DONE) else "Rejected",

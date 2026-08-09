@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
@@ -17,18 +18,30 @@ from advisory import (
     Advisor,
     AIReviewLedger,
     DisabledAdvisor,
+    ScoutDecision,
     VetoMemory,
     build_advisor,
     build_review_payload,
     build_supervision_payload,
+    read_trade_reflections,
 )
+from advisory.scout import ScoutThrottle
 from analysis import (
     ConfluenceEngine,
     LevelReaction,
     LiquiditySweep,
+    MarketObservation,
+    MarketRegime,
     MarketStructure,
+    OpportunityIntelligence,
     TrendMomentum,
     VolatilityRegime,
+    assess_opportunity,
+    observe_market,
+    scout_market_snapshot,
+)
+from analysis import (
+    world_state as build_world_state,
 )
 from analysis.confluence import TradeIdea
 from analysis.playbooks import (
@@ -57,6 +70,7 @@ from infra.logging import get_logger
 from journal.database import Journal
 from journal.recorder import CycleContext, Recorder
 from learning.config_control import ShadowRecorder
+from learning.counterfactual import resolve_counterfactuals, resolve_management_baselines
 from learning.memory import TradingMemory
 from main import build_filter_chain
 from monitoring.alerts import AlertSender
@@ -94,6 +108,18 @@ _UNKNOWN_HEALTH: dict[str, object] = {
 #: their structure, so it is what defines "the same setup".
 _REVIEW_TIMEFRAME = Timeframe.H1
 
+
+@dataclass(frozen=True, slots=True)
+class _SupervisionSnapshot:
+    """The material state at the last paid open-position review."""
+
+    r_now: float
+    peak_r: float
+    giveback_fraction: float
+    health_verdict: str
+    health_severity: float
+
+
 #: AI verdicts retained. One per symbol and direction per bar of the fastest
 #: timeframe, so a few hundred covers a full catalogue for several bars.
 _REVIEW_CACHE_ENTRIES = 500
@@ -123,6 +149,7 @@ class AnalysedCandidate:
     cycle_id: str
     idea: TradeIdea
     context: MarketContext
+    intelligence: OpportunityIntelligence | None = None
 
     @property
     def conviction(self) -> float:
@@ -137,6 +164,16 @@ class AnalysedCandidate:
         decides what is looked at first.
         """
         return self.idea.score * self.idea.confidence
+
+    @property
+    def ranking_score(self) -> float:
+        """Conviction plus bounded context, used only to decide who goes first."""
+        modifier = (
+            self.intelligence.modifier + self.intelligence.scout_alignment
+            if self.intelligence is not None
+            else 0.0
+        )
+        return self.conviction + modifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,9 +204,18 @@ class JarvisRunner:
         self.root = root
         self.operation = operation
         self.settings = self._settings_for_operation(settings, operation)
-        self.kill_switch = KillSwitch.in_dir(root, self.settings.system.kill_switch_file)
+        self.clock: Clock = clock or LiveClock()
+        self.kill_switch = KillSwitch.in_dir(
+            root,
+            self.settings.system.kill_switch_file,
+            self.clock,
+        )
         self.broker: Broker = (
-            PaperBroker(market, root / "runtime" / "paper_state.json")
+            PaperBroker(
+                market,
+                root / "runtime" / "paper_state.json",
+                clock=self.clock,
+            )
             if operation is OperationMode.PAPER
             else market
         )
@@ -177,7 +223,6 @@ class JarvisRunner:
         # was the last hardcoded LiveClock, and while it stood no end-to-end
         # test could place itself on, say, a Monday morning — which is exactly
         # when the interesting failures happen.
-        self.clock: Clock = clock or LiveClock()
         self.journal = Journal(
             root / self.settings.journal.database_path,
             self.clock,
@@ -187,19 +232,24 @@ class JarvisRunner:
         self.engine = ConfluenceEngine(
             [
                 MarketStructure(self.settings.analysis.market_structure),
-                TrendMomentum(),
-                LiquiditySweep(),
-                LevelReaction(),
-                VolatilityRegime(),
+                TrendMomentum(self.settings.analysis.trend_momentum),
+                LiquiditySweep(self.settings.analysis.liquidity_sweep),
+                LevelReaction(self.settings.analysis.level_reaction),
+                VolatilityRegime(self.settings.analysis.volatility_regime),
+                MarketRegime(self.settings.analysis.market_regime),
             ],
             self.settings.analysis.confluence,
         )
-        self.shadow = ShadowRecorder(root)
+        self.shadow = ShadowRecorder(root, self.settings.learning)
         self.shadow_engine = self._shadow_engine()
         self.playbook_config = self.settings.analysis.playbooks
         self.playbooks = self._build_playbooks()
         self.advisor = advisor or build_advisor(self.settings.ai)
-        self.ai_ledger = AIReviewLedger(root / "runtime" / "ai_reviews.jsonl")
+        self.ai_ledger = AIReviewLedger(
+            root / "runtime" / "ai_reviews.jsonl",
+            database=self.journal,
+            clock=self.clock,
+        )
         self.cursor = self._load_cursor()
         self.operation_ledger = OperationLedger(root / "runtime" / "operation_history.json")
         self.scan_activity = ScanActivityLedger(root / "runtime" / "scan_activity.json")
@@ -207,15 +257,32 @@ class JarvisRunner:
         # (symbol, direction, fastest-timeframe bar close) -> the verdict given.
         self._review_cache: dict[tuple[str, str, datetime], Advice] = {}
         # Refusals outlive the bar they were given on; see advisory/veto_memory.
-        self.veto_memory = VetoMemory(root / "runtime" / "veto_memory.json")
+        self.veto_memory = VetoMemory(
+            root / "runtime" / "veto_memory.json",
+            clock=self.clock,
+        )
         # What the account has taught itself, fed back into every review.
-        self.memory = TradingMemory(root / "runtime" / "trading_memory.json")
+        self.memory = TradingMemory(
+            root / "runtime" / "trading_memory.json",
+            clock=self.clock,
+        )
+        # One global closed-bar view per cycle. It is prompt/dashboard context,
+        # never a source of entry permission.
+        self.market_intelligence_file = root / "runtime" / "market_intelligence.json"
+        self.scout_throttle = ScoutThrottle(root / "runtime" / "market_scout_state.json")
+        self._cycle_observations: list[MarketObservation] = []
+        self._cycle_contexts: dict[str, MarketContext] = {}
+        self._world_state: dict[str, object] = {}
+        self._last_scout = ScoutDecision(thesis="No scout call recorded yet")
+        self._counterfactuals_checked_at: datetime | None = None
         # The fast layer's live read, published for the deck. The manager holds
         # it in memory; the dashboard is a separate process and cannot see that.
         self.health_file = root / "runtime" / "position_health.json"
         # ticket -> when the supervisor last looked at it, so an open position
         # is reconsidered on a sane cadence rather than every thirty seconds.
         self._supervised_at: dict[int, datetime] = {}
+        self._supervision_due_at: dict[int, datetime] = {}
+        self._supervision_snapshots: dict[int, _SupervisionSnapshot] = {}
         # Why new risk is refused, if it is. Empty means trading is permitted.
         self.blocked_reason = ""
         self.blocked_detail = ""
@@ -238,7 +305,22 @@ class JarvisRunner:
             raise
         self.clock.server_offset = self.broker.server_offset
         self.journal.open()
+        self.ai_ledger.backfill_database()
         self.recorder = Recorder(self.journal, self.clock, self.settings)
+        self.memory.synchronize_outcomes(
+            self.journal.query(
+                "SELECT id, symbol, direction, closed_at, "
+                "CASE WHEN pnl_r IS NOT NULL THEN pnl_r "
+                "WHEN risk_money > 0 THEN COALESCE(pnl_money, 0.0) / risk_money "
+                "ELSE 0.0 END AS pnl_r "
+                "FROM trades WHERE closed_at IS NOT NULL "
+                "AND COALESCE(entry_state, 'OPEN') != 'ABANDONED'"
+            ),
+            self.clock.now(),
+        )
+        self.memory.synchronize_reflections(
+            read_trade_reflections(self.ai_ledger.path), self.clock.now()
+        )
         self.risk = RiskManager(
             self.settings,
             self.journal,
@@ -371,11 +453,16 @@ class JarvisRunner:
             return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
         reconciliation = self.manager.reconcile(positions)
         self._record_management(reconciliation)
-        if any(event.action == "BROKER_CLOSED_PENDING_HISTORY" for event in reconciliation):
+        reconciliation_failures = {
+            "BROKER_CLOSED_PENDING_HISTORY",
+            "EMERGENCY_CLOSE_REJECTED",
+            "ORPHAN_CLOSE_REJECTED",
+        }
+        if any(event.action in reconciliation_failures for event in reconciliation):
             self.alerts.send(
-                "CRITICAL: broker/journal closure could not be recovered; new risk halted"
+                "CRITICAL: reconciliation left unresolved broker risk; new risk halted"
             )
-            self.risk.halt("broker/journal reconciliation requires deal-history recovery")
+            self.risk.halt("broker/journal reconciliation left unresolved broker risk")
         positions = self.broker.positions(magic=self.settings.system.magic_number)
         news_filter = next(
             (item for item in self.filters.filters if isinstance(item, NewsFilter)), None
@@ -487,6 +574,7 @@ class JarvisRunner:
         # sizing, the AI review, the order) then runs in that order, so the
         # scarce slots and the paid reviews go to the best ideas available.
         analysed = self._analyse_batch(batch, account)
+        analysed = self._apply_market_scout(analysed, batch)
         # Every candidate now gets the full chart analysis, so this is the
         # honest count of deep work done — not the number that survived it.
         deep = len(batch.candidates)
@@ -530,6 +618,7 @@ class JarvisRunner:
         self.reports.maybe_generate(self.broker.account(), self.clock.now())
         self.weekly_reports.maybe_generate(self.broker.account(), self.clock.now())
         self.execution_reports.maybe_generate(self.clock.now())
+        self._resolve_counterfactuals()
         return summary
 
     def _analyse_batch(self, batch: ScanBatch, account) -> list[AnalysedCandidate]:  # type: ignore[no-untyped-def]
@@ -543,9 +632,11 @@ class JarvisRunner:
         stands when its turn comes, not as it stood at the top of the cycle.
         """
         analysed: list[AnalysedCandidate] = []
+        self._cycle_observations = []
+        self._cycle_contexts = {}
         for candidate in batch.candidates:
             try:
-                item = self._analyse_candidate(candidate.symbol, account)
+                item = self._analyse_candidate(candidate.symbol, candidate.asset_class, account)
             except Exception:
                 log.exception(
                     "candidate analysis failed; continuing with the rest of the batch",
@@ -554,7 +645,9 @@ class JarvisRunner:
                 continue
             if item is not None:
                 analysed.append(item)
-        analysed.sort(key=lambda item: item.conviction, reverse=True)
+        self._world_state = build_world_state(self._cycle_observations)
+        self._publish_market_intelligence(analysed)
+        analysed.sort(key=lambda item: item.ranking_score, reverse=True)
         # In a drawdown, go less far down the ranked list. The candidates are
         # already ordered by conviction, so this says "only the best few" —
         # scale-free, and it always leaves at least one reachable. It never
@@ -583,18 +676,172 @@ class JarvisRunner:
                     "candidates": len(analysed),
                     "best": [
                         f"{item.symbol} {item.idea.direction.name if item.idea.direction else '?'}"
-                        f" {item.conviction:.1f}"
+                        f" {item.ranking_score:.1f}"
                         for item in analysed[:5]
                     ],
                 },
             )
         return analysed
 
-    def _analyse_candidate(self, symbol: str, account) -> AnalysedCandidate | None:  # type: ignore[no-untyped-def]
+    def _apply_market_scout(
+        self, analysed: list[AnalysedCandidate], batch: ScanBatch
+    ) -> list[AnalysedCandidate]:
+        """Let Claude nominate one market without creating a new trade gate.
+
+        A matching nomination receives a bounded ordering bonus. WAIT,
+        disagreement, low confidence, a timeout or a symbol for which the
+        deterministic engine has no executable idea all leave the queue exactly
+        as it was. This is the crucial asymmetry: scouting can help select, but
+        it cannot make an API outage equal zero trades.
+        """
+        config = self.settings.ai.market_scout
+        scout_method = getattr(self.advisor, "scout", None)
+        if (
+            not config.enabled
+            or self.operation is OperationMode.MONITOR
+            or isinstance(self.advisor, DisabledAdvisor)
+            or not callable(scout_method)
+            or not self._cycle_contexts
+        ):
+            self._publish_market_intelligence(analysed)
+            return analysed
+
+        observations = {row.symbol: row for row in self._cycle_observations}
+        markets: list[dict[str, object]] = []
+        signatures: list[str] = []
+        for cheap in batch.candidates:
+            context = self._cycle_contexts.get(cheap.symbol)
+            observation = observations.get(cheap.symbol)
+            if context is None or observation is None:
+                continue
+            markets.append(scout_market_snapshot(context, observation))
+            signatures.append(f"{cheap.symbol}:{observation.last_h1_bar}")
+            if len(markets) >= config.max_markets_per_call:
+                break
+        if len(markets) < 1:
+            self._publish_market_intelligence(analysed)
+            return analysed
+
+        signature = hashlib.sha256("|".join(signatures).encode("utf-8")).hexdigest()[:24]
+        try:
+            reserved, why = self.scout_throttle.reserve(
+                signature,
+                self.clock.now(),
+                cooldown_minutes=config.cooldown_minutes,
+                max_calls_per_day=config.max_calls_per_day,
+            )
+        except OSError:
+            log.exception("market scout throttle unavailable; deterministic queue unchanged")
+            self._publish_market_intelligence(analysed)
+            return analysed
+        if not reserved:
+            log.debug("market scout skipped: %s", why, extra={"event": "market_scout_skipped"})
+            self._publish_market_intelligence(analysed)
+            return analysed
+
+        payload = {
+            "global_market_state": self._world_state,
+            "markets": markets,
+            "deterministic_tradeable_symbols": [item.symbol for item in analysed],
+            "rule": (
+                "Nomination changes ordering only. It cannot create, block, resize or "
+                "execute a trade."
+            ),
+        }
+        try:
+            self.ai_ledger.append(
+                "market_scout_request",
+                {
+                    "signature": signature,
+                    "provider": self.settings.ai.provider,
+                    "model": self.settings.ai.anthropic_model or self.settings.ai.openai_model,
+                    "request": payload,
+                },
+            )
+        except OSError:
+            log.exception("market scout request could not be audited; paid call skipped")
+            self._publish_market_intelligence(analysed)
+            return analysed
+        started = time.monotonic()
+        decision = scout_method(payload)
+        latency_ms = round((time.monotonic() - started) * 1000.0, 1)
+        self._last_scout = decision
+        try:
+            self.ai_ledger.append(
+                "market_scout_response",
+                {
+                    "signature": signature,
+                    "latency_ms": latency_ms,
+                    "decision": decision.safe_dict(),
+                },
+            )
+        except OSError:
+            log.exception("market scout response audit failed; ranking result retained")
+
+        promoted: list[AnalysedCandidate] = []
+        matched = False
+        for item in analysed:
+            intelligence = item.intelligence
+            if (
+                not matched
+                and intelligence is not None
+                and decision.directional
+                and decision.confidence >= config.minimum_confidence
+                and item.symbol == decision.symbol
+                and item.idea.direction is not None
+                and item.idea.direction.name == decision.action
+            ):
+                matched = True
+                intelligence = replace(
+                    intelligence,
+                    scout_alignment=config.ranking_bonus,
+                    reasons=(
+                        *intelligence.reasons,
+                        f"Claude scout independently nominated this {decision.action} setup",
+                    ),
+                    thesis=f"{intelligence.thesis}; scout: {decision.thesis}",
+                )
+                item = replace(item, intelligence=intelligence)
+            promoted.append(item)
+        promoted.sort(key=lambda item: item.ranking_score, reverse=True)
+        self._publish_market_intelligence(promoted)
+        return promoted
+
+    def _publish_market_intelligence(self, analysed: list[AnalysedCandidate]) -> None:
+        write_json_atomic(
+            self.market_intelligence_file,
+            {
+                "version": 1,
+                "updated_at": self.clock.now().isoformat(),
+                "operation": self.operation.value,
+                "world": self._world_state,
+                "scout": self._last_scout.safe_dict(),
+                "opportunities": [
+                    {
+                        "symbol": item.symbol,
+                        "direction": item.idea.direction.name if item.idea.direction else None,
+                        "conviction": round(item.conviction, 2),
+                        "ranking_score": round(item.ranking_score, 2),
+                        "intelligence": (
+                            item.intelligence.safe_dict() if item.intelligence is not None else None
+                        ),
+                    }
+                    for item in analysed
+                ],
+                "observations": [row.safe_dict() for row in self._cycle_observations],
+            },
+        )
+
+    def _analyse_candidate(  # type: ignore[no-untyped-def]
+        self, symbol: str, asset_class, account
+    ) -> AnalysedCandidate | None:
         cycle_id = str(uuid.uuid4())
         try:
             context = self.data.get_context(symbol, force_refresh=True)
             idea = self.engine.evaluate(context, self.settings.mode)
+            self._cycle_contexts[symbol] = context
+            observation = observe_market(context, asset_class, idea.signals)
+            self._cycle_observations.append(observation)
             if self.shadow_engine is not None:
                 candidate = self.shadow_engine.evaluate(context, TradingMode.PAPER)
                 self.shadow.record(symbol, idea, candidate, self.clock.now())
@@ -608,7 +855,12 @@ class JarvisRunner:
         # an hourly one are different trades, not the same trade at different
         # strengths.
         verdict = self._playbook_verdict(context)
-        if verdict is not None and verdict.conflict and self.playbook_config.veto_on_conflict:
+        if (
+            self._playbooks_may_execute()
+            and verdict is not None
+            and verdict.conflict
+            and self.playbook_config.veto_on_conflict
+        ):
             self._record_skip(
                 cycle_id,
                 symbol,
@@ -682,7 +934,13 @@ class JarvisRunner:
                 },
             )
             return None
-        return AnalysedCandidate(symbol, cycle_id, idea, context)
+        intelligence = assess_opportunity(
+            idea,
+            observation,
+            asset_class,
+            cap=self.settings.analysis.market_regime.ranking_modifier_cap,
+        )
+        return AnalysedCandidate(symbol, cycle_id, idea, context, intelligence)
 
     def _process_candidate(  # type: ignore[no-untyped-def]
         self,
@@ -703,7 +961,7 @@ class JarvisRunner:
         state = self.risk.build_state(account, positions)
         risk_decision = self.risk.evaluate(state, symbol, spec)
         if not risk_decision.approved:
-            self._record_skip(
+            cycle_pk = self._record_skip(
                 cycle_id,
                 symbol,
                 account.equity,
@@ -711,6 +969,7 @@ class JarvisRunner:
                 risk_decision.detail,
                 signals=list(idea.signals),
             )
+            self._record_counterfactual(cycle_pk, idea, risk_decision.reason)
             return False
 
         filter_verdict, filter_data = self.filters.check(
@@ -724,7 +983,7 @@ class JarvisRunner:
             )
         )
         if not filter_verdict.passed:
-            self._record_skip(
+            cycle_pk = self._record_skip(
                 cycle_id,
                 symbol,
                 account.equity,
@@ -733,6 +992,7 @@ class JarvisRunner:
                 signals=list(idea.signals),
                 extra=filter_data,
             )
+            self._record_counterfactual(cycle_pk, idea, filter_verdict.reason)
             return False
 
         # Can this trade afford its own spread? Asked before sizing, because it
@@ -749,7 +1009,7 @@ class JarvisRunner:
         # evening stop-outs were coming from.
         affordable, share = self._spread_is_affordable(context, idea.entry, idea.stop_loss)
         if not affordable:
-            self._record_skip(
+            cycle_pk = self._record_skip(
                 cycle_id,
                 symbol,
                 account.equity,
@@ -759,6 +1019,7 @@ class JarvisRunner:
                 signals=list(idea.signals),
                 extra=filter_data,
             )
+            self._record_counterfactual(cycle_pk, idea, Reason.SPREAD_EATS_THE_STOP)
             return False
 
         sizing = PositionSizer(self.settings).size(
@@ -780,6 +1041,7 @@ class JarvisRunner:
                 signals=list(idea.signals),
             )
             self.recorder.record_sizing(cycle_pk, sizing)
+            self._record_counterfactual(cycle_pk, idea, sizing.reason)
             return False
         margin = self.risk.check_margin(
             state,
@@ -798,6 +1060,7 @@ class JarvisRunner:
                 signals=list(idea.signals),
             )
             self.recorder.record_sizing(cycle_pk, sizing)
+            self._record_counterfactual(cycle_pk, idea, margin.reason)
             return False
         self.risk.assert_not_forbidden(sizing, state)
 
@@ -819,7 +1082,9 @@ class JarvisRunner:
             )
             self.recorder.record_cycle(
                 cycle_id=cycle_id,
-                context=CycleContext(symbol, account.equity, extra=filter_data),
+                context=self._journal_cycle_context(
+                    symbol, account.equity, filter_data, market_context=context
+                ),
                 reason=Reason.OK,
                 detail=idea.reason,
                 traded=False,
@@ -844,6 +1109,9 @@ class JarvisRunner:
                 if context.tick is not None
                 else None
             ),
+            "market_intelligence": (
+                candidate.intelligence.safe_dict() if candidate.intelligence is not None else {}
+            ),
         }
         # What the reviewer cannot see from one chart: where this setup placed
         # among everything analysed this cycle, and how the account is carrying
@@ -862,7 +1130,10 @@ class JarvisRunner:
                 ),
             },
             "account_posture": self.posture.brief(),
+            "global_market_state": self._world_state,
         }
+        if candidate.intelligence is not None:
+            briefing["market_intelligence"] = candidate.intelligence.safe_dict()
         if self.memory.has_evidence():
             briefing["learned_so_far"] = self.memory.briefing(symbol, idea.direction.name)
         # Every theory's reading of this chart, including the ones that did not
@@ -870,7 +1141,19 @@ class JarvisRunner:
         # anywhere else, and it is the part most likely to change the answer.
         playbooks = self._playbook_verdict(context)
         if playbooks is not None and playbooks.plays:
-            briefing["other_theories"] = playbooks.summary()
+            key = (
+                "other_theories"
+                if self._playbooks_may_execute()
+                else "research_only_unvalidated_theories"
+            )
+            briefing[key] = {
+                **playbooks.summary(),
+                "authority": (
+                    "may corroborate or contradict"
+                    if self._playbooks_may_execute()
+                    else "context only; negative evidence; may not create or veto this trade"
+                ),
+            }
         request_payload = build_review_payload(idea, context, proposal, briefing)
         try:
             self.ai_ledger.append(
@@ -939,6 +1222,18 @@ class JarvisRunner:
             "ai_request_id": advice.request_id,
             "ai_error": advice.error,
         }
+        decision_context = {
+            **filter_data,
+            **ai_data,
+            "trade_thesis": (
+                candidate.intelligence.thesis if candidate.intelligence is not None else idea.reason
+            ),
+            "market_intelligence": (
+                candidate.intelligence.safe_dict() if candidate.intelligence is not None else {}
+            ),
+            "global_market_state": self._world_state,
+            "market_scout": self._last_scout.safe_dict(),
+        }
         if not advice.approved:
             # Remember it, so the next cycle does not buy this answer again.
             # Only a real verdict is worth remembering: a transport failure is
@@ -948,22 +1243,26 @@ class JarvisRunner:
             if not advice.error:
                 self._remember_veto(idea, context, advice)
                 self.memory.record_veto(symbol, idea.direction.name, self.clock.now())
-            self._record_skip(
+            cycle_pk = self._record_skip(
                 cycle_id,
                 symbol,
                 account.equity,
                 Reason.AI_VETO,
                 advice.thesis,
                 signals=list(idea.signals),
-                extra={**filter_data, **ai_data},
+                extra=decision_context,
             )
+            self._record_review_snapshots(cycle_pk, symbol, request_payload)
+            self._record_counterfactual(cycle_pk, idea, Reason.AI_VETO)
             return False
         # Approved: whatever was held against this symbol no longer stands.
         self.veto_memory.clear(symbol, idea.direction.name)
 
         cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
-            context=CycleContext(symbol, account.equity, extra={**filter_data, **ai_data}),
+            context=self._journal_cycle_context(
+                symbol, account.equity, decision_context, market_context=context
+            ),
             reason=Reason.OK,
             detail=idea.reason,
             traded=self.operation is not OperationMode.MONITOR,
@@ -974,6 +1273,7 @@ class JarvisRunner:
             weights=self.settings.analysis.confluence.weights,
         )
         self.recorder.record_sizing(cycle_pk, sizing)
+        self._record_review_snapshots(cycle_pk, symbol, request_payload)
         if not self._entry_still_allowed():
             self.scan_activity.record_deep_decision(
                 symbol,
@@ -1048,6 +1348,32 @@ class JarvisRunner:
         )
         return True
 
+    def _record_review_snapshots(
+        self, cycle_pk: int, symbol: str, request_payload: dict[str, object]
+    ) -> None:
+        """Persist the exact closed candles the final reviewer was shown.
+
+        The AI JSONL already contains these bars, but the journal's dedicated
+        replay table was never populated by the live runner. Storing only
+        candidates that actually reached the final gate keeps growth bounded
+        while making every veto and executed plan reproducible from SQLite.
+        """
+        limit = self.settings.journal.snapshot_bars_before
+        if limit <= 0:
+            return
+        timeframes = request_payload.get("timeframes")
+        if not isinstance(timeframes, dict):
+            return
+        for timeframe, raw in timeframes.items():
+            if not isinstance(raw, dict):
+                continue
+            bars = raw.get("closed_bars")
+            if not isinstance(bars, list) or not bars:
+                continue
+            serializable = [bar for bar in bars[-limit:] if isinstance(bar, dict)]
+            if serializable:
+                self.recorder.record_bar_snapshot(cycle_pk, symbol, str(timeframe), serializable)
+
     def _record_skip(
         self,
         cycle_id: str,
@@ -1069,7 +1395,7 @@ class JarvisRunner:
         # "confluence score 41.9 below threshold".
         cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
-            context=CycleContext(symbol, equity, extra=extra),
+            context=self._journal_cycle_context(symbol, equity, extra),
             reason=reason,
             detail=detail,
             total_score=total_score,
@@ -1085,6 +1411,70 @@ class JarvisRunner:
             self.clock.now(),
         )
         return cycle_pk
+
+    @classmethod
+    def _journal_cycle_context(
+        cls,
+        symbol: str,
+        equity: float,
+        extra: dict[str, object] | None,
+        *,
+        market_context: MarketContext | None = None,
+    ) -> CycleContext:
+        """Promote query-worthy context out of the JSON catch-all columns.
+
+        Filter data has always been kept in `context_json`, but leaving the
+        dedicated columns empty made ordinary SQL analysis silently report no
+        session, spread or news distance. The JSON remains the full evidence;
+        these fields are its indexed, typed projection.
+        """
+        data = extra or {}
+        intelligence = data.get("market_intelligence")
+        regime = data.get("volatility_regime")
+        if regime is None and isinstance(intelligence, dict):
+            regime = intelligence.get("regime")
+
+        return CycleContext(
+            symbol=symbol,
+            equity=equity,
+            atr=cls._signal_atr(market_context) if market_context is not None else None,
+            spread_pips=_optional_float(data.get("spread_pips")),
+            session=_optional_string(data.get("session")),
+            volatility_regime=_optional_string(regime),
+            minutes_to_news=_optional_float(data.get("minutes_to_news")),
+            extra=dict(data),
+        )
+
+    def _record_counterfactual(self, cycle_pk: int, idea: TradeIdea, blocked_by: Reason) -> None:
+        """Observe a rejected executable plan without changing the decision."""
+        if idea.direction is None or self.recorder.has_unresolved_shadow_trade(
+            idea.symbol, idea.direction
+        ):
+            return
+        if min(idea.entry, idea.stop_loss, idea.take_profit) <= 0:
+            return
+        self.recorder.record_shadow_trade(
+            cycle_pk=cycle_pk,
+            symbol=idea.symbol,
+            direction=idea.direction,
+            blocked_by=blocked_by,
+            entry_price=idea.entry,
+            sl=idea.stop_loss,
+            tp=idea.take_profit,
+        )
+
+    def _resolve_counterfactuals(self) -> None:
+        """Update passive evidence every fifteen minutes, never the live policy."""
+        now = self.clock.now()
+        if (
+            self._counterfactuals_checked_at is not None
+            and now - self._counterfactuals_checked_at < Timeframe.M15.duration
+        ):
+            return
+        self._counterfactuals_checked_at = now
+        resolve_counterfactuals(self.recorder, self.broker, now)
+        resolve_management_baselines(self.recorder, self.broker, now)
+        self.shadow.resolve(self.broker, now)
 
     def _record_paper_closures(self, events) -> None:  # type: ignore[no-untyped-def]
         for position, reason in events:
@@ -1117,7 +1507,11 @@ class JarvisRunner:
 
     def _record_management(self, events) -> None:  # type: ignore[no-untyped-def]
         for event in events:
-            if event.action == "BROKER_CLOSED_PENDING_HISTORY":
+            if event.action in {
+                "BROKER_CLOSED_PENDING_HISTORY",
+                "EMERGENCY_CLOSE_REJECTED",
+                "ORPHAN_CLOSE_REJECTED",
+            }:
                 self.operation_ledger.reconciliation_failure(self.clock.now())
             row = self.journal.open_trade_by_ticket(event.ticket)
             if row is None:
@@ -1186,7 +1580,7 @@ class JarvisRunner:
             )
 
     def _supervise_positions(self, positions) -> None:  # type: ignore[no-untyped-def]
-        """Let the adviser manage what is already open, on a bounded cadence.
+        """Let the adviser manage what is already open, on cadence or evidence.
 
         The account previously had a strategist and no manager. Something
         decided what to open, and from that moment the position was handed to
@@ -1195,12 +1589,11 @@ class JarvisRunner:
         twenty minutes ago. Both look identical to a rule that only reads the
         R multiple.
 
-        Rate-limited rather than run every loop, and the reason is not only
-        cost. At a thirty-second interval an adviser asked continuously will
-        eventually talk itself into acting on noise, and each intervention
-        costs real spread. Once every `supervision_interval_minutes` is roughly
-        how often a human glances at an open trade, which is the behaviour
-        being modelled.
+        The local layer watches every guard tick. Claude is called either on its
+        ordinary cadence or early when that watcher has genuinely new evidence:
+        a worse health state, a new profit band, or meaningful give-back. This
+        models an attentive human without asking a stochastic model the same
+        question sixty times a minute until it eventually changes its mind.
         """
         if isinstance(self.advisor, DisabledAdvisor) or self.operation is OperationMode.MONITOR:
             return
@@ -1214,10 +1607,19 @@ class JarvisRunner:
         self._supervised_at = {
             ticket: when for ticket, when in self._supervised_at.items() if ticket in live
         }
+        self._supervision_due_at = {
+            ticket: when for ticket, when in self._supervision_due_at.items() if ticket in live
+        }
+        self._supervision_snapshots = {
+            ticket: snapshot
+            for ticket, snapshot in self._supervision_snapshots.items()
+            if ticket in live
+        }
         for position in positions:
-            last = self._supervised_at.get(position.ticket)
-            if last is not None and (now - last).total_seconds() < interval * 60:
+            triggered = self._supervision_trigger(position, now)
+            if triggered is None:
                 continue
+            trigger, snapshot = triggered
             try:
                 context = self.data.get_context(position.symbol)
             except (TradingSystemError, ValueError) as exc:
@@ -1235,6 +1637,7 @@ class JarvisRunner:
                 position,
                 context,
                 {
+                    "trigger": trigger,
                     "operation": self.operation.value,
                     "account_currency": self.broker.account().currency,
                     "account_posture": self.posture.brief(),
@@ -1246,12 +1649,19 @@ class JarvisRunner:
                     # to be asked and cannot know the trade has been bleeding
                     # for ten minutes — the fast layer watched all of it.
                     "mechanical_health": self._health_brief(position.ticket),
+                    "peak_r": snapshot.peak_r,
+                    "trade_record": self.journal.supervision_context(position.ticket),
                 },
             )
             self._supervised_at[position.ticket] = now
+            self._supervision_snapshots[position.ticket] = snapshot
             started = time.monotonic()
             verdict = self.advisor.supervise(payload)
             latency_ms = round((time.monotonic() - started) * 1000, 1)
+            requested = verdict.review_after_minutes or interval
+            floor = self.settings.trade_management.supervision_min_interval_minutes
+            cadence = floor if verdict.error else min(interval, max(floor, requested))
+            self._supervision_due_at[position.ticket] = now + timedelta(minutes=cadence)
             try:
                 self.ai_ledger.append(
                     "position_supervision",
@@ -1274,9 +1684,97 @@ class JarvisRunner:
                 continue
             if verdict.action == "hold":
                 continue
-            event = self.manager.apply_supervision(position, verdict)
+            fresh = next(
+                (
+                    item
+                    for item in self.broker.positions(
+                        symbol=position.symbol,
+                        magic=self.settings.system.magic_number,
+                    )
+                    if item.ticket == position.ticket
+                ),
+                None,
+            )
+            if fresh is None:
+                event = ManagementEvent(
+                    position.ticket,
+                    "AI_SUPERVISION_STALE",
+                    "position closed or disappeared at the broker while the adviser "
+                    "deliberated; no action sent",
+                )
+            else:
+                event = self.manager.apply_supervision(fresh, verdict)
             if event is not None:
                 self._record_management([event])
+
+    def _supervision_trigger(
+        self,
+        position,
+        now: datetime,  # type: ignore[no-untyped-def]
+    ) -> tuple[str, _SupervisionSnapshot] | None:
+        """Escalate only a materially changed position to the paid adviser."""
+        row = self.journal.open_trade_by_ticket(position.ticket)
+        if row is None:
+            return None
+        original_stop = float(row["sl"])
+        risk = abs(position.price_open - original_stop)
+        if risk <= 0:
+            return None
+        tick = self.broker.tick(position.symbol)
+        price = tick.bid if int(position.direction) > 0 else tick.ask
+        r_now = (price - position.price_open) * int(position.direction) / risk
+        peak_r = max(float(row["mfe_r"] or 0.0), r_now, 0.0)
+        giveback = ((peak_r - r_now) / peak_r) if peak_r > 0 and r_now < peak_r else 0.0
+        health = self.manager.last_health.get(position.ticket)
+        snapshot = _SupervisionSnapshot(
+            r_now=r_now,
+            peak_r=peak_r,
+            giveback_fraction=max(0.0, giveback),
+            health_verdict=health.verdict if health is not None else "unknown",
+            health_severity=health.severity if health is not None else 0.0,
+        )
+
+        previous = self._supervision_snapshots.get(position.ticket)
+        last = self._supervised_at.get(position.ticket)
+        if previous is None or last is None:
+            return "position_opened", snapshot
+        config = self.settings.trade_management
+        due = self._supervision_due_at.get(
+            position.ticket,
+            last + timedelta(minutes=config.supervision_interval_minutes),
+        )
+        if now >= due:
+            return "scheduled_review", snapshot
+        if not config.supervision_event_driven:
+            return None
+        if (now - last).total_seconds() < config.supervision_min_interval_minutes * 60:
+            return None
+
+        health_rank = {
+            "unknown": -1,
+            "healthy": 0,
+            "watch": 1,
+            "deteriorating": 2,
+            "broken": 3,
+        }
+        if health_rank.get(snapshot.health_verdict, -1) > health_rank.get(
+            previous.health_verdict, -1
+        ):
+            return (
+                f"health_worsened:{previous.health_verdict}->{snapshot.health_verdict}",
+                snapshot,
+            )
+        step = config.supervision_profit_step_r
+        if int(max(snapshot.r_now, 0.0) / step) > int(max(previous.r_now, 0.0) / step):
+            return f"new_profit_milestone:{snapshot.r_now:.2f}R", snapshot
+        threshold = config.supervision_giveback_trigger_fraction
+        if (
+            snapshot.peak_r >= config.giveback_arm_r
+            and snapshot.giveback_fraction >= threshold
+            and previous.giveback_fraction < threshold
+        ):
+            return f"profit_giveback:{snapshot.giveback_fraction:.0%}", snapshot
+        return None
 
     def _publish_health(self, positions) -> None:  # type: ignore[no-untyped-def]
         """Write the current read to disk for the deck to pick up.
@@ -1370,7 +1868,11 @@ class JarvisRunner:
         enough to trade in its own right, so it is not good enough to cancel
         somebody else's trade either.
         """
-        if verdict is None or not self.playbook_config.require_method_agreement:
+        if (
+            not self._playbooks_may_execute()
+            or verdict is None
+            or not self.playbook_config.require_method_agreement
+        ):
             return None
         floor = self.playbook_config.min_conviction
         opposing = [
@@ -1401,7 +1903,7 @@ class JarvisRunner:
         threshold. A short-horizon trade pays spread against a small stop, so
         the marginal ones are not worth taking even when the pattern is real.
         """
-        if verdict is None or verdict.best is None:
+        if not self._playbooks_may_execute() or verdict is None or verdict.best is None:
             return None
         play = verdict.best
         if play.conviction < self.playbook_config.min_conviction:
@@ -1439,6 +1941,15 @@ class JarvisRunner:
             take_profit=play.take_profit,
             reason=f"{play.playbook}: {play.thesis}",
             signals=(),
+        )
+
+    def _playbooks_may_execute(self) -> bool:
+        """Research stays visible even when negative evidence removes authority."""
+        settings = getattr(self, "settings", None)
+        if settings is None:  # isolated policy/unit use outside a full runner
+            return True
+        return not settings.mode.is_live or bool(
+            getattr(self.playbook_config, "live_execution_enabled", False)
         )
 
     def _remembered_veto(self, idea: TradeIdea):  # type: ignore[no-untyped-def]
@@ -1645,6 +2156,7 @@ class JarvisRunner:
         closed_at: datetime | None,
     ) -> None:
         risk_money = float(row["risk_money"])
+        trade_id = int(row["id"])
         # The realised result goes into the memory whether or not an adviser is
         # configured. It is the account's own arithmetic, not an opinion, and
         # it is the part of the record that matters most: switching the adviser
@@ -1654,8 +2166,9 @@ class JarvisRunner:
             str(row["direction"]),
             pnl_money / risk_money if risk_money > 0 else 0.0,
             self.clock.now(),
+            trade_id=trade_id,
         )
-        if isinstance(self.advisor, DisabledAdvisor):
+        if isinstance(self.advisor, DisabledAdvisor) or self.memory.has_reflection(trade_id):
             return
         outcome = {
             "trade_id": int(row["id"]),
@@ -1676,13 +2189,28 @@ class JarvisRunner:
             "opened_at": str(row["opened_at"]),
             "closed_at": closed_at.isoformat() if closed_at is not None else None,
         }
+        cycle_pk = dict(row).get("cycle_pk")
+        if cycle_pk is not None:
+            cycle = self.journal.conn.execute(
+                "SELECT context_json FROM analysis_cycles WHERE id = ?", (int(cycle_pk),)
+            ).fetchone()
+            if cycle is not None:
+                try:
+                    outcome["entry_context"] = json.loads(str(cycle["context_json"] or "{}"))
+                except json.JSONDecodeError:
+                    outcome["entry_context"] = {}
         reflection = self.advisor.reflect(outcome)
         # This is the step that was missing. The reflection used to be written
         # to a file nothing read, so every lesson was paid for once and then
         # discarded; folding it into the memory is what makes the next review
         # start from more than zero.
-        if not reflection.error and reflection.lessons:
-            self.memory.record_reflection(outcome, reflection.lessons, self.clock.now())
+        if not reflection.error:
+            self.memory.record_reflection(
+                outcome,
+                reflection.lessons,
+                self.clock.now(),
+                trade_id=trade_id,
+            )
         try:
             self.ai_ledger.append(
                 "posttrade_reflection",
@@ -1791,10 +2319,10 @@ class JarvisRunner:
         return ConfluenceEngine(
             [
                 MarketStructure(candidate.analysis.market_structure),
-                TrendMomentum(),
-                LiquiditySweep(),
-                LevelReaction(),
-                VolatilityRegime(),
+                TrendMomentum(candidate.analysis.trend_momentum),
+                LiquiditySweep(candidate.analysis.liquidity_sweep),
+                LevelReaction(candidate.analysis.level_reaction),
+                VolatilityRegime(candidate.analysis.volatility_regime),
             ],
             candidate.analysis.confluence,
         )
@@ -1942,3 +2470,14 @@ class JarvisRunner:
             next_cursor=batch.next_cursor,
             universe_size=batch.universe_size,
         )
+
+
+def _optional_float(value: object) -> float | None:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_string(value: object) -> str | None:
+    return None if value is None else str(value)

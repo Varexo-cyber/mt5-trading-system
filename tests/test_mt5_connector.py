@@ -49,6 +49,43 @@ class TestConnection:
         assert account.is_demo is True
         assert connector.is_connected
 
+    def test_transient_read_ipc_failure_is_retried(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        connector.connect()
+        original = fake.copy_rates_from_pos
+        calls = 0
+
+        def flaky(*args):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                fake.error = (-10001, "IPC send failed")
+                return None
+            return original(*args)
+
+        fake.copy_rates_from_pos = flaky  # type: ignore[method-assign]
+
+        assert connector.copy_rates("EURUSD", 60, 10) is not None
+        assert calls == 2
+
+    def test_non_transient_read_failure_is_not_retried(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        connector.connect()
+        calls = 0
+
+        def broken(*_args):  # type: ignore[no-untyped-def]
+            nonlocal calls
+            calls += 1
+            fake.error = (-10002, "unknown symbol")
+
+        fake.copy_rates_from_pos = broken  # type: ignore[method-assign]
+
+        with pytest.raises(Exception, match="no rates"):
+            connector.copy_rates("EURUSD", 60, 10)
+        assert calls == 1
+
     def test_connect_retries_transient_failures(
         self, fast_config: MT5Config, fake: FakeMT5
     ) -> None:
@@ -256,6 +293,24 @@ class TestOrderExecution:
         assert result.latency_ms >= 0.0
         assert result.spread_at_send == pytest.approx(0.00012)
         assert result.attempts == 1
+
+    def test_missing_result_price_is_recovered_from_deal_history(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        """A broker-side zero must not become a fake zero-slippage fill."""
+        connector.connect()
+        fake.fill_offset = 0.00003
+        fake.zero_result_price = True
+        spec = connector.spec("EURUSD")
+
+        result = connector.order_send(self._request(), spec)
+
+        assert result.ok
+        assert result.filled_price == pytest.approx(1.08515)
+        assert result.filled_volume == pytest.approx(0.01)
+        assert result.position_ticket == 555_002
+        assert result.slippage_pips == pytest.approx(0.3, abs=1e-6)
+        assert any(name == "history_deals_get" for name, _ in fake.calls)
 
     def test_slippage_sign_is_direction_aware(self, connector: MT5Connector, fake: FakeMT5) -> None:
         """Positive always means 'worse than requested', whichever way we trade.

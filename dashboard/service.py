@@ -68,6 +68,17 @@ def load_paper_snapshot(path: Path) -> PaperSnapshot | None:
         return None
 
 
+def load_market_intelligence(path: Path) -> dict[str, object] | None:
+    """Read the latest cross-market brain snapshot without mutating runtime state."""
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 PROFILE_TIMEFRAMES: dict[AssetClass, tuple[Timeframe, ...]] = {
     AssetClass.FOREX: (Timeframe.D1, Timeframe.H4, Timeframe.H1, Timeframe.M15, Timeframe.M5),
     AssetClass.CRYPTO: (Timeframe.D1, Timeframe.H4, Timeframe.H1, Timeframe.M15, Timeframe.M5),

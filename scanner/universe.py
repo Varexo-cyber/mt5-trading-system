@@ -89,8 +89,7 @@ class UniverseScanner:
         named handful. Neither changes how anything is judged — they decide what
         gets looked at, and everything they exclude simply never appears.
         """
-        supported = {asset.value for asset in AssetClass if asset is not AssetClass.UNKNOWN}
-        wanted = set(self.settings.instruments.asset_classes) or supported
+        wanted = set(self.settings.instruments.asset_classes)
         chosen = self.settings.instruments.symbols_only
         names = (
             {self.settings.instruments.broker_symbol(name) for name in chosen} if chosen else set()
@@ -99,8 +98,11 @@ class UniverseScanner:
         return [
             item
             for item in self.broker.symbols()
-            if self._path_class(item.path).value in supported
-            and self._path_class(item.path).value in wanted
+            # Empty means literally every row returned by MT5's symbols_get(),
+            # including a future Eightcap folder this version does not yet know.
+            # Unknown families are still visible in telemetry and are rejected
+            # fail-closed by _inspect if their contract cannot classify them.
+            if (not wanted or self._path_class(item.path).value in wanted)
             and (not names or item.name in names)
         ]
 

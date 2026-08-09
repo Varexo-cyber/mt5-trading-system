@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from core.broker import Broker
+from core.clock import Clock, LiveClock
 from core.instrument import InstrumentSpec
 from core.types import (
     AccountSnapshot,
@@ -33,11 +34,13 @@ class PaperBroker:
         *,
         starting_balance: float = 100.0,
         currency: str = "EUR",
+        clock: Clock | None = None,
     ) -> None:
         self.market = market
         self.state_path = Path(state_path)
         self.starting_balance = starting_balance
         self.currency = currency
+        self.clock = clock or LiveClock()
         self._balance = starting_balance
         self._positions: list[Position] = []
         self._closed: dict[int, ClosedPosition] = {}
@@ -83,7 +86,7 @@ class PaperBroker:
             margin_level=0.0,
             leverage=live.leverage,
             is_demo=True,
-            taken_at=datetime.now(UTC),
+            taken_at=self.clock.now(),
         )
 
     def positions(self, symbol: str | None = None, magic: int | None = None) -> list[Position]:
@@ -128,7 +131,7 @@ class PaperBroker:
                 tp=request.tp,
                 profit=0.0,
                 swap=0.0,
-                opened_at=datetime.now(UTC),
+                opened_at=self.clock.now(),
                 magic=request.magic,
                 comment=request.comment or "jarvis-paper",
             )
@@ -158,7 +161,7 @@ class PaperBroker:
             latency_ms=0.0,
             spread_at_send=0.0,
             attempts=1,
-            sent_at=datetime.now(UTC),
+            sent_at=self.clock.now(),
         )
 
     def close_position(self, position: Position, volume: float | None = None) -> OrderResult:
@@ -202,7 +205,7 @@ class PaperBroker:
             latency_ms=0.0,
             spread_at_send=tick.spread,
             attempts=1,
-            sent_at=datetime.now(UTC),
+            sent_at=self.clock.now(),
         )
 
     def mark_to_market(self) -> list[tuple[Position, str]]:
@@ -269,7 +272,7 @@ class PaperBroker:
         self._closed[position.ticket] = ClosedPosition(
             position_ticket=position.ticket,
             symbol=position.symbol,
-            closed_at=datetime.now(UTC),
+            closed_at=self.clock.now(),
             exit_price=weighted_price,
             volume=total_volume,
             pnl_money=pnl_money + (previous.pnl_money if previous is not None else 0.0),
@@ -290,9 +293,8 @@ class PaperBroker:
             value if (exit_price - position.price_open) * int(position.direction) >= 0 else -value
         )
 
-    @staticmethod
     def _result(
-        request: OrderRequest, fill: float, ticket: int, comment: str, spread: float
+        self, request: OrderRequest, fill: float, ticket: int, comment: str, spread: float
     ) -> OrderResult:
         return OrderResult(
             ok=True,
@@ -310,7 +312,7 @@ class PaperBroker:
             latency_ms=0.0,
             spread_at_send=spread,
             attempts=1,
-            sent_at=datetime.now(UTC),
+            sent_at=self.clock.now(),
         )
 
     def _load(self) -> None:

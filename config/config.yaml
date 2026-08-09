@@ -28,6 +28,8 @@ mt5:
   reconnect_backoff_seconds: [2, 4, 8, 16, 30]
   order_max_attempts: 3
   order_retry_delay_ms: 250
+  read_max_attempts: 3
+  read_retry_delay_ms: 50
   deviation_points: 10
   slow_call_warn_ms: 1000
 
@@ -189,7 +191,10 @@ filters:
     refresh_interval_minutes: 30
     # Tried in order, first success wins. At least two are required so one
     # host going down does not stop all trading (the filter fails closed).
-    providers: [faireconomy, tradingview]
+    # TradingView was live-verified on 2026-08-09 (180 events, 14 high impact).
+    # FairEconomy's next-week endpoint returned HTTP 404 and therefore remains
+    # a strict fallback rather than delaying every refresh before TradingView.
+    providers: [tradingview, faireconomy]
     cache_path: data/calendar/cache.json
 
   session:
@@ -208,6 +213,12 @@ filters:
     block_sunday_before: "23:00"
     continuous_asset_classes: [crypto]
     continuous_maintenance_block: ["23:55", "00:10"]
+    # These products follow their broker quote and their own exchange/CFD
+    # schedule, not the FX London/New York preference. Stale quotes and bad
+    # spreads still block them later in the filter chain.
+    broker_hours_asset_classes: [stock, index, metal, commodity, unknown]
+    # The forced 20:15 flatten is specifically an FX-rollover defence.
+    evening_flat_asset_classes: [forex]
 
   spread:
     enabled: true
@@ -260,6 +271,21 @@ filters:
     timeframe: H1
 
 analysis:
+  # Context only: classifies closed H1/H4 bars for ranking and Claude. It has
+  # zero directional weight and cannot create or veto an entry.
+  market_regime:
+    enabled: true
+    fast_timeframe: H1
+    slow_timeframe: H4
+    efficiency_lookback: 24
+    atr_period: 14
+    atr_percentile_lookback: 100
+    extreme_atr_percentile: 0.95
+    trend_efficiency_min: 0.30
+    range_fast_efficiency_max: 0.20
+    range_slow_efficiency_max: 0.25
+    ranking_modifier_cap: 12.0
+
   market_structure:
     enabled: true
     signal_timeframe: H1
@@ -272,6 +298,49 @@ analysis:
     bos_score: 70.0
     minimum_confidence: 0.50
     full_confidence_break_atr: 0.50
+  trend_momentum:
+    bias_timeframe: H4
+    signal_timeframe: H1
+    fast_ema: 20
+    slow_ema: 50
+    slope_lookback: 5
+    atr_period: 14
+    invalidation_lookback: 12
+    score: 65.0
+    base_confidence: 0.50
+    separation_confidence_scale: 0.20
+    maximum_confidence: 0.90
+  liquidity_sweep:
+    primary_timeframe: M15
+    fallback_timeframe: H1
+    range_lookback: 20
+    minimum_bars: 25
+    atr_period: 14
+    minimum_depth_atr: 0.0
+    score: 75.0
+    base_confidence: 0.55
+    depth_confidence_scale: 0.25
+    maximum_confidence: 0.90
+  level_reaction:
+    timeframe: H1
+    history_lookback: 50
+    minimum_bars: 60
+    support_quantile: 0.05
+    resistance_quantile: 0.95
+    atr_period: 14
+    proximity_atr: 0.35
+    wick_ratio: 1.5
+    score: 55.0
+    base_confidence: 0.50
+    wick_confidence_scale: 0.20
+    maximum_confidence: 0.80
+  volatility_regime:
+    timeframe: H1
+    minimum_bars: 120
+    atr_period: 14
+    percentile_lookback: 100
+    compressed_percentile: 0.20
+    extreme_percentile: 0.95
   confluence:
     score_threshold: 55.0
     minimum_confidence: 0.45
@@ -322,6 +391,24 @@ trade_management:
   health_structure_bars: 60
   health_secure_at_r: 0.5
   health_tighten_at_r: 0.2
+  # Closed-candle health profiles. Slower products are judged on M5/M15 so one
+  # unfinished one-minute print cannot look like a broken thesis.
+  health_profiles:
+    forex: {fast_timeframe: M1, structure_timeframe: M5, fast_bars: 40, structure_bars: 60}
+    crypto: {fast_timeframe: M5, structure_timeframe: M15, fast_bars: 48, structure_bars: 64}
+    stock: {fast_timeframe: M5, structure_timeframe: M15, fast_bars: 48, structure_bars: 64}
+    index: {fast_timeframe: M1, structure_timeframe: M5, fast_bars: 40, structure_bars: 60}
+    metal: {fast_timeframe: M1, structure_timeframe: M5, fast_bars: 40, structure_bars: 60}
+    commodity: {fast_timeframe: M5, structure_timeframe: M15, fast_bars: 48, structure_bars: 64}
+    unknown: {fast_timeframe: M5, structure_timeframe: M15, fast_bars: 48, structure_bars: 64}
+  # Claude performs a full routine review every 15 minutes. Between reviews,
+  # the one-second local watcher escalates only material changes (health,
+  # profit milestones or give-back), with a two-minute cost/noise cooldown.
+  supervision_interval_minutes: 15.0
+  supervision_event_driven: true
+  supervision_min_interval_minutes: 2.0
+  supervision_profit_step_r: 0.25
+  supervision_giveback_trigger_fraction: 0.25
 
 journal:
   database_path: journal/trading.db
@@ -329,6 +416,15 @@ journal:
   snapshot_bars_before: 200
   snapshot_bars_after: 100
   shadow_trades: true
+
+learning:
+  shadow_min_days: 30
+  shadow_min_paired_outcomes: 100
+  shadow_min_unique_days: 20
+  shadow_min_symbols: 3
+  shadow_min_expectancy_lift_r: 0.05
+  shadow_confidence_level: 0.95
+  shadow_resolution_hours: 72
 
 scanner:
   # null = rank the entire broker catalogue every cycle.
@@ -356,3 +452,10 @@ ai:
   # impatient client is indistinguishable from a real one — leave headroom.
   timeout_seconds: 60
   fail_closed: true
+  market_scout:
+    enabled: false
+    cooldown_minutes: 30
+    max_calls_per_day: 24
+    max_markets_per_call: 12
+    minimum_confidence: 0.65
+    ranking_bonus: 8.0

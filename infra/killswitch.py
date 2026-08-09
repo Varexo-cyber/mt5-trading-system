@@ -13,9 +13,9 @@ before money moves.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 
+from core.clock import Clock, LiveClock
 from infra.logging import get_logger
 
 log = get_logger(__name__)
@@ -26,13 +26,19 @@ DEFAULT_FILENAME = "STOP"
 class KillSwitch:
     """Filesystem-backed halt flag."""
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, clock: Clock | None = None) -> None:
         self.path = Path(path)
+        self.clock = clock or LiveClock()
         self._announced = False
 
     @classmethod
-    def in_dir(cls, directory: Path | str, filename: str = DEFAULT_FILENAME) -> KillSwitch:
-        return cls(Path(directory) / filename)
+    def in_dir(
+        cls,
+        directory: Path | str,
+        filename: str = DEFAULT_FILENAME,
+        clock: Clock | None = None,
+    ) -> KillSwitch:
+        return cls(Path(directory) / filename, clock)
 
     def is_engaged(self) -> bool:
         """True if the STOP file exists. Logs the transition exactly once."""
@@ -58,7 +64,7 @@ class KillSwitch:
 
     def engage(self, reason: str = "") -> None:
         """Trip the switch from inside the system (e.g. circuit breaker)."""
-        stamp = datetime.now(UTC).isoformat()
+        stamp = self.clock.now().isoformat()
         self.path.write_text(f"{stamp} {reason}\n".strip() + "\n", encoding="utf-8")
         log.critical(
             "kill switch tripped by system",

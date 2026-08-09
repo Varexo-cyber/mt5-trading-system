@@ -77,6 +77,16 @@ class PositionManager:
         for position in positions:
             if not position.has_stop:
                 result = self.broker.close_position(position)
+                if not result.ok:
+                    events.append(
+                        ManagementEvent(
+                            position.ticket,
+                            "EMERGENCY_CLOSE_REJECTED",
+                            f"position had no stop; broker rejected emergency exit: "
+                            f"{result.retcode_name}",
+                        )
+                    )
+                    continue
                 events.append(
                     ManagementEvent(
                         position.ticket,
@@ -93,6 +103,16 @@ class PositionManager:
                     events.append(adopted)
                     continue
                 result = self.broker.close_position(position)
+                if not result.ok:
+                    events.append(
+                        ManagementEvent(
+                            position.ticket,
+                            "ORPHAN_CLOSE_REJECTED",
+                            "strategy-magic orphan remained open because the broker rejected "
+                            f"the exit: {result.retcode_name}",
+                        )
+                    )
+                    continue
                 events.append(
                     ManagementEvent(
                         position.ticket,
@@ -222,6 +242,17 @@ class PositionManager:
                 and abs(r_now) < config.time_exit_min_abs_r
             ):
                 result = self.broker.close_position(position)
+                if not result.ok:
+                    events.append(
+                        ManagementEvent(
+                            position.ticket,
+                            "TIME_EXIT_REJECTED",
+                            f"broker rejected stalled-trade exit: {result.retcode_name}; "
+                            f"still open after {age_hours:.1f}h at {r_now:.2f}R",
+                            r_at_action=r_now,
+                        )
+                    )
+                    continue
                 events.append(
                     ManagementEvent(
                         position.ticket,
@@ -314,12 +345,18 @@ class PositionManager:
             # The shared builder, not a local `pd.DataFrame(...)`: the structure
             # reader needs the time index, and a second almost-right conversion
             # here is how the two would drift apart.
-            raw = self.broker.copy_rates(symbol, timeframe.mt5_value, count)
+            # MT5 copy-from-position starts at bar zero, which is the candle
+            # still being formed. Fetch one extra and discard that last row so
+            # a transient intrabar spike can warn through the live tick but can
+            # never masquerade as a confirmed structure break.
+            raw = self.broker.copy_rates(symbol, timeframe.mt5_value, count + 1)
             frame = DataManager._to_frame(raw)
         except Exception:  # noqa: BLE001 - no bars is a reason to stay quiet, not to crash
             frame = None
-        if frame is not None and frame.empty:
-            frame = None
+        if frame is not None:
+            frame = frame.iloc[:-1].tail(count)
+            if frame.empty:
+                frame = None
         self._bar_cache[key] = (now + BAR_CACHE_SECONDS, frame)
         return frame
 
@@ -329,12 +366,20 @@ class PositionManager:
         config = self.settings.trade_management
         if not config.health_enabled:
             return PositionHealth("healthy", 0.0, "hold", (), "health reading disabled")
+        asset_class = self.broker.spec(position.symbol).asset_class.value
+        profile = config.health_profiles.get(asset_class)
+        fast_timeframe = Timeframe.parse(profile.fast_timeframe) if profile else Timeframe.M1
+        structure_timeframe = (
+            Timeframe.parse(profile.structure_timeframe) if profile else Timeframe.M5
+        )
+        fast_bars = profile.fast_bars if profile else config.health_fast_bars
+        structure_bars = profile.structure_bars if profile else config.health_structure_bars
         return assess_position(
             sign=int(position.direction),
             r_now=r_now,
             age_minutes=age_minutes,
-            fast=self._bars(position.symbol, Timeframe.M1, config.health_fast_bars),
-            structure=self._bars(position.symbol, Timeframe.M5, config.health_structure_bars),
+            fast=self._bars(position.symbol, fast_timeframe, fast_bars),
+            structure=self._bars(position.symbol, structure_timeframe, structure_bars),
             spread=getattr(tick, "spread", 0.0),
             risk=risk,
             secure_at_r=config.health_secure_at_r,
@@ -404,12 +449,13 @@ class PositionManager:
         Continuously traded markets are exempt: crypto has no FX rollover and
         no reason to be closed at 22:15 Amsterdam time.
         """
+        spec = self.broker.spec(position.symbol)
+        if spec.asset_class.value not in self.settings.filters.session.evening_flat_asset_classes:
+            return None
         window = self._session_windows()
         if window is None or not window.contains(now):
             return None
-        if self.broker.spec(position.symbol).asset_class.value in (
-            self.settings.filters.session.continuous_asset_classes
-        ):
+        if spec.asset_class.value in (self.settings.filters.session.continuous_asset_classes):
             return None
         result = self.broker.close_position(position)
         if not result.ok:
@@ -417,8 +463,7 @@ class PositionManager:
         return ManagementEvent(
             position.ticket,
             "EVENING_FLAT",
-            f"evening wind-down ({window.describe()} UTC) at {r_now:.2f}R; "
-            "spreads widen from here",
+            f"evening wind-down ({window.describe()} UTC) at {r_now:.2f}R; spreads widen from here",
             result.filled_price,
             position.profit + position.swap,
             r_at_action=r_now,
@@ -583,6 +628,14 @@ class PositionManager:
         """
         if verdict.action == "hold":
             return None
+        minimum = self.settings.ai.minimum_confidence
+        if verdict.confidence < minimum:
+            return ManagementEvent(
+                position.ticket,
+                "AI_SUPERVISION_UNDER_THRESHOLD",
+                f"{verdict.action} refused: confidence {verdict.confidence:.2f} is below "
+                f"the hard {minimum:.2f} management threshold ({verdict.reason})"[:400],
+            )
         spec = self.broker.spec(position.symbol)
         tick = self.broker.tick(position.symbol)
         sign = int(position.direction)
