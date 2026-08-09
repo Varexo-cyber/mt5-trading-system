@@ -134,9 +134,9 @@ def test_every_live_enabled_module_has_a_hypothesis_document() -> None:
         settings = load_settings(overlay=overlay, env_overrides=False)
         for module in settings.analysis.confluence.live_enabled_modules:
             document = Path(root / "docs" / "hypotheses" / f"{module}.md")
-            assert (
-                document.exists()
-            ), f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
+            assert document.exists(), (
+                f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
+            )
 
 
 def test_weighted_modules_are_documented() -> None:

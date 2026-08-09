@@ -325,6 +325,34 @@ class TestModeCeilings:
         assert result.reason is Reason.RR_BELOW_MINIMUM
         assert "1:1.00" in result.decision.detail
 
+    def test_one_broker_point_of_rr_rounding_does_not_reject_exact_boundary(
+        self, sizer: PositionSizer, eurusd: InstrumentSpec
+    ) -> None:
+        result = sizer.size(
+            spec=eurusd,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.08500,
+            sl=1.08300,
+            tp=1.08899,  # one 0.00001 point below exact 2R
+        )
+
+        assert result.approved
+
+    def test_more_than_one_broker_point_below_rr_boundary_is_refused(
+        self, sizer: PositionSizer, eurusd: InstrumentSpec
+    ) -> None:
+        result = sizer.size(
+            spec=eurusd,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.08500,
+            sl=1.08300,
+            tp=1.08898,
+        )
+
+        assert result.reason is Reason.RR_BELOW_MINIMUM
+
     def test_target_on_the_wrong_side_is_refused(
         self, sizer: PositionSizer, eurusd: InstrumentSpec
     ) -> None:

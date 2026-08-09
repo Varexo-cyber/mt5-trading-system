@@ -148,6 +148,34 @@ class SessionFilter(Filter):
                 asset_class=asset_class,
             )
 
+        if asset_class in self.config.broker_hours_asset_classes:
+            weekday = now.weekday()
+            clock_time = now.timetz().replace(tzinfo=None)
+            if weekday == 5 or (weekday == 6 and clock_time < time(22, 0)):
+                return FilterVerdict.block(
+                    self.name,
+                    Reason.MARKET_CLOSED,
+                    f"{asset_class} market is closed ({now:%A %H:%M} UTC)",
+                    session="broker-closed",
+                    asset_class=asset_class,
+                )
+            if self.rollover.contains(now):
+                return FilterVerdict.block(
+                    self.name,
+                    Reason.ROLLOVER_WINDOW,
+                    f"{asset_class} broker-maintenance buffer ({self.rollover.describe()} UTC)",
+                    session="broker-maintenance",
+                    asset_class=asset_class,
+                )
+            return FilterVerdict.allow(
+                self.name,
+                f"{asset_class} uses broker-hours profile; quote freshness and spread "
+                "prove whether its own venue is open",
+                session="broker-hours",
+                session_overlap=False,
+                asset_class=asset_class,
+            )
+
         weekday = now.weekday()
         clock_time = now.timetz().replace(tzinfo=None)
 

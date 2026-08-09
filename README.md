@@ -116,8 +116,9 @@ while BTCUSD, XAUUSD, stocks and indices keep their catalogue names.
 ```
 
 The scanner screens the complete supported broker catalogue in every cycle. It
-ranks that full universe, deep-reads at most the five best candidates across
-D1/H4/H1/M15/M5, then applies confluence, filters, risk sizing and journalling.
+ranks that full universe and deep-reads every cheap-scan survivor up to the
+configured `scanner.deep_candidates` ceiling across the configured timeframe
+ladder, then applies confluence, filters, risk sizing and journalling.
 The 30-second loop interval is a target: when a full broker scan takes longer,
 the next cycle starts as soon as the current one finishes.
 The dashboard's **Live scanner** tab shows every cheap inspection and its exact
@@ -126,17 +127,65 @@ exact secret-free candidate payload sent to Claude, the pending state, and
 Claude's structured response, refreshing every three seconds. See
 `docs/HOE_JARVIS_WERKT.md`
 for the plain-Dutch walkthrough and `docs/JARVIS.md` for the technical controls,
-fail-closed Claude gate and Windows autostart. Use
+fail-closed Claude gate and Windows autostart.
+
+The Eightcap overlay sets the deep-analysis ceiling above the current 847-row
+catalogue. Every symbol that survives the cheap contract, quote, spread and
+H1-history checks therefore receives the complete configured W1-to-M1 ladder.
+Closed or stale markets remain visible with their rejection reason instead of
+being mistaken for a live opportunity.
+
+The **Market brain** section compares surviving setups using asset-specific
+context, H1/H4 regime and cross-market breadth. Claude's optional market scout
+can independently nominate one already-valid setup and move it earlier in the
+queue. It is deliberately not another gate: WAIT, disagreement, malformed
+output or an API outage leaves the original queue unchanged. It cannot change
+risk, size, SL, TP or position management.
+
+Rejected executable plans are stored as passive counterfactuals and later
+resolved from M15 bars as TP, SL, timeout or ambiguous. This measures whether a
+filter is too strict without changing production behaviour. An operating-system
+process lock also stops a second accidental Jarvis launch from running another
+trading loop against the same account. Use
+
+Open-position health now uses closed candles and asset-specific horizons.
+Forex retains M1/M5; slower exchange and continuously traded products default
+to M5/M15. The FX evening flatten applies only to forex, while stocks, indices,
+metals and commodities use the broker-hours profile and still have to pass the
+fresh-quote, spread and maintenance gates. The Positions tab shows a complete
+entry-to-exit timeline including Claude holds, and passively compares every
+managed exit with the untouched original SL/TP path for up to 72 hours. That
+comparison is evidence only and can never place or modify an order.
+
+Every final Claude request and response is written both to the append-only
+`runtime/ai_reviews.jsonl` audit and to the journal's `ai_events` table. The
+exact closed candles shown to Claude are also stored in `bar_snapshots` for
+every candidate that reaches the final gate. Learning memory is rebuilt from
+closed journal trades at startup and labels fewer than 100 outcomes as
+anecdotal; it is bounded prompt context, not model retraining or automatic
+strategy rewriting.
+
+Persistence is currently local: the configured journal is SQLite at
+`journal/trading.db`. No PostgreSQL, Neon, Supabase or other external database
+driver/connection variable is wired into this build. Supplying a database URL
+somewhere outside this configuration does not make the runner use it.
+
+The latest operator-supplied playbook backtest is negative: all five tested
+theories lost money and none beat a matched coin-direction control outside
+chance. See `docs/evidence/playbook_backtest_2026-08-08.md`. This means the
+system is operationally sophisticated but does **not** have a proven entry edge.
+
 `install_autostart_paper.cmd` to start the saved MT5 terminal minimized at
 login, start PAPER sixty seconds later, and open the local dashboard after
 ninety seconds; it disables monitor autostart and never arms LIVE.
 
 Once an experimental contract exists, `install_autostart_experimental_live.cmd`
-replaces PAPER autostart with the bound real-money mode. The fixed envelope is
-1% per trade, a 15% peak drawdown breaker, and an additional absolute floor at
-85% of the equity recorded when the contract was armed. It scans the complete
-supported catalogue, but real entries remain restricted to the four micro-live
-FX majors in `config/config.yaml`.
+replaces PAPER autostart with the bound real-money mode. The exact active
+experimental envelope is shown in the dashboard Control tab and comes from
+`promotion/experimental.py`; check that display before every live run rather
+than relying on a copied percentage in documentation. It scans the complete
+supported catalogue; actual order eligibility still follows the current live
+configuration and broker contract constraints.
 
 The Phase 1 acceptance test — one demo order, placed, verified and closed, with
 every execution detail printed — is:
@@ -149,17 +198,20 @@ It refuses to run against a live account.
 
 ## Before going live: verify the calendar
 
-Both calendar response shapes were verified against live feeds on 2026-08-01.
-Continue archiving weekly so multi-year backtests do not depend on short-lived
-free-feed history:
+TradingView was live-verified again on 2026-08-09 with 180 events and 14 high-impact
+events in the requested window. FairEconomy's current-week feed responded, but
+its next-week endpoint returned HTTP 404; it therefore fails closed and remains
+the secondary provider. The 2026-08-09 run added 175 events to the archive (428
+total). Continue archiving weekly so multi-year backtests do not depend on
+short-lived free-feed history:
 
 ```bash
 python scripts/verify_calendar.py --raw
 ```
 
 Zero high-impact events in a normal week is the signature of a parser that lost
-the impact field. Treat the remote providers as unverified until this has
-passed.
+the impact field. TradingView currently passes that check; FairEconomy remains
+degraded until its missing next-week endpoint is restored or replaced.
 
 ## Kill switch
 

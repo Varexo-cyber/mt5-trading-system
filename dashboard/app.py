@@ -43,8 +43,11 @@ from dashboard.ledger import (
     day_start,
     health_caption,
     live_health,
+    management_baseline_report,
     recent_management,
     summarise,
+    timeline_candidates,
+    trade_timeline,
     week_start,
 )
 from dashboard.position_control import PositionControl
@@ -52,6 +55,7 @@ from dashboard.service import (
     PROFILE_TIMEFRAMES,
     DashboardService,
     catalogue_asset_class,
+    load_market_intelligence,
     load_paper_snapshot,
 )
 from infra.killswitch import KillSwitch
@@ -86,6 +90,98 @@ ai_ready = (
     and bool(settings.ai.anthropic_model)
     and bool(os.getenv("ANTHROPIC_API_KEY"))
 )
+
+
+@st.fragment(run_every="10s")
+def render_market_brain() -> None:
+    """Show ranking context and Claude scouting without rerunning broker charts."""
+    snapshot = load_market_intelligence(ROOT / "runtime" / "market_intelligence.json")
+    if not snapshot:
+        st.info(
+            "Nog geen marktbrein-snapshot. Start Jarvis; de eerste volledige scan en "
+            "multi-timeframeanalyse vullen dit scherm vanzelf."
+        )
+        return
+
+    world = dict(snapshot.get("world") or {})
+    scout = dict(snapshot.get("scout") or {})
+    opportunities = list(snapshot.get("opportunities") or [])
+    observations = list(snapshot.get("observations") or [])
+    with st.container(horizontal=True):
+        st.metric(
+            "Diep bekeken",
+            int(world.get("markets_observed", len(observations))),
+            border=True,
+        )
+        st.metric("Mondiale toon", str(world.get("risk_tone", "onbekend")), border=True)
+        st.metric(
+            "Risk-breedte omhoog",
+            f"{float(world.get('risk_breadth_up_pct', 0.0)):.1f}%",
+            border=True,
+        )
+        st.metric("Geldige setups", len(opportunities), border=True)
+        st.metric(
+            "Claude scout",
+            f"{scout.get('action', 'WAIT')} {scout.get('symbol', '')}".strip(),
+            border=True,
+        )
+
+    st.caption(
+        f"Snapshot: {snapshot.get('updated_at', 'onbekend')} · modus: "
+        f"{snapshot.get('operation', 'onbekend')}. De volledige catalogus krijgt eerst "
+        "een lichte scan; alleen de best gerangschikte markten krijgen deze dure diepe analyse."
+    )
+    strongest = ", ".join(world.get("strongest_currencies") or []) or "onvoldoende data"
+    weakest = ", ".join(world.get("weakest_currencies") or []) or "onvoldoende data"
+    st.info(
+        f"Sterkste gemeten valuta: {strongest}. Zwakste: {weakest}. "
+        "Deze context verandert alleen de volgorde van al geldige kansen; hij kan geen "
+        "setup blokkeren en verandert geen risico, stoploss of take-profit."
+    )
+
+    if opportunities:
+        rows: list[dict[str, object]] = []
+        for item in opportunities:
+            intelligence = dict(item.get("intelligence") or {})
+            reasons = list(intelligence.get("reasons") or [])
+            rows.append(
+                {
+                    "Markt": item.get("symbol"),
+                    "Richting": item.get("direction"),
+                    "Basisscore": item.get("conviction"),
+                    "Rangscore": item.get("ranking_score"),
+                    "Regime": intelligence.get("regime"),
+                    "Waarom": "; ".join(str(reason) for reason in reasons),
+                }
+            )
+        st.dataframe(
+            pd.DataFrame(rows),
+            hide_index=True,
+            width="stretch",
+            column_config={
+                "Basisscore": st.column_config.NumberColumn(format="%.2f"),
+                "Rangscore": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
+    else:
+        st.warning(
+            "Deze cyclus leverde geen volledig geldige setup op. Dat kan normaal zijn; "
+            "de nieuwe marktcontext veroorzaakt dit niet, want die is geen toegangspoort."
+        )
+
+    with st.expander("Precies wat de Claude-marktscout antwoordde"):
+        st.write(
+            {
+                "actie": scout.get("action", "WAIT"),
+                "markt": scout.get("symbol"),
+                "vertrouwen": scout.get("confidence"),
+                "thesis": scout.get("thesis"),
+                "tegenargument": scout.get("counter_thesis"),
+                "ongeldig_bij": scout.get("invalidation"),
+                "wacht_op": scout.get("wait_for"),
+                "fout": scout.get("error"),
+            }
+        )
 
 
 @st.fragment(run_every="5s")
@@ -208,7 +304,7 @@ def render_live_scanner() -> None:
 4. Geef alle overblijvers een lichte trend/activiteit-rangscore.
 5. Analyseer maximaal vijf winnaars zwaar op D1, H4, H1, M15 en M5.
 6. Controleer whitelist, balans, bestaande posities, nieuws, sessie en correlatie.
-7. Bereken een echte stoploss, take-profit, lotgrootte en maximaal 1% risico.
+7. Bereken een echte stoploss, take-profit en lotgrootte binnen het actieve risicocontract.
 8. Vraag Claude als laatste veto. Claude mag nooit risico of orderwaarden veranderen.
 9. Stuur alleen bij alle groene poorten een order naar MT5/Eightcap.
 10. Beheer daarna SL, break-even, trailing/exit en schrijf alles in het journaal.
@@ -343,6 +439,118 @@ def render_management_log() -> None:
         hide_index=True,
         width="stretch",
         column_config={"R": st.column_config.NumberColumn(format="%.2f")},
+    )
+
+
+@st.fragment(run_every="5s")
+def render_trade_timeline() -> None:
+    """One readable chronology: plan, mechanical actions, Claude and exit."""
+    database = ROOT / settings.journal.database_path
+    candidates = timeline_candidates(database)
+    st.subheader("Volledige tijdlijn per trade")
+    if not candidates:
+        st.caption("Nog geen echte brokertrade beschikbaar voor een tijdlijn.")
+        return
+    labels = {
+        int(row["ticket"]): (
+            f"#{row['ticket']} · {row['symbol']} · {row['direction']} · "
+            f"{str(row['opened_at'])[:16]} UTC"
+        )
+        for row in candidates
+    }
+    ticket = st.selectbox(
+        "Kies een trade",
+        list(labels),
+        format_func=labels.__getitem__,
+        key="trade-timeline-ticket",
+    )
+    timeline = trade_timeline(database, int(ticket))
+    if not timeline:
+        st.warning("De journaalgegevens van deze trade konden niet worden gelezen.")
+        return
+    trade = timeline["trade"]
+    events = list(timeline["events"])
+    # Holds never create a management action, but are still real decisions. Add
+    # them from the durable AI exchange so 'Claude deed niets' is visible too.
+    for row in supervision_rows(
+        read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl", limit=1000)
+    ):
+        if int(row.get("ticket") or 0) != int(ticket):
+            continue
+        events.append(
+            {
+                "Tijd (UTC)": row["at"],
+                "Bron": "Claude",
+                "Gebeurtenis": str(row["action"]),
+                "R": None,
+                "Uitleg": (
+                    f"confidence {float(row['confidence'] or 0):.2f} · "
+                    f"{row['reason'] or 'geen reden'}"
+                ),
+            }
+        )
+    events.sort(key=lambda item: str(item.get("Tijd (UTC)") or ""))
+    with st.container(horizontal=True):
+        st.metric("Markt", str(trade["symbol"]), border=True)
+        st.metric("Richting", str(trade["direction"]), border=True)
+        st.metric("Oorspronkelijk plan", f"{float(trade['planned_rr'] or 0):.2f}R", border=True)
+        status = "open" if trade["closed_at"] is None else f"{float(trade['pnl_r'] or 0):+.2f}R"
+        st.metric("Nu/einde", status, border=True)
+    st.dataframe(
+        pd.DataFrame(events),
+        hide_index=True,
+        key=f"trade-timeline-{ticket}",
+        column_config={"R": st.column_config.NumberColumn(format="%.2f")},
+    )
+
+
+@st.fragment(run_every="30s")
+def render_management_evidence() -> None:
+    """Passive A/B: managed result against untouched original SL/TP."""
+    report = management_baseline_report(ROOT / settings.journal.database_path)
+    st.subheader("Bewijs: hielp het positiebeheer echt?")
+    if not report or not int(report.get("summary", {}).get("n") or 0):
+        st.caption(
+            "Nog geen vergelijking afgerond. Na een beheerde sluiting blijft Jarvis de "
+            "oorspronkelijke SL/TP maximaal 72 uur schaduwmatig volgen. Dit plaatst geen order."
+        )
+        return
+    summary = report["summary"]
+    lift = float(summary.get("lift_r") or 0.0)
+    with st.container(horizontal=True):
+        st.metric("Vergelijkingen", int(summary["n"]), border=True)
+        st.metric("Jarvis-beheer", f"{float(summary.get('actual_r') or 0):+.2f}R", border=True)
+        st.metric(
+            "Originele SL/TP",
+            f"{float(summary.get('baseline_r') or 0):+.2f}R",
+            border=True,
+        )
+        st.metric("Toegevoegde waarde", f"{lift:+.2f}R", border=True)
+    if int(summary["n"]) < 30:
+        st.info(
+            "Dit is vroege meetdata, geen conclusie. Beoordeel een beheerregel pas over een "
+            "ruime steekproef en uitgesplitst per assetklasse."
+        )
+    frame = pd.DataFrame(report["rows"]).rename(
+        columns={
+            "ticket": "Ticket",
+            "symbol": "Markt",
+            "exit_reason": "Werkelijke exit",
+            "outcome": "Origineel plan",
+            "actual_pnl_r": "Jarvis R",
+            "baseline_pnl_r": "SL/TP R",
+            "lift_r": "Verschil R",
+            "resolved_at": "Gemeten (UTC)",
+        }
+    )
+    st.dataframe(
+        frame,
+        hide_index=True,
+        column_config={
+            "Jarvis R": st.column_config.NumberColumn(format="%.2f"),
+            "SL/TP R": st.column_config.NumberColumn(format="%.2f"),
+            "Verschil R": st.column_config.NumberColumn(format="%+.2f"),
+        },
     )
 
 
@@ -991,7 +1199,7 @@ try:
     # why nothing stopped it.
     off = []
     if settings.risk.max_drawdown_circuit_breaker_pct == 0:
-        off.append("de 15%-drawdownbreaker")
+        off.append("de peak-drawdownbreaker")
     if not settings.risk.posture_throttle:
         off.append("de houdingsrem na verliezen")
     if off:
@@ -1077,11 +1285,17 @@ try:
 
     with scanner_tab:
         st.subheader("Wat Jarvis achter de schermen scant")
-        st.warning(
-            "De hele catalogus wordt bekeken, maar met EUR 100 mogen alleen EURUSD.i, "
-            "GBPUSD.i, USDJPY.i en AUDUSD.i uiteindelijk een echte order worden."
+        st.info(
+            "Jarvis haalt de volledige actuele MT5-catalogus van dit Eightcap-account op. "
+            "Elk symbool krijgt een goedkope eerste controle. Alleen markten met een "
+            "verhandelbaar contract, verse koers, aanvaardbare spread en voldoende historie "
+            "gaan door naar de volledige multi-timeframe-analyse. De position sizer en alle "
+            "overige gates beslissen daarna afzonderlijk of een echte order mogelijk is."
         )
         render_live_scanner()
+        st.divider()
+        st.subheader("Marktbrein: vergelijking van de beste kansen")
+        render_market_brain()
 
     with ai_tab:
         entry_view, manage_view, learn_view = st.tabs(
@@ -1139,6 +1353,10 @@ try:
         render_live_positions(account)
         st.divider()
         render_management_log()
+        st.divider()
+        render_trade_timeline()
+        st.divider()
+        render_management_evidence()
         st.divider()
         render_trade_history()
         st.divider()
@@ -1224,9 +1442,15 @@ try:
             "is a separate real-money mode using the owner's explicit loss acceptance."
         )
         if experimental_contract is not None and not experimental_error:
+            drawdown = (
+                "drawdown breaker OFF"
+                if experimental_contract.max_drawdown_pct == 0
+                else f"{experimental_contract.max_drawdown_pct:.1f}% drawdown stop"
+            )
             st.error(
                 f"EXPERIMENTAL LIVE ARMED - account {experimental_contract.login}; "
-                f"1.0% per trade; 15.0% drawdown stop; absolute equity floor "
+                f"{experimental_contract.risk_per_trade_pct:.1f}% per trade; {drawdown}; "
+                f"absolute equity floor "
                 f"{experimental_contract.equity_floor:.2f} {experimental_contract.currency}."
             )
         else:

@@ -171,6 +171,27 @@ class TestSessionFilter:
         assert verdict.data["session"] == "continuous"
         assert verdict.data["asset_class"] == "crypto"
 
+    def test_stock_uses_its_broker_hours_instead_of_the_fx_session(self) -> None:
+        stock = InstrumentSpec.from_mt5(
+            xauusd_spec(
+                name="AAPL",
+                path="Stocks\\US\\AAPL",
+                currency_base="AAPL",
+                trade_contract_size=1.0,
+            )
+        )
+        # 03:00 UTC is outside London/NY. The session layer must not invent an
+        # FX closure for a stock; the later freshness/spread gates prove whether
+        # its actual venue is open.
+        moment = datetime(2026, 3, 11, 3, 0, tzinfo=UTC)
+        verdict = SessionFilter(SessionFilterConfig()).check(
+            context(stock, now=moment, bid=250.0, spread=0.05)
+        )
+
+        assert verdict.passed
+        assert verdict.data["session"] == "broker-hours"
+        assert verdict.data["asset_class"] == "stock"
+
     def test_sunday_before_reopen_is_market_closed(
         self, filter_: SessionFilter, spec: InstrumentSpec
     ) -> None:

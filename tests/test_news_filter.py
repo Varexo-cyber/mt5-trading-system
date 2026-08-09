@@ -102,6 +102,10 @@ class TestBlackoutWindows:
         verdict = f.check(context())
         assert verdict.passed
         assert verdict.data["minutes_to_news"] == pytest.approx(120.0)
+        assert verdict.data["next_news_event"] == "Retail Sales"
+        assert verdict.data["next_news_currency"] == "USD"
+        assert verdict.data["next_news_at"] == event(180).when.isoformat()
+        assert verdict.data["next_news_blackout_start"] == event(120).when.isoformat()
 
     def test_blocked_sixty_minutes_before(self, clock: SimulatedClock, tmp_path: Path) -> None:
         f = make_filter([event(45)], clock, tmp_path)

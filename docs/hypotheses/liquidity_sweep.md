@@ -62,6 +62,10 @@ for it. This is exactly the double-counting the project brief warned about.
 - **Configurations tested: 9**
 - **Additional required measurement:** signal correlation with
   `market_structure` over the same window.
+- Independence threshold fixed before the first run: no more than **70%** of
+  the smaller actionable signal set may occur at the same timestamp in the
+  same direction as `market_structure`. Above that, the module is treated as
+  duplicated evidence and cannot be promoted as an independent vote.
 
 ## Result
 

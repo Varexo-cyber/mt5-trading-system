@@ -120,6 +120,12 @@ class NewsFilter(Filter):
             ),
             calendar_source=self.calendar.source,
             minutes_to_news=minutes_to_news,
+            next_news_event=upcoming.event.title if upcoming is not None else None,
+            next_news_currency=upcoming.event.currency if upcoming is not None else None,
+            next_news_at=upcoming.event.when.isoformat() if upcoming is not None else None,
+            next_news_extreme=upcoming.extreme if upcoming is not None else None,
+            next_news_blackout_start=(upcoming.start.isoformat() if upcoming is not None else None),
+            next_news_blackout_end=(upcoming.end.isoformat() if upcoming is not None else None),
         )
 
     # -- open positions ----------------------------------------------------

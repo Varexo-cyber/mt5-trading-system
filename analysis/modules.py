@@ -5,6 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from config.schema import (
+    LevelReactionConfig,
+    LiquiditySweepConfig,
+    TrendMomentumConfig,
+    VolatilityRegimeConfig,
+)
 from core.types import MarketContext, Signal, Timeframe
 
 
@@ -24,30 +30,46 @@ class TrendMomentum:
 
     name = "trend_momentum"
 
+    def __init__(self, config: TrendMomentumConfig | None = None) -> None:
+        self.config = config or TrendMomentumConfig()
+
     def analyze(self, ctx: MarketContext) -> Signal:
         reads: list[int] = []
         details: dict[str, object] = {}
         invalidation: float | None = None
-        for timeframe in (Timeframe.H4, Timeframe.H1):
+        timeframes = (
+            Timeframe.parse(self.config.bias_timeframe),
+            Timeframe.parse(self.config.signal_timeframe),
+        )
+        minimum = max(
+            self.config.slow_ema + self.config.slope_lookback,
+            self.config.atr_period + 1,
+            self.config.invalidation_lookback,
+        )
+        for timeframe in timeframes:
             series = ctx.series.get(timeframe)
-            if series is None or len(series.df) < 55:
-                return Signal.neutral(self.name, f"{timeframe.value} needs 55 closed bars")
+            if series is None or len(series.df) < minimum:
+                return Signal.neutral(
+                    self.name,
+                    f"{timeframe.value} needs {minimum} closed bars",
+                )
             frame = series.df
             close = frame["close"]
-            fast = float(close.ewm(span=20, adjust=False).mean().iloc[-1])
-            slow = float(close.ewm(span=50, adjust=False).mean().iloc[-1])
-            atr = _atr(frame)
-            slope = float(close.ewm(span=20, adjust=False).mean().diff(5).iloc[-1])
+            fast_ema = close.ewm(span=self.config.fast_ema, adjust=False).mean()
+            fast = float(fast_ema.iloc[-1])
+            slow = float(close.ewm(span=self.config.slow_ema, adjust=False).mean().iloc[-1])
+            atr = _atr(frame, self.config.atr_period)
+            slope = float(fast_ema.diff(self.config.slope_lookback).iloc[-1])
             direction = 1 if fast > slow and slope > 0 else -1 if fast < slow and slope < 0 else 0
             reads.append(direction)
             details[timeframe.value] = {
-                "ema20": fast,
-                "ema50": slow,
-                "ema20_slope_5": slope,
-                "atr14": atr,
+                f"ema{self.config.fast_ema}": fast,
+                f"ema{self.config.slow_ema}": slow,
+                f"ema{self.config.fast_ema}_slope_{self.config.slope_lookback}": slope,
+                f"atr{self.config.atr_period}": atr,
             }
-            if timeframe is Timeframe.H1 and direction:
-                recent = frame.iloc[-12:]
+            if timeframe is timeframes[1] and direction:
+                recent = frame.iloc[-self.config.invalidation_lookback :]
                 invalidation = float(recent["low"].min() if direction > 0 else recent["high"].max())
 
         if not reads[0] or reads[0] != reads[1]:
@@ -58,20 +80,33 @@ class TrendMomentum:
                 reasoning="H4/H1 momentum is neutral or disagrees",
                 details=details,
             )
-        h1 = ctx.series[Timeframe.H1].df
-        atr = max(_atr(h1), 1e-12)
+        signal_frame = ctx.series[timeframes[1]].df
+        atr = max(_atr(signal_frame, self.config.atr_period), 1e-12)
         separation = (
             abs(
-                float(h1["close"].ewm(span=20, adjust=False).mean().iloc[-1])
-                - float(h1["close"].ewm(span=50, adjust=False).mean().iloc[-1])
+                float(
+                    signal_frame["close"]
+                    .ewm(span=self.config.fast_ema, adjust=False)
+                    .mean()
+                    .iloc[-1]
+                )
+                - float(
+                    signal_frame["close"]
+                    .ewm(span=self.config.slow_ema, adjust=False)
+                    .mean()
+                    .iloc[-1]
+                )
             )
             / atr
         )
-        confidence = min(0.9, 0.5 + separation * 0.2)
+        confidence = min(
+            self.config.maximum_confidence,
+            self.config.base_confidence + separation * self.config.separation_confidence_scale,
+        )
         direction = reads[0]
         return Signal(
             module=self.name,
-            score=65.0 * direction,
+            score=self.config.score * direction,
             confidence=confidence,
             reasoning=f"H4 and H1 EMA/momentum aligned {'bullish' if direction > 0 else 'bearish'}",
             invalidation_price=invalidation,
@@ -84,22 +119,43 @@ class LiquiditySweep:
 
     name = "liquidity_sweep"
 
+    def __init__(self, config: LiquiditySweepConfig | None = None) -> None:
+        self.config = config or LiquiditySweepConfig()
+
     def analyze(self, ctx: MarketContext) -> Signal:
-        series = ctx.series.get(Timeframe.M15) or ctx.series.get(Timeframe.H1)
-        if series is None or len(series.df) < 25:
-            return Signal.neutral(self.name, "needs M15 or H1 history")
+        primary = Timeframe.parse(self.config.primary_timeframe)
+        fallback = Timeframe.parse(self.config.fallback_timeframe)
+        series = ctx.series.get(primary) or ctx.series.get(fallback)
+        minimum = max(
+            self.config.minimum_bars,
+            self.config.range_lookback + 1,
+            self.config.atr_period + 1,
+        )
+        if series is None or len(series.df) < minimum:
+            return Signal.neutral(
+                self.name,
+                f"needs {minimum} {primary.value} or {fallback.value} bars",
+            )
         frame = series.df
         candle = frame.iloc[-1]
-        prior = frame.iloc[-21:-1]
+        prior = frame.iloc[-1 - self.config.range_lookback : -1]
         prior_high = float(prior["high"].max())
         prior_low = float(prior["low"].min())
-        atr = max(_atr(frame), 1e-12)
+        atr = max(_atr(frame, self.config.atr_period), 1e-12)
         if float(candle["low"]) < prior_low and float(candle["close"]) > prior_low:
             depth = (prior_low - float(candle["low"])) / atr
+            if depth < self.config.minimum_depth_atr:
+                return Signal.neutral(
+                    self.name,
+                    f"sell-side sweep depth {depth:.2f} ATR below minimum",
+                )
             return Signal(
                 module=self.name,
-                score=75.0,
-                confidence=min(0.9, 0.55 + depth * 0.25),
+                score=self.config.score,
+                confidence=min(
+                    self.config.maximum_confidence,
+                    self.config.base_confidence + depth * self.config.depth_confidence_scale,
+                ),
                 reasoning="sell-side liquidity swept and candle closed back above the range",
                 key_levels=(prior_low, prior_high),
                 invalidation_price=float(candle["low"]),
@@ -107,10 +163,18 @@ class LiquiditySweep:
             )
         if float(candle["high"]) > prior_high and float(candle["close"]) < prior_high:
             depth = (float(candle["high"]) - prior_high) / atr
+            if depth < self.config.minimum_depth_atr:
+                return Signal.neutral(
+                    self.name,
+                    f"buy-side sweep depth {depth:.2f} ATR below minimum",
+                )
             return Signal(
                 module=self.name,
-                score=-75.0,
-                confidence=min(0.9, 0.55 + depth * 0.25),
+                score=-self.config.score,
+                confidence=min(
+                    self.config.maximum_confidence,
+                    self.config.base_confidence + depth * self.config.depth_confidence_scale,
+                ),
                 reasoning="buy-side liquidity swept and candle closed back below the range",
                 key_levels=(prior_low, prior_high),
                 invalidation_price=float(candle["high"]),
@@ -124,42 +188,62 @@ class LevelReaction:
 
     name = "level_reaction"
 
+    def __init__(self, config: LevelReactionConfig | None = None) -> None:
+        self.config = config or LevelReactionConfig()
+
     def analyze(self, ctx: MarketContext) -> Signal:
-        series = ctx.series.get(Timeframe.H1)
-        if series is None or len(series.df) < 60:
-            return Signal.neutral(self.name, "H1 needs 60 closed bars")
+        timeframe = Timeframe.parse(self.config.timeframe)
+        series = ctx.series.get(timeframe)
+        minimum = max(
+            self.config.minimum_bars,
+            self.config.history_lookback + 1,
+            self.config.atr_period + 1,
+        )
+        if series is None or len(series.df) < minimum:
+            return Signal.neutral(
+                self.name,
+                f"{timeframe.value} needs {minimum} closed bars",
+            )
         frame = series.df
         candle = frame.iloc[-1]
-        history = frame.iloc[-51:-1]
-        support = float(history["low"].quantile(0.05))
-        resistance = float(history["high"].quantile(0.95))
-        atr = max(_atr(frame), 1e-12)
+        history = frame.iloc[-1 - self.config.history_lookback : -1]
+        support = float(history["low"].quantile(self.config.support_quantile))
+        resistance = float(history["high"].quantile(self.config.resistance_quantile))
+        atr = max(_atr(frame, self.config.atr_period), 1e-12)
         lower_wick = min(float(candle["open"]), float(candle["close"])) - float(candle["low"])
         upper_wick = float(candle["high"]) - max(float(candle["open"]), float(candle["close"]))
-        near_support = abs(float(candle["low"]) - support) <= atr * 0.35
-        near_resistance = abs(float(candle["high"]) - resistance) <= atr * 0.35
+        near_support = abs(float(candle["low"]) - support) <= atr * self.config.proximity_atr
+        near_resistance = abs(float(candle["high"]) - resistance) <= atr * self.config.proximity_atr
         if (
             near_support
-            and lower_wick > upper_wick * 1.5
+            and lower_wick > upper_wick * self.config.wick_ratio
             and float(candle["close"]) > float(candle["open"])
         ):
             return Signal(
                 module=self.name,
-                score=55.0,
-                confidence=min(0.8, 0.5 + lower_wick / atr * 0.2),
+                score=self.config.score,
+                confidence=min(
+                    self.config.maximum_confidence,
+                    self.config.base_confidence
+                    + lower_wick / atr * self.config.wick_confidence_scale,
+                ),
                 reasoning="bullish H1 rejection from rolling support",
                 key_levels=(support, resistance),
                 invalidation_price=float(candle["low"]),
             )
         if (
             near_resistance
-            and upper_wick > lower_wick * 1.5
+            and upper_wick > lower_wick * self.config.wick_ratio
             and float(candle["close"]) < float(candle["open"])
         ):
             return Signal(
                 module=self.name,
-                score=-55.0,
-                confidence=min(0.8, 0.5 + upper_wick / atr * 0.2),
+                score=-self.config.score,
+                confidence=min(
+                    self.config.maximum_confidence,
+                    self.config.base_confidence
+                    + upper_wick / atr * self.config.wick_confidence_scale,
+                ),
                 reasoning="bearish H1 rejection from rolling resistance",
                 key_levels=(support, resistance),
                 invalidation_price=float(candle["high"]),
@@ -172,10 +256,21 @@ class VolatilityRegime:
 
     name = "volatility_regime"
 
+    def __init__(self, config: VolatilityRegimeConfig | None = None) -> None:
+        self.config = config or VolatilityRegimeConfig()
+
     def analyze(self, ctx: MarketContext) -> Signal:
-        series = ctx.series.get(Timeframe.H1)
-        if series is None or len(series.df) < 120:
-            return Signal.neutral(self.name, "H1 needs 120 closed bars")
+        timeframe = Timeframe.parse(self.config.timeframe)
+        series = ctx.series.get(timeframe)
+        minimum = max(
+            self.config.minimum_bars,
+            self.config.atr_period + self.config.percentile_lookback - 1,
+        )
+        if series is None or len(series.df) < minimum:
+            return Signal.neutral(
+                self.name,
+                f"{timeframe.value} needs {minimum} closed bars",
+            )
         frame = series.df
         tr = pd.concat(
             [
@@ -185,14 +280,24 @@ class VolatilityRegime:
             ],
             axis=1,
         ).max(axis=1)
-        atrs = tr.rolling(14).mean().dropna()
+        atrs = tr.rolling(self.config.atr_period).mean().dropna()
         current = float(atrs.iloc[-1])
-        percentile = float((atrs.iloc[-100:] <= current).mean())
-        regime = "compressed" if percentile < 0.2 else "extreme" if percentile > 0.95 else "normal"
+        percentile = float((atrs.iloc[-self.config.percentile_lookback :] <= current).mean())
+        regime = (
+            "compressed"
+            if percentile < self.config.compressed_percentile
+            else "extreme"
+            if percentile > self.config.extreme_percentile
+            else "normal"
+        )
         return Signal(
             module=self.name,
             score=0.0,
             confidence=1.0,
             reasoning=f"H1 volatility regime is {regime}",
-            details={"regime": regime, "atr14": current, "percentile": percentile},
+            details={
+                "regime": regime,
+                f"atr{self.config.atr_period}": current,
+                "percentile": percentile,
+            },
         )

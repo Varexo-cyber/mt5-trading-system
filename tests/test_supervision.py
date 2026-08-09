@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -11,7 +12,9 @@ from advisory.providers import (
     ConsensusAdvisor,
     Supervision,
     _parse_supervision,
+    build_supervision_payload,
 )
+from core.types import Direction, MarketContext, Position, Tick
 
 LONG = 1
 SHORT = -1
@@ -183,6 +186,63 @@ def test_unparseable_text_becomes_hold_not_close() -> None:
     verdict = _parse_supervision("not json at all", "test", "m", "")
     assert verdict.action == "hold"
     assert verdict.error == "invalid_response"
+
+
+def test_the_structured_judgement_is_preserved_for_audit() -> None:
+    verdict = parse(
+        {
+            "action": "hold",
+            "reason": "H1 structure remains intact",
+            "confidence": 0.78,
+            "stop_loss": None,
+            "take_profit": None,
+            "close_fraction": None,
+            "thesis_state": "intact",
+            "urgency": "next_close",
+            "evidence": ["M15 held the prior higher low"],
+            "review_after_minutes": 5,
+        }
+    )
+
+    assert verdict.thesis_state == "intact"
+    assert verdict.urgency == "next_close"
+    assert verdict.evidence == ("M15 held the prior higher low",)
+    assert verdict.review_after_minutes == pytest.approx(5.0)
+
+
+def test_supervision_r_stays_anchored_to_the_original_stop() -> None:
+    now = datetime(2026, 8, 8, 12, 0, tzinfo=UTC)
+    position = Position(
+        ticket=7,
+        symbol="TEST",
+        direction=Direction.LONG,
+        volume=0.01,
+        price_open=100.0,
+        sl=100.0,
+        tp=120.0,
+        profit=1.0,
+        swap=0.0,
+        opened_at=now - timedelta(hours=1),
+    )
+    context = MarketContext(
+        "TEST",
+        now,
+        {},
+        tick=Tick("TEST", now, bid=105.0, ask=105.2),
+    )
+
+    payload = build_supervision_payload(
+        position,
+        context,
+        {
+            "peak_r": 0.8,
+            "trade_record": {"original_plan": {"stop_loss": 90.0}},
+        },
+    )
+
+    assert payload["initial_risk_distance"] == pytest.approx(10.0)
+    assert payload["unrealised_r"] == pytest.approx(0.5)
+    assert payload["profit_given_back_r"] == pytest.approx(0.3)
 
 
 # ------------------------------------------------------------- consensus ----

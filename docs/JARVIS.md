@@ -13,10 +13,12 @@
   micro-live, the account matches `runtime/LIVE_ARMED.json`, and at least two
   analysis modules are explicitly listed as independently validated.
 - `EXPERIMENTAL_LIVE`: a separate, explicitly accepted real-money experiment.
-  It is bound to one login/server/currency contract, fixes both requested and
-  maximum risk at 1% per trade, uses the 15% peak drawdown breaker, and also
-  stops at 85% of the equity recorded when the contract was armed. It does not
-  pretend the current research modules have passed normal live promotion.
+  It is bound to one login/server/currency contract. In the current owner-set
+  contract it fixes both requested and maximum risk at 2% per trade, has the
+  peak-to-current drawdown breaker switched off, and stops at the fixed EUR 50
+  equity floor. The dashboard reads these values from the armed contract rather
+  than repeating constants. It does not pretend the current research modules
+  have passed normal live promotion.
 
 Opening MT5 alone does not start Jarvis. Start it through the dashboard or one
 of the launchers. MT5 must remain open and logged in.
@@ -45,8 +47,9 @@ recent cheap inspection, the exact rejection stage and the final deep-analysis
 decision. The ledger retains the latest status per symbol and the most recent
 500 inspection records; it is bounded so it cannot grow forever.
 
-With the default settings Jarvis cheaply inspects the complete supported
-catalogue every cycle and deep-analyses at most five. The loop targets a new
+With the Eightcap overlay Jarvis cheaply inspects the complete supported
+catalogue every cycle and deep-analyses every survivor up to the configured
+2,000-candidate ceiling. The loop targets a new
 cycle every 30 seconds, but it never overlaps scans: if MT5 needs longer to
 inspect the full catalogue, the next cycle begins immediately after completion.
 Scanning all symbols across every timeframe every second remains intentionally
@@ -58,7 +61,7 @@ AI is optional in the base research configuration. The Eightcap overlay makes
 Claude mandatory for `EXPERIMENTAL_LIVE`: it is a final second-opinion veto,
 not an unbounded order tool. The deterministic engine must first clear account,
 news, session, spread, correlation, sizing, margin, stoploss and reward:risk
-rules. Only then is a compact snapshot of the last three closed bars on each
+rules. Only then is a bounded snapshot of recent closed bars on each
 configured timeframe sent to Claude. Claude can approve or veto; it cannot
 change size, stop, target, risk, filters or account settings.
 
@@ -70,7 +73,7 @@ ANTHROPIC_API_KEY=...
 # OPENAI_API_KEY=...  # unused in the current Claude-only Eightcap setup
 ```
 
-The Eightcap overlay currently pins `claude-sonnet-4-6`. Verify authentication
+The Eightcap overlay currently pins `claude-sonnet-5`. Verify authentication
 without placing a trade:
 
 ```powershell
@@ -78,9 +81,10 @@ without placing a trade:
 ```
 
 A timeout, rate limit, authentication error, malformed response, missing key,
-unfinished response, confidence below 0.65 or failed audit write blocks the
+unfinished response, confidence below the configured 0.55 threshold or failed audit write blocks the
 setup. Every proposal and decision is stored in
-`runtime/ai_reviews.jsonl` and shown in the dashboard. A closed trade is sent
+`runtime/ai_reviews.jsonl`, mirrored into SQLite `ai_events`, and shown in the
+dashboard. The exact reviewed candles are stored in `bar_snapshots`. A closed trade is sent
 back once for a process reflection; that reflection is research-only and can
 never alter production parameters automatically. API usage is billed by the
 provider separately from a Claude or ChatGPT chat subscription.
@@ -90,7 +94,7 @@ The dashboard's **AI exchange** tab refreshes every three seconds. A
 appears as `PENDING`; the matching `pretrade_response` contains Claude's exact
 structured decision, confidence, thesis, risks, request ID and safe error code.
 The request shown is the exact secret-free market payload used by the provider:
-module scores, the last three closed bars per decision timeframe, tick,
+module scores, recent closed bars per decision timeframe, tick,
 executable sizing, filters and account risk context. API keys and request
 headers are never written. Deep candidates rejected before the AI gate are
 listed separately, so an empty paid-AI history does not look like an idle bot.

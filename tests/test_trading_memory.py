@@ -83,6 +83,9 @@ def test_realised_results_build_a_per_symbol_record(tmp_path: Path) -> None:
     assert brief["cumulative_r"] == 0.0
     assert "3 trades" in brief["this_instrument"]
     assert "33% won" in brief["this_instrument"]
+    assert brief["evidence_status"] == "ANECDOTAL_ONLY"
+    assert brief["minimum_sample"] == 100
+    assert "not statistical evidence" in brief["guardrail"]
 
 
 def test_an_instrument_with_no_history_says_so(tmp_path: Path) -> None:
@@ -133,6 +136,71 @@ def test_it_survives_a_restart(tmp_path: Path) -> None:
     reopened = TradingMemory(tmp_path / "memory.json")
     assert reopened.briefing()["closed_trades_recorded"] == 1
     assert reopened.briefing()["lessons"]
+
+
+def test_trade_ids_make_outcomes_and_reflections_idempotent(tmp_path: Path) -> None:
+    memory = store(tmp_path)
+    outcome = {"symbol": "SPX500"}
+    memory.record_outcome("SPX500", "LONG", 1.0, NOW, trade_id=7)
+    memory.record_outcome("SPX500", "LONG", 1.0, NOW, trade_id=7)
+    memory.record_reflection(
+        outcome, ("A concrete lesson about this exact setup",), NOW, trade_id=7
+    )
+    memory.record_reflection(
+        outcome, ("A concrete lesson about this exact setup",), NOW, trade_id=7
+    )
+
+    brief = memory.briefing("SPX500", "LONG")
+    assert brief["closed_trades_recorded"] == 1
+    assert "1 trades" in brief["this_instrument"]
+    assert "seen 2x" not in brief["lessons"][0]
+    assert memory.has_reflection(7)
+
+
+def test_journal_sync_repairs_missing_outcomes_without_losing_vetoes(tmp_path: Path) -> None:
+    memory = store(tmp_path)
+    memory.record_outcome("OLD", "LONG", -1.0, NOW, trade_id=1)
+    memory.record_veto("EURUSD", "SHORT", NOW)
+
+    memory.synchronize_outcomes(
+        [
+            {
+                "id": 10,
+                "symbol": "EURUSD",
+                "direction": "SHORT",
+                "pnl_r": 2.0,
+                "closed_at": NOW.isoformat(),
+            },
+            {
+                "id": 11,
+                "symbol": "AUDJPY",
+                "direction": "LONG",
+                "pnl_r": -1.0,
+                "closed_at": NOW.isoformat(),
+            },
+        ],
+        NOW,
+    )
+
+    brief = memory.briefing("EURUSD", "SHORT")
+    assert brief["closed_trades_recorded"] == 2
+    assert brief["cumulative_r"] == 1.0
+    assert "refused 1x" in brief["this_instrument"]
+
+
+def test_reflection_sync_deduplicates_the_same_closed_trade(tmp_path: Path) -> None:
+    memory = store(tmp_path)
+    row = {
+        "timestamp": NOW.isoformat(),
+        "outcome": {"trade_id": 9, "symbol": "EURUSD"},
+        "reflection": {"lessons": ["The stop sat inside normal noise on entry"]},
+    }
+
+    memory.synchronize_reflections([row, row], NOW)
+
+    assert len(memory.briefing()["lessons"]) == 1
+    assert "seen 2x" not in memory.briefing()["lessons"][0]
+    assert memory.has_reflection(9)
 
 
 def test_unreadable_file_starts_empty_rather_than_crashing(tmp_path: Path) -> None:

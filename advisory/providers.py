@@ -127,6 +127,34 @@ class Advice:
 
 
 @dataclass(frozen=True, slots=True)
+class ScoutDecision:
+    """One independent cross-market nomination, never an execution command."""
+
+    action: str = "WAIT"
+    symbol: str = ""
+    confidence: float = 0.0
+    thesis: str = ""
+    counter_thesis: str = ""
+    invalidation_price: float | None = None
+    target_price: float | None = None
+    patterns: tuple[str, ...] = ()
+    risks: tuple[str, ...] = ()
+    wait_for: str = ""
+    provider: str = "disabled"
+    model: str = ""
+    request_id: str = ""
+    error: str = ""
+    usage: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def directional(self) -> bool:
+        return self.action in {"LONG", "SHORT"} and bool(self.symbol)
+
+    def safe_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class Reflection:
     summary: str
     lessons: tuple[str, ...] = ()
@@ -180,6 +208,15 @@ class Supervision:
     request_id: str = ""
     error: str = ""
     usage: dict[str, int] = field(default_factory=dict)
+    #: Explicitly separate the state of the original idea from the action. A
+    #: profitable trade can have an intact thesis and still deserve protection;
+    #: a losing trade can have an invalidated thesis and deserve an exit.
+    thesis_state: str = "uncertain"
+    urgency: str = "routine"
+    evidence: tuple[str, ...] = ()
+    #: The model may ask to see the trade sooner than the routine cadence. The
+    #: runner clamps this to its configured cost/noise floor and ceiling.
+    review_after_minutes: float | None = None
 
     def safe_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -224,6 +261,8 @@ class Supervision:
 
 
 class Advisor(Protocol):
+    def scout(self, market_state: Mapping[str, object]) -> ScoutDecision: ...
+
     def review(
         self,
         idea: TradeIdea,
@@ -238,6 +277,9 @@ class Advisor(Protocol):
 
 
 class DisabledAdvisor:
+    def scout(self, _market_state: Mapping[str, object]) -> ScoutDecision:
+        return ScoutDecision(thesis="AI advisory disabled", provider="disabled")
+
     def review(
         self,
         _idea: TradeIdea,
@@ -265,6 +307,30 @@ class OpenAIAdvisor:
         self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=config.timeout_seconds)
         self.model = config.openai_model
         self.minimum = config.minimum_confidence
+
+    def scout(self, market_state: Mapping[str, object]) -> ScoutDecision:
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                instructions=_SCOUT_INSTRUCTIONS,
+                input=_dumps({"market_scout": dict(market_state)}),
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "market_scout",
+                        "strict": True,
+                        "schema": _SCOUT_SCHEMA,
+                    }
+                },
+            )
+            return _parse_scout(
+                response.output_text,
+                "openai",
+                self.model,
+                getattr(response, "_request_id", "") or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - scouting is non-blocking
+            return _failed_scout("openai", self.model, exc)
 
     def review(
         self,
@@ -359,6 +425,51 @@ class AnthropicAdvisor:
         )
         self.model = config.anthropic_model
         self.minimum = config.minimum_confidence
+
+    def scout(self, market_state: Mapping[str, object]) -> ScoutDecision:
+        try:
+            message = self.client.messages.create(
+                model=self.model,
+                max_tokens=_MAX_TOKENS,
+                system=_cached(_SCOUT_INSTRUCTIONS),
+                output_config={
+                    "effort": _EFFORT,
+                    "format": {
+                        "type": "json_schema",
+                        "schema": _anthropic_schema(_SCOUT_SCHEMA),
+                    },
+                },
+                messages=[
+                    {
+                        "role": "user",
+                        "content": _dumps(
+                            {"schema": _SCOUT_SCHEMA, "market_scout": dict(market_state)}
+                        ),
+                    }
+                ],
+            )
+            request_id = getattr(message, "_request_id", "") or ""
+            stop_reason = getattr(message, "stop_reason", "") or "unknown"
+            if stop_reason != "end_turn":
+                return ScoutDecision(
+                    thesis="Claude scout response did not finish normally",
+                    provider="anthropic",
+                    model=self.model,
+                    request_id=request_id,
+                    error=f"incomplete_response:{stop_reason}",
+                )
+            text = "".join(
+                block.text for block in message.content if getattr(block, "type", "") == "text"
+            )
+            return _parse_scout(
+                text,
+                "anthropic",
+                self.model,
+                request_id,
+                _usage(message),
+            )
+        except Exception as exc:  # noqa: BLE001 - scouting is non-blocking
+            return _failed_scout("anthropic", self.model, exc)
 
     def review(
         self,
@@ -511,6 +622,37 @@ class ConsensusAdvisor:
     def __init__(self, advisors: list[Advisor]) -> None:
         self.advisors = advisors
 
+    def scout(self, market_state: Mapping[str, object]) -> ScoutDecision:
+        answers = [advisor.scout(market_state) for advisor in self.advisors]
+        directional = [answer for answer in answers if answer.directional and not answer.error]
+        if not directional:
+            return ScoutDecision(
+                thesis=" | ".join(answer.thesis for answer in answers if answer.thesis),
+                provider="consensus",
+                error=" | ".join(answer.error for answer in answers if answer.error),
+            )
+        sides = {(answer.symbol, answer.action) for answer in directional}
+        if len(sides) != 1:
+            return ScoutDecision(
+                thesis="scouts disagree; no nomination promoted",
+                counter_thesis=" | ".join(answer.thesis for answer in directional),
+                provider="consensus",
+            )
+        strongest = max(directional, key=lambda answer: answer.confidence)
+        return ScoutDecision(
+            action=strongest.action,
+            symbol=strongest.symbol,
+            confidence=min(answer.confidence for answer in directional),
+            thesis=" | ".join(answer.thesis for answer in directional),
+            counter_thesis=" | ".join(answer.counter_thesis for answer in directional),
+            invalidation_price=strongest.invalidation_price,
+            target_price=strongest.target_price,
+            patterns=tuple(pattern for answer in directional for pattern in answer.patterns),
+            risks=tuple(risk for answer in directional for risk in answer.risks),
+            wait_for=" | ".join(answer.wait_for for answer in directional if answer.wait_for),
+            provider="consensus",
+        )
+
     def review(
         self,
         idea: TradeIdea,
@@ -564,6 +706,10 @@ class ConsensusAdvisor:
             strongest.close_fraction,
             "consensus",
             error=" | ".join(answer.error for answer in answers if answer.error),
+            thesis_state=strongest.thesis_state,
+            urgency=strongest.urgency,
+            evidence=tuple(item for answer in answers for item in answer.evidence),
+            review_after_minutes=strongest.review_after_minutes,
         )
 
 
@@ -802,10 +948,30 @@ def build_supervision_payload(
     price = 0.0
     if context.tick is not None:
         price = context.tick.bid if sign > 0 else context.tick.ask
-    risk = abs(position.price_open - position.sl) if position.sl else 0.0
+    # R must stay anchored to the risk accepted at entry. Once the mechanical
+    # layer moves the live stop to break-even, measuring against that stop makes
+    # the denominator collapse and turns an ordinary move into a fictitious
+    # 20R gain. The original plan is journal-backed and survives restarts.
+    supplied = dict(extra or {})
+    trade_record = supplied.get("trade_record")
+    trade_record = trade_record if isinstance(trade_record, Mapping) else {}
+    original_plan = trade_record.get("original_plan")
+    original_plan = original_plan if isinstance(original_plan, Mapping) else {}
+    try:
+        original_stop = float(original_plan.get("stop_loss", position.sl) or position.sl)
+    except (TypeError, ValueError):
+        original_stop = float(position.sl)
+    risk = abs(position.price_open - original_stop) if original_stop else 0.0
     r_now = ((price - position.price_open) * sign / risk) if (risk and price) else None
     signal = context.series.get(Timeframe.H1)
     atr = _atr(signal.df) if signal is not None else 0.0
+
+    try:
+        peak_r = float(supplied.get("peak_r", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        peak_r = 0.0
+    giveback_r = max(0.0, peak_r - (r_now or 0.0)) if peak_r > 0 else 0.0
+    giveback_fraction = giveback_r / peak_r if peak_r > 0 else 0.0
 
     return {
         "symbol": position.symbol,
@@ -819,6 +985,13 @@ def build_supervision_payload(
         "unrealised_money": round(position.profit + position.swap, 2),
         "unrealised_r": round(r_now, 2) if r_now is not None else None,
         "initial_risk_distance": round(risk, 6),
+        "original_stop": original_stop,
+        "peak_unrealised_r": round(peak_r, 2),
+        "profit_given_back_r": round(giveback_r, 2),
+        "profit_given_back_fraction": round(giveback_fraction, 3),
+        "spread_as_fraction_of_initial_risk": (
+            round(context.tick.spread / risk, 3) if context.tick is not None and risk else None
+        ),
         "distance_to_stop_in_atr": (
             round(abs(price - position.sl) / atr, 2) if atr and price and position.sl else None
         ),
@@ -829,12 +1002,65 @@ def build_supervision_payload(
         "age_hours": round((context.now - position.opened_at).total_seconds() / 3600.0, 2),
         "h1_atr14": round(atr, 6),
         "timeframes": timeframes,
-        "context": dict(extra or {}),
+        "context": supplied,
         "rule": (
             "You may only hold, tighten the stop, pull the target in, close part, or close all. "
             "Widening a stop, extending a target, adding size and reversing are all refused."
         ),
     }
+
+
+def _parse_scout(
+    text: str,
+    provider: str,
+    model: str,
+    request_id: str,
+    usage: dict[str, int] | None = None,
+) -> ScoutDecision:
+    try:
+        payload = json.loads(text.strip())
+        action = str(payload["action"]).upper().strip()
+        if action not in {"WAIT", "LONG", "SHORT"}:
+            raise ValueError("invalid scout action")  # noqa: TRY301
+        symbol = str(payload["symbol"]).strip()
+        confidence = float(payload["confidence"])
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence outside [0, 1]")  # noqa: TRY301
+        thesis = str(payload["thesis"]).strip()
+        counter = str(payload["counter_thesis"]).strip()
+        patterns = payload["patterns"]
+        risks = payload["risks"]
+        wait_for = str(payload["wait_for"]).strip()
+        if not isinstance(patterns, list) or not isinstance(risks, list):
+            raise TypeError("patterns/risks must be arrays")  # noqa: TRY301
+        if action != "WAIT" and (not symbol or not thesis or not counter):
+            raise ValueError("directional scout decision needs symbol and both theses")  # noqa: TRY301
+        if action == "WAIT":
+            symbol = ""
+        return ScoutDecision(
+            action=action,
+            symbol=symbol,
+            confidence=confidence,
+            thesis=thesis,
+            counter_thesis=counter,
+            invalidation_price=_optional_float(payload.get("invalidation_price")),
+            target_price=_optional_float(payload.get("target_price")),
+            patterns=tuple(str(item) for item in patterns),
+            risks=tuple(str(item) for item in risks),
+            wait_for=wait_for,
+            provider=provider,
+            model=model,
+            request_id=request_id,
+            usage=dict(usage or {}),
+        )
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return ScoutDecision(
+            thesis=f"Invalid {provider} market-scout response; ignored",
+            provider=provider,
+            model=model,
+            request_id=request_id,
+            error="invalid_response",
+        )
 
 
 def _parse_review(
@@ -931,6 +1157,19 @@ def _parse_supervision(
             # Downgrading to "hold" rather than guessing keeps a malformed reply
             # from silently becoming a full exit.
             raise ValueError("partial_close needs a fraction in (0, 1)")  # noqa: TRY301
+        thesis_state = str(payload.get("thesis_state", "uncertain")).strip().lower()
+        if thesis_state not in {"intact", "weakened", "invalidated", "uncertain"}:
+            raise ValueError("unknown thesis state")  # noqa: TRY301
+        urgency = str(payload.get("urgency", "routine")).strip().lower()
+        if urgency not in {"routine", "next_close", "immediate"}:
+            raise ValueError("unknown urgency")  # noqa: TRY301
+        raw_evidence = payload.get("evidence", ())
+        if not isinstance(raw_evidence, (list, tuple)):
+            raise TypeError("evidence is not a list")  # noqa: TRY301
+        evidence = tuple(str(item).strip() for item in raw_evidence if str(item).strip())
+        review_after = _optional_float(payload.get("review_after_minutes"))
+        if review_after is not None and not 0.25 <= review_after <= 240.0:
+            raise ValueError("review cadence outside supported range")  # noqa: TRY301
         return Supervision(
             action,
             reason,
@@ -942,6 +1181,10 @@ def _parse_supervision(
             model,
             request_id,
             usage=dict(usage or {}),
+            thesis_state=thesis_state,
+            urgency=urgency,
+            evidence=evidence,
+            review_after_minutes=review_after,
         )
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return _failed_supervision(provider, model, "invalid_response", request_id)
@@ -999,6 +1242,15 @@ def _failed_advice(provider: str, model: str, exc: Exception) -> Advice:
 def _failed_reflection(provider: str, model: str, exc: Exception) -> Reflection:
     return Reflection(
         f"{provider} reflection unavailable",
+        provider=provider,
+        model=model,
+        error=_safe_error(exc),
+    )
+
+
+def _failed_scout(provider: str, model: str, exc: Exception) -> ScoutDecision:
+    return ScoutDecision(
+        thesis=f"{provider} market scout unavailable; deterministic pipeline continues",
         provider=provider,
         model=model,
         error=_safe_error(exc),
@@ -1194,6 +1446,11 @@ drawn from this account's own closed trades, its realised record on this exact s
 direction, and how often this proposal has been refused before. It is evidence, and it is the
 only thing in the payload that is not visible in the charts.
 
+Read its `evidence_status` and `guardrail` literally. Below one hundred closed trades these are
+research notes, not a validated edge. Never approve or veto solely because a small sample won or
+lost, and never turn repeated AI wording into proof. A remembered claim matters only when the
+same feature is independently visible in the supplied bars and market context.
+
 Weigh it honestly in both directions. Four losing longs on this instrument is a reason to want
 more from the setup than usual, not an automatic veto — but if the same lesson keeps arriving
 ("stops on this symbol sit inside the noise", "afternoon entries here reverse"), and this
@@ -1202,6 +1459,27 @@ lower bar. An instrument with no history is neutral, not suspect.
 
 Hard filters, risk limits and sizing have already run and are not yours to reconsider. You may not
 propose a different trade, or change volume, stop, target or risk. Never infer missing data."""
+
+_SCOUT_INSTRUCTIONS = """You are an independent cross-market scout, not an order sender. You are
+given a compact point-in-time comparison of the strongest markets from one complete broker scan,
+plus the global closed-bar market state. Every observation uses closed bars only.
+
+Choose WAIT unless one supplied market has a materially clearer directional opportunity than the
+rest. If one does, nominate exactly that supplied symbol as LONG or SHORT. Compare markets rather
+than grading each in isolation: persistence, multi-horizon drift, volatility regime, asset-specific
+microstructure and the strongest counter-thesis all matter. A fluent story is not evidence.
+
+This is not an approval and not an execution command. Deterministic analysis, costs, sizing, hard
+filters and a separate final Claude review still have to construct and approve an executable trade.
+You cannot alter risk, size, stop or target. Your nomination can only move an
+already-valid candidate earlier in the queue. WAIT, disagreement, malformed output or an API
+failure changes nothing.
+
+Use confidence as comparative clarity: 0.75+ means one market clearly stands above the supplied
+field, 0.65-0.75 means a normal but meaningful preference, below 0.65 should normally be WAIT.
+For a directional nomination provide concrete invalidation and target prices when the supplied
+evidence supports them; otherwise null. Always state the best counter-thesis and what would make
+you wait or reconsider."""
 
 _REFLECTION_INSTRUCTIONS = """Review one closed trade as a process auditor. Separate outcome luck
 from decision quality. Identify evidence-supported lessons and process flags only. Never recommend
@@ -1228,6 +1506,17 @@ WHAT YOU ARE GIVEN. The position with its entry, current stop and target, live p
 P&L in account currency and in R, how long it has been open, and closed bars on every timeframe
 from the weekly down to the one-minute with each frame's ATR. The bars are what changed since the
 trade was opened. Read them.
+
+`context.trade_record` is the trade's memory, not background decoration. `original_plan` is the
+entry, stop, target, risk and intended reward before any management move. `entry_thesis` contains
+the exact deterministic modules and the Claude review that admitted the trade.
+`management_history` lists what has already been changed. Compare the current closed bars with
+that original thesis explicitly. Never claim that a thesis broke without naming which premise
+from the entry record failed. `trigger` says why this review happened early (for example a health
+change, a new profit milestone, or profit being given back).
+
+R, peak R and profit give-back are always calculated from the ORIGINAL stop. The current stop may
+already be at break-even and must never be used as a new denominator.
 
 HOW TO THINK ABOUT IT — this is the part that matters. A good trade manager is not a stop-loss
 calculator, and is not looking for reasons to fiddle. Ask:
@@ -1286,7 +1575,18 @@ not confident enough to justify the cost of acting.
 
 Give `reason` as one or two plain sentences naming the concrete evidence. It is written to the
 trade journal and read back later, so "M15 lost the rising trendline it had held for 14 bars and
-closed below the prior swing low" is useful and "momentum weakening" is not."""
+closed below the prior swing low" is useful and "momentum weakening" is not.
+
+Always classify the ORIGINAL thesis as intact, weakened, invalidated or uncertain, and list the
+specific closed-bar evidence separately. Set urgency to routine, next_close or immediate. Use
+`review_after_minutes` to request another look sooner when a known confirmation candle is due;
+otherwise use null. A requested cadence never authorises an action and is bounded by the runner."""
+
+# The additional fields do not grant new powers. They make the judgement
+# inspectable and allow the adviser to request an earlier look without acting:
+# `thesis_state` says what happened to the original reason for entry, `evidence`
+# names the closed-bar facts, and `review_after_minutes` is clamped by the
+# runner before it can affect API cadence.
 
 _SUPERVISION_SCHEMA = {
     "type": "object",
@@ -1297,6 +1597,13 @@ _SUPERVISION_SCHEMA = {
         "stop_loss": {"type": ["number", "null"]},
         "take_profit": {"type": ["number", "null"]},
         "close_fraction": {"type": ["number", "null"]},
+        "thesis_state": {
+            "type": "string",
+            "enum": ["intact", "weakened", "invalidated", "uncertain"],
+        },
+        "urgency": {"type": "string", "enum": ["routine", "next_close", "immediate"]},
+        "evidence": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+        "review_after_minutes": {"type": ["number", "null"], "minimum": 0.25, "maximum": 240},
     },
     "required": [
         "action",
@@ -1305,6 +1612,39 @@ _SUPERVISION_SCHEMA = {
         "stop_loss",
         "take_profit",
         "close_fraction",
+        "thesis_state",
+        "urgency",
+        "evidence",
+        "review_after_minutes",
+    ],
+    "additionalProperties": False,
+}
+
+_SCOUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["WAIT", "LONG", "SHORT"]},
+        "symbol": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "thesis": {"type": "string"},
+        "counter_thesis": {"type": "string"},
+        "invalidation_price": {"type": ["number", "null"]},
+        "target_price": {"type": ["number", "null"]},
+        "patterns": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "wait_for": {"type": "string"},
+    },
+    "required": [
+        "action",
+        "symbol",
+        "confidence",
+        "thesis",
+        "counter_thesis",
+        "invalidation_price",
+        "target_price",
+        "patterns",
+        "risks",
+        "wait_for",
     ],
     "additionalProperties": False,
 }

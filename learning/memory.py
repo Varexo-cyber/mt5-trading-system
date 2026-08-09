@@ -37,11 +37,12 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from core.clock import Clock, LiveClock
 from infra.atomic import write_json_atomic
 from infra.logging import get_logger
 
@@ -60,6 +61,13 @@ MAX_SYMBOLS = 200
 
 #: How long an observation counts as evidence about the present.
 RETENTION_DAYS = 90
+
+# One hundred closed trades is the project's pre-registered minimum for an
+# empirical conclusion. The memory can surface observations earlier, but it
+# must label them honestly so a fluent reflection from one trade cannot acquire
+# the authority of a measured pattern merely by being fed back into a prompt.
+MIN_STATISTICAL_SAMPLE = 100
+DEVELOPING_SAMPLE = 30
 
 
 @dataclass
@@ -107,13 +115,22 @@ class Lesson:
 class TradingMemory:
     """Durable, bounded, decaying record of what the account has been taught."""
 
-    def __init__(self, path: Path | None = None, *, retention_days: int = RETENTION_DAYS) -> None:
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        retention_days: int = RETENTION_DAYS,
+        clock: Clock | None = None,
+    ) -> None:
         self.path = path
         self.retention_days = retention_days
+        self.clock = clock or LiveClock()
         self._lessons: dict[str, Lesson] = {}
         self._symbols: dict[tuple[str, str], SymbolRecord] = {}
         self._closed_trades = 0
         self._total_r = 0.0
+        self._processed_trade_ids: set[int] = set()
+        self._reflected_trade_ids: set[int] = set()
         self._load()
 
     # ---------------------------------------------------------------- record
@@ -123,9 +140,13 @@ class TradingMemory:
         outcome: Mapping[str, object],
         lessons: tuple[str, ...],
         now: datetime | None = None,
+        *,
+        trade_id: int | None = None,
     ) -> None:
         """Fold one post-trade reflection into the accumulated record."""
-        moment = now or datetime.now(UTC)
+        if trade_id is not None and trade_id in self._reflected_trade_ids:
+            return
+        moment = now or self.clock.now()
         symbol = str(outcome.get("symbol", "") or "")
         for raw in lessons:
             text = " ".join(str(raw).split())[:300]
@@ -150,6 +171,8 @@ class TradingMemory:
                 # time would make the count look like drift.
                 if symbol and symbol not in existing.symbols:
                     existing.symbols.append(symbol)
+        if trade_id is not None:
+            self._reflected_trade_ids.add(trade_id)
         self._prune(moment)
         self._save()
 
@@ -159,9 +182,13 @@ class TradingMemory:
         direction: str,
         pnl_r: float,
         now: datetime | None = None,
+        *,
+        trade_id: int | None = None,
     ) -> None:
         """Fold one closed trade's realised result into the scoreboard."""
-        moment = now or datetime.now(UTC)
+        if trade_id is not None and trade_id in self._processed_trade_ids:
+            return
+        moment = now or self.clock.now()
         record = self._symbols.setdefault(
             (symbol, direction), SymbolRecord(symbol=symbol, direction=direction)
         )
@@ -171,12 +198,102 @@ class TradingMemory:
         record.last_seen = _iso(moment)
         self._closed_trades += 1
         self._total_r += pnl_r
+        if trade_id is not None:
+            self._processed_trade_ids.add(trade_id)
         self._prune(moment)
+        self._save()
+
+    def synchronize_outcomes(
+        self, outcomes: Iterable[Mapping[str, object]], now: datetime | None = None
+    ) -> None:
+        """Rebuild realised statistics from the journal without duplicating them.
+
+        The journal is the source of truth. Older runner versions only updated
+        memory for closures they observed directly, so broker-side closures
+        could exist in SQLite without reaching this file. Rebuilding at start
+        repairs that drift and makes every later `record_outcome` idempotent.
+        Reflection lessons and veto counts are preserved; only arithmetic that
+        can be recomputed exactly is replaced.
+        """
+        moment = now or self.clock.now()
+        cutoff = moment - timedelta(days=self.retention_days)
+        for record in self._symbols.values():
+            record.trades = 0
+            record.wins = 0
+            record.total_r = 0.0
+        self._closed_trades = 0
+        self._total_r = 0.0
+        self._processed_trade_ids.clear()
+
+        for outcome in outcomes:
+            try:
+                trade_id = int(outcome["id"])
+                closed_at = _parse(str(outcome["closed_at"]))
+                symbol = str(outcome["symbol"])
+                direction = str(outcome["direction"])
+                pnl_r = float(outcome["pnl_r"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if closed_at < cutoff:
+                continue
+            record = self._symbols.setdefault(
+                (symbol, direction), SymbolRecord(symbol=symbol, direction=direction)
+            )
+            record.trades += 1
+            record.wins += int(pnl_r > 0)
+            record.total_r += pnl_r
+            record.last_seen = max(record.last_seen, _iso(closed_at))
+            self._closed_trades += 1
+            self._total_r += pnl_r
+            self._processed_trade_ids.add(trade_id)
+        self._prune(moment)
+        self._save()
+
+    def has_reflection(self, trade_id: int) -> bool:
+        """Whether a successful structured reflection already exists."""
+        return trade_id in self._reflected_trade_ids
+
+    def synchronize_reflections(
+        self, rows: Iterable[Mapping[str, object]], now: datetime | None = None
+    ) -> None:
+        """Rebuild lessons once per trade from the durable AI audit.
+
+        Earlier versions could reflect the same broker closure more than once.
+        Replaying the audit through the trade-ID guard removes those duplicate
+        lesson counts and restores reflections that existed in JSONL but were
+        never folded into memory.
+        """
+        material = list(rows)
+        if not material:
+            return
+        self._lessons.clear()
+        self._reflected_trade_ids.clear()
+        fallback = now or self.clock.now()
+        for row in material:
+            outcome = row.get("outcome")
+            reflection = row.get("reflection")
+            if not isinstance(outcome, Mapping) or not isinstance(reflection, Mapping):
+                continue
+            try:
+                trade_id = int(outcome["trade_id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            raw_lessons = reflection.get("lessons", ())
+            if not isinstance(raw_lessons, (list, tuple)):
+                continue
+            timestamp = _parse(str(row.get("timestamp", ""))) if row.get("timestamp") else fallback
+            self.record_reflection(
+                outcome,
+                tuple(str(lesson) for lesson in raw_lessons),
+                timestamp,
+                trade_id=trade_id,
+            )
+        self._prune(fallback)
         self._save()
 
     def record_veto(self, symbol: str, direction: str, now: datetime | None = None) -> None:
         """Note that a proposal here was refused, for the reviewer's context."""
-        moment = now or datetime.now(UTC)
+        moment = now or self.clock.now()
         record = self._symbols.setdefault(
             (symbol, direction), SymbolRecord(symbol=symbol, direction=direction)
         )
@@ -204,16 +321,32 @@ class TradingMemory:
             (record for record in self._symbols.values() if record.trades >= 2),
             key=lambda record: record.total_r,
         )[:5]
+        if self._closed_trades >= MIN_STATISTICAL_SAMPLE:
+            evidence_status = "MINIMUM_SAMPLE_REACHED"
+        elif self._closed_trades >= DEVELOPING_SAMPLE:
+            evidence_status = "DEVELOPING"
+        else:
+            evidence_status = "ANECDOTAL_ONLY"
         return {
             "closed_trades_recorded": self._closed_trades,
             "cumulative_r": round(self._total_r, 2),
+            "minimum_sample": MIN_STATISTICAL_SAMPLE,
+            "evidence_status": evidence_status,
             "lessons": [lesson.summary() for lesson in ranked[:BRIEFED_LESSONS]],
             "this_instrument": here.summary() if here is not None else "no history on record",
             "worst_performing": [record.summary() for record in worst],
+            "guardrail": (
+                "Fewer than 100 closed trades is not statistical evidence. Do not approve or "
+                "veto solely because of this memory; use it only to identify a concrete feature "
+                "that is independently visible in the supplied market data."
+                if self._closed_trades < MIN_STATISTICAL_SAMPLE
+                else "The minimum account-level sample has been reached, but instrument and "
+                "regime subgroups may still be too small. Correlation is not causation."
+            ),
             "note": (
-                "Accumulated from this account's own closed trades. Treat it as evidence, "
-                "not instruction: a symbol that has lost money is a reason for a higher bar, "
-                "not an automatic veto, and a symbol with no history is neutral."
+                "Accumulated from this account's own closed trades. Reflections are structured "
+                "research notes, not model retraining and not permission to rewrite production "
+                "parameters. A symbol with no history is neutral."
             ),
         }
 
@@ -258,6 +391,8 @@ class TradingMemory:
             return
         self._closed_trades = int(payload.get("closed_trades", 0))
         self._total_r = float(payload.get("total_r", 0.0))
+        self._processed_trade_ids = {int(value) for value in payload.get("processed_trade_ids", [])}
+        self._reflected_trade_ids = {int(value) for value in payload.get("reflected_trade_ids", [])}
         for row in payload.get("lessons", []):
             try:
                 lesson = Lesson(**row)
@@ -277,10 +412,12 @@ class TradingMemory:
         write_json_atomic(
             self.path,
             {
-                "version": 1,
-                "written_at": _iso(datetime.now(UTC)),
+                "version": 2,
+                "written_at": _iso(self.clock.now()),
                 "closed_trades": self._closed_trades,
                 "total_r": round(self._total_r, 4),
+                "processed_trade_ids": sorted(self._processed_trade_ids),
+                "reflected_trade_ids": sorted(self._reflected_trade_ids),
                 "lessons": [asdict(lesson) for lesson in self._lessons.values()],
                 "symbols": [asdict(record) for record in self._symbols.values()],
             },
@@ -347,5 +484,5 @@ def _parse(text: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
-        return datetime.now(UTC)
+        return datetime.min.replace(tzinfo=UTC)
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

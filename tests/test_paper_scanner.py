@@ -7,6 +7,7 @@ import pytest
 
 from config.loader import load_settings
 from config.schema import MT5Config
+from core.clock import SimulatedClock
 from core.mt5_connector import MT5Connector
 from core.types import Direction, OrderRequest
 from execution.manager import PositionManager
@@ -18,6 +19,24 @@ from tests.fakes.fake_mt5 import FakeMT5, eurusd_spec
 
 def connector(fake: FakeMT5) -> MT5Connector:
     return MT5Connector(MT5Config(), mt5_module=fake)
+
+
+def test_runner_promotes_filter_context_into_queryable_journal_columns() -> None:
+    context = JarvisRunner._journal_cycle_context(
+        "EURUSD",
+        100.0,
+        {
+            "session": "london",
+            "spread_pips": 0.8,
+            "minutes_to_news": 75.0,
+            "market_intelligence": {"regime": "trend_up"},
+        },
+    )
+
+    assert context.session == "london"
+    assert context.spread_pips == pytest.approx(0.8)
+    assert context.minutes_to_news == pytest.approx(75.0)
+    assert context.volatility_regime == "trend_up"
 
 
 def test_paper_position_survives_restart(tmp_path: Path) -> None:
@@ -40,6 +59,25 @@ def test_paper_position_survives_restart(tmp_path: Path) -> None:
     assert len(positions) == 1
     assert positions[0].ticket == result.position_ticket
     restored.shutdown()
+
+
+def test_paper_broker_uses_the_injected_clock_for_auditable_events(tmp_path: Path) -> None:
+    moment = datetime(2026, 8, 9, 12, 34, tzinfo=UTC)
+    paper = PaperBroker(
+        connector(FakeMT5()),
+        tmp_path / "paper.json",
+        clock=SimulatedClock(moment),
+    )
+    paper.connect()
+    result = paper.order_send(
+        OrderRequest("EURUSD", Direction.LONG, 0.01, 1.08, 1.10, 1.08512),
+        paper.spec("EURUSD"),
+    )
+
+    assert result.sent_at == moment
+    assert paper.positions()[0].opened_at == moment
+    assert paper.account().taken_at == moment
+    paper.shutdown()
 
 
 def test_paper_stop_closes_and_changes_balance(tmp_path: Path) -> None:
@@ -106,17 +144,25 @@ def test_partial_close_is_persistent_and_recoverable(tmp_path: Path) -> None:
         def update_excursions(self, _trade_id, *, mae_r, mfe_r):  # type: ignore[no-untyped-def]
             self.peak_r = max(self.peak_r, mfe_r)
 
-    fake = FakeMT5(now=datetime.now(UTC))
+    test_now = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
+    fake = FakeMT5(now=test_now)
     paper = PaperBroker(connector(fake), tmp_path / "paper.json")
     paper.connect()
     spec = paper.spec("EURUSD")
     paper.order_send(OrderRequest("EURUSD", Direction.LONG, 0.10, 1.083, 1.10, 1.08512), spec)
     fake.quotes["EURUSD"] = (1.09, 1.09012)
     settings = load_settings(env_overrides=False)
+    # This test measures partial-close persistence, not whether the synthetic
+    # FakeMT5 bars look healthy. Keep earlier exit layers from pre-empting the
+    # rule under test.
+    management = settings.trade_management.model_copy(
+        update={"health_enabled": False, "giveback_arm_r": 0.0}
+    )
+    settings = settings.model_copy(update={"trade_management": management})
     manager = PositionManager(paper, JournalStub(), settings)  # type: ignore[arg-type]
 
-    manager.manage(paper.positions(), datetime.now(UTC))  # break-even first
-    events = manager.manage(paper.positions(), datetime.now(UTC))
+    manager.manage(paper.positions(), test_now)  # break-even first
+    events = manager.manage(paper.positions(), test_now)
 
     assert events[0].action == "PARTIAL_CLOSE"
     assert paper.positions()[0].volume == pytest.approx(0.05)
@@ -176,6 +222,29 @@ def test_scanner_scans_and_ranks_full_available_catalogue_by_default() -> None:
     assert len(batch.inspections) == 2
     assert {item.status for item in batch.inspections} == {"SHORTLISTED"}
     assert all(item.reason for item in batch.inspections)
+    market.shutdown()
+
+
+def test_empty_asset_filter_keeps_future_broker_catalogue_folders_visible() -> None:
+    """A new Eightcap product folder must be inspected, not silently disappear.
+
+    Its contract may still be rejected fail-closed later. The catalogue count
+    and scanner telemetry nevertheless need to account for every symbols_get()
+    row when the operator selected the complete catalogue.
+    """
+    fake = FakeMT5(
+        specs={
+            "FUTURE_PRODUCT": eurusd_spec(
+                name="FUTURE_PRODUCT", path="Future Eightcap Products\\FUTURE_PRODUCT"
+            )
+        },
+        quotes={"FUTURE_PRODUCT": (1.08500, 1.08512)},
+    )
+    market = connector(fake)
+    market.connect()
+    scanner = UniverseScanner(market, load_settings(env_overrides=False))
+
+    assert [item.name for item in scanner.catalogue()] == ["FUTURE_PRODUCT"]
     market.shutdown()
 
 

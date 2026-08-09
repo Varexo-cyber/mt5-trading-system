@@ -23,6 +23,7 @@ Design notes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator, Sequence
@@ -36,7 +37,7 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
@@ -273,6 +274,50 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         """,
         "DELETE FROM equity_marks WHERE period = 'PEAK' AND period_key != 'all-time'",
     ),
+    5: (
+        # Passive A/B evidence for position management. After Jarvis closes a
+        # trade, keep following the original broker-native SL/TP plan and store
+        # which one would have won. This never changes a live order; it measures
+        # whether break-even, health, give-back and AI intervention helped.
+        """
+        CREATE TABLE management_baselines (
+            trade_id        INTEGER PRIMARY KEY REFERENCES trades(id) ON DELETE CASCADE,
+            observed_at     TEXT NOT NULL,
+            resolved_at     TEXT NOT NULL,
+            outcome         TEXT NOT NULL,
+            baseline_pnl_r  REAL NOT NULL,
+            actual_pnl_r    REAL NOT NULL,
+            lift_r          REAL NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_management_baseline_outcome ON management_baselines(outcome)",
+    ),
+    6: (
+        # The JSONL audit remains the append-only operator log, but AI evidence
+        # also belongs beside the cycle and trade data it explains. Keeping a
+        # relational copy makes questions such as "which model approved the
+        # losing trades around CPI?" answerable without parsing a large file.
+        # The payload is already the secret-free representation written by
+        # `AIReviewLedger`; API keys and hidden model reasoning never enter it.
+        """
+        CREATE TABLE ai_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_hash   TEXT NOT NULL UNIQUE,
+            ts           TEXT NOT NULL,
+            event        TEXT NOT NULL,
+            cycle_id     TEXT,
+            symbol       TEXT,
+            direction    TEXT,
+            provider     TEXT,
+            model        TEXT,
+            payload_json TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_ai_events_ts ON ai_events(ts)",
+        "CREATE INDEX idx_ai_events_cycle ON ai_events(cycle_id)",
+        "CREATE INDEX idx_ai_events_symbol_ts ON ai_events(symbol, ts)",
+        "CREATE INDEX idx_ai_events_event ON ai_events(event)",
+    ),
 }
 
 #: The single row the all-time equity peak lives in.
@@ -447,6 +492,124 @@ class Journal:
             "SELECT * FROM trades WHERE ticket = ? AND closed_at IS NULL", (ticket,)
         ).fetchone()
 
+    def supervision_context(self, ticket: int) -> dict[str, Any]:
+        """Reconstruct why an open trade exists and what has happened to it.
+
+        A chart snapshot alone cannot answer whether the entry thesis still
+        holds. The supervisor therefore receives the immutable original plan,
+        the analysis and Claude verdict that admitted it, and every subsequent
+        management action. This is assembled from existing audit tables rather
+        than copied into process memory, so a restart does not erase the story.
+        """
+        row = self.conn.execute(
+            """
+            SELECT t.*, c.cycle_id, c.detail AS entry_reason,
+                   c.total_score, c.score_threshold, c.session,
+                   c.volatility_regime, c.minutes_to_news, c.context_json
+            FROM trades t
+            LEFT JOIN analysis_cycles c ON c.id = t.cycle_pk
+            WHERE t.ticket = ? AND t.closed_at IS NULL
+            """,
+            (ticket,),
+        ).fetchone()
+        if row is None:
+            return {}
+
+        cycle_pk = row["cycle_pk"]
+        modules: list[dict[str, Any]] = []
+        if cycle_pk is not None:
+            modules = [
+                {
+                    "module": str(item["module"]),
+                    "score": float(item["score"]),
+                    "confidence": float(item["confidence"]),
+                    "weight": float(item["weight"]),
+                    "reasoning": str(item["reasoning"] or ""),
+                }
+                for item in self.conn.execute(
+                    "SELECT module, score, confidence, weight, reasoning "
+                    "FROM module_scores WHERE cycle_pk = ? ORDER BY id",
+                    (cycle_pk,),
+                ).fetchall()
+            ]
+
+        actions = [
+            {
+                "at": str(item["ts"]),
+                "action": str(item["action"]),
+                "old_stop": item["old_sl"],
+                "new_stop": item["new_sl"],
+                "old_target": item["old_tp"],
+                "new_target": item["new_tp"],
+                "volume_closed": item["volume_closed"],
+                "r_at_action": item["r_at_action"],
+                "note": str(item["note"] or ""),
+            }
+            for item in self.conn.execute(
+                "SELECT ts, action, old_sl, new_sl, old_tp, new_tp, "
+                "volume_closed, r_at_action, note FROM management_actions a "
+                "JOIN trades t ON t.id = a.trade_id WHERE t.ticket = ? "
+                "ORDER BY a.id DESC LIMIT 20",
+                (ticket,),
+            ).fetchall()
+        ]
+        actions.reverse()
+
+        cycle_context: dict[str, Any] = {}
+        try:
+            decoded = json.loads(str(row["context_json"] or "{}"))
+            if isinstance(decoded, dict):
+                cycle_context = decoded
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+        entry_ai: dict[str, Any] = {}
+        cycle_id = str(row["cycle_id"] or "")
+        if cycle_id:
+            ai_row = self.conn.execute(
+                "SELECT payload_json FROM ai_events WHERE cycle_id = ? "
+                "AND event = 'pretrade_response' ORDER BY id DESC LIMIT 1",
+                (cycle_id,),
+            ).fetchone()
+            if ai_row is not None:
+                try:
+                    decoded = json.loads(str(ai_row["payload_json"] or "{}"))
+                    decision = decoded.get("decision", {}) if isinstance(decoded, dict) else {}
+                    if isinstance(decision, dict):
+                        entry_ai = {
+                            key: decision.get(key)
+                            for key in ("approved", "confidence", "thesis", "risks", "model")
+                            if key in decision
+                        }
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+
+        return {
+            "original_plan": {
+                "trade_id": int(row["id"]),
+                "entry_price": float(row["entry_price"]),
+                "stop_loss": float(row["sl"]),
+                "take_profit": float(row["tp"]),
+                "initial_volume": float(row["volume"]),
+                "risk_money": float(row["risk_money"]),
+                "risk_pct": float(row["risk_pct"]),
+                "planned_rr": float(row["planned_rr"]),
+                "opened_at": str(row["opened_at"]),
+            },
+            "entry_thesis": {
+                "reason": str(row["entry_reason"] or ""),
+                "trade_thesis": str(cycle_context.get("trade_thesis", "")),
+                "score": row["total_score"],
+                "score_threshold": row["score_threshold"],
+                "session": row["session"],
+                "volatility_regime": row["volatility_regime"],
+                "minutes_to_news_at_entry": row["minutes_to_news"],
+                "modules": modules,
+                "entry_ai_review": entry_ai,
+            },
+            "management_history": actions,
+        }
+
     def open_trades(self) -> list[sqlite3.Row]:
         """Trades believed to be live at the broker.
 
@@ -584,6 +747,43 @@ class Journal:
             (mae_r, mfe_r, trade_id),
         )
 
+    def unresolved_management_baselines(self, limit: int = 50) -> list[sqlite3.Row]:
+        """Closed real trades not yet compared with their original SL/TP plan."""
+        return list(
+            self.conn.execute(
+                "SELECT t.* FROM trades t LEFT JOIN management_baselines b ON b.trade_id=t.id "
+                "WHERE t.closed_at IS NOT NULL AND b.trade_id IS NULL "
+                "AND COALESCE(t.entry_state, 'OPEN') != 'ABANDONED' "
+                "ORDER BY t.closed_at LIMIT ?",
+                (limit,),
+            ).fetchall()
+        )
+
+    def record_ai_event(self, row: dict[str, Any]) -> None:
+        """Mirror one secret-free AI audit event into the relational journal.
+
+        The full row is retained as JSON so additions to the structured Claude
+        payload do not require a schema migration. Frequently queried identity
+        fields are duplicated into columns deliberately; that keeps evidence
+        queries cheap while preserving the exact request or response.
+        """
+        self.conn.execute(
+            "INSERT INTO ai_events "
+            "(event_hash, ts, event, cycle_id, symbol, direction, provider, model, payload_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_hash) DO NOTHING",
+            (
+                hashlib.sha256(_canonical_json(row).encode("utf-8")).hexdigest(),
+                str(row.get("timestamp", "")),
+                str(row.get("event", "")),
+                _optional_text(row.get("cycle_id")),
+                _optional_text(row.get("symbol")),
+                _optional_text(row.get("direction")),
+                _optional_text(row.get("provider")),
+                _optional_text(row.get("model")),
+                dumps(row),
+            ),
+        )
+
     def update_open_trade_volume(self, ticket: int, volume: float) -> None:
         self.conn.execute(
             "UPDATE trades SET volume = ? WHERE ticket = ? AND closed_at IS NULL",
@@ -713,6 +913,16 @@ def parse_iso(text: str) -> datetime:
 def dumps(payload: Any) -> str:
     """JSON for a TEXT column, never raising on an odd value."""
     return json.dumps(payload, default=str, ensure_ascii=False)
+
+
+def _canonical_json(payload: Any) -> str:
+    return json.dumps(
+        payload, default=str, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _optional_text(value: object) -> str | None:
+    return None if value is None else str(value)
 
 
 def _parse_hhmm(text: str) -> tuple[int, int]:

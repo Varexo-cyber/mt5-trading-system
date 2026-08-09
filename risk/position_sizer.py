@@ -20,6 +20,7 @@ which is what makes it exhaustively testable.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isclose
 
 from config.schema import Settings
 from core.instrument import InstrumentSpec
@@ -190,7 +191,21 @@ class PositionSizer:
 
         # -- 3. reward:risk on structural levels --------------------------
         minimum_rr = self.settings.risk.min_risk_reward
-        if tp and reward_risk < minimum_rr:
+        reward_distance = abs(tp - entry) if reward_risk > 0 else 0.0
+        rr_shortfall = minimum_rr * sl_distance - reward_distance
+        # Prices live on the broker's point grid. Normalising entry, stop and
+        # target independently can leave an otherwise exact 2R target one
+        # point short (for example 7,675 versus 7,676 points), which used to be
+        # printed as "1:2.00 below 1:2.00" and rejected thousands of times.
+        # One broker point is representation tolerance; anything beyond it is
+        # a genuinely smaller target and still fails.
+        exceeds_point_tolerance = rr_shortfall > spec.point and not isclose(
+            rr_shortfall,
+            spec.point,
+            rel_tol=1e-9,
+            abs_tol=spec.point * 1e-9,
+        )
+        if tp and exceeds_point_tolerance:
             return result(
                 RiskDecision.block(
                     Reason.RR_BELOW_MINIMUM,

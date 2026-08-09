@@ -201,6 +201,7 @@ protocol in `core/types.py`:
 ```python
 class AnalysisModule(Protocol):
     name: str
+
     def analyze(self, ctx: MarketContext) -> Signal: ...
 ```
 

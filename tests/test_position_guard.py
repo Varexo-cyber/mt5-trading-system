@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from advisory.providers import Supervision
 from config.loader import load_settings
 from core.instrument import AssetClass
 from core.types import Direction, Position, Tick, Timeframe
@@ -36,6 +37,7 @@ class OrderResult:
     ok: bool = True
     filled_price: float | None = 100.0
     filled_volume: float | None = 0.01
+    retcode_name: str = "DONE"
 
 
 @dataclass
@@ -133,6 +135,9 @@ class JournalStub:
         self.peak_r = max(self.peak_r, mfe_r)
         self.trough_r = min(self.trough_r, mae_r)
 
+    def open_trades(self):  # type: ignore[no-untyped-def]
+        return []
+
 
 def position(volume: float = 0.02, opened_at: datetime = NOW) -> Position:
     return Position(
@@ -155,6 +160,19 @@ def manager_for(broker: BrokerStub, journal: JournalStub, **overrides) -> Positi
         management = settings.trade_management.model_copy(update=overrides)
         settings = settings.model_copy(update={"trade_management": management})
     return PositionManager(broker, journal, settings)  # type: ignore[arg-type]
+
+
+def test_a_rejected_emergency_close_remains_explicitly_open() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    broker.close_position = lambda _p, volume=None: OrderResult(  # type: ignore[assignment]
+        ok=False, filled_price=None, retcode_name="MARKET_CLOSED"
+    )
+    manager = manager_for(broker, journal)
+
+    events = manager.reconcile([replace(position(), sl=0.0)])
+
+    assert [event.action for event in events] == ["EMERGENCY_CLOSE_REJECTED"]
+    assert events[0].exit_price is None
 
 
 def at(broker: BrokerStub, r: float) -> None:
@@ -432,6 +450,21 @@ def test_a_stalled_trade_still_times_out() -> None:
     assert [event.action for event in events] == ["TIME_EXIT"]
 
 
+def test_a_rejected_time_exit_is_never_reported_as_closed() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    broker.close_position = lambda _p, volume=None: OrderResult(  # type: ignore[assignment]
+        ok=False, filled_price=None, retcode_name="MARKET_CLOSED"
+    )
+    manager = manager_for(broker, journal, time_exit_hours=4.0)
+
+    at(broker, 0.05)
+    events = manager.manage([position(opened_at=NOW - timedelta(hours=9))], NOW)
+
+    assert [event.action for event in events] == ["TIME_EXIT_REJECTED"]
+    assert events[0].exit_price is None
+    assert "still open" in events[0].detail
+
+
 def test_management_events_are_still_typed() -> None:
     broker, journal = BrokerStub(), JournalStub()
     manager = manager_for(broker, journal)
@@ -540,6 +573,45 @@ def test_a_continuous_market_is_not_flattened() -> None:
     events = manager.manage([replace(position(), symbol="BTCUSD")], EVENING)
 
     assert not any(event.action == "EVENING_FLAT" for event in events)
+    assert broker.closed == []
+
+
+def test_a_stock_is_not_flattened_by_the_fx_evening_rule() -> None:
+    broker = BrokerStub(asset_class=AssetClass.STOCK)
+    manager = manager_for(broker, JournalStub())
+
+    at(broker, 0.3)
+    events = manager.manage([replace(position(), symbol="AAPL")], EVENING)
+
+    assert not any(event.action == "EVENING_FLAT" for event in events)
+    assert broker.closed == []
+
+
+def test_health_uses_confirmed_closed_bars_only() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(broker, journal)
+
+    frame = manager._bars("EURUSD", Timeframe.M1, 40)
+
+    assert frame is not None
+    assert len(frame) == 40
+    # The broker returned 41 rows. Bar zero/current is represented by the final
+    # row in this fake; the manager must remove it before health analysis.
+    base = datetime(2026, 8, 4, 0, 0, tzinfo=UTC)
+    assert frame.index[-1].to_pydatetime() == base + timedelta(minutes=39)
+
+
+def test_low_confidence_supervision_is_a_hard_hold() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(broker, journal)
+
+    event = manager.apply_supervision(
+        position(),
+        Supervision("close", "weak hunch", confidence=0.20, provider="test"),
+    )
+
+    assert event is not None
+    assert event.action == "AI_SUPERVISION_UNDER_THRESHOLD"
     assert broker.closed == []
 
 

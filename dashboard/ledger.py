@@ -162,7 +162,8 @@ def closed_trades(path: Path, since: datetime) -> list[ClosedTrade]:
                 "FROM trades WHERE closed_at IS NOT NULL AND closed_at >= ? "
                 # ABANDONED rows are entries the broker refused. They never held
                 # risk and counting them would report losses that never happened.
-                "AND COALESCE(entry_state, 'OPEN') != 'ABANDONED' " "ORDER BY closed_at DESC",
+                "AND COALESCE(entry_state, 'OPEN') != 'ABANDONED' "
+                "ORDER BY closed_at DESC",
                 (iso(since),),
             ).fetchall()
     except sqlite3.Error:
@@ -239,6 +240,10 @@ ACTION_LABELS = {
     "ADOPTED": "positie geadopteerd na crash",
     "ORPHAN_CLOSE": "onbekende positie gesloten",
     "EMERGENCY_CLOSE": "noodsluiting, geen stop",
+    "EMERGENCY_CLOSE_REJECTED": "noodsluiting geweigerd — positie nog open",
+    "ORPHAN_CLOSE_REJECTED": "sluiting onbekende positie geweigerd",
+    "TIME_EXIT_REJECTED": "tijdsluiting geweigerd — positie nog open",
+    "AI_SUPERVISION_UNDER_THRESHOLD": "Claude-actie geweigerd: te onzeker",
 }
 
 
@@ -321,6 +326,104 @@ def recent_management(path: Path, limit: int = 25) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def timeline_candidates(path: Path, limit: int = 50) -> list[dict[str, Any]]:
+    """Recent real trades available for the operator's full timeline."""
+    if not path.exists():
+        return []
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT ticket, symbol, direction, opened_at, closed_at FROM trades "
+                "WHERE ticket IS NOT NULL AND COALESCE(entry_state, 'OPEN') != 'ABANDONED' "
+                "ORDER BY opened_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    return [dict(row) for row in rows]
+
+
+def trade_timeline(path: Path, ticket: int) -> dict[str, Any]:
+    """Entry, every management action and final exit for one broker ticket."""
+    if not path.exists():
+        return {}
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            trade = conn.execute("SELECT * FROM trades WHERE ticket = ?", (ticket,)).fetchone()
+            if trade is None:
+                return {}
+            actions = conn.execute(
+                "SELECT ts, action, note, old_sl, new_sl, old_tp, new_tp, "
+                "volume_closed, r_at_action FROM management_actions "
+                "WHERE trade_id = ? ORDER BY ts, id",
+                (int(trade["id"]),),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    events: list[dict[str, Any]] = [
+        {
+            "Tijd (UTC)": trade["opened_at"],
+            "Bron": "systeem",
+            "Gebeurtenis": "positie geopend",
+            "R": None,
+            "Uitleg": (
+                f"{trade['direction']} {float(trade['volume']):g} lots @ "
+                f"{float(trade['entry_price']):g}; oorspronkelijke SL {float(trade['sl']):g}, "
+                f"TP {float(trade['tp']):g}, gepland {float(trade['planned_rr'] or 0):.2f}R"
+            ),
+        }
+    ]
+    events.extend(
+        {
+            "Tijd (UTC)": row["ts"],
+            "Bron": "Claude" if str(row["action"]).startswith("AI_") else "mechanisch",
+            "Gebeurtenis": ACTION_LABELS.get(str(row["action"]), str(row["action"])),
+            "R": row["r_at_action"],
+            "Uitleg": row["note"],
+        }
+        for row in actions
+    )
+    if trade["closed_at"] is not None:
+        events.append(
+            {
+                "Tijd (UTC)": trade["closed_at"],
+                "Bron": "broker/journaal",
+                "Gebeurtenis": "positie definitief gesloten",
+                "R": trade["pnl_r"],
+                "Uitleg": (
+                    f"{trade['exit_reason'] or 'gesloten'} @ {trade['exit_price']}; "
+                    f"resultaat {float(trade['pnl_money'] or 0):+.2f}"
+                ),
+            }
+        )
+    return {"trade": dict(trade), "events": events}
+
+
+def management_baseline_report(path: Path, limit: int = 30) -> dict[str, Any]:
+    """Measured result of Jarvis management versus untouched original SL/TP."""
+    if not path.exists():
+        return {}
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            summary = conn.execute(
+                "SELECT COUNT(*) n, SUM(actual_pnl_r) actual_r, "
+                "SUM(baseline_pnl_r) baseline_r, SUM(lift_r) lift_r "
+                "FROM management_baselines"
+            ).fetchone()
+            rows = conn.execute(
+                "SELECT t.ticket, t.symbol, t.exit_reason, b.outcome, b.actual_pnl_r, "
+                "b.baseline_pnl_r, b.lift_r, b.resolved_at FROM management_baselines b "
+                "JOIN trades t ON t.id=b.trade_id ORDER BY b.resolved_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+    return {"summary": dict(summary) if summary else {}, "rows": [dict(row) for row in rows]}
 
 
 def as_rows(trades: Sequence[ClosedTrade]) -> list[dict[str, Any]]:

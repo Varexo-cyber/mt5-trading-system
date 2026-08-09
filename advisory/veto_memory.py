@@ -39,6 +39,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from core.clock import Clock, LiveClock
 from infra.atomic import write_json_atomic
 from infra.logging import get_logger
 
@@ -119,12 +120,14 @@ class VetoMemory:
         base_minutes: float = DEFAULT_BASE_MINUTES,
         max_minutes: float = DEFAULT_MAX_MINUTES,
         capacity: int = DEFAULT_CAPACITY,
+        clock: Clock | None = None,
     ) -> None:
         self.path = path
         self.tolerance_atr = tolerance_atr
         self.base_minutes = base_minutes
         self.max_minutes = max_minutes
         self.capacity = capacity
+        self.clock = clock or LiveClock()
         self._records: dict[tuple[str, str], VetoRecord] = {}
         self._load()
 
@@ -256,7 +259,7 @@ class VetoMemory:
             self.path,
             {
                 "version": 1,
-                "written_at": _iso(datetime.now(UTC)),
+                "written_at": _iso(self.clock.now()),
                 "records": [asdict(record) for record in self._records.values()],
             },
         )

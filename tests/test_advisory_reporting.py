@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ from typing import ClassVar
 import pandas as pd
 import pytest
 
-from advisory.ledger import AIReviewLedger, read_recent_reviews
+from advisory.ledger import AIReviewLedger, read_recent_reviews, read_trade_reflections
 from advisory.providers import DisabledAdvisor, build_advisor, build_review_payload
 from analysis.confluence import TradeIdea
 from config.loader import load_settings
@@ -107,6 +108,44 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     assert "minimum" not in str(output_config)
     # The thinking block must never reach the JSON parser.
     assert advice.thesis == "coherent"
+
+
+def test_anthropic_market_scout_nominates_without_approving_or_sizing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, object] = {}
+
+    class Messages:
+        def create(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            text = (
+                '{"action":"LONG","symbol":"EURUSD.i","confidence":0.78,'
+                '"thesis":"strongest aligned trend","counter_thesis":"near resistance",'
+                '"invalidation_price":1.09,"target_price":1.12,'
+                '"patterns":["trend"],"risks":["event"],"wait_for":""}'
+            )
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=text)],
+                stop_reason="end_turn",
+                _request_id="scout-1",
+            )
+
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            self.messages = Messages()
+
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", SimpleNamespace(Anthropic=Client))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "unit-test-secret")
+    adviser = build_advisor(
+        AIConfig(enabled=True, provider="anthropic", anthropic_model="claude-test")
+    )
+
+    decision = adviser.scout({"world": {"risk_tone": "mixed"}, "markets": [{"symbol": "EURUSD.i"}]})
+
+    assert decision.directional
+    assert decision.symbol == "EURUSD.i"
+    assert decision.action == "LONG"
+    assert decision.request_id == "scout-1"
+    assert "volume" not in str(captured["messages"])
+    assert "risk_per_trade" not in str(captured["messages"])
 
 
 def test_anthropic_request_omits_parameters_the_current_models_reject() -> None:
@@ -265,6 +304,39 @@ def test_ai_review_ledger_round_trips_safe_events(tmp_path: Path) -> None:
     assert rows[-1]["symbol"] == "EURUSD"
 
 
+def test_ai_review_ledger_uses_the_injected_clock(tmp_path: Path) -> None:
+    path = tmp_path / "ai.jsonl"
+    moment = datetime(2026, 8, 9, 12, 34, tzinfo=UTC)
+    AIReviewLedger(path, clock=SimulatedClock(moment)).append("test", {})
+
+    assert read_recent_reviews(path)[0]["timestamp"] == moment.isoformat()
+
+
+def test_ai_review_ledger_also_mirrors_events_into_the_journal(tmp_path: Path) -> None:
+    path = tmp_path / "ai.jsonl"
+    journal = Journal(tmp_path / "journal.db", SimulatedClock(datetime(2026, 1, 1, tzinfo=UTC)))
+    journal.open()
+
+    AIReviewLedger(path, database=journal).append(
+        "pretrade_request",
+        {
+            "cycle_id": "cycle-1",
+            "symbol": "EURUSD",
+            "direction": "LONG",
+            "provider": "anthropic",
+            "model": "claude-test",
+            "request": {"score": 72},
+        },
+    )
+
+    row = journal.query("SELECT * FROM ai_events")[0]
+    assert row["event"] == "pretrade_request"
+    assert row["cycle_id"] == "cycle-1"
+    assert row["symbol"] == "EURUSD"
+    assert json.loads(row["payload_json"])["request"]["score"] == 72
+    journal.close()
+
+
 def test_ai_review_reader_skips_a_partial_live_line(tmp_path: Path) -> None:
     path = tmp_path / "ai.jsonl"
     path.write_text(
@@ -275,6 +347,37 @@ def test_ai_review_reader_skips_a_partial_live_line(tmp_path: Path) -> None:
     rows = read_recent_reviews(path)
 
     assert rows == [{"event": "pretrade_request", "cycle_id": "ok"}]
+
+
+def test_reflection_reader_excludes_failed_and_unrelated_events(tmp_path: Path) -> None:
+    path = tmp_path / "ai.jsonl"
+    ledger = AIReviewLedger(path)
+    ledger.append("pretrade_response", {"decision": {"approved": True}})
+    ledger.append(
+        "posttrade_reflection",
+        {"outcome": {"trade_id": 1}, "reflection": {"lessons": ["useful"], "error": ""}},
+    )
+    ledger.append(
+        "posttrade_reflection",
+        {"outcome": {"trade_id": 2}, "reflection": {"lessons": [], "error": "timeout"}},
+    )
+
+    rows = read_trade_reflections(path)
+
+    assert [row["outcome"]["trade_id"] for row in rows] == [1]  # type: ignore[index]
+
+
+def test_ai_backfill_is_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "ai.jsonl"
+    AIReviewLedger(path).append("pretrade_response", {"cycle_id": "one"})
+    journal = Journal(tmp_path / "journal.db", SimulatedClock(datetime(2026, 1, 1, tzinfo=UTC)))
+    journal.open()
+    ledger = AIReviewLedger(path, database=journal)
+
+    assert ledger.backfill_database() == 1
+    assert ledger.backfill_database() == 1
+    assert journal.scalar("SELECT COUNT(*) FROM ai_events") == 1
+    journal.close()
 
 
 def test_daily_report_writes_markdown_and_pdf(tmp_path: Path) -> None:

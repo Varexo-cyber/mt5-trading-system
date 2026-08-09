@@ -1,10 +1,11 @@
-from advisory.ledger import AIReviewLedger, read_recent_reviews
+from advisory.ledger import AIReviewLedger, read_recent_reviews, read_trade_reflections
 from advisory.providers import (
     SUPERVISION_ACTIONS,
     Advice,
     Advisor,
     DisabledAdvisor,
     Reflection,
+    ScoutDecision,
     Supervision,
     build_advisor,
     build_review_payload,
@@ -19,6 +20,7 @@ __all__ = [
     "Advisor",
     "DisabledAdvisor",
     "Reflection",
+    "ScoutDecision",
     "Supervision",
     "VetoMemory",
     "VetoRecord",
@@ -26,4 +28,5 @@ __all__ = [
     "build_review_payload",
     "build_supervision_payload",
     "read_recent_reviews",
+    "read_trade_reflections",
 ]
