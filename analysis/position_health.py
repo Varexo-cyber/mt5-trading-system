@@ -36,12 +36,41 @@ import pandas as pd
 from analysis.market_structure import find_swings
 
 Action = Literal["hold", "tighten", "secure", "exit"]
-Verdict = Literal["healthy", "watch", "deteriorating", "broken"]
+#: `unmanaged` is not a reading, it is the absence of one, and it is a state
+#: distinct from every other value here. The four real verdicts all mean "the
+#: fast layer looked at this trade and concluded something". `unmanaged` means
+#: the loop skipped the position before any reader ran — so no give-back, no
+#: profit lock, no peak stall, no time exit. The trade is held by its broker
+#: stop alone, and nothing else in this system is watching it.
+#:
+#: It exists because that state used to be invisible. A skipped position simply
+#: never appeared in the health map, and the deck rendered the gap as "geen live
+#: oordeel (draait Jarvis?)" — pointing at the one explanation the operator can
+#: see with their own eyes is false, while the real one went unsaid.
+Verdict = Literal["healthy", "watch", "deteriorating", "broken", "unmanaged"]
 
 #: Below this the trade is too young to judge. Entry noise — the first tick
 #: against you, the spread crossing — would otherwise read as a momentum turn
 #: and close good trades before they can breathe.
 MIN_AGE_MINUTES = 2.0
+
+#: Bars of the fast timeframe each drift reader needs to have formed *since the
+#: entry* before it is allowed to speak.
+#:
+#: Stated per reader because one number is wrong for both: the slope reads
+#: twelve bars, the run reads six. And stated at all because `MIN_AGE_MINUTES`
+#: alone does not do this job — at two minutes old, ten of the slope's twelve
+#: bars are from before the trade existed, which is the same stretch of chart
+#: the playbook read when it decided to enter. Entry and health then draw
+#: opposite conclusions from one set of bars, and health wins because it is
+#: asked again every second.
+#:
+#: Live evidence, 6 August: three trades were cut at 2:14, 2:19 and 2:38
+#: against a two-minute floor, for -0.16R, -0.71R and -0.48R. Not one of them
+#: reached its stop; the reader closed all three within seconds of becoming
+#: eligible to.
+_MOMENTUM_BARS = 12
+_RUN_BARS = 6
 
 #: Severity thresholds for the combined read. Chosen so that "broken" is out of
 #: reach for any single reader at full strength, which is what makes the
@@ -92,6 +121,11 @@ class PositionHealth:
             "verdict": self.verdict,
             "severity": round(self.severity, 2),
             "action": self.action,
+            # Already computed, and the one field this used to drop. On an
+            # ordinary reading it condenses the signals into a line; on an
+            # `unmanaged` verdict it is the entire answer, because there are no
+            # signals and the verdict alone only says a reading was not taken.
+            "reason": self.reason,
             "signals": [
                 {"name": s.name, "severity": round(s.severity, 2), "detail": s.detail}
                 for s in self.signals
@@ -171,6 +205,26 @@ def structure_broken(
     )
 
 
+def drift_score(frame: pd.DataFrame, sign: int, *, bars: int = 12) -> float | None:
+    """How hard the market is running in `sign`, in random-walk units.
+
+    A least-squares slope over the last `bars` closes, totalled and divided by
+    `sqrt(bars) * ATR` — roughly how far a market wanders over that many bars
+    for no reason at all. Positive means running our way, negative against.
+
+    One definition, used twice. `momentum_turned` asks whether this is
+    strongly negative; the banking rule asks whether it is strongly positive.
+    Two separately derived versions of "is this still moving" would eventually
+    disagree, and they would disagree while a position was open.
+    """
+    atr = _atr(frame)
+    if atr <= 0 or len(frame) < bars:
+        return None
+    closes = frame["close"].tail(bars).to_numpy(dtype=float)
+    slope = float(np.polyfit(np.arange(len(closes), dtype=float), closes, 1)[0])
+    return slope * sign * bars / atr / np.sqrt(bars)
+
+
 def momentum_turned(
     frame: pd.DataFrame,
     sign: int,
@@ -198,13 +252,11 @@ def momentum_turned(
     stopped distinguishing a drift from a collapse. A reader that always says
     the same thing is not evidence.
     """
-    atr = _atr(frame)
-    if atr <= 0 or len(frame) < bars:
+    against = drift_score(frame, -sign, bars=bars)
+    if against is None:
         return None
-    closes = frame["close"].tail(bars).to_numpy(dtype=float)
-    slope = float(np.polyfit(np.arange(len(closes), dtype=float), closes, 1)[0])
-    total_atr = -slope * sign * bars / atr  # ATR moved against us across the window
-    drift = total_atr / np.sqrt(bars)
+    drift = against
+    total_atr = drift * np.sqrt(bars)
     if drift < threshold:
         return None
     fraction = min(1.0, (drift - threshold) / max(saturate - threshold, 1e-9))
@@ -278,12 +330,18 @@ def assess_position(
     weights: HealthWeights | None = None,
     secure_at_r: float = 0.5,
     tighten_at_r: float = 0.2,
+    fast_bar_minutes: float = 1.0,
 ) -> PositionHealth:
     """Combine the readers into one verdict and one permitted action.
 
     `fast` is the short timeframe the momentum and run readers work on; the
     structure reader deliberately uses `structure`, a slower one, because a
     swing on M1 is noise wearing the word "structure".
+
+    The drift readers are additionally held back until their own window has
+    filled with bars from after the entry — see `_MOMENTUM_BARS`. The structure
+    reader is not: the swing holding a trade up legitimately formed before it,
+    and closing through that swing is a real break whenever it happens.
     """
     weights = weights or HealthWeights()
     if age_minutes < MIN_AGE_MINUTES:
@@ -294,10 +352,14 @@ def assess_position(
         found = structure_broken(structure, sign)
         if found is not None:
             signals.append(found)
+    since_entry = age_minutes / fast_bar_minutes if fast_bar_minutes > 0 else 0.0
     if fast is not None and not fast.empty:
-        signals.extend(
-            found for found in (momentum_turned(fast, sign), adverse_run(fast, sign)) if found
-        )
+        drift = []
+        if since_entry >= _MOMENTUM_BARS:
+            drift.append(momentum_turned(fast, sign))
+        if since_entry >= _RUN_BARS:
+            drift.append(adverse_run(fast, sign))
+        signals.extend(found for found in drift if found)
     blown = spread_blowout(spread, risk)
     if blown is not None:
         signals.append(blown)

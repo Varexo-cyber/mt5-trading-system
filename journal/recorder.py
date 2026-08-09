@@ -306,11 +306,23 @@ class Recorder:
         opened = datetime.fromisoformat(row["opened_at"])
         duration = int((now - opened).total_seconds())
 
+        # The excursions are ratcheted throughout the trade by the guard, once
+        # a second. This write used to overwrite them with its own arguments,
+        # which both callers leave at None — so every trade lost its peak and
+        # trough at the exact moment they became history, and every postmortem
+        # read "best it reached: unknown" on a trade the system had watched run
+        # to 0.92R and said so in its own management log.
+        #
+        # `COALESCE(?, mfe_r)` keeps what is on the row when the caller has
+        # nothing better. A caller that *does* pass a value still wins, which is
+        # what the broker-recovery path needs when it reconstructs a closure
+        # from deal history the guard never saw.
         self.journal.conn.execute(
             """
             UPDATE trades SET
                 closed_at = ?, exit_price = ?, exit_reason = ?, pnl_money = ?, pnl_r = ?,
-                mae_r = ?, mfe_r = ?, duration_seconds = ?, equity_after = ?
+                mae_r = COALESCE(?, mae_r), mfe_r = COALESCE(?, mfe_r),
+                duration_seconds = ?, equity_after = ?
             WHERE id = ?
             """,
             (

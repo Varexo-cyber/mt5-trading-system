@@ -77,7 +77,21 @@ data:
     H1: 2000
     M15: 2000
     M5: 2000
-    M1: 1200      # ~20 hours; entry-timing context, not a history for analysis
+    # 300, niet 1200. M1 is de enige reeks die zijn cache elke cyclus verliest
+    # - een minuutbar sluit elke minuut, en een cyclus duurt er ongeveer een -
+    # dus dit is de enige regel in deze tabel die per cyclus 67 keer opnieuw
+    # over de lijn moet. De rest wordt pas opgehaald als er echt een nieuwe bar
+    # gesloten is, en dat is bij H1 een keer per uur en bij D1 een keer per dag.
+    #
+    # Wie leest hem eigenlijk:
+    #   momentum_scalp    15 bars (een M1-ATR plus vijf bars drift)
+    #   de adviseur       30 bars (_BARS_SENT)
+    #   de bewakingslus   haalt zijn eigen bars direct op, los van deze tabel
+    #
+    # Er werden er dus 1200 opgehaald voor een verbruik van 30. De vloer is
+    # `min_bars_required: 200`, en 300 laat daar wat lucht boven voor een
+    # weekendgat zonder de rest van de dag mee te slepen.
+    M1: 300
 
   # 200 closed bars is a fair floor for an intraday indicator and an absurd one
   # on a weekly series: it demands four years of history that a broker does not
@@ -195,7 +209,22 @@ analysis:
     # Also refuse when a short-horizon theory contradicts the swing engine.
     require_method_agreement: true
     max_spread_share_of_stop: 0.15
-    min_conviction: 60.0
+
+    # Van 60 naar 75, op verzoek van de eigenaar: liever weinig trades waar hij
+    # zeker van is dan veel marginale.
+    #
+    # Dit is de knop die dat echt doet. De plafonds van de vijf theorieen zijn
+    # 95, 90, 88, 86 en 84, dus 75 vraagt ongeveer de bovenste kwart van wat ze
+    # ueberhaupt kunnen uitdrukken. Boven ~84 vallen ze een voor een stil, en
+    # boven 95 kan er geen enkele meer door - `_build_playbooks` waarschuwt nu
+    # bij het opstarten als de vloer boven elk plafond ligt, want dat leest als
+    # strengheid en is een uitknop.
+    #
+    # Dit is een risicovoorkeur, geen gemeten optimum. Met negen gesloten trades
+    # is er geen verdeling om 75 uit af te leiden; het is de keuze van de
+    # eigenaar en die is legitiem. Wat het kost is wel meetbaar: `why_no_trades`
+    # laat zien hoeveel setups eronder sneuvelen.
+    min_conviction: 75.0
 
 # Experimental live uses Claude as a mandatory final veto gate. The API key
 # stays in config/.env, is never committed, and is never sent to the dashboard.
@@ -239,6 +268,17 @@ ai:
     max_markets_per_call: 12
     minimum_confidence: 0.65
     ranking_bonus: 8.0
+  # Paid reviews per cycle. Candidates reach the reviewer in the engine's own
+  # order of conviction, so this budget buys the best setups that survived
+  # every free gate and then stops. Without it a cycle pays to be told that its
+  # ninth, tenth and eleventh-best ideas are weak — which is what happened, in
+  # those words, on this account.
+  #
+  # Not a rank cut-off: a low rank is only *reached* because the better
+  # candidates were rejected earlier, so a hard "never below rank 3" would halt
+  # trading entirely on a day the top three keep failing a gate. A budget
+  # cannot do that. Set 0 to remove the cap.
+  max_reviews_per_cycle: 3
 
 # No cap on how many trades a good day may produce.
 #
@@ -252,23 +292,186 @@ ai:
 # experiment; the fixed EUR 50 experimental equity floor is the unconditional
 # capital backstop. These comments describe the effective settings below and
 # must change with them.
+filters:
+  # Ongepland nieuws. De kalender hiernaast weet wat eraan komt; deze laag weet
+  # wat er NU gebeurt - de centrale bank die tussen vergaderingen door beweegt,
+  # het verhaal dat om 03:00 uitbreekt terwijl de kalender een lege middag laat
+  # zien.
+  #
+  # ER ZIT GEEN SENTIMENT IN, EN DAT KOMT ER OOK NIET. Tegen de tijd dat een
+  # verhaal op een publieke feed staat is de beweging die het beschrijft al
+  # geweest. De richting ervan handelen vanaf een VPS is kopen wat een ander al
+  # gekocht heeft. Wat de vertraging wel overleeft is het feit DAT er iets aan
+  # de hand is, en dat is een prima reden om je handen stil te houden.
+  #
+  # STAAT UIT. Geen van de feed-URL's kon bereikt worden vanuit de omgeving
+  # waarin dit gebouwd is, dus geen enkel antwoordformaat is bevestigd. Draai
+  # eerst op de VPS:
+  #
+  #     .venv-live\Scripts\python.exe scripts\verify_newsfeed.py
+  #
+  # Dat rapporteert per feed of hij antwoordt, wat er parst en welke valuta de
+  # tagger vindt - plus precies de meting die het filter zou doen. Zet `enabled`
+  # pas op true als dat er goed uitziet, en stel de drempels af op het echte
+  # verkeer van die feeds. Een laag die stilletjes niets teruggeeft meldt een
+  # rustige markt, en dat is het enige antwoord dat hij nooit mag verzinnen.
+  headlines:
+    enabled: false
+    # Beide moeten waar zijn om te blokkeren: genoeg berichten om iets te
+    # betekenen, en genoeg boven normaal om ongewoon te zijn. Los van elkaar
+    # slaan ze mis - drie koppen is niets op EUR en een storm op NZD.
+    min_headlines: 3
+    spike_multiple: 3.0
+    window_minutes: 20.0
+    # Het normaal waar dat tegen afgezet wordt, per instrument. EUR en NZD
+    # dragen op geen enkele wire vergelijkbaar verkeer, en één absolute drempel
+    # over allebei betekent EUR altijd blokkeren of NZD nooit.
+    baseline_hours: 12.0
+    # Een marktbreed verhaal blokkeert op zichzelf. Het raakt elk paar even
+    # hard, dus het lijkt op geen enkel paar op een piek, en de test hierboven
+    # zou ze op het slechtst denkbare moment allemaal doorlaten.
+    block_on_systemic: true
+    # Afwijking van jouw regel "geen data = geen trade", en een smalle. Die
+    # regel beschermt tegen een ontbrekende KALENDER, en de kalender faalt nog
+    # steeds dicht - daar is niets aan veranderd. Staat deze laag donker, dan
+    # draait het systeem op precies het veiligheidsniveau dat het altijd al
+    # had. Op true betekent één hikkende RSS-host een dag zonder trades.
+    block_when_unavailable: false
+
+  session:
+    # 20:00 UTC, niet de standaard 19:00. 19:00 is 21:00 in Amsterdam en dat is
+    # gewoon de New Yorkse middag - een normaal verhandelbaar uur, geen dun boek.
+    #
+    # Wat die vrijdaggrens hoort te beschermen is een positie die het weekend in
+    # gedragen wordt, en dat kan sowieso niet: de avonduitfasering sluit alles om
+    # 20:15 (indices al om 20:00), ruim voor de sluiting om 21:00. En een trade
+    # openen die de tijd niet meer heeft om zijn target te halen wordt al
+    # geweigerd door `INSUFFICIENT_RUNWAY`, dat de resterende minuten tegen de
+    # afstand tot het doel afweegt in plaats van tegen een vast uur.
+    #
+    # Er bleef dus een uur handelstijd liggen voor een risico dat twee andere
+    # regels al dekken. Op 20:00 valt de grens samen met de uitfasering van de
+    # indices en vijftien minuten voor die van forex, wat betekent dat hij nog
+    # bindt zonder een normaal uur weg te gooien.
+    block_friday_after: "20:00"
+
+    # De Aziatische sessie erbij, op verzoek van de eigenaar: de VPS is er om
+    # 24/7 te draaien en de rekening stond 's nachts stil.
+    #
+    # Dit gaat van 7 handelbare uren per dag naar 21. De unie van de drie
+    # sessies is 00:00-21:00 UTC. Wat dicht blijft is 21:00-00:00, en dat is
+    # geen conservatisme maar de rollover: de swap-omslag valt daarin, de
+    # spread is er een veelvoud van normaal, en `rollover_block` en de
+    # avond-uitfasering staan er al. In dat gat "handelen" toestaan zou
+    # toneelspel zijn - het spread-filter weigert daar toch bijna alles.
+    #
+    # Waarom dit veilig genoeg is om aan te zetten, en niet omdat de nacht
+    # rustig is: het spread-filter meet per instrument *per uur van de dag* en
+    # doet dat elke cyclus, ook in de uren waarin nooit gehandeld werd. Er ligt
+    # dus al een gemeten nachtnormaal per markt om tegen af te wegen, en 03:00
+    # wordt beoordeeld tegen 03:00 en niet tegen de Londense ochtend. Het
+    # liveliness-filter doet hetzelfde voor "de markt is in slaap gevallen".
+    #
+    # De conviction-vloer staat inmiddels op 75 voor alle uren, dus de nacht
+    # krijgt geen eigen soepelere lat - hij krijgt dezelfde strengere.
+    #
+    # Wat hier mis kan gaan: dun boek in de Aziatische uren op EUR-crosses en
+    # Europese indices. ASX200 en JPY-paren zijn er juist het levendigst. De
+    # twee filters hierboven horen dat onderscheid per markt te maken; als
+    # `why_no_trades` na een paar nachten laat zien dat het toch de dunne
+    # markten zijn die erdoor komen, gaat asia er weer af.
+    tradable_sessions: [asia, london, newyork]
+
 risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
   posture_throttle: false
+
+  # Hoeveel eigen vermogen één gelijktijdige positie "koopt".
+  #
+  # Een vast aantal slots is de verkeerde vorm voor een account dat moet
+  # groeien. Twee klopt bij EUR 100 — een derde gelijktijdige trade daar is er
+  # een die het account bij de minimum lot toch niet kan uitdrukken — en klopt
+  # niet meer bij EUR 400.
+  #
+  # Bij EUR 75 per slot:  87 -> 2 (de bodem),  225 -> 3,  300 -> 4 (het plafond
+  # van micro_live). Een drawdown draait dat vanzelf weer terug. Het plafond
+  # per modus blijft absoluut; groei loopt ernaartoe, nooit erdoorheen.
+  equity_per_position: 75
+  # Nooit minder dan twee, hoe klein het account ook is. Met één slot blokkeert
+  # één open trade elke andere kans zolang hij loopt.
+  min_concurrent_positions: 2
+
+  # Commissie per lot per kant, in euro. Dit is geen boekhouding maar risico.
+  #
+  # Gemeten, niet geschat: een AUDNZD-stop-out van 0,06 lot kostte EUR 1,93
+  # tegen een gemodelleerde 1R van EUR 1,53, en EUR 0,33 van dat gat was
+  # commissie — bevestigd tegen de deal in de terminal. Dat is EUR 5,50 per lot
+  # round trip, dus EUR 2,75 per kant.
+  #
+  # Elke drempel in dit systeem is uitgedrukt in R. Een R die een vijfde van
+  # het echte verlies weglaat laat de give-back te laat wapenen, laat de
+  # winst-grendel minder vastzetten dan hij zegt, en maakt elk
+  # verwachtingsgetal mooier dan het is.
+  #
+  # Dit prijst ook krappe stops voor het eerst eerlijk. Commissie is een vaste
+  # kost per lot: op een stop van 2 pips is het een derde van je risico, op 20
+  # pips een afrondingsfout.
+  commission_per_lot_per_side: 2.75
+
+  # Slippage die een stop-out werkelijk oploopt, in pips per assetklasse.
+  #
+  # Gemeten: een AUDNZD-stop stond op 1.19722 en werd gevuld op 1.19705 —
+  # 1,7 pip dwars door de stop heen, op een stop van 5 pips. Een stop is een
+  # verzoek, geen garantie.
+  #
+  # Eén waarneming per klasse is weinig. Draai `scripts/execution_noise.py`
+  # als er meer trades zijn en stel bij op wat de data zegt.
+  stop_slippage_pips:
+    forex: 1.7
+    metal: 2.0
+    index: 2.0
+
+  # Hoeveel van je risico commissie plus slippage mogen opeten.
+  #
+  # Op die AUDNZD-trade was dat samen 56% van 1R, en hij kwam uit op -1.48R
+  # tegen een plan van -1.00R. Bij die verhouding wordt niet de strategie
+  # getest maar de kosten van handelen, en die winnen.
+  #
+  # Op 25% kan een volle stop-out nooit slechter uitpakken dan -1.25R, hoe
+  # goed of slecht de entry ook was. Setups met een krappere stop worden
+  # geweigerd met SL_TOO_TIGHT_FOR_COSTS.
+  max_cost_share_of_risk: 0.25
+  # Het absolute plafond. Een modus mag hier lager gaan, nooit hoger — de
+  # loader weigert dat bij het inladen, en dat is precies hoe deze regel is
+  # opgevallen toen micro_live op 4 werd gezet terwijl dit nog 2 was.
+  max_concurrent_positions: 4
 
   # De anti-martingale-halvering staat uit op DIT account, en alleen omdat hij
   # hier niet doet waar hij voor bedoeld is.
   #
   # Hij hoort de inzet te verkleinen als het bewijs dat de edge werkt het zwakst
-  # is. Op een account van EUR 88 verkleint hij niks: 2% is EUR 1,77, gehalveerd
-  # EUR 0,88, en dat ligt onder wat de kleinste lot van de broker kost. Het
-  # effect is dus niet "kleiner traden" maar "helemaal niet traden" — en dat is
-  # een schakelaar die pas omgaat door te winnen, wat niet kan zolang hij aan
-  # staat. Precies dezelfde val als de houdingsrem hierboven.
+  # is. Op dit account verkleint hij niks — hij zet het handelen stil. Dat is
+  # een schakelaar die alleen omgaat door te winnen, wat niet kan zolang hij
+  # aan staat. Precies dezelfde val als de houdingsrem hierboven.
   #
-  # Bij een account dat groot genoeg is om een gehalveerde inzet nog uit te
-  # drukken, moet dit terug naar 0.5. De drempel blijft op 3 staan zodat de
-  # verliesreeks nog steeds geteld en gelogd wordt.
+  # De rekensom, bij 2% experimenteel-live risico en een 0,01-lot minimum dat
+  # inclusief commissie ongeveer EUR 1,05 kost op een stop van 10 pips en
+  # EUR 2,06 op 20 pips:
+  #
+  #   saldo    budget   gehalveerd   breedste stop die de helft nog uitdrukt
+  #   EUR  88   1,77       0,88        ~8 pips
+  #   EUR 123   2,47       1,23        ~11 pips
+  #   EUR 250   5,00       2,50        ~24 pips
+  #
+  # De echte stops op dit account liggen op 10 tot 12 pips. Bij EUR 123 zou de
+  # halvering dus nog steeds ruwweg de helft van de setups weigeren met
+  # TRADE_SKIPPED_UNDERCAPITALIZED, en precies tijdens een verliesreeks. Dat is
+  # geen risicobeheer, dat is een storing met een nette naam.
+  #
+  # Terug naar 0.5 rond EUR 250, waar een gehalveerde inzet een stop van 20+
+  # pips nog kan uitdrukken. De drempel blijft op 3 staan zodat de verliesreeks
+  # geteld en vastgelegd blijft worden — alleen zonder er iets mee te doen, en
+  # sinds `risk_manager.risk_multiplier` ook zonder te beweren van wel.
   losing_streak_risk_multiplier: 1.0
 
   # Van 2.0 naar 1.5, en dit is een correctie en geen versoepeling.
@@ -304,7 +507,13 @@ modes:
     max_sl_pips: 30
     max_trades_per_day: 0
     daily_loss_limit_pct: 0
-    max_concurrent_positions: 2
+    # The ceiling, not the everyday number. What is actually allowed is earned
+    # from equity — see `risk.equity_per_position` — and at EUR 87 that is 2.
+    # Four is where it stops even after the account has grown into this mode's
+    # EUR 500 range: four positions at 2% is 8% of equity at risk at once, and
+    # with the daily and weekly limits switched off on this account that is as
+    # far as simultaneous exposure should go.
+    max_concurrent_positions: 4
     max_journal_detail: true
     min_equity: 50
     max_equity: 500

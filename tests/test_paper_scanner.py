@@ -144,8 +144,14 @@ def test_partial_close_is_persistent_and_recoverable(tmp_path: Path) -> None:
         def update_excursions(self, _trade_id, *, mae_r, mfe_r):  # type: ignore[no-untyped-def]
             self.peak_r = max(self.peak_r, mfe_r)
 
-    test_now = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
-    fake = FakeMT5(now=test_now)
+    # Pinned to mid-morning, and it has to be. This test used the wall clock,
+    # so what it measured depended on the hour the suite happened to run: the
+    # closing-hour rule reads the minutes left before the wind-down, and at
+    # 14:24 UTC the target 100 pips away needed 363 minutes against 351
+    # remaining, so the position was banked as SESSION_DECAY and the partial
+    # close this test is about never happened. Correct behaviour, wrong test.
+    moment = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    fake = FakeMT5(now=moment)
     paper = PaperBroker(connector(fake), tmp_path / "paper.json")
     paper.connect()
     spec = paper.spec("EURUSD")
@@ -161,8 +167,8 @@ def test_partial_close_is_persistent_and_recoverable(tmp_path: Path) -> None:
     settings = settings.model_copy(update={"trade_management": management})
     manager = PositionManager(paper, JournalStub(), settings)  # type: ignore[arg-type]
 
-    manager.manage(paper.positions(), test_now)  # break-even first
-    events = manager.manage(paper.positions(), test_now)
+    manager.manage(paper.positions(), moment)  # break-even first
+    events = manager.manage(paper.positions(), moment)
 
     assert events[0].action == "PARTIAL_CLOSE"
     assert paper.positions()[0].volume == pytest.approx(0.05)

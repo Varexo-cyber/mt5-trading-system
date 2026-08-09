@@ -477,6 +477,25 @@ class Journal:
                 break
         return streak
 
+    def last_loss_closed_at(self, symbol: str) -> datetime | None:
+        """When the most recent losing trade on this instrument closed.
+
+        Losses only. A winner closing and a fresh setup appearing on the same
+        instrument is an ordinary sequence; a loser closing and the same
+        instrument being taken again a minute later is not.
+        """
+        row = self.conn.execute(
+            "SELECT closed_at FROM trades WHERE symbol = ? AND closed_at IS NOT NULL "
+            "AND pnl_money < 0 ORDER BY closed_at DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        if row is None or not row["closed_at"]:
+            return None
+        try:
+            return datetime.fromisoformat(str(row["closed_at"]))
+        except ValueError:
+            return None
+
     def last_trade_risk_pct(self) -> float | None:
         """Risk percentage of the most recently opened trade.
 
@@ -676,12 +695,7 @@ class Journal:
             if abs(float(row["volume"]) - volume) > volume_tolerance:
                 continue
             trade_id = int(row["id"])
-            self.conn.execute(
-                "UPDATE trades SET ticket = ?, entry_price = ?, entry_state = 'OPEN', "
-                "opened_at = ? WHERE id = ?",
-                (ticket, entry_price, iso(opened_at or self.clock.now()), trade_id),
-            )
-            self.conn.commit()
+            self._mark_open(trade_id, ticket=ticket, entry_price=entry_price, opened_at=opened_at)
             return trade_id
         return None
 
@@ -693,12 +707,58 @@ class Journal:
         entry_price: float,
         opened_at: datetime | None = None,
     ) -> None:
-        """Mark an intent as a live trade once the broker has confirmed it."""
-        self.conn.execute(
-            "UPDATE trades SET ticket = ?, entry_price = ?, entry_state = 'OPEN', opened_at = ? "
-            "WHERE id = ?",
-            (ticket, entry_price, iso(opened_at or self.clock.now()), trade_id),
-        )
+        """Mark an intent as a live trade once the broker has confirmed it.
+
+        The fill price is preferred and the intent price is the fallback. It
+        used to be an unconditional overwrite, and a live EURGBP entry came
+        back from the broker with no usable fill price — so a perfectly good
+        0.857xx recorded at sizing time was replaced with 0.00000, and every
+        number the postmortem derives from entry became nonsense.
+
+        Nothing downstream noticed, because the manager works from the
+        broker's own `price_open` rather than this column. The trade was
+        managed correctly and only its record was wrong, which is the kind of
+        corruption that survives for months.
+        """
+        self._mark_open(trade_id, ticket=ticket, entry_price=entry_price, opened_at=opened_at)
+
+    def _mark_open(
+        self,
+        trade_id: int,
+        *,
+        ticket: int,
+        entry_price: float,
+        opened_at: datetime | None,
+    ) -> None:
+        """Attach a broker ticket to an intent, preserving a good entry price.
+
+        Shared by both routes into the OPEN state — the ordinary promotion and
+        the adoption of an unexplained broker position after a restart. They
+        had the same unconditional overwrite written out twice, which is how
+        fixing one of them and not the other has already gone wrong once in
+        this codebase.
+        """
+        if entry_price > 0:
+            self.conn.execute(
+                "UPDATE trades SET ticket = ?, entry_price = ?, entry_state = 'OPEN', "
+                "opened_at = ? WHERE id = ?",
+                (ticket, entry_price, iso(opened_at or self.clock.now()), trade_id),
+            )
+        else:
+            log.warning(
+                "broker confirmed the entry without a usable fill price; "
+                "keeping the price recorded at sizing time",
+                extra={
+                    "event": "entry_price_missing",
+                    "trade_id": trade_id,
+                    "ticket": ticket,
+                    "reported": entry_price,
+                },
+            )
+            self.conn.execute(
+                "UPDATE trades SET ticket = ?, entry_state = 'OPEN', opened_at = ? WHERE id = ?",
+                (ticket, iso(opened_at or self.clock.now()), trade_id),
+            )
         self.conn.commit()
 
     def abandon_pending_entry(self, trade_id: int, reason: str) -> None:
@@ -727,6 +787,34 @@ class Journal:
             (ticket, *actions),
         ).fetchone()
         return row is not None
+
+    def management_actions_for(self, trade_id: int) -> list[dict[str, object]]:
+        """Everything the guard did to this position, oldest first.
+
+        The trade's own story, and until now nothing read it back. The
+        post-trade reflection was handed entry, exit and P&L and asked what
+        went wrong — which is like reviewing a journey from the departure and
+        arrival boards. A trade that reached +0.9R, had its stop pulled to
+        break even, drifted for forty minutes and closed flat looks, in that
+        summary, exactly like one that never moved at all.
+        """
+        rows = self.conn.execute(
+            "SELECT ts, action, old_sl, new_sl, volume_closed, r_at_action, note "
+            "FROM management_actions WHERE trade_id = ? ORDER BY ts, id",
+            (trade_id,),
+        ).fetchall()
+        return [
+            {
+                "at": row["ts"],
+                "action": row["action"],
+                "r_at_the_time": row["r_at_action"],
+                "stop_moved_from": row["old_sl"],
+                "stop_moved_to": row["new_sl"],
+                "volume_closed": row["volume_closed"],
+                "why": row["note"],
+            }
+            for row in rows
+        ]
 
     def update_excursions(self, trade_id: int, *, mae_r: float, mfe_r: float) -> None:
         """Ratchet MAE/MFE while a trade is open.

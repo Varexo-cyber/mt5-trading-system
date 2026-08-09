@@ -18,7 +18,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TypeVar
 
 from core.instrument import InstrumentSpec
 from core.types import Direction, Position, Tick
@@ -90,6 +90,9 @@ class Filter(ABC):
         """
 
 
+FilterT = TypeVar("FilterT", bound=Filter)
+
+
 class FilterChain:
     """Runs filters in order and stops at the first block.
 
@@ -130,6 +133,19 @@ class FilterChain:
             FilterVerdict.allow("chain", f"{len(self.filters)} filters clear"),
             collected,
         )
+
+    def find(self, kind: type[FilterT]) -> FilterT | None:
+        """The chain's instance of `kind`, or None when it is not installed.
+
+        Exists so a caller that needs a filter's *measurements* rather than its
+        verdict can reach the one the chain actually runs, instead of building
+        a second copy from the same config. Two copies agree right up until one
+        of them is reconfigured, and then they disagree silently.
+        """
+        for filter_ in self.filters:
+            if isinstance(filter_, kind):
+                return filter_
+        return None
 
     def __len__(self) -> int:
         return len(self.filters)

@@ -220,6 +220,42 @@ filters:
     # The forced 20:15 flatten is specifically an FX-rollover defence.
     evening_flat_asset_classes: [forex]
 
+  # Does this trade have time to work? The session block above only refuses
+  # entries *inside* the wind-down, which leaves the minute before it wide
+  # open: an entry at 20:14 clears every gate and is flattened by us at 20:15,
+  # having paid the spread twice to learn nothing. That is not a rare edge —
+  # it is the last half hour of every trading day.
+  runway:
+    enabled: true
+    # Minutes of clear market an entry must have before its own wind-down.
+    min_runway_minutes: 45
+    # Per asset class, for anything that resolves on a different clock.
+    # Indices already wind down 15 minutes before FX; this would be on top.
+    min_runway_by_class: {}
+    # Beyond that flat floor, also ask whether *this* target is reachable in
+    # the time left at the market's current pace. Net travel over n bars scales
+    # with sqrt(n) x ATR, so a 6-ATR target is ~36 bars away, not 6.
+    require_reachable_target: true
+    # How much better than a random walk we assume a market travels when we
+    # have a directional read on it. 1.0 assumes no edge at all; above ~2.5
+    # the check stops rejecting anything.
+    travel_efficiency: 1.5
+    speed_timeframe: M5
+
+  # Is the market awake? Targets are priced in ATR, and a market that has
+  # stopped producing ATR cannot reach one. The setup still looks valid and the
+  # stop is still the same distance away; the position simply sits there paying
+  # the spread until the clock closes it flat-minus-costs.
+  liveliness:
+    enabled: true
+    timeframe: M5
+    recent_bars: 6                   # ~30 minutes: how fast is it moving now
+    baseline_bars: 120               # ~10 hours of its own normal, as a median
+    # Below this fraction of that baseline the market is asleep. Markets
+    # breathe; a gate set near 1.0 would never let anything through.
+    min_activity_ratio: 0.5
+    min_bars: 40
+
   spread:
     enabled: true
     max_spread_multiple: 2.0
@@ -384,6 +420,9 @@ trade_management:
   giveback_fraction: 0.5
   # Hoeveel er terugmag ongeacht wat de gezondheidslezing zegt.
   giveback_hard_fraction: 0.8
+  # Eruit als de spread zelf de stop dreigt te raken (zie schema.py).
+  spread_squeeze_share: 0.75
+  spread_squeeze_min_r: -0.5
   # Per-second read of how the trade is behaving (structure, momentum, adverse
   # run, spread). Can only reduce risk, and needs two signals to close.
   health_enabled: true
@@ -459,3 +498,5 @@ ai:
     max_markets_per_call: 12
     minimum_confidence: 0.65
     ranking_bonus: 8.0
+  # Paid pre-trade reviews per cycle, spent best-first. 0 removes the cap.
+  max_reviews_per_cycle: 3

@@ -56,6 +56,21 @@ class SystemConfig(Base):
     #: this cadence. It never calls the adviser and never opens anything, so
     #: tightening it costs latency and nothing else.
     guard_interval_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
+    #: Seconds of guarding that a slow cycle may never take away.
+    #:
+    #: The guard used to run until `cycle_start + loop_interval_seconds`, which
+    #: is a deadline already in the past by the time a cycle returns: the live
+    #: log shows cycles of 55 to 121 seconds against a 30-second interval, so
+    #: `remaining <= 0` fired immediately and the one-second layer never ran at
+    #: all. No give-back, no peak stall, no profit lock, no health reading —
+    #: every one of them written, tested, deployed and never once executed on
+    #: an open position. The deck showed it plainly the moment it started
+    #: reporting the age of a reading: "this measurement is 9 minutes old".
+    #:
+    #: A scan that starts thirty seconds late costs a setup. A position left
+    #: unwatched for two minutes costs money, and the whole reason the fast
+    #: layer exists is that it is the cheaper of the two.
+    min_guard_seconds: float = Field(default=20.0, ge=0.0, le=300.0)
     #: Filename of the manual kill switch, relative to the project root.
     kill_switch_file: str = "STOP"
     #: Refuse to start if the terminal reports a live account while the config
@@ -297,7 +312,63 @@ class RiskConfig(Base):
     #: Ceiling the sizer will never exceed regardless of setup quality.
     max_risk_per_trade_pct: Pct = 1.0
 
+    #: Slippage a stop-out actually suffers, in pips, per asset class. A class
+    #: not listed here contributes nothing, and the cost check below then rests
+    #: on commission alone.
+    #:
+    #: Measured, not assumed. A live AUDNZD stop sat at 1.19722 and filled at
+    #: 1.19705 — 1.7 pips straight through it, on a 5-pip stop. A stop is a
+    #: request, not a guarantee, and the difference is a cost the risk model
+    #: has to carry like any other.
+    stop_slippage_pips: dict[str, float] = Field(default_factory=dict)
+    #: Share of the risk that commission plus slippage may consume before a
+    #: setup is refused outright. 0 switches the check off.
+    #:
+    #: On that AUDNZD trade the two together were 56% of 1R and it returned
+    #: -1.48R on a -1.00R plan. At that ratio the strategy is not what is being
+    #: tested — the cost of trading is, and it wins. Past roughly a quarter, a
+    #: full stop-out cannot land inside -1.25R however good the entry was.
+    max_cost_share_of_risk: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    #: Broker commission per lot per side, in account currency. 0 for accounts
+    #: whose cost is entirely in the spread.
+    #:
+    #: This is not bookkeeping, it is part of the risk. A live AUDNZD stop-out
+    #: cost EUR 1.93 against a modelled 1R of EUR 1.53 — and EUR 0.33 of the
+    #: EUR 0.40 gap was commission, confirmed against the deal in the terminal.
+    #: Every threshold in this system is denominated in R, so an R that omits
+    #: a fifth of what a loss actually costs makes the give-back arm late, the
+    #: profit lock secure less than it claims, and every expectancy figure
+    #: flatter the account.
+    #:
+    #: It also prices tight stops correctly for the first time. Commission is a
+    #: fixed cost per lot, so on a 2-pip stop it is a third of the risk and on
+    #: a 20-pip stop it is a rounding error. Including it makes scalp-width
+    #: stops unattractive by arithmetic rather than by a threshold someone
+    #: guessed.
+    commission_per_lot_per_side: float = Field(default=0.0, ge=0.0)
+    #: Per-asset-class overrides, for brokers that charge indices or metals
+    #: differently from FX. Absent classes take the figure above.
+    commission_by_asset_class: dict[str, float] = Field(default_factory=dict)
+
     max_concurrent_positions: int = Field(default=2, ge=1, le=10)
+    #: Equity that buys one concurrent position. 0 keeps the flat cap above.
+    #:
+    #: A fixed number of slots is the wrong shape for an account that is meant
+    #: to grow. Two is right at EUR 100 — three simultaneous trades there means
+    #: three positions the account cannot express at the minimum lot anyway —
+    #: and plainly wrong at EUR 1,000, where the constraint is no longer size
+    #: but the fact that somebody once typed a 2.
+    #:
+    #: Slots earned this way are still bounded by `max_concurrent_positions`
+    #: and by the mode's own ceiling, so growth widens the account toward a
+    #: limit that a human set; it never walks through it.
+    equity_per_position: float = Field(default=0.0, ge=0.0)
+    #: Never fewer than this, however small the account. Below two, one open
+    #: trade blocks every other opportunity for as long as it runs, and a
+    #: system that can hold only one position is a system that spends most of
+    #: its day unable to act.
+    min_concurrent_positions: int = Field(default=2, ge=1, le=10)
     #: Trades a day, or 0 for no cap. See `UNLIMITED_TRADES` below for why 0 is
     #: a defensible setting and not a hole in the risk model.
     max_trades_per_day: int = Field(default=3, ge=0, le=50)
@@ -354,6 +425,16 @@ class RiskConfig(Base):
     margin_safety_factor: float = Field(default=2.0, ge=1.0, le=10.0)
 
     forbidden: ForbiddenPractices = ForbiddenPractices()
+
+    def commission_per_lot(self, asset_class: str) -> float:
+        """Round-trip commission for one lot, in account currency.
+
+        Round trip because a stop-out pays both sides, and the risk model is
+        answering "what does it cost me if this is wrong" — which is never one
+        side of the trade.
+        """
+        per_side = self.commission_by_asset_class.get(asset_class, self.commission_per_lot_per_side)
+        return 2.0 * max(0.0, per_side)
 
     @model_validator(mode="after")
     def _coherent(self) -> RiskConfig:
@@ -499,6 +580,17 @@ class SessionFilterConfig(Base):
     #: the spread widens is the entire point — flattening at 20:45 would pay
     #: exactly the cost this is meant to avoid.
     evening_flat_from: str | None = "20:15"
+    #: Asset classes that wind down at their own time rather than the FX one.
+    #:
+    #: An index does not follow the FX rollover. The US cash session closes at
+    #: 20:00 UTC and the CFD spread widens from that moment, so a position held
+    #: to the forex wind-down at 20:15 spends its last quarter of an hour in the
+    #: widest quote of the day. A live SPX500 long sat in exactly that window.
+    #:
+    #: Times are UTC and must be no later than `evening_flat_from`; a class that
+    #: wants to run *longer* than forex is not a wind-down override, it is a
+    #: different feature, and letting it in here would silently extend exposure.
+    evening_flat_by_class: dict[str, str] = Field(default_factory=lambda: {"index": "20:00"})
     block_friday_after: str | None = "19:00"
     block_sunday_before: str | None = "23:00"
     #: These markets are not forced through the FX London/New York calendar.
@@ -520,6 +612,30 @@ class SessionFilterConfig(Base):
     #: Applying it to every non-crypto CFD closed healthy stock and metal swing
     #: positions for a calendar they do not follow.
     evening_flat_asset_classes: tuple[str, ...] = ("forex",)
+
+    @model_validator(mode="after")
+    def _class_overrides_only_tighten(self) -> SessionFilterConfig:
+        """A per-class wind-down may be earlier than the FX one, never later.
+
+        Enforced rather than documented. An override reading 21:30 looks like a
+        harmless edit and silently *extends* exposure into the rollover for a
+        whole asset class — the opposite of what the setting exists for, and
+        invisible until something is held through it.
+        """
+        if not self.evening_flat_from:
+            return self
+        limit = tuple(int(part) for part in self.evening_flat_from.split(":"))
+        late = {
+            name: when
+            for name, when in self.evening_flat_by_class.items()
+            if tuple(int(part) for part in when.split(":")) > limit
+        }
+        if late:
+            raise ValueError(
+                "evening_flat_by_class may only be earlier than evening_flat_from "
+                f"({self.evening_flat_from}); these are later: {late}"
+            )
+        return self
 
 
 class SpreadFilterConfig(Base):
@@ -568,11 +684,198 @@ class CorrelationFilterConfig(Base):
     timeframe: str = "H1"
 
 
+class RunwayFilterConfig(Base):
+    """How much time a trade must have before we force it flat."""
+
+    enabled: bool = True
+    #: Minutes of clear market required between an entry and this instrument's
+    #: own wind-down. 45 is not a market constant, it is a floor: a structural
+    #: target on the M5/M15 setups this system trades resolves in roughly one
+    #: to three hours, and a trade with less than three quarters of an hour is
+    #: not being given a chance to be right — it is being charged the spread
+    #: for the privilege of being closed on the clock.
+    min_runway_minutes: float = Field(default=45.0, ge=0.0, le=480.0)
+    #: Per-asset-class overrides, for instruments that resolve on a different
+    #: clock than FX. Absent classes take `min_runway_minutes`.
+    min_runway_by_class: dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("min_runway_by_class")
+    @classmethod
+    def _sane_overrides(cls, value: dict[str, float]) -> dict[str, float]:
+        bad = {name: minutes for name, minutes in value.items() if not 0.0 <= minutes <= 480.0}
+        if bad:
+            raise ValueError(f"min_runway_by_class out of range [0, 480]: {bad}")
+        return value
+
+    #: Beyond the blunt floor above, also ask whether *this* target can be
+    #: reached in the time left at the market's current speed. The filter
+    #: cannot ask that — it never sees the setup — so the runner does, once the
+    #: levels are known.
+    require_reachable_target: bool = True
+    #: How much better than a pure random walk a market travels when we have a
+    #: directional read on it. Net displacement over n bars is `sqrt(n) x ATR`
+    #: for a random walk, so bars-to-target is `(distance / ATR)^2`; this
+    #: divides the distance first. 1.0 assumes we have no edge at all and is
+    #: brutally pessimistic; above ~2.5 the check stops rejecting anything.
+    travel_efficiency: float = Field(default=1.5, ge=0.5, le=3.0)
+    #: Timeframe whose ATR sets the market's speed for that estimate.
+    speed_timeframe: str = "M5"
+
+    def minutes_for(self, asset_class: str) -> float:
+        return self.min_runway_by_class.get(asset_class, self.min_runway_minutes)
+
+
+class LivelinessFilterConfig(Base):
+    """When is a market too quiet to be worth entering."""
+
+    enabled: bool = True
+    timeframe: str = "M5"
+    #: Bars averaged for "how fast is it moving right now".
+    recent_bars: int = Field(default=6, ge=2, le=60)
+    #: Bars the recent window is compared against. 120 M5 bars is ten hours —
+    #: long enough to span more than one session, so the comparison is against
+    #: the instrument's day rather than against the last twenty minutes of it.
+    baseline_bars: int = Field(default=120, ge=30, le=1000)
+    #: Below this fraction of its own baseline, the market is asleep. 0.5 is
+    #: deliberately not close to 1.0: normal markets breathe, and a gate that
+    #: fires on every lull is a gate that never lets anything through.
+    min_activity_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
+    #: Bars needed before the ratio means anything at all.
+    min_bars: int = Field(default=40, ge=10, le=1000)
+
+    @model_validator(mode="after")
+    def _windows_are_ordered(self) -> LivelinessFilterConfig:
+        if self.recent_bars >= self.baseline_bars:
+            raise ValueError(
+                f"recent_bars ({self.recent_bars}) must be shorter than baseline_bars "
+                f"({self.baseline_bars}); comparing a window against itself always "
+                f"reads as normal"
+            )
+        if self.min_bars < self.recent_bars:
+            raise ValueError(
+                f"min_bars ({self.min_bars}) is below recent_bars ({self.recent_bars}); "
+                f"the recent window would be padded with bars that do not exist"
+            )
+        return self
+
+
+class CurrencyExposureConfig(Base):
+    """How many positions may lean the same way on one currency."""
+
+    enabled: bool = True
+    #: Positions already leaning one way on a currency before a further one is
+    #: refused. One, because a two-slot account holding GBPAUD short and
+    #: GBPJPY short is not diversified — it is one GBP short with a second lot
+    #: on it, and it was believed to be two independent trades right up until
+    #: both moved together.
+    max_positions_per_currency: int = Field(default=1, ge=1, le=10)
+    #: The same limit for instruments the currency decomposition cannot see.
+    #:
+    #: An index quoted in its own currency has no currency leg — correctly, it
+    #: is a bet on equities and not on the euro — which leaves FRA40 long and
+    #: UK100 long looking like two unrelated trades to the filter above. They
+    #: are one risk-on bet with a second lot on it, and on 7 August the account
+    #: held three European index longs inside twenty minutes.
+    max_positions_per_asset_class: int = Field(default=1, ge=1, le=10)
+    #: Which classes that limit applies to.
+    #:
+    #: Forex is absent on purpose: the currency legs already describe it
+    #: exactly, and capping FX by class would refuse EURUSD beside USDJPY,
+    #: which are genuinely different trades.
+    grouped_asset_classes: tuple[str, ...] = ("index", "metal", "commodity", "crypto", "stock")
+
+
+class LossCooldownConfig(Base):
+    """How long an instrument is left alone after it has cost us money."""
+
+    enabled: bool = True
+    #: A third of the shortest playbook horizon. `momentum_scalp` expects to be
+    #: finished inside an hour, so re-entering the same instrument within
+    #: twenty minutes of a loss is the same idea taken twice — the chart it
+    #: read has not had time to become a different chart.
+    #:
+    #: Not "the observed 75 seconds plus a margin". That would fix the one case
+    #: in the log and nothing standing next to it.
+    minutes: float = Field(default=20.0, ge=0.0, le=1440.0)
+
+
+class HeadlineFilterConfig(Base):
+    """Unscheduled news, as a reason to keep still. Never as a direction.
+
+    The calendar next door knows what is coming. This knows what is happening,
+    and it is the layer that catches the central bank moving between meetings
+    and the story that breaks at 03:00 with the afternoon showing clear.
+
+    There is no sentiment setting here and there will not be one.
+    `filters.newsfeed.items.NewsPressure` carries the argument: by the time a
+    story reaches a public feed the move it describes has happened, so trading
+    its direction from a retail VPS is buying what somebody else already
+    bought. What survives the latency is that something is going on, and that
+    is what these numbers describe.
+    """
+
+    #: Off until `scripts/verify_newsfeed.py` has been run on the machine that
+    #: will use it. None of the default feed URLs could be reached from the
+    #: environment this was written in, so no response shape has been confirmed
+    #: — and a layer that silently returns nothing reports a quiet market,
+    #: which is the one answer it must never invent.
+    enabled: bool = False
+    #: Feed name to URL. Empty uses `filters.newsfeed.providers.DEFAULT_FEEDS`.
+    feeds: dict[str, str] = Field(default_factory=dict)
+    #: How often EACH FEED is polled -- not how often the layer checks.
+    #:
+    #: The distinction is the whole design. `HeadlineService` staggers the
+    #: feeds across this interval, so with twenty feeds at twenty seconds
+    #: something is fetched roughly every second while no single host sees
+    #: more than three requests a minute. The operator asked for one-second
+    #: scraping and that is what the batch does; what it does not do is hit
+    #: one URL every second, which gets the VPS rate-limited and then blocked.
+    #: A blocked address reports a permanently quiet market, which is the
+    #: worst failure this layer has because nothing downstream can tell.
+    #:
+    #: Cheap on top of that: `RssHeadlineProvider` sends an ETag, so a poll
+    #: that finds nothing new costs a couple of hundred bytes and no work at
+    #: the far end.
+    refresh_interval_seconds: float = Field(default=20.0, ge=5.0, le=3600.0)
+    #: The recent window "how busy is it right now" is measured over.
+    window_minutes: float = Field(default=20.0, ge=5.0, le=240.0)
+    #: The long window that window is compared against. Per instrument, because
+    #: EUR and NZD do not carry comparable traffic on any wire and one absolute
+    #: threshold over both means blocking EUR always or NZD never.
+    baseline_hours: float = Field(default=12.0, ge=1.0, le=72.0)
+    #: How stale the held window may get before it stops being evidence.
+    max_age_minutes: float = Field(default=30.0, ge=5.0, le=360.0)
+    #: Both must hold to block: enough stories to mean anything, and enough
+    #: above normal to be unusual. Either alone misfires — three headlines is
+    #: nothing on EUR and a storm on NZD, and a tenfold rise from 0.1 is one
+    #: routine mention.
+    min_headlines: int = Field(default=3, ge=1, le=50)
+    spike_multiple: float = Field(default=3.0, ge=1.0, le=20.0)
+    #: A market-wide story blocks on its own. It touches every pair equally, so
+    #: it never looks like a spike on any single one and the test above would
+    #: wave all of them through at the worst possible moment.
+    block_on_systemic: bool = True
+    #: Stand down when the feeds are dark. Off by default, and the departure
+    #: from "no data, no trade" is argued in `HeadlineFilter._unavailable`: the
+    #: calendar's fail-closed rule is untouched, and with this layer dark the
+    #: system is at the safety level it has run at all along.
+    block_when_unavailable: bool = False
+    #: Headlines handed to the reviewer with an open position. The one place
+    #: the text itself is worth carrying — a language model reads a headline
+    #: better than any regex here, and it is being asked anyway.
+    headlines_for_reviewer: int = Field(default=6, ge=0, le=25)
+
+
 class FiltersConfig(Base):
     news: NewsFilterConfig = NewsFilterConfig()
+    headlines: HeadlineFilterConfig = HeadlineFilterConfig()
     session: SessionFilterConfig = SessionFilterConfig()
+    runway: RunwayFilterConfig = RunwayFilterConfig()
+    liveliness: LivelinessFilterConfig = LivelinessFilterConfig()
     spread: SpreadFilterConfig = SpreadFilterConfig()
     correlation: CorrelationFilterConfig = CorrelationFilterConfig()
+    currency_exposure: CurrencyExposureConfig = CurrencyExposureConfig()
+    loss_cooldown: LossCooldownConfig = LossCooldownConfig()
 
 
 # ------------------------------------------------------------- analysis ---
@@ -765,6 +1068,27 @@ class PlaybooksConfig(Base):
     momentum_scalp: bool = True
     #: M15 range-extreme rejection targeting the midpoint, ~3 hours.
     range_fade: bool = True
+    #: H1 trend, M15 pullback, entry on the turn back. ~4 hours.
+    #:
+    #: The most ordinary thing a market does — go one way, rest, go on — and
+    #: nothing saw it. The scalp wants compression right before the move, which
+    #: a trend running for hours does not have; the fade wants a range, and a
+    #: trend is the absence of one.
+    trend_pullback: bool = True
+    #: A break of the M15 range that could not hold and came back inside. ~2.5h.
+    #:
+    #: Cannot fire on the same bar as `range_break`, by construction: that one
+    #: needs a close outside the edge, this one a close back inside. They read
+    #: one event and disagree only about how it ended.
+    failed_break: bool = True
+    #: M15 range break, targeting a measured move, ~2 hours.
+    #:
+    #: The counterpart to `range_fade`, and worth having on even if it never
+    #: opened a trade. Without it the system is not neutral about which of the
+    #: two is happening: it fades every edge, including the ones that are
+    #: giving way. With it, a genuine break has both theories pointing opposite
+    #: ways and `veto_on_conflict` stands them both down.
+    range_break: bool = True
     #: Refuse everything when two theories disagree on direction.
     #:
     #: On by default and it should stay on. Momentum continuation and range
@@ -870,6 +1194,37 @@ class ConfluenceConfig(Base):
     #: still-accelerating one, where the setup has to be right about the turn
     #: and about its timing at the same time.
     htf_trend_veto: float = Field(default=1.0, gt=0.0, le=5.0)
+
+    #: Refuse to enter while price is actively running the other way.
+    #:
+    #: The engine finds a level, forms a view, and the order goes out on the
+    #: same tick — so a short can be sent into a market that is climbing
+    #: through the very level it is short against. A live GBPJPY short was
+    #: exactly that: the operator watched resistance break upward and the
+    #: system sold into it, because nothing between "this is a good level" and
+    #: "send the order" ever looked at which way price was going right then.
+    #:
+    #: This is the cheapest form of waiting for confirmation, and the only one
+    #: that needs no state: not "has the market proved me right", but "has it
+    #: already started proving me wrong". A setup refused here is not gone — it
+    #: is re-examined every cycle, and taken the moment the move against it
+    #: stops.
+    require_entry_confirmation: bool = True
+    #: Timeframe the immediate move is read on. Fast enough to be about *now*
+    #: rather than about the setup, which the analysis has already judged.
+    confirmation_timeframe: str = "M5"
+    #: Closed bars of it to measure across.
+    confirmation_bars: int = Field(default=3, ge=1, le=50)
+    #: How far price may travel against the entry over those bars before the
+    #: trade waits, in ATR of that timeframe.
+    #:
+    #: Measured in ATR so it means the same on gold as on EURGBP, and set at
+    #: half a bar because that is the point where "noise around the level"
+    #: becomes "the level is not holding". Below about 0.3 ordinary wobble
+    #: blocks everything; above 1.0 a full bar can run against the trade and
+    #: still be waved through, which is the situation this exists to catch.
+    confirmation_max_adverse_atr: float = Field(default=0.5, gt=0.0, le=3.0)
+
     weights: dict[str, float] = Field(
         default_factory=lambda: {
             "market_structure": 1.0,
@@ -947,6 +1302,55 @@ class TradeManagementConfig(Base):
     #: spread and commission. Break even at exactly entry is a small loss.
     break_even_offset_atr: float = Field(default=0.1, ge=0.0)
 
+    #: Minutes the peak may stand still before a profitable trade is banked.
+    #: 0 switches the rule off.
+    #:
+    #: Every other exit here measures how much has been *given back*, which
+    #: means every one of them can only act after the money has already gone.
+    #: This one measures the thing a person actually watches: the trade stopped
+    #: making new highs. A move that is working prints a new high every few
+    #: minutes; one that has sat at the same level for six is not pausing, it
+    #: is finished, and what follows is the retrace.
+    #:
+    #: Six minutes is roughly a M5 bar plus confirmation — long enough that an
+    #: ordinary pullback inside a live move does not trigger it, short enough
+    #: to still be near the high when it does.
+    peak_stall_minutes: float = Field(default=6.0, ge=0.0, le=240.0)
+    #: Profit required before a stalled peak means anything. Below this the
+    #: trade has not made enough to be worth protecting and the noise band is
+    #: wide enough that "no new high" says nothing.
+    peak_stall_arm_r: float = Field(default=0.6, gt=0.0)
+    #: How close to the peak the price must still be. Past this the money is
+    #: already gone and the give-back rule owns the decision; this rule exists
+    #: to leave *near the high*, not to confirm a retrace that has happened.
+    peak_stall_near_peak: float = Field(default=0.7, gt=0.0, le=1.0)
+
+    #: From this peak R, walk the stop up behind the trade instead of leaving
+    #: it parked at break-even.
+    #:
+    #: Between `break_even_at_r` (0.6) and `partial_close_at_r` (1.5) the stop
+    #: did not move at all: a trade could run to 1.4R and hand every cent of it
+    #: back to a break-even stop, having been demonstrably right for hours.
+    #:
+    #: The give-back rule watches the same ground from inside our own loop, and
+    #: this is deliberately redundant with it. A stop lives at the broker. It
+    #: survives the VPS rebooting, the terminal dropping its connection, and
+    #: this process dying at three in the morning — none of which the give-back
+    #: rule survives. Protection that depends on our code still running is not
+    #: protection at the moment it is most needed.
+    #: 0.7, not 1.0. A live NZDCAD long peaked at 0.92R and stopped out at
+    #: 0.13R for 22 cents: the lock armed at 1.0R and never fired, the
+    #: give-back with conviction allowed an 80% drain to 0.18R, and the
+    #: break-even stop sat below both at 0.13R and won the race. Three rules
+    #: aimed at that trade and the crudest of them decided it. Arming below
+    #: break-even's own reach is what stops that happening again.
+    profit_lock_from_r: float = Field(default=0.7, gt=0.0)
+    #: Share of the *peak* excursion the stop secures. 0.5 at a 2R peak leaves
+    #: the stop at 1R. Deliberately not close to 1.0: a stop tucked right under
+    #: the high is stopped out by ordinary noise, and strangling a winner is
+    #: the single most expensive habit available here.
+    profit_lock_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
+
     partial_close_at_r: float = Field(default=1.5, gt=0.0)
     partial_close_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
 
@@ -986,6 +1390,25 @@ class TradeManagementConfig(Base):
     #: holding. Without it, a permanently "healthy" read could ride a winner all
     #: the way back to entry, which is the exact complaint this rule answers.
     giveback_hard_fraction: float = Field(default=0.8, ge=0.0, le=1.0)
+
+    #: Leave when the spread is this share of the room left to the stop.
+    #:
+    #: A stop does not trigger on the price you watch: a short closes at the
+    #: ask, a long at the bid, and both move toward the stop when the book
+    #: thins — with the market perfectly still. A live NZDJPY sell had bid
+    #: 92.845 against a stop at 92.904: 5.9 pips of room, and six pips of
+    #: spread would have taken it out having never once gone wrong.
+    #:
+    #: At 0.75 the quote owns three quarters of what is left. Both exits pay
+    #: the spread, but this one happens at a price we chose, and on a trade
+    #: near flat it turns a full stop-out into roughly break-even.
+    spread_squeeze_share: float = Field(default=0.75, ge=0.0)
+    #: ...but only while price has not already carried the trade most of the
+    #: way to the stop. Past this the room is small because the trade is
+    #: losing, not because the quote is wide, and the stop is doing its job.
+    #: Without this the rule degenerates into closing every loser a moment
+    #: early, which changes the risk profile for no gain.
+    spread_squeeze_min_r: float = Field(default=-0.5)
 
     #: The per-second read of how an open trade is actually behaving — has the
     #: structure broken, has momentum turned, is it running against us, has the
@@ -1031,9 +1454,75 @@ class TradeManagementConfig(Base):
         }
     )
 
+    #: Take a sum worth taking, unless the move is clearly still running.
+    #:
+    #: The operator's rule, in their words: on a EUR 100 account, 50 to 90 cents
+    #: is a fine amount to bank; on EUR 1000 it is five to twenty euro. That is
+    #: the same thing said twice — a share of the account — so it is expressed
+    #: as one, and it scales without anybody editing it after a deposit.
+    #:
+    #: The posture is deliberately inverted from every other rule in this file.
+    #: The rest hold by default and act on evidence of trouble. This one *banks*
+    #: by default and holds only on evidence the move is still running, because
+    #: "prima bedragen om te stationen" is the whole point: a profit you can see
+    #: beats a bigger one you are hoping for.
+    #:
+    #: BE HONEST ABOUT THE ARITHMETIC. `bank_at_r` holds this to 0.3R whatever
+    #: the lot rounded to. Banking at 0.3R against a 1R stop needs a win rate
+    #: near 77% to break even, and the backtest measured 24-33%. This does
+    #: not fix a negative edge and it is not meant to; it stops handing back
+    #: what the account has already earned. Whether it helps is measurable with
+    #: `backtest.cmd --targets`, which sweeps exactly this question.
+    bank_enabled: bool = True
+    #: Share of account equity that counts as worth taking.
+    bank_at_equity_pct: float = Field(default=0.6, ge=0.0, le=10.0)
+    #: The same sentence said in R, and the trade banks at whichever is lower.
+    #:
+    #: Needed because the equity share alone is not stable from trade to trade.
+    #: The sizer rounds the lot *down* to the broker's step, so the risk really
+    #: carried sits under the intended 2% and varies by instrument — 0.66% to
+    #: 1.95% of equity across the last twenty live trades. A fixed 0.6%-of-
+    #: equity threshold therefore lands anywhere between 0.31R and 0.91R, and at
+    #: the top of that range it is not a banking rule: it demands nearly the
+    #: whole trade. See `PositionManager._worth_taking`.
+    bank_at_r: float = Field(default=0.3, ge=0.0, le=3.0)
+    #: How hard price must be coming BACK against the position to earn a hold,
+    #: in random-walk units — see `analysis.position_health.drift_score`.
+    #:
+    #: Renamed from `bank_still_running_drift`, and the rename is the finding.
+    #: The old field held the trade while the move was running our way, which
+    #: is the intuitive rule and is measurably backwards.
+    #: `backtest.cmd --exits --days 90` reports what an extra minute of
+    #: patience was worth at every in-profit moment, split by pace, and a
+    #: running move is negative at all seven profit levels on thousands of
+    #: observations each. A hard run is exhaustion. The state where waiting
+    #: pays is a retrace, which the old rule treated as a reason to leave.
+    #:
+    #: Still not zero, for the same reason as before inverted: "not obviously
+    #: running" is the absence of news, and holding needs the presence of it.
+    bank_while_retracing_drift: float = Field(default=0.5, ge=0.0, le=3.0)
+
+    #: Bank a profit whose target the session can no longer deliver.
+    #:
+    #: No threshold to set, deliberately. The rule asks two measured questions
+    #: — is the remaining distance reachable in the time left, and is what is
+    #: on the table worth more than the spread and commission it costs to
+    #: collect — and an R figure chosen in advance can answer neither. The
+    #: version this replaced fired at 0.3R, which was a number I made up.
+    session_decay_enabled: bool = True
+
     #: Close a position that has gone nowhere. Dead capital still carries risk.
     time_exit_hours: float | None = Field(default=24.0, gt=0.0)
     time_exit_min_abs_r: float = Field(default=0.3, ge=0.0)
+    #: Past the deadline, also bank a profitable trade whose *peak* never
+    #: reached this. Between `time_exit_min_abs_r` (0.3) and the give-back's
+    #: arming point (0.5R) sat a gap nothing owned: a position on +0.4R after
+    #: a day and a half was too profitable for the time exit and never good
+    #: enough for the give-back, so it stayed on indefinitely, paying swap for
+    #: one of two slots it was not using. Judged on the peak rather than the
+    #: current price, because a trade that ran to 2R and came back has proved
+    #: something — that one belongs to the give-back rule, not to this one.
+    time_exit_stale_peak_r: float = Field(default=1.0, ge=0.0)
 
     #: How often the AI supervisor reconsiders each open position, in minutes.
     #: Zero switches it off and leaves the mechanical rules above as the whole
@@ -1180,6 +1669,21 @@ class AIConfig(Base):
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
     fail_closed: Literal[True] = True
     market_scout: MarketScoutConfig = MarketScoutConfig()
+    #: Paid pre-trade reviews allowed per cycle. 0 removes the budget.
+    #:
+    #: Candidates reach the reviewer in the engine's own order of conviction,
+    #: so a budget is spent on the best setups that survived every free gate
+    #: and then stops. Without one, a cycle pays to be told that its ninth,
+    #: tenth and eleventh-best ideas are weak — which is what the reviewer
+    #: actually said, in those words, on a live account.
+    #:
+    #: Deliberately a budget rather than a rank cut-off. Candidates are
+    #: processed in rank order and a low rank is only *reached* because the
+    #: better ones were rejected earlier, so "never review below rank 3" would
+    #: silently stop trading altogether on any day the top three keep failing
+    #: a deterministic gate. A budget cannot do that: whatever reaches the
+    #: reviewer first is by construction the best thing still standing.
+    max_reviews_per_cycle: int = Field(default=3, ge=0, le=50)
 
 
 # -------------------------------------------------------------- settings ---
@@ -1293,8 +1797,25 @@ class Settings(Base):
     def effective_daily_loss_limit_pct(self) -> float:
         return self.active_limits.daily_loss_limit_pct
 
-    def effective_max_positions(self) -> int:
-        return self.active_limits.max_concurrent_positions
+    def effective_max_positions(self, equity: float | None = None) -> int:
+        """How many positions may be open at once, given what the account holds.
+
+        The mode's ceiling is absolute and is never exceeded — this only decides
+        where between the floor and that ceiling the account currently sits.
+        Passing no equity returns the ceiling, which is what the startup banner
+        and the profile printout want: the shape of the mode, not today's
+        balance.
+
+        Slots are earned in whole steps of `equity_per_position`, so the number
+        moves when the account genuinely grows rather than drifting with every
+        floating tick.
+        """
+        ceiling = self.active_limits.max_concurrent_positions
+        step = self.risk.equity_per_position
+        if equity is None or step <= 0:
+            return ceiling
+        earned = int(max(0.0, equity) // step)
+        return max(1, min(ceiling, max(self.risk.min_concurrent_positions, earned)))
 
     def symbol_allowed_at_equity(self, symbol: str, equity: float) -> tuple[bool, str]:
         """Whitelist + equity gate for one symbol.

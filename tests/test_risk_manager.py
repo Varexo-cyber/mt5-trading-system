@@ -349,6 +349,38 @@ class TestAntiMartingale:
         assert state.consecutive_losses == 3
         assert manager.risk_multiplier(state) == 0.5
 
+    def test_a_disabled_halving_does_not_claim_to_have_halved(
+        self,
+        manager: RiskManager,
+        journal: Journal,
+        clock: SimulatedClock,
+        settings: Settings,
+        spec: InstrumentSpec,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The live overlay sets the multiplier to 1.0, because at EUR 88 a
+        halved stake is below the broker's smallest lot and the rule would stop
+        the account trading rather than make it trade smaller.
+
+        It still logged "reducing risk after a losing streak" at warning level,
+        once per candidate — eight times in one cycle of the live log. An
+        operator reading that concludes the account is protecting itself, and
+        on this account it is not.
+        """
+        manager.settings = settings.model_copy(
+            update={"risk": settings.risk.model_copy(update={"losing_streak_risk_multiplier": 1.0})}
+        )
+        _record_losses(journal, clock, settings, spec, count=3)
+        state = manager.build_state(account(1_000.0))
+
+        with caplog.at_level("INFO"):
+            assert manager.risk_multiplier(state) == 1.0
+
+        assert "reducing risk" not in caplog.text
+        assert "risk unchanged" in caplog.text
+        # Still counted, so the streak stays visible in the record.
+        assert state.consecutive_losses == 3
+
     def test_a_winner_resets_the_streak(
         self,
         manager: RiskManager,

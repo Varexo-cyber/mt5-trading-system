@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -20,12 +21,14 @@ from advisory import (
     DisabledAdvisor,
     ScoutDecision,
     VetoMemory,
+    VetoPatterns,
     build_advisor,
     build_review_payload,
     build_supervision_payload,
     read_trade_reflections,
 )
 from advisory.scout import ScoutThrottle
+from advisory.veto_patterns import readable as veto_readable
 from analysis import (
     ConfluenceEngine,
     LevelReaction,
@@ -45,25 +48,35 @@ from analysis import (
 )
 from analysis.confluence import TradeIdea
 from analysis.playbooks import (
+    BreakConfig,
     FadeConfig,
+    FailedBreak,
+    FailedBreakConfig,
     MomentumScalp,
     Playbook,
     PlaybookEngine,
     PlaybookVerdict,
+    PullbackConfig,
+    RangeBreak,
     RangeFade,
     ScalpConfig,
+    TrendPullback,
 )
+from brain import build_brain
 from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
-from core.data_manager import DataManager
+from core.data_manager import DataManager, atr
 from core.errors import TradingSystemError
 from core.startup import run_startup_guard
 from core.types import AccountSnapshot, MarketContext, OrderRequest, Timeframe, TradingMode
 from execution.manager import ManagementEvent, PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
+from filters.calendar.events import symbol_currencies
+from filters.headline_filter import HeadlineFilter
 from filters.news_filter import NewsFilter
+from filters.runway_filter import RunwayFilter
 from infra.atomic import write_json_atomic
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger
@@ -74,7 +87,7 @@ from learning.counterfactual import resolve_counterfactuals, resolve_management_
 from learning.memory import TradingMemory
 from main import build_filter_chain
 from monitoring.alerts import AlertSender
-from monitoring.operation_ledger import OperationLedger
+from monitoring.operation_ledger import LEDGER_FILENAME, OperationLedger
 from monitoring.scan_activity import ScanActivityLedger
 from promotion.audit import PromotionAudit
 from promotion.experimental import (
@@ -101,8 +114,15 @@ _UNKNOWN_HEALTH: dict[str, object] = {
     "verdict": "unknown",
     "severity": 0.0,
     "action": "hold",
+    "reason": "",
     "signals": [],
 }
+
+#: How far inside the cost limit a widened stop is placed, as a multiplier on
+#: the limit itself. Solving for exactly the limit and stopping there loses to
+#: the float: the widened stop is normalised to the instrument's tick and comes
+#: back a hair short, and the gate refuses it anyway.
+_COST_MARGIN = 0.95
 
 #: The timeframe a review is tied to. H1 is where the weighted modules read
 #: their structure, so it is what defines "the same setup".
@@ -251,16 +271,20 @@ class JarvisRunner:
             clock=self.clock,
         )
         self.cursor = self._load_cursor()
-        self.operation_ledger = OperationLedger(root / "runtime" / "operation_history.json")
+        self.operation_ledger = OperationLedger(root / "runtime" / LEDGER_FILENAME)
         self.scan_activity = ScanActivityLedger(root / "runtime" / "scan_activity.json")
         self.experimental_contract: ExperimentalLiveContract | None = None
         # (symbol, direction, fastest-timeframe bar close) -> the verdict given.
         self._review_cache: dict[tuple[str, str, datetime], Advice] = {}
+        # Paid reviews spent in the cycle currently running; reset by run_once.
+        self._reviews_this_cycle = 0
         # Refusals outlive the bar they were given on; see advisory/veto_memory.
         self.veto_memory = VetoMemory(
             root / "runtime" / "veto_memory.json",
             clock=self.clock,
         )
+        # Why repeated refusals happened, independent of the proposal's exact shape.
+        self.veto_patterns = VetoPatterns(root / "runtime" / "veto_patterns.json")
         # What the account has taught itself, fed back into every review.
         self.memory = TradingMemory(
             root / "runtime" / "trading_memory.json",
@@ -275,6 +299,24 @@ class JarvisRunner:
         self._world_state: dict[str, object] = {}
         self._last_scout = ScoutDecision(thesis="No scout call recorded yet")
         self._counterfactuals_checked_at: datetime | None = None
+        # The long half of the same memory. The JSON file above keeps forty
+        # lessons on one machine and forgets past its retention window; this
+        # keeps every decision, every guard action and every lesson for the
+        # life of the account, and survives the VPS being rebuilt. It is
+        # deliberately optional and deliberately fail-soft — no write here can
+        # stop a trade, and `brain.store` sets out why at length. Returns a
+        # `NullBrain` when no DSN is configured, which is the developer case.
+        # Scoped by account number, so a demo and a live account writing to the
+        # same database never pool their statistics into one misleading total.
+        self.brain = build_brain(account=os.getenv("MT5_LOGIN", "") or self.settings.mode.value)
+        if self.brain.enabled and not self.brain.migrate():
+            log.warning(
+                "brain schema could not be applied; running without long-term memory",
+                extra={"event": "brain_migrate_failed", "why": self.brain.status.last_error},
+            )
+        # Broker ticket -> the brain's own trade row, so a guard action can be
+        # attached to the right position without a lookup on every event.
+        self._brain_trades: dict[int, int | None] = {}
         # The fast layer's live read, published for the deck. The manager holds
         # it in memory; the dashboard is a separate process and cannot see that.
         self.health_file = root / "runtime" / "position_health.json"
@@ -330,7 +372,10 @@ class JarvisRunner:
         )
         self.filters = build_filter_chain(self.broker, self.settings, self.journal, self.clock)
         self.scanner = UniverseScanner(self.broker, self.settings, self.clock)
-        self.manager = PositionManager(self.broker, self.journal, self.settings)
+        # The brain is handed over so the banking rule can consult what this
+        # account's own closed trades say about when to take profit. It can
+        # only ever lower the threshold — see `PositionManager._worth_taking`.
+        self.manager = PositionManager(self.broker, self.journal, self.settings, self.brain)
         self.alerts = AlertSender(self.settings.monitoring)
         self.reports = DailyReportGenerator(
             self.journal,
@@ -378,9 +423,30 @@ class JarvisRunner:
                 self.run_once()
                 # The gap between cycles is not idle time — it is the time open
                 # money spends unwatched. Spend it watching.
-                self._guard_until(started + self.settings.system.loop_interval_seconds)
+                self._guard_until(self._guard_deadline(started))
         finally:
             self.close()
+
+    def _guard_deadline(self, cycle_started: float) -> float:
+        """When the next cycle may begin, given that positions need watching.
+
+        The interval is a target gap between cycle *starts*, which is the right
+        way to pace scanning and the wrong way to schedule protection: a cycle
+        that overruns the interval leaves a deadline in the past, and the guard
+        returns without a single tick.
+
+        That is not a corner case here. Live cycles run 55 to 121 seconds
+        against a 30-second interval, so the one-second layer never ran at all
+        — every rule in it written, tested, deployed and never once executed on
+        an open position, while the deck reported readings nine minutes old.
+
+        So the guard gets a floor. A scan delayed by twenty seconds costs at
+        most a setup; a position unwatched for two minutes costs money, and the
+        fast layer exists precisely because that trade-off is not close.
+        """
+        interval = self.settings.system.loop_interval_seconds
+        floor = self.settings.system.min_guard_seconds
+        return max(cycle_started + interval, time.monotonic() + floor)
 
     def _guard_until(self, deadline: float) -> None:
         """Watch open positions until the next full cycle is due.
@@ -418,16 +484,17 @@ class JarvisRunner:
         take the service down, and the next full cycle re-does everything this
         does with its own error handling.
         """
+        positions: list = []
         try:
             self.broker.ensure_connected()
             positions = self.broker.positions(magic=self.settings.system.magic_number)
             if not positions:
+                self._publish_health(positions)
                 return []
             events = self.manager.manage(
                 positions, self.clock.now(), self.posture.patience_multiplier
             )
             self._record_management(events)
-            self._publish_health(positions)
             return events
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning(
@@ -436,11 +503,21 @@ class JarvisRunner:
                 extra={"event": "guard_tick_failed", "error": type(exc).__name__},
             )
             return []
+        finally:
+            # Publish whatever we know, including after a failed pass. It used
+            # to run only on the success path, so any error anywhere in
+            # `manage` left the file frozen at its last good write — and a
+            # frozen file is indistinguishable from a stopped Jarvis on the
+            # deck. The one moment an operator most needs to see what the
+            # system thinks is the moment something went wrong.
+            if positions:
+                self._publish_health(positions)
 
     def run_once(
         self, *, batch_size: int | None = None, deep_candidates: int | None = None
     ) -> CycleSummary:
         started_at = self.clock.now()
+        self._reviews_this_cycle = 0
         if self.kill_switch.is_engaged():
             self._flatten_owned_positions("operator hard STOP")
             return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
@@ -493,6 +570,10 @@ class JarvisRunner:
                     "candidates_allowed": self.posture.max_candidates,
                 },
             )
+        # Once a cycle, not once a guard tick: the banking rule needs equity to
+        # the nearest euro and a broker round trip every second to watch a
+        # number that moves in cents is a poor trade.
+        self.manager.equity = account.equity
         self._record_management(
             self.manager.manage(positions, self.clock.now(), self.posture.patience_multiplier)
         )
@@ -1007,6 +1088,45 @@ class JarvisRunner:
         # no amount of edge in the setup survives that. The playbooks already
         # refused on this; the confluence path did not, which is where the
         # evening stop-outs were coming from.
+        # Is the market already moving the other way? Asked before the paid
+        # review, because a setup price is actively contradicting is not worth
+        # an opinion — and because this is the gate that would have stopped a
+        # short being sent into a resistance break.
+        confirmed, adverse = self._entry_is_confirmed(context, idea)
+        if not confirmed:
+            assert adverse is not None  # only False once it has been measured
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AWAITING_CONFIRMATION,
+                f"price has run {adverse:.2f} ATR against this {idea.direction.name} over the "
+                f"last {self.settings.analysis.confluence.confirmation_bars} "
+                f"{self.settings.analysis.confluence.confirmation_timeframe} bars, above the "
+                f"{self.settings.analysis.confluence.confirmation_max_adverse_atr:.2f} limit; "
+                f"the setup may still be right, it is early. Re-checked next cycle.",
+                signals=list(idea.signals),
+                extra={**filter_data, "adverse_atr": round(adverse, 2)},
+            )
+            return False
+
+        # Give the stop the room the costs demand, before anything is sized.
+        #
+        # The cost gate in the sizer would otherwise refuse this outright, and
+        # on this account it refuses nearly everything: measured against real
+        # fills, all four of the live trades had stops between 1.8 and 6.3 pips
+        # and every one of them spends over a quarter of its risk on commission
+        # and slippage. A gate that says no to all of them is not a risk
+        # control, it is an off switch.
+        #
+        # Widening is the honest alternative and it is what a person does. The
+        # invalidation level does not move — the trade is still wrong in the
+        # same place — it simply stops being sized as though the market cannot
+        # breathe. What it costs is reward-to-risk, and that is already
+        # measured: if the target no longer justifies the wider stop, the RR
+        # gate refuses the trade a few lines further down, on the merits.
+        idea = self._widen_stop_for_costs(idea, spec)
+
         affordable, share = self._spread_is_affordable(context, idea.entry, idea.stop_loss)
         if not affordable:
             cycle_pk = self._record_skip(
@@ -1022,6 +1142,30 @@ class JarvisRunner:
             self._record_counterfactual(cycle_pk, idea, Reason.SPREAD_EATS_THE_STOP)
             return False
 
+        # Is there time for this to work? The runway filter enforced a flat
+        # floor without seeing the setup; now that the target is known, ask the
+        # sharper question. A 5-ATR target on a market moving at its usual pace
+        # needs hours, and an hour before the wind-down it is not a trade with
+        # a lower probability — it is a trade that cannot complete, and the
+        # only thing it reliably does is pay the spread twice.
+        reachable, needed, runway = self._target_is_reachable_in_time(
+            context, idea, spec.asset_class.value
+        )
+        if not reachable:
+            assert needed is not None and runway is not None  # only False with both set
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.INSUFFICIENT_RUNWAY,
+                f"target is ~{needed:.0f} min away at the current pace but only "
+                f"{runway:.0f} min remain before the {spec.asset_class.value} wind-down; "
+                f"the position would be closed on the clock, not on the idea",
+                signals=list(idea.signals),
+                extra={**filter_data, "minutes_to_target": round(needed, 1)},
+            )
+            return False
+
         sizing = PositionSizer(self.settings).size(
             spec=spec,
             equity=account.equity,
@@ -1030,6 +1174,12 @@ class JarvisRunner:
             sl=spec.normalize_price(idea.stop_loss),
             tp=spec.normalize_price(idea.take_profit),
             risk_multiplier=self.risk.risk_multiplier(state),
+            # The largest single cost of being wrong on this account, and the
+            # gate cannot weigh it against commission and slippage unless it is
+            # handed the live number. A setup cannot exist without a tick — the
+            # playbooks refuse to score one — so the zero branch is a belt on a
+            # path that does not reach here.
+            spread_price=context.tick.spread if context.tick else 0.0,
         )
         if not sizing.approved:
             cycle_pk = self._record_skip(
@@ -1134,8 +1284,74 @@ class JarvisRunner:
         }
         if candidate.intelligence is not None:
             briefing["market_intelligence"] = candidate.intelligence.safe_dict()
+        # Do we already know what the reviewer is going to say, and why?
+        #
+        # `veto_memory` above catches the identical proposal coming back. This
+        # catches the case it cannot: five GBPCAD longs at five different
+        # entries, refused five times as counter-trend. The shape moved every
+        # time so the shape memory forgot; the flaw never moved at all.
+        #
+        # Only ever suppresses a paid call. Every deterministic gate has
+        # already run, and an approval on this pair wipes the pattern outright.
+        pattern = (
+            self.veto_patterns.established(symbol, idea.direction.name, self.clock.now())
+            if self.operation is not OperationMode.MONITOR
+            else None
+        )
+        if pattern is not None and self._cached_review(idea, context) is None:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AI_VETO_PATTERN,
+                f"{pattern.describe()}: {veto_readable(pattern.tag)}. Nothing about that "
+                f"has changed, so this is not worth asking again yet — an approval on "
+                f"{symbol} {idea.direction.name} clears it immediately.",
+                signals=list(idea.signals),
+                extra={**filter_data, "veto_pattern": pattern.tag},
+            )
+            return False
+
+        # Has this cycle already spent its review budget on better ideas?
+        #
+        # Asked here, before the payload is built and before anything is
+        # written, and only when the verdict is not already on file — a
+        # replayed verdict costs nothing and must not be rationed.
+        #
+        # Candidates arrive in the engine's order of conviction, so whatever
+        # reaches this point first is the best thing that survived every free
+        # gate. Spending the budget there and stopping is what a person with a
+        # fixed research budget does. The live account was doing the opposite:
+        # paying five cents to be told, in the reviewer's own words, that its
+        # "weakest setup of the 10 tradeable candidates" was weak.
+        remaining = self._review_budget_left()
+        if (
+            remaining == 0
+            and self.operation is not OperationMode.MONITOR
+            and self._cached_review(idea, context) is None
+        ):
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AI_BUDGET_SPENT,
+                f"rank {rank} of {of}; this cycle's {self.settings.ai.max_reviews_per_cycle} "
+                f"paid reviews went to higher-conviction setups. Not a judgement on this "
+                f"one — it was not asked about, and it is first in line next cycle.",
+                signals=list(idea.signals),
+                extra=filter_data,
+            )
+            return False
         if self.memory.has_evidence():
             briefing["learned_so_far"] = self.memory.briefing(symbol, idea.direction.name)
+        # The long memory on top of the local one. It reaches back past the JSON
+        # file's retention window and past the forty lessons it can hold, so the
+        # reviewer sees "this lesson has now arrived from nine separate trades"
+        # rather than the last handful. Empty when no database is configured,
+        # which leaves the payload exactly as it was.
+        remembered = self.brain.briefing(symbol, idea.direction.name)
+        if remembered:
+            briefing["learned_over_the_account_lifetime"] = remembered
         # Every theory's reading of this chart, including the ones that did not
         # win. What the losing theories saw is evidence the reviewer cannot get
         # anywhere else, and it is the part most likely to change the answer.
@@ -1242,6 +1458,13 @@ class JarvisRunner:
             # timeout would let a brief outage blank out the catalogue.
             if not advice.error:
                 self._remember_veto(idea, context, advice)
+                self.veto_patterns.remember(
+                    symbol,
+                    idea.direction.name,
+                    risks=advice.risks,
+                    thesis=advice.thesis,
+                    now=self.clock.now(),
+                )
                 self.memory.record_veto(symbol, idea.direction.name, self.clock.now())
             cycle_pk = self._record_skip(
                 cycle_id,
@@ -1255,8 +1478,12 @@ class JarvisRunner:
             self._record_review_snapshots(cycle_pk, symbol, request_payload)
             self._record_counterfactual(cycle_pk, idea, Reason.AI_VETO)
             return False
-        # Approved: whatever was held against this symbol no longer stands.
+        # Approved: whatever was held against this symbol no longer stands —
+        # neither the refused shape nor the reason behind it. The reviewer has
+        # just said yes to exactly the pair the pattern called hopeless, so the
+        # pattern is wrong by demonstration rather than merely weakened.
         self.veto_memory.clear(symbol, idea.direction.name)
+        self.veto_patterns.clear(symbol, idea.direction.name)
 
         cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
@@ -1331,6 +1558,44 @@ class JarvisRunner:
             trade_id,
             ticket=result.position_ticket,
             entry_price=result.filled_price,
+        )
+        # The taken side of the same record. Written after the broker confirms
+        # rather than beside the intent, so the long-term memory never carries
+        # a position that does not exist — the journal owns the crash window
+        # and is the thing reconciliation reads.
+        decision_id = self.brain.record_decision(
+            decided_at=self.clock.now(),
+            symbol=symbol,
+            reason=str(Reason.OK),
+            mode=self.settings.mode.value,
+            direction=idea.direction.name,
+            detail=f"opened at {result.filled_price:g}",
+            taken=True,
+            equity=account.equity,
+            conviction=idea.score,
+            playbook=(idea.signals[0] if idea.signals else ""),
+            entry=result.filled_price,
+            stop_loss=sizing.sl,
+            take_profit=sizing.tp,
+            filters=dict(filter_data),
+            ai={
+                "verdict": "approved",
+                "confidence": advice.confidence,
+                "reasoning": advice.thesis,
+            },
+            headlines=self._headlines_for(symbol),
+        )
+        self._brain_trades[result.position_ticket] = self.brain.record_trade_opened(
+            ticket=result.position_ticket,
+            decision_id=decision_id,
+            symbol=symbol,
+            direction=idea.direction.name,
+            volume=sizing.volume,
+            opened_at=self.clock.now(),
+            entry=result.filled_price,
+            stop_loss=sizing.sl,
+            take_profit=sizing.tp,
+            risk_money=sizing.actual_risk_money,
         )
         self.recorder.record_order_attempt(
             trade_id=trade_id, kind="ENTRY", symbol=symbol, result=result
@@ -1409,6 +1674,22 @@ class JarvisRunner:
             str(reason),
             detail,
             self.clock.now(),
+        )
+        # The refusals are the bulk of the evidence, and there are roughly two
+        # thousand of them for every trade taken. Without them the question
+        # "is this system refusing the right things" cannot be asked at all,
+        # and right now it is the question with the most money behind it.
+        self.brain.record_decision(
+            decided_at=self.clock.now(),
+            symbol=symbol,
+            reason=str(reason),
+            mode=self.settings.mode.value,
+            detail=detail,
+            taken=False,
+            equity=equity,
+            conviction=total_score,
+            filters=dict(extra or {}),
+            headlines=self._headlines_for(symbol),
         )
         return cycle_pk
 
@@ -1524,6 +1805,21 @@ class JarvisRunner:
                 r_at_action=event.r_at_action,
                 note=event.detail,
             )
+            # "What happened, when, and why" in the operator's words: BREAK_EVEN
+            # at 13:42 on +0.31R, PROFIT_BANKED at 13:58 because the move had
+            # stopped running. The journal holds this already; here it survives
+            # the machine and can be grouped across months.
+            brain_trade = self._brain_trades.get(event.ticket)
+            if brain_trade is not None:
+                self.brain.record_trade_event(
+                    trade_id=brain_trade,
+                    happened_at=self.clock.now(),
+                    action=event.action,
+                    reason=event.detail,
+                    r_at_action=event.r_at_action,
+                    price=event.exit_price,
+                    money=event.pnl_money,
+                )
             if event.remaining_volume is not None:
                 self.journal.update_open_trade_volume(event.ticket, event.remaining_volume)
             if event.exit_price is not None and event.pnl_money is not None:
@@ -1640,6 +1936,11 @@ class JarvisRunner:
                     "trigger": trigger,
                     "operation": self.operation.value,
                     "account_currency": self.broker.account().currency,
+                    # Without this the reviewer is told "you are 0.76 up" and
+                    # has no way to know whether that is most of a good day or
+                    # a rounding error. It is the difference between judging
+                    # money and judging a number.
+                    "account_equity": self.broker.account().equity,
                     "account_posture": self.posture.brief(),
                     "learned_so_far": self.memory.briefing(
                         position.symbol, position.direction.name
@@ -1651,6 +1952,14 @@ class JarvisRunner:
                     "mechanical_health": self._health_brief(position.ticket),
                     "peak_r": snapshot.peak_r,
                     "trade_record": self.journal.supervision_context(position.ticket),
+                    # The one place a headline's actual words earn their cost.
+                    # Everything in `filters.newsfeed` deliberately refuses to
+                    # read meaning, because a regex cannot and a sentiment
+                    # score at retail latency is buying what somebody else
+                    # already bought. A language model reads a headline
+                    # properly, and it is being asked about this position
+                    # anyway, so the marginal cost is a few hundred tokens.
+                    "headlines": self._headlines_for(position.symbol),
                 },
             )
             self._supervised_at[position.ticket] = now
@@ -1683,27 +1992,44 @@ class JarvisRunner:
                 # reconstructable from the ledger and this one must be too.
                 continue
             if verdict.action == "hold":
-                continue
-            fresh = next(
-                (
-                    item
-                    for item in self.broker.positions(
-                        symbol=position.symbol,
-                        magic=self.settings.system.magic_number,
-                    )
-                    if item.ticket == position.ticket
-                ),
-                None,
-            )
-            if fresh is None:
-                event = ManagementEvent(
-                    position.ticket,
-                    "AI_SUPERVISION_STALE",
-                    "position closed or disappeared at the broker while the adviser "
-                    "deliberated; no action sent",
-                )
+                event = None
             else:
-                event = self.manager.apply_supervision(fresh, verdict)
+                fresh = next(
+                    (
+                        item
+                        for item in self.broker.positions(
+                            symbol=position.symbol,
+                            magic=self.settings.system.magic_number,
+                        )
+                        if item.ticket == position.ticket
+                    ),
+                    None,
+                )
+                if fresh is None:
+                    event = ManagementEvent(
+                        position.ticket,
+                        "AI_SUPERVISION_STALE",
+                        "position closed or disappeared at the broker while the adviser "
+                        "deliberated; no action sent",
+                    )
+                else:
+                    event = self.manager.apply_supervision(fresh, verdict)
+            # Written whether or not it was a hold, and whether or not the risk
+            # layer carried it out. A "hold" that preceded a full stop-out is
+            # the most informative row this table can hold, and marking a
+            # refused verdict as acted-upon would credit the adviser for
+            # something that never happened.
+            self.brain.record_supervision(
+                trade_id=self._brain_trades.get(position.ticket),
+                asked_at=now,
+                symbol=position.symbol,
+                action=verdict.action,
+                confidence=verdict.confidence,
+                reasoning=verdict.reason,
+                applied=event is not None,
+                latency_ms=latency_ms,
+                model=verdict.model,
+            )
             if event is not None:
                 self._record_management([event])
 
@@ -1799,6 +2125,102 @@ class JarvisRunner:
         }
         write_json_atomic(self.health_file, payload)
 
+    def _entry_is_confirmed(
+        self, context: MarketContext, idea: TradeIdea
+    ) -> tuple[bool, float | None]:
+        """Is price already running against this trade at the moment of entry?
+
+        Returns `(ok, adverse_atr)`. The second value is how far price has
+        travelled the wrong way over the confirmation window, in ATR, and is
+        None whenever the question could not be asked.
+
+        The engine finds a level, forms a view, and the order goes out on the
+        same tick. Nothing in between ever looks at which way price is moving
+        *right now* — so a short is sent into a market climbing through the
+        very level it is short against. A live GBPJPY short was that exactly:
+        resistance broke upward and the system sold into the break.
+
+        This is the cheapest form of waiting for confirmation and the only one
+        that needs no state. It does not ask whether the market has proved the
+        thesis right; it asks whether the market has already started proving it
+        wrong. A setup refused here is not discarded — every cycle re-examines
+        it, and it is taken the moment the adverse move stops.
+
+        Fails open when it cannot measure. A missing timeframe is not evidence
+        that price is running against the trade, and the analysis gates that
+        judged the setup have all already passed.
+        """
+        config = self.settings.analysis.confluence
+        if not config.require_entry_confirmation or idea.direction is None:
+            return True, None
+        try:
+            timeframe = Timeframe.parse(config.confirmation_timeframe)
+            frame = context.bars(timeframe).df
+            reference = atr(frame, period=14)
+        except (KeyError, TradingSystemError, ValueError):
+            return True, None
+        if reference <= 0 or len(frame) <= config.confirmation_bars:
+            return True, None
+
+        closes = frame["close"].to_numpy()
+        travelled = float(closes[-1] - closes[-1 - config.confirmation_bars])
+        # Positive means the market has moved against the intended direction.
+        adverse = -travelled * int(idea.direction) / reference
+        return adverse <= config.confirmation_max_adverse_atr, adverse
+
+    def _widen_stop_for_costs(self, idea: TradeIdea, spec) -> TradeIdea:  # type: ignore[no-untyped-def]
+        """Push the stop out until commission and slippage are a small part of it.
+
+        Returns the idea unchanged when the stop is already wide enough, when
+        the check is switched off, or when the direction is missing.
+
+        The target is deliberately left where the analysis put it. Widening the
+        stop lowers reward-to-risk, and that loss is the honest price of making
+        the trade viable — `min_risk_reward` then decides whether it is still
+        worth taking. Moving the target to preserve the ratio would be
+        inventing a level the chart never offered.
+        """
+        limit = self.settings.risk.max_cost_share_of_risk
+        if limit <= 0 or idea.direction is None:
+            return idea
+
+        risk = abs(idea.entry - idea.stop_loss)
+        if risk <= 0:
+            return idea
+        sizer = PositionSizer(self.settings)
+        commission = self.settings.risk.commission_per_lot(spec.asset_class.value)
+        if sizer._cost_share(spec, risk, commission) <= limit:
+            return idea
+
+        # The distance at which cost is exactly the limit — solved rather than
+        # stepped outward, so it lands on the boundary instead of near it.
+        #
+        # And then a hair past it. Aiming at exactly the limit leaves the gate
+        # re-testing `cost > limit` on a number that has since been through a
+        # price normalisation and a float division, and it loses: a nine-pip
+        # stop arrived back as 8.99999 pips and was refused by the very rule
+        # the widening exists to satisfy. Widening that fails to clear the gate
+        # is worse than not widening, because it moves the stop as well.
+        cost_per_lot = commission + spec.money_per_lot(
+            spec.pips_to_price(
+                self.settings.risk.stop_slippage_pips.get(spec.asset_class.value, 0.0)
+            )
+        )
+        per_price_unit = spec.money_per_lot(risk) / risk
+        needed = cost_per_lot / (limit * _COST_MARGIN) / per_price_unit
+        widened = idea.entry - needed * int(idea.direction)
+
+        log.info(
+            "widening the stop so the costs are not the trade",
+            extra={
+                "event": "stop_widened_for_costs",
+                "symbol": idea.symbol,
+                "from_pips": round(spec.price_to_pips(risk), 1),
+                "to_pips": round(spec.price_to_pips(needed), 1),
+            },
+        )
+        return replace(idea, stop_loss=spec.normalize_price(widened))
+
     def _spread_is_affordable(
         self, context: MarketContext, entry: float, stop: float
     ) -> tuple[bool, float]:
@@ -1814,10 +2236,107 @@ class JarvisRunner:
         share = context.tick.spread / risk
         return share <= self.settings.analysis.confluence.max_spread_share_of_stop, share
 
+    def _target_is_reachable_in_time(
+        self, context: MarketContext, idea: TradeIdea, asset_class: str
+    ) -> tuple[bool, float | None, float | None]:
+        """Can this target be reached before we force the position flat?
+
+        Returns `(ok, minutes_needed, runway_minutes)`. Both numbers are None
+        when the question does not apply — a continuous market, the check
+        switched off, or no usable speed reading.
+
+        The runway *filter* enforces a flat floor because it never sees the
+        setup. This is the same idea with the setup in hand, and it is the
+        version that matters: forty-five minutes is plenty for a target one ATR
+        away and nowhere near enough for one five ATR away, and a rule that
+        cannot tell those apart is either blocking good trades or letting bad
+        ones through, usually both.
+
+        Time-to-target comes from the same normalisation the health reader and
+        the higher-timeframe conflict check already use. Net displacement over
+        n bars scales with `sqrt(n) x ATR`, not with n, because price does not
+        travel in a straight line — so covering d requires `(d / ATR)^2` bars,
+        not `d / ATR`. Using the linear form is what makes a distant target
+        look forty minutes away when it is really three hours away, and it is
+        why an entry can look reasonable at 19:50 and be hopeless in fact.
+
+        `travel_efficiency` divides the distance first, crediting the setup for
+        the directional read we think we have. It is an assumption, stated in
+        one place and configurable, rather than an optimism baked into the
+        shape of the formula.
+        """
+        config = self.settings.filters.runway
+        if not config.enabled or not config.require_reachable_target:
+            return True, None, None
+
+        runway_filter = self.filters.find(RunwayFilter)
+        if runway_filter is None:
+            return True, None, None
+        runway = runway_filter.session.minutes_of_runway(self.clock.now(), asset_class)
+        if runway is None:
+            return True, None, None
+
+        try:
+            timeframe = Timeframe.parse(config.speed_timeframe)
+            speed = atr(context.bars(timeframe).df, period=14)
+        except (KeyError, TradingSystemError, ValueError) as exc:
+            # No speed reading means no estimate. The flat floor in the filter
+            # has already cleared this moment, so falling through is not the
+            # same as skipping the check entirely.
+            log.debug(
+                "no speed reading for the reachability estimate",
+                extra={"symbol": context.symbol, "reason": str(exc)},
+            )
+            return True, None, runway
+
+        distance = abs(idea.take_profit - idea.entry)
+        if speed <= 0 or distance <= 0:
+            return True, None, runway
+
+        atr_units = distance / speed / config.travel_efficiency
+        bars_needed = atr_units**2
+        minutes_needed = bars_needed * timeframe.duration.total_seconds() / 60.0
+        return minutes_needed <= runway, minutes_needed, runway
+
     def _health_brief(self, ticket: int) -> dict[str, object]:
         """The fast layer's current read, for the adviser's payload."""
         health = self.manager.last_health.get(ticket)
         return health.summary() if health is not None else dict(_UNKNOWN_HEALTH)
+
+    def _headlines_for(self, symbol: str) -> list[dict[str, object]]:
+        """Recent wire copy touching this instrument, for the reviewer.
+
+        Reaches into the chain's own `HeadlineFilter` rather than building a
+        second `HeadlineService`. Two services would each hold their own window
+        and their own fetch schedule, so the gate and the reviewer would end up
+        disagreeing about what the news was — the same reasoning as
+        `FilterChain.find`'s docstring, and the reason that method exists.
+
+        Empty is the normal answer and an honest one. The layer ships disabled
+        until its feeds have been verified on the machine running it, and an
+        empty list reads downstream as "nothing supplied" rather than as
+        "nothing is happening".
+        """
+        gate = self.filters.find(HeadlineFilter)
+        if gate is None or not gate.config.enabled or not gate.service.is_usable():
+            return []
+        limit = gate.config.headlines_for_reviewer
+        if limit <= 0:
+            return []
+        try:
+            spec = self.broker.spec(symbol)
+        except Exception:  # noqa: BLE001 - a missing spec must not skip supervision
+            return []
+        currencies = symbol_currencies(spec.currency_base, spec.currency_profit)
+        now = self.clock.now()
+        return [
+            {
+                "minutes_ago": round(item.age_minutes(now)),
+                "source": item.source,
+                "headline": item.title,
+            }
+            for item in gate.service.recent_for(currencies, limit=limit)
+        ]
 
     def _build_playbooks(self) -> PlaybookEngine | None:
         """Assemble the short-horizon theories, or None when they are off."""
@@ -1833,8 +2352,41 @@ class JarvisRunner:
             chosen.append(
                 RangeFade(FadeConfig(max_spread_share_of_stop=config.max_spread_share_of_stop))
             )
+        if config.range_break:
+            chosen.append(
+                RangeBreak(BreakConfig(max_spread_share_of_stop=config.max_spread_share_of_stop))
+            )
+        if config.failed_break:
+            chosen.append(
+                FailedBreak(
+                    FailedBreakConfig(max_spread_share_of_stop=config.max_spread_share_of_stop)
+                )
+            )
+        if config.trend_pullback:
+            chosen.append(
+                TrendPullback(
+                    PullbackConfig(max_spread_share_of_stop=config.max_spread_share_of_stop)
+                )
+            )
         if not chosen:
             return None
+        # A floor above what any theory can express switches them all off while
+        # reading like a tightening. "Only take nine-out-of-ten setups" is an
+        # instruction nothing in this file can satisfy, because the highest
+        # score any of them returns is 95 and most cap in the eighties.
+        ceiling = max(playbook.max_conviction for playbook in chosen)
+        if config.min_conviction > ceiling:
+            log.warning(
+                "conviction floor %.0f is above every playbook's ceiling (%.0f); "
+                "no short-horizon theory can ever qualify",
+                config.min_conviction,
+                ceiling,
+                extra={
+                    "event": "conviction_floor_unreachable",
+                    "min_conviction": config.min_conviction,
+                    "highest_ceiling": ceiling,
+                },
+            )
         log.info(
             "short-horizon playbooks active: %s",
             ", ".join(playbook.name for playbook in chosen),
@@ -2040,20 +2592,11 @@ class JarvisRunner:
         only ever replays a veto or an approval of an unchanged setup.
         """
         key = self._review_key(idea, context)
-        if key is not None:
-            cached = self._review_cache.get(key)
-            if cached is not None:
-                log.info(
-                    "reusing the AI verdict for an unchanged setup",
-                    extra={
-                        "event": "ai_review_reused",
-                        "symbol": idea.symbol,
-                        "direction": idea.direction.name if idea.direction else None,
-                        "approved": cached.approved,
-                    },
-                )
-                return cached
+        cached = self._cached_review(idea, context)
+        if cached is not None:
+            return cached
 
+        self._reviews_this_cycle += 1
         advice = self.advisor.review(idea, context, proposal, memory)
         if key is not None:
             if len(self._review_cache) >= _REVIEW_CACHE_ENTRIES:
@@ -2061,6 +2604,41 @@ class JarvisRunner:
                 del self._review_cache[next(iter(self._review_cache))]
             self._review_cache[key] = advice
         return advice
+
+    def _cached_review(self, idea: TradeIdea, context: MarketContext) -> Advice | None:
+        """A verdict already on file for this exact setup, or None.
+
+        Separate from `_reviewed` so the budget gate can ask "would this cost
+        anything" without committing to the call. A replayed verdict is free
+        and must never consume budget — charging for it would make a cheap
+        cycle look expensive and starve the candidates that do need asking.
+        """
+        key = self._review_key(idea, context)
+        if key is None:
+            return None
+        cached = self._review_cache.get(key)
+        if cached is None:
+            return None
+        log.info(
+            "reusing the AI verdict for an unchanged setup",
+            extra={
+                "event": "ai_review_reused",
+                "symbol": idea.symbol,
+                "direction": idea.direction.name if idea.direction else None,
+                "approved": cached.approved,
+            },
+        )
+        # Flagged, not stripped. The token counts stay on the row so the audit
+        # trail still shows which call this verdict came from; what must not
+        # happen is the spend report charging for them a second time.
+        return replace(cached, replayed=True)
+
+    def _review_budget_left(self) -> int | None:
+        """Paid reviews still allowed this cycle. None means no budget is set."""
+        budget = self.settings.ai.max_reviews_per_cycle
+        if budget <= 0:
+            return None
+        return max(0, budget - self._reviews_this_cycle)
 
     def _review_key(
         self, idea: TradeIdea, context: MarketContext
@@ -2161,13 +2739,26 @@ class JarvisRunner:
         # configured. It is the account's own arithmetic, not an opinion, and
         # it is the part of the record that matters most: switching the adviser
         # off should not blind the system to its own P&L.
+        realised_r = pnl_money / risk_money if risk_money > 0 else 0.0
         self.memory.record_outcome(
             str(row["symbol"]),
             str(row["direction"]),
-            pnl_money / risk_money if risk_money > 0 else 0.0,
+            realised_r,
             self.clock.now(),
             trade_id=trade_id,
         )
+        ticket = int(row["ticket"]) if row["ticket"] is not None else None
+        if ticket is not None:
+            self.brain.record_trade_closed(
+                ticket=ticket,
+                closed_at=closed_at or self.clock.now(),
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                pnl_money=pnl_money,
+                pnl_r=realised_r,
+                mfe_r=float(row["mfe_r"]) if row["mfe_r"] is not None else None,
+                mae_r=float(row["mae_r"]) if row["mae_r"] is not None else None,
+            )
         if isinstance(self.advisor, DisabledAdvisor) or self.memory.has_reflection(trade_id):
             return
         outcome = {
@@ -2188,6 +2779,24 @@ class JarvisRunner:
             "exit_reason": exit_reason,
             "opened_at": str(row["opened_at"]),
             "closed_at": closed_at.isoformat() if closed_at is not None else None,
+            # -- what actually happened, rather than only how it ended --------
+            #
+            # Everything above is a departure and an arrival board. A trade
+            # that reached +0.9R, had its stop pulled to break even, drifted
+            # for forty minutes and closed flat is, in that summary, identical
+            # to one that never moved — and the reflection was being asked what
+            # went wrong with only that to look at. No wonder the lessons were
+            # thin.
+            #
+            # These four are the journey.
+            "best_it_ever_reached_r": float(row["mfe_r"]) if row["mfe_r"] is not None else None,
+            "worst_it_ever_reached_r": float(row["mae_r"]) if row["mae_r"] is not None else None,
+            "share_of_its_best_it_kept": (
+                round(realised_r / float(row["mfe_r"]), 2)
+                if row["mfe_r"] and float(row["mfe_r"]) > 0
+                else None
+            ),
+            "what_the_system_did_and_when": self.journal.management_actions_for(int(row["id"])),
         }
         cycle_pk = dict(row).get("cycle_pk")
         if cycle_pk is not None:
@@ -2211,6 +2820,20 @@ class JarvisRunner:
                 self.clock.now(),
                 trade_id=trade_id,
             )
+            if reflection.lessons:
+                # And into the long memory, one row per lesson rather than one blob
+                # per reflection. One row each is what turns "this has now arrived
+                # from nine separate trades" into a GROUP BY, which is the whole
+                # difference between a pattern and an anecdote.
+                self.brain.record_lessons(
+                    reflection.lessons,
+                    learned_at=self.clock.now(),
+                    symbol=str(row["symbol"]),
+                    direction=str(row["direction"]),
+                    pnl_r=realised_r,
+                    trade_id=self._brain_trades.get(int(row["ticket"] or 0)),
+                )
+                self._brain_trades.pop(int(row["ticket"] or 0), None)
         try:
             self.ai_ledger.append(
                 "posttrade_reflection",

@@ -76,6 +76,16 @@ class SessionFilter(Filter):
             if config.evening_flat_from
             else None
         )
+        # Per-asset-class overrides, each strictly earlier than the FX one (the
+        # config validator refuses anything later). An index does not follow the
+        # FX rollover: its cash session closes at 20:00 UTC and the CFD quote
+        # widens from that moment, so holding to 20:15 spends the last quarter
+        # of an hour in the widest spread of the day.
+        self.evening_flat_by_class = {
+            name: Window(f"evening-flat-{name}", _parse(when), self.rollover.end)
+            for name, when in config.evening_flat_by_class.items()
+        }
+
         self.continuous_maintenance = Window(
             "continuous-maintenance",
             _parse(config.continuous_maintenance_block[0]),
@@ -89,6 +99,76 @@ class SessionFilter(Filter):
         )
 
     # -- queries -----------------------------------------------------------
+
+    def evening_flat_window(self, asset_class: str) -> Window | None:
+        """The wind-down that applies to this asset class."""
+        if asset_class in self.config.continuous_asset_classes:
+            return None
+        if asset_class in self.evening_flat_by_class:
+            return self.evening_flat_by_class[asset_class]
+        if asset_class in self.config.evening_flat_asset_classes:
+            return self.evening_flat
+        return None
+
+    def minutes_of_runway(self, moment: datetime, asset_class: str) -> float | None:
+        """Minutes left before *we* force this instrument flat.
+
+        The deadline is whichever comes first: this asset class's evening
+        wind-down, or the Friday cut-off on a Friday. `None` means no deadline
+        applies — a continuous market, or a profile with the wind-down off.
+
+        This is the number the session gate never had. `check` answers "are we
+        inside a blocked window", which is a different question, and it leaves
+        the minute before the window wide open: an entry at 20:14 clears every
+        gate and is flattened by us at 20:15, having paid the spread twice to
+        find out nothing.
+
+        A deadline already behind us returns 0.0 rather than tomorrow's, which
+        keeps the failure direction safe. `check` blocks those moments anyway,
+        so the only way to see 0.0 is a caller asking out of band — and for
+        that caller, "no runway" is the honest answer.
+        """
+        if asset_class in self.config.continuous_asset_classes:
+            return None
+
+        deadlines: list[time] = []
+        window = self.evening_flat_window(asset_class)
+        if window is not None:
+            deadlines.append(window.start)
+        if self.friday_cutoff is not None and moment.weekday() == 4:
+            deadlines.append(self.friday_cutoff)
+        if not deadlines:
+            return None
+
+        current = moment.timetz().replace(tzinfo=None)
+        return min(_minutes_until(current, deadline) for deadline in deadlines)
+
+    def should_be_flat(self, moment: datetime, asset_class: str) -> bool:
+        """Is this a moment we have already decided not to be in the market for?
+
+        The same deadline set `minutes_of_runway` counts down to, asked as a
+        yes or no. Both have to be one definition, and they were not.
+
+        The hole: `block_friday_after` refuses entries from 19:00 on a Friday
+        because of the weekend, and the runway correctly reports zero minutes
+        left from then. But the flatten only knew about the generic evening
+        window at 20:15, so for seventy-five minutes the system refused to open
+        anything — on the grounds that there was no time left to open it in —
+        while leaving whatever was already on to sit there. A losing position
+        in particular just waited, in exactly the thin Friday book the gate
+        exists to avoid.
+
+        Continuous markets are exempt here as everywhere: crypto has no FX
+        rollover and no weekend.
+        """
+        if asset_class in self.config.continuous_asset_classes:
+            return False
+        window = self.evening_flat_window(asset_class)
+        if window is not None and window.contains(moment):
+            return True
+        if self.friday_cutoff is None or moment.weekday() != 4:
+            return False
+        return moment.timetz().replace(tzinfo=None) >= self.friday_cutoff
 
     def active_sessions(self, moment: datetime) -> tuple[str, ...]:
         """Sessions currently open. Overlaps are real and reported as such."""
@@ -167,6 +247,15 @@ class SessionFilter(Filter):
                     session="broker-maintenance",
                     asset_class=asset_class,
                 )
+            wind_down = self.evening_flat_window(asset_class)
+            if wind_down is not None and wind_down.contains(now):
+                return FilterVerdict.block(
+                    self.name,
+                    Reason.EVENING_WIND_DOWN,
+                    f"{asset_class} evening wind-down ({wind_down.describe()} UTC)",
+                    session=wind_down.name,
+                    asset_class=asset_class,
+                )
             return FilterVerdict.allow(
                 self.name,
                 f"{asset_class} uses broker-hours profile; quote freshness and spread "
@@ -192,11 +281,12 @@ class SessionFilter(Filter):
         # Evening wind-down. Strictly wider than the rollover block, and checked
         # first so the message names the real reason: not "we are inside the
         # rollover" but "we are going flat for the evening".
-        if self.evening_flat is not None and self.evening_flat.contains(now):
+        flat_window = self.evening_flat_window(asset_class)
+        if flat_window is not None and flat_window.contains(now):
             return FilterVerdict.block(
                 self.name,
                 Reason.EVENING_WIND_DOWN,
-                f"evening wind-down ({self.evening_flat.describe()} UTC); the book thins "
+                f"evening wind-down ({flat_window.describe()} UTC); the book thins "
                 f"and spreads widen from here, and open positions are being flattened",
                 session=label,
                 asset_class=asset_class,
@@ -252,6 +342,19 @@ class SessionFilter(Filter):
             session_overlap=overlap,
             asset_class=asset_class,
         )
+
+
+def _minutes_until(current: time, deadline: time) -> float:
+    """Minutes from `current` to `deadline` on the same day, floored at zero.
+
+    Deliberately does not roll over to tomorrow. Every deadline this is used
+    for is an end-of-day one, so a deadline that reads as "past" means the day
+    is over — answering with 1400 minutes of runway would be the one wrong
+    answer that lets a trade through.
+    """
+    minutes = (deadline.hour - current.hour) * 60 + (deadline.minute - current.minute)
+    minutes -= current.second / 60.0
+    return max(0.0, minutes)
 
 
 def _parse(text: str) -> time:
