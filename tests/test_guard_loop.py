@@ -220,3 +220,70 @@ def test_an_unread_position_is_published_as_unknown(tmp_path: Path) -> None:
     jarvis.guard_tick()
     (entry,) = json.loads(jarvis.health_file.read_text())["positions"]
     assert entry["verdict"] == "unknown"
+
+
+class TestASlowCycleCannotStarveTheGuard:
+    """The bug that made the whole fast layer dead code on the live account.
+
+    The deadline was `cycle_start + loop_interval_seconds`. Live cycles run 55
+    to 121 seconds against a 30-second interval, so by the time `run_once`
+    returned the deadline was already tens of seconds in the past, `remaining
+    <= 0` fired, and the guard returned without ticking once.
+
+    Give-back, peak stall, profit lock, the health reading: all written, all
+    tested, all deployed, none of them ever executed on an open position. The
+    deck said so out loud once it started reporting the age of a reading —
+    "this measurement is 9 minutes old" — on a loop that is supposed to run
+    every second.
+    """
+
+    @staticmethod
+    def service(*, interval: float = 30.0, floor: float = 20.0):  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        from runner.service import JarvisRunner
+
+        instance = JarvisRunner.__new__(JarvisRunner)
+        instance.settings = SimpleNamespace(  # type: ignore[assignment]
+            system=SimpleNamespace(loop_interval_seconds=interval, min_guard_seconds=floor)
+        )
+        return instance
+
+    def test_a_fast_cycle_keeps_pacing_on_the_interval(self) -> None:
+        """Nothing changes when the cycle fits: the next one starts on time."""
+        import time as clock
+
+        service = self.service()
+        started = clock.monotonic()
+        deadline = service._guard_deadline(started)
+
+        assert deadline == pytest.approx(started + 30.0, abs=0.5)
+
+    def test_a_slow_cycle_still_gets_its_guard_window(self) -> None:
+        """A 121-second cycle used to yield a deadline 91 seconds in the past."""
+        import time as clock
+
+        service = self.service()
+        started = clock.monotonic() - 121.0
+        deadline = service._guard_deadline(started)
+
+        assert deadline > clock.monotonic()
+        assert deadline == pytest.approx(clock.monotonic() + 20.0, abs=0.5)
+
+    def test_the_floor_is_never_below_the_interval_on_a_fast_cycle(self) -> None:
+        """The floor adds time; it never takes it away."""
+        import time as clock
+
+        service = self.service(interval=30.0, floor=5.0)
+        started = clock.monotonic()
+
+        assert service._guard_deadline(started) == pytest.approx(started + 30.0, abs=0.5)
+
+    def test_setting_the_floor_to_zero_restores_the_old_behaviour(self) -> None:
+        """Deliberately possible, and deliberately not the default."""
+        import time as clock
+
+        service = self.service(floor=0.0)
+        started = clock.monotonic() - 121.0
+
+        assert service._guard_deadline(started) <= clock.monotonic()

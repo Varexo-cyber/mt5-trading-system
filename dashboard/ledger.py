@@ -254,14 +254,28 @@ HEALTH_LABELS = {
     "deteriorating": ("verslechtert", "⚠️"),
     "broken": ("thesis gebroken", "🚨"),
     "unknown": ("nog niet gelezen", "…"),
+    # Not a reading — the absence of one. The trade is held by its broker stop
+    # and nothing in the fast layer is watching it.
+    "unmanaged": ("NIET BEHEERD — alleen de broker-stop houdt deze", "🚨"),
 }
 
 
-def live_health(path: Path) -> dict[int, dict[str, Any]]:
+#: Beyond this the published read is old enough that showing it as "live" would
+#: be a lie. The guard writes every second, so anything past half a minute means
+#: the guard is not ticking — not that the market is quiet.
+HEALTH_STALE_SECONDS = 30.0
+
+
+def live_health(path: Path, now: datetime | None = None) -> dict[int, dict[str, Any]]:
     """The per-second read, keyed by ticket, as the runner last published it.
 
-    Returns an empty map when the file is missing or unreadable — the runner may
-    simply not be running, and an empty panel is the honest rendering of that.
+    Each entry carries `age_seconds`, measured from the file's own
+    `recorded_at`. Without it a frozen file is indistinguishable from a live
+    one, and the panel would keep showing a verdict from twenty minutes ago
+    with a green tick beside it — the most confidently wrong state available.
+
+    Returns an empty map when the file is missing or unreadable. That is a real
+    answer too, and `health_caption` says which one it is.
     """
     if not path.exists():
         return {}
@@ -272,17 +286,48 @@ def live_health(path: Path) -> dict[int, dict[str, Any]]:
         return {}
     if not isinstance(entries, list):
         return {}
+
+    age = None
+    written = payload.get("recorded_at")
+    if isinstance(written, str):
+        try:
+            moment = datetime.fromisoformat(written)
+        except ValueError:
+            moment = None
+        if moment is not None:
+            age = max(0.0, ((now or datetime.now(UTC)) - moment).total_seconds())
+
     return {
-        int(entry["ticket"]): entry
+        int(entry["ticket"]): {**entry, "age_seconds": age}
         for entry in entries
         if isinstance(entry, dict) and "ticket" in entry
     }
 
 
-def health_caption(entry: dict[str, Any] | None) -> str:
-    """One line an operator can read at a glance, signals included."""
+def health_caption(entry: dict[str, Any] | None, *, jarvis_running: bool = True) -> str:
+    """One line an operator can read at a glance, signals included.
+
+    A missing entry used to render as "geen live oordeel (draait Jarvis?)" for
+    every possible cause at once. Seen on a live deck beside a mode tile reading
+    EXPERIMENTAL_LIVE, that question answers itself and the operator is left
+    concluding the panel is broken.
+
+    The causes are different problems with different fixes, so they get
+    different sentences: Jarvis stopped, the guard has stopped ticking, or the
+    position is open but nothing is managing it.
+    """
     if not entry:
-        return "…  geen live oordeel (draait Jarvis?)"
+        if not jarvis_running:
+            return "…  geen live oordeel — Jarvis draait niet"
+        return (
+            "⚠️  Jarvis draait, maar deze positie staat niet in de laatste meting. "
+            "Meestal betekent dat de guard-lus niet rondkomt — check de log op "
+            "`guard_tick_failed`."
+        )
+
+    age = entry.get("age_seconds")
+    stale = isinstance(age, int | float) and age > HEALTH_STALE_SECONDS
+
     label, icon = HEALTH_LABELS.get(str(entry.get("verdict")), (str(entry.get("verdict")), "•"))
     parts = [f"{icon}  **{label}**"]
     action = str(entry.get("action", "hold"))
@@ -290,9 +335,34 @@ def health_caption(entry: dict[str, Any] | None) -> str:
         parts.append(
             {"tighten": "stop aantrekken", "secure": "winst pakken", "exit": "eruit"}[action]
         )
+    if entry.get("verdict") == "unmanaged" and entry.get("reason"):
+        parts.append(str(entry["reason"]))
     for signal in entry.get("signals", []) or []:
         parts.append(str(signal.get("detail", "")))
+    if stale:
+        parts.append(f"⏳ deze meting is {float(age) / 60:.0f} min oud, niet live")
     return "  ·  ".join(part for part in parts if part)
+
+
+def operation_label(running: bool, heartbeat: dict[str, Any]) -> str:
+    """What the mode tile shows: OFF, STARTING, or the running operation.
+
+    Three states, because the two obvious ones are not enough. The heartbeat is
+    written when a cycle *completes*, and the first cycle on a cold cache pulls
+    every timeframe for the whole catalogue — minutes in which the process is
+    up, the pid file is on disk, and no heartbeat exists yet.
+
+    Collapsing that into OFF is the worst available answer on a live account:
+    it reads as "nothing is running" at precisely the moment an operator is
+    checking whether the system they just started came up correctly, and the
+    natural response to it — start it again — puts two instances on one account
+    fighting over the same positions.
+    """
+    if not running:
+        return "OFF"
+    if not heartbeat:
+        return "STARTING"
+    return str(heartbeat.get("operation", "OFF")).upper()
 
 
 def recent_management(path: Path, limit: int = 25) -> list[dict[str, Any]]:

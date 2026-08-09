@@ -33,7 +33,9 @@ def run(*args: str) -> subprocess.CompletedProcess[str]:
 def test_the_risk_and_drawdown_flags_are_optional() -> None:
     """They may only ever equal the build's constants, so requiring them was
     ceremony that could only be got wrong — and was."""
-    result = run("--account", "1", "--confirm", PHRASE)
+    # Prove argparse accepted the omitted numeric flags without waiting for a
+    # real MT5 IPC connection inside a unit test process.
+    result = run("--account", "1", "--confirm", "wrong on purpose")
     assert "the following arguments are required" not in result.stderr
 
 

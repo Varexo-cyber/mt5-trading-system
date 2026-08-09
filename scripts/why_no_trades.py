@@ -56,6 +56,13 @@ _ADVICE = {
         "lot rounds below the broker minimum. Correct behaviour — rounding up would "
         "silently multiply your risk. Nothing to fix unless equity has grown."
     ),
+    "SL_TOO_TIGHT_FOR_COSTS": (
+        "The stop is legal at the broker and still too narrow to be worth taking: "
+        "commission plus the slippage a stop-out actually suffers would be a large "
+        "share of the risk. Expected on scalp-width setups. It is the gate that "
+        "stops a -1.00R plan returning -1.48R; loosen `risk.max_cost_share_of_risk` "
+        "only if you are willing to have the cost of trading decide the outcome."
+    ),
     "SL_TOO_WIDE_FOR_ACCOUNT": (
         "The structural stop is wider than this account can carry. Raise "
         "`max_sl_pips` only if the arithmetic genuinely allows it."
@@ -65,6 +72,47 @@ _ADVICE = {
     "NEWS_CALENDAR_UNAVAILABLE": (
         "No economic calendar, so every entry is blocked by design. Run "
         "`python scripts/verify_calendar.py` — this one WILL stop all trading."
+    ),
+    "AWAITING_CONFIRMATION": (
+        "Price is running against the trade at the moment of entry — a short into a "
+        "rising market, or a long into a falling one. Not a judgement on the setup: "
+        "it may be right and simply early, and it is re-checked every cycle and taken "
+        "as soon as the adverse move stops. If it dominates all day, either the "
+        "analysis is consistently calling turns too soon or "
+        "`analysis.confluence.confirmation_max_adverse_atr` is too tight."
+    ),
+    "CURRENCY_CONCENTRATION": (
+        "A second position leaning the same way on a currency already in the book. "
+        "GBPAUD short and GBPJPY short are not two trades, they are one GBP short "
+        "with a second lot on it. Expected when the whole market is moving on one "
+        "currency; raise `filters.currency_exposure.max_positions_per_currency` only "
+        "if you actually want that bet doubled."
+    ),
+    "AI_VETO_PATTERN_KNOWN": (
+        "Claude has refused this symbol and direction several times for the same "
+        "underlying reason, so the question was not bought again. Not a judgement on "
+        "this setup — it was recognised, not reviewed, and an approval on the same "
+        "pair clears the pattern immediately. If it dominates a whole day, the "
+        "instrument selection is the problem rather than this gate."
+    ),
+    "AI_REVIEW_BUDGET_SPENT": (
+        "The cycle's paid reviews went to higher-conviction setups. Not a judgement "
+        "on these — they were never asked about, and they are first in line next "
+        "cycle. Only worth changing if the top-ranked candidates are consistently "
+        "rejected by a later gate: raise `ai.max_reviews_per_cycle`, or 0 for no cap."
+    ),
+    "INSUFFICIENT_RUNWAY": (
+        "Too close to the evening wind-down for a trade to finish — either under "
+        "`filters.runway.min_runway_minutes` of clear market left, or a target that "
+        "needs longer than the time remaining at the market's current pace. Expected "
+        "in the last hour of the session; if it dominates all day, the floor or "
+        "`filters.runway.travel_efficiency` is set too conservatively."
+    ),
+    "MARKET_TOO_QUIET": (
+        "The market is ranging well below its own recent normal, so a target priced "
+        "in ATR cannot be reached in any reasonable time. Expected during lulls and "
+        "holidays; if it dominates for hours across every market, lower "
+        "`filters.liveliness.min_activity_ratio`."
     ),
     "MAX_TRADES_PER_DAY": "Daily trade cap reached. Set `risk.max_trades_per_day: 0` to remove it.",
     "DAILY_LOSS_LIMIT_HIT": "Daily loss limit hit; paused until the next trading day.",

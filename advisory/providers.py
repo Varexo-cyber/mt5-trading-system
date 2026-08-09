@@ -116,6 +116,15 @@ class Advice:
     #: Token counts for this call. Carried on the verdict because that is what
     #: reaches the audit ledger; nothing else in the pipeline sees the response.
     usage: dict[str, int] = field(default_factory=dict)
+    #: True when this verdict came from the review cache rather than the API.
+    #:
+    #: A replay is a real decision and belongs in the audit trail, but it cost
+    #: nothing. Without this flag it carries the *original* call's token counts
+    #: into the ledger, and the spend report bills them a second time: nine
+    #: rows on the deck where five were paid, and a per-call figure computed
+    #: over the wrong denominator. The operator then reads a cost they are not
+    #: incurring and reaches for a fix that is not needed.
+    replayed: bool = False
 
     @property
     def below_threshold(self) -> bool:
@@ -754,6 +763,62 @@ _BARS_SENT = {"MN1": 12, "W1": 20, "D1": 40, "H4": 42, "H1": 48, "M15": 32, "M5"
 _BARS_SENT_DEFAULT = 40
 
 
+#: What one row of `rows` means. Sent once per timeframe instead of repeating
+#: five JSON keys on every bar.
+_BAR_COLUMNS = "open,high,low,close,tick_volume"
+
+
+def _chart(series: Any, count: int) -> dict[str, object]:
+    """One timeframe as a compact table: the same bars, half the tokens.
+
+    The obvious encoding — one JSON object per bar with named keys and an ISO
+    timestamp — spends most of its bytes on the same eight strings repeated
+    forty times. Measured on a 48-bar H1 block: 4,317 characters as objects
+    against 2,157 as rows, and bars are 91% of the whole request. Nothing is
+    dropped; the same numbers arrive at half the price.
+
+    Per-bar timestamps go because they carry no information. `Series` is
+    gap-checked and strictly increasing by construction, so the bars are
+    contiguous at a known interval — given the timeframe and the last bar's
+    close time, every other timestamp is arithmetic. The two ends are still
+    sent, both because the model should not have to infer the window it is
+    looking at and because a mismatch between them and `bars_sent` is a bug
+    that ought to be visible.
+    """
+    frame = series.df
+    recent = frame.tail(count)
+    rows = [
+        [
+            round(float(row["open"]), 6),
+            round(float(row["high"]), 6),
+            round(float(row["low"]), 6),
+            round(float(row["close"]), 6),
+            int(row.get("tick_volume", 0)),
+        ]
+        for _, row in recent.iterrows()
+    ]
+    first = recent.index[0] if len(recent) else None
+    return {
+        "columns": _BAR_COLUMNS,
+        "bar_interval": series.timeframe.value,
+        "oldest_bar_opened": _iso(first),
+        "last_closed_bar": series.last_bar_time.isoformat(),
+        "rows": rows,
+        "bars_sent": len(rows),
+        "history_available": len(series),
+        "atr14": round(_atr(frame), 6),
+        "range_high": round(float(recent["high"].max()), 6) if len(recent) else None,
+        "range_low": round(float(recent["low"].min()), 6) if len(recent) else None,
+    }
+
+
+def _iso(index: Any) -> str | None:
+    if index is None:
+        return None
+    moment = index.to_pydatetime() if hasattr(index, "to_pydatetime") else index
+    return moment.isoformat().replace("+00:00", "Z")
+
+
 def _atr(frame: Any, period: int = 14) -> float:
     """Wilder-style ATR over the last `period` bars, in price units."""
     if len(frame) < 2:
@@ -817,34 +882,10 @@ def build_review_payload(
     not see whether price was running into a level, or whether the target was
     somewhere this market ever goes.
     """
-    timeframes: dict[str, object] = {}
-    for timeframe, series in context.series.items():
-        frame = series.df
-        count = _BARS_SENT.get(timeframe.value, _BARS_SENT_DEFAULT)
-        recent = frame.tail(count)
-        bars = [
-            {
-                "t": (index.to_pydatetime() if hasattr(index, "to_pydatetime") else index)
-                .isoformat()
-                .replace("+00:00", "Z"),
-                "o": round(float(row["open"]), 6),
-                "h": round(float(row["high"]), 6),
-                "l": round(float(row["low"]), 6),
-                "c": round(float(row["close"]), 6),
-                "v": int(row.get("tick_volume", 0)),
-            }
-            for index, row in recent.iterrows()
-        ]
-        atr = _atr(frame)
-        timeframes[timeframe.value] = {
-            "closed_bars": bars,
-            "bars_sent": len(bars),
-            "history_available": len(series),
-            "last_closed_bar": series.last_bar_time.isoformat(),
-            "atr14": round(atr, 6),
-            "range_high": round(float(recent["high"].max()), 6),
-            "range_low": round(float(recent["low"].min()), 6),
-        }
+    timeframes: dict[str, object] = {
+        timeframe.value: _chart(series, _BARS_SENT.get(timeframe.value, _BARS_SENT_DEFAULT))
+        for timeframe, series in context.series.items()
+    }
 
     tick = None
     if context.tick is not None:
@@ -919,30 +960,10 @@ def build_supervision_payload(
     multiple, age, distance to stop and target in ATR) because that is what the
     decision turns on, not the absolute price.
     """
-    timeframes: dict[str, object] = {}
-    for timeframe, series in context.series.items():
-        frame = series.df
-        count = _BARS_SENT.get(timeframe.value, _BARS_SENT_DEFAULT)
-        recent = frame.tail(count)
-        timeframes[timeframe.value] = {
-            "closed_bars": [
-                {
-                    "t": (index.to_pydatetime() if hasattr(index, "to_pydatetime") else index)
-                    .isoformat()
-                    .replace("+00:00", "Z"),
-                    "o": round(float(row["open"]), 6),
-                    "h": round(float(row["high"]), 6),
-                    "l": round(float(row["low"]), 6),
-                    "c": round(float(row["close"]), 6),
-                    "v": int(row.get("tick_volume", 0)),
-                }
-                for index, row in recent.iterrows()
-            ],
-            "atr14": round(_atr(frame), 6),
-            "range_high": round(float(recent["high"].max()), 6),
-            "range_low": round(float(recent["low"].min()), 6),
-            "last_closed_bar": series.last_bar_time.isoformat(),
-        }
+    timeframes: dict[str, object] = {
+        timeframe.value: _chart(series, _BARS_SENT.get(timeframe.value, _BARS_SENT_DEFAULT))
+        for timeframe, series in context.series.items()
+    }
 
     sign = int(position.direction)
     price = 0.0
@@ -972,6 +993,30 @@ def build_supervision_payload(
         peak_r = 0.0
     giveback_r = max(0.0, peak_r - (r_now or 0.0)) if peak_r > 0 else 0.0
     giveback_fraction = giveback_r / peak_r if peak_r > 0 else 0.0
+    # What the position is worth in money, at the three prices that matter.
+    #
+    # The payload used to carry `unrealised_money` and the account currency and
+    # nothing else, so the reviewer was told "you are 0.76 up" with no way to
+    # know whether that is a real result or a rounding error. On a hundred-euro
+    # account it is most of a good day; on ten thousand it is noise. Judging it
+    # needs the size of the account, and judging whether to keep waiting needs
+    # to know what is still on the table against what is already in hand.
+    money = position.profit + position.swap
+    equity = float((extra or {}).get("account_equity") or 0.0)
+    per_unit = None
+    moved = (price - position.price_open) * sign
+    if price and abs(moved) > 1e-12:
+        per_unit = money / moved
+    to_target = (
+        round(abs(position.tp - price) * per_unit, 2)
+        if per_unit and position.tp and price
+        else None
+    )
+    at_stop = (
+        round((position.sl - position.price_open) * sign * per_unit, 2)
+        if per_unit and position.sl
+        else None
+    )
 
     return {
         "symbol": position.symbol,
@@ -982,7 +1027,12 @@ def build_supervision_payload(
         "current_stop": position.sl,
         "current_target": position.tp,
         "price_now": price,
-        "unrealised_money": round(position.profit + position.swap, 2),
+        "unrealised_money": round(money, 2),
+        #: The three numbers the "should I take it" question actually turns on.
+        "account_equity": round(equity, 2) if equity else None,
+        "unrealised_pct_of_account": (round(money / equity * 100, 2) if equity else None),
+        "money_still_to_win_if_target_hit": to_target,
+        "money_if_the_current_stop_is_hit": at_stop,
         "unrealised_r": round(r_now, 2) if r_now is not None else None,
         "initial_risk_distance": round(risk, 6),
         "original_stop": original_stop,
@@ -1323,7 +1373,10 @@ modules, or because a score is not corroborated by modules that look for somethi
 
 YOU HAVE THE CHARTS. Every timeframe from the weekly down to the one-minute arrives as closed
 OHLC bars — dozens per frame, not a summary — with each frame's ATR and its high and low over
-that window. Read them. The higher frames say whether there is a trend and where the structure
+that window. Each frame is a table: `columns` names the fields, and `rows` holds one array per
+bar in that order, oldest first. Bars are contiguous at `bar_interval`, so `oldest_bar_opened`
+and `last_closed_bar` fix the window and every bar in between follows from the interval. Read
+them. The higher frames say whether there is a trend and where the structure
 is; H1 and M15 say whether the entry sits at a sensible place in it; M5 and M1 say whether price
 is moving toward the entry or away from it right now. An answer that could have been written from
 the module scores alone means the bars went unread.
@@ -1481,10 +1534,40 @@ For a directional nomination provide concrete invalidation and target prices whe
 evidence supports them; otherwise null. Always state the best counter-thesis and what would make
 you wait or reconsider."""
 
-_REFLECTION_INSTRUCTIONS = """Review one closed trade as a process auditor. Separate outcome luck
-from decision quality. Identify evidence-supported lessons and process flags only. Never recommend
-raising risk, martingale, averaging down, grid trading, or changing production parameters. This
-reflection is logged for research and cannot directly modify the trading system."""
+_REFLECTION_INSTRUCTIONS = """Review one closed trade as a process auditor.
+
+WHAT YOU ARE GIVEN, AND WHAT CHANGED. This used to be entry, exit and P&L — a departure board and
+an arrival board — and you were asked what went wrong. You now get the journey: the best and the
+worst the trade ever reached, the share of its best it took home, and the field
+`what_the_system_did_and_when` — every action the guard took, in order, with the R it was at and
+the reason it gave.
+
+READ THE TIMELINE FIRST. It is the point of the exercise. A trade that reached +0.9R, had its stop
+pulled to break even, drifted for forty minutes and closed flat is a completely different event
+from one that never moved, and the two are indistinguishable without it. Find the moment the trade
+was worth more than it ended up being worth, name what the system did at that moment, and say
+whether that was the right call ON THE INFORMATION AVAILABLE THEN.
+
+That last clause is the discipline. Judge each decision against what was knowable when it was made,
+not against what the next hour revealed. A stop that was correctly placed and then got hit is a good
+decision with a bad outcome, and saying otherwise teaches the system to widen stops. Equally, a
+profitable trade whose management was luck is not a validated process.
+
+WHAT A USEFUL LESSON LOOKS LIKE. Specific enough to recognise the same situation again, and tied to
+something in the record. "Cut losers sooner" is not a lesson — nothing can act on it. "The
+break-even move fired at +0.31R and the stop was taken nine minutes later by a spread that had
+widened to 2.4 pips" is, because it names the trigger, the mechanism and the cost.
+
+Few and concrete beats many and vague. One lesson is a good day. Zero is an acceptable and honest
+answer when the trade was ordinary — not every trade is a teachable moment, and inventing one
+dilutes the lessons that are real. Repeats are wanted rather than avoided: identical observations
+are grouped and counted, and that count is the only thing separating a pattern from an anecdote,
+so say the same thing again when you see the same thing again.
+
+HARD LIMITS. Never recommend raising risk, martingale, averaging down, grid trading, removing a
+stop, or changing a production parameter. This reflection is stored as evidence and read back into
+later reviews as context. It cannot modify the trading system: nothing written here moves a risk
+limit, a threshold or a lot size, and those change only by an explicit human edit."""
 
 _SUPERVISION_INSTRUCTIONS = """You are managing a real open position on a small live account. It
 is already on. The question is not whether it should have been taken — that is settled — but what
@@ -1504,8 +1587,39 @@ be bigger" or "the stop needs more room", the answer available to you is hold.
 
 WHAT YOU ARE GIVEN. The position with its entry, current stop and target, live price, unrealised
 P&L in account currency and in R, how long it has been open, and closed bars on every timeframe
-from the weekly down to the one-minute with each frame's ATR. The bars are what changed since the
-trade was opened. Read them.
+from the weekly down to the one-minute with each frame's ATR. Each frame is a table: `columns`
+names the fields, `rows` holds one array per bar in that order, oldest first, contiguous at
+`bar_interval` between `oldest_bar_opened` and `last_closed_bar`. The bars are what changed since
+the trade was opened. Read them.
+
+JUDGE THE MONEY AGAINST THE ACCOUNT, NOT AGAINST ZERO. This is the part that used to be missing
+and it changed real outcomes. You are given `account_equity`, `unrealised_pct_of_account`,
+`money_still_to_win_if_target_hit` and `money_if_the_current_stop_is_hit`. Use all four together.
+
+The owner of this account put it in their own words, and it is the correct instinct: on a hundred
+euro, fifty to ninety cents is an attractive amount to bank. On a thousand, five to twenty euro
+is. Those are the same statement — roughly half a percent to one percent of the account — and it
+is a real result, not small change, because it is what compounding is made of.
+
+So the question on a profitable position is never "is 0.76 a lot of money". It is:
+
+    what is already in hand      (unrealised_pct_of_account)
+    against what is still to win (money_still_to_win_if_target_hit)
+    against how likely that is   (the bars in front of you)
+
+When what is in hand is around half a percent of the account or more, and the remaining reach is
+not clearly coming, take it. Safe beats greedy. A live USDCHF long is the case this is written
+against: it peaked seventy-six cents up on a hundred-and-twenty-euro account with a target
+fourteen pips away that price never went near, and it closed at twenty-nine cents. Nothing was
+wrong with the trade. It was asked to reach for something the market was not offering.
+
+ANTICIPATE, DO NOT ONLY REACT. Every other rule in this system fires on damage that has already
+happened — the peak stopped rising, the gain drained away, the structure broke. You are the only
+part that can look at the chart and say where this is *going*. Do that explicitly. Is the next
+level above going to be sold into? Is the session about to thin out? Is price grinding into a
+range it has been rejected from three times? If the honest read is "this probably stalls here",
+that is a reason to bank now, at a good price, rather than to wait for the give-back rule to
+confirm it at a worse one.
 
 `context.trade_record` is the trade's memory, not background decoration. `original_plan` is the
 entry, stop, target, risk and intended reward before any management move. `entry_thesis` contains

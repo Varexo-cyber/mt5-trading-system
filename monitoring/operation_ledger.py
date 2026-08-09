@@ -10,6 +10,13 @@ from typing import Any
 
 from infra.atomic import write_json_atomic
 
+#: Filename under `runtime/`. Named once because two places had guessed it and
+#: guessed differently: `scripts/selfcheck.py` looked for `operations.json`,
+#: reported "no operations ledger yet; has it ever started?" and was believed —
+#: on an account with thirty thousand decisions in its journal. A heartbeat
+#: check that cannot find the heartbeat is worse than no heartbeat check at all.
+LEDGER_FILENAME = "operation_history.json"
+
 
 class OperationLedger:
     """Append-only-ish session ledger that survives orderly exits and crashes."""
