@@ -23,6 +23,8 @@ class ScanCandidate:
     quote_age_seconds: float
     trend_strength_atr: float
     latest_bar: datetime
+    priority_tier: int
+    spread_quality: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +126,7 @@ class UniverseScanner:
                 rejected += 1
             else:
                 candidates.append(candidate)
-        candidates.sort(key=lambda item: item.rank, reverse=True)
+        candidates.sort(key=lambda item: (item.priority_tier, item.rank), reverse=True)
         shortlisted = {item.symbol for item in candidates[:keep]}
         inspections = [
             (
@@ -257,7 +259,13 @@ class UniverseScanner:
                 / max(1.0, float(frame["tick_volume"].tail(50).median())),
             )
             spread_quality = max(0.0, 1.0 - spread_bps / cap)
-            rank = strength * 2.0 + activity + spread_quality
+            priority_tier = self._priority_tier(descriptor.name, spec.asset_class)
+            rank = (
+                strength * 2.0
+                + activity
+                + spread_quality
+                + spread_quality * self.settings.scanner.priority_spread_weight
+            )
             last = datetime.fromtimestamp(int(frame["time"].iloc[-1]), tz=UTC)
             candidate = ScanCandidate(
                 descriptor.name,
@@ -267,6 +275,8 @@ class UniverseScanner:
                 age,
                 strength,
                 last,
+                priority_tier,
+                spread_quality,
             )
             return candidate, ScanInspection(
                 inspected_at,
@@ -302,3 +312,12 @@ class UniverseScanner:
         if root in {"commodity", "commodities"}:
             return AssetClass.METAL if "metal" in path.lower() else AssetClass.COMMODITY
         return AssetClass.UNKNOWN
+
+    def _priority_tier(self, symbol: str, asset_class: AssetClass) -> int:
+        """Two preferred lanes above the complete-catalogue fallback."""
+        base_symbol = symbol.split(".", 1)[0].upper()
+        if base_symbol in self.settings.scanner.priority_symbols:
+            return 2
+        if asset_class.value in self.settings.scanner.priority_asset_classes:
+            return 1
+        return 0

@@ -231,6 +231,53 @@ def test_scanner_scans_and_ranks_full_available_catalogue_by_default() -> None:
     market.shutdown()
 
 
+def test_scanner_queues_core_then_preferred_then_catalogue_fallback() -> None:
+    moment = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    fake = FakeMT5(
+        now=moment,
+        specs={
+            "EURUSD.i": eurusd_spec(
+                name="EURUSD.i", path="RAW\\Raw Majors\\EURUSD.i", description="EURUSD"
+            ),
+            "BTCUSD": eurusd_spec(
+                name="BTCUSD",
+                path="Cryptos\\BTCUSD",
+                description="Bitcoin",
+                trade_contract_size=1.0,
+            ),
+            "DB1": eurusd_spec(
+                name="DB1",
+                path="Shares\\Germany\\DB1",
+                description="Deutsche Boerse",
+                trade_contract_size=1.0,
+            ),
+        },
+        quotes={
+            "EURUSD.i": (1.08500, 1.08512),
+            "BTCUSD": (1.08500, 1.08512),
+            "DB1": (1.08500, 1.08512),
+        },
+    )
+    market = connector(fake)
+    market.connect()
+    settings = load_settings(env_overrides=False)
+    scanner_config = settings.scanner.model_copy(
+        update={
+            "priority_asset_classes": ("forex", "crypto"),
+            "priority_symbols": ("EURUSD",),
+            "priority_spread_weight": 10.0,
+        }
+    )
+    settings = settings.model_copy(update={"scanner": scanner_config})
+    scanner = UniverseScanner(market, settings, SimulatedClock(moment))
+
+    batch = scanner.scan(keep=3)
+
+    assert [item.symbol for item in batch.candidates] == ["EURUSD.i", "BTCUSD", "DB1"]
+    assert [item.priority_tier for item in batch.candidates] == [2, 1, 0]
+    market.shutdown()
+
+
 def test_empty_asset_filter_keeps_future_broker_catalogue_folders_visible() -> None:
     """A new Eightcap product folder must be inspected, not silently disappear.
 
