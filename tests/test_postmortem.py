@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from learning.postmortem import PostmortemAnalyzer
+from scripts.postmortem import _OUR_EXITS as OUR_EXITS
 from scripts.postmortem import connect, find_trade, main, overview, report
 
 
@@ -331,3 +332,149 @@ class TestOverview:
 
         overview(connect(journal), 10)
         assert "No trades recorded yet" in capsys.readouterr().out
+
+
+@pytest.fixture
+def recent(journal: Path) -> Path:
+    """The same journal, re-stamped relative to now so a time window can bite.
+
+    Three trades: one closed two hours ago, one closed twenty hours ago, one
+    still open since three hours ago. That spread is what separates a 12h
+    window from a 24h one, and an open position from a closed one.
+    """
+    now = datetime.now(UTC)
+    db = sqlite3.connect(journal)
+    db.execute(
+        "UPDATE trades SET opened_at = ?, closed_at = ?, exit_reason = 'PROFIT_BANKED'",
+        ((now - timedelta(hours=4)).isoformat(), (now - timedelta(hours=2)).isoformat()),
+    )
+    db.execute(
+        "INSERT INTO trades (id, ticket, symbol, direction, volume, entry_price, sl, tp, "
+        "sl_distance_pips, opened_at, closed_at, exit_reason, pnl_money, pnl_r, mfe_r) VALUES "
+        "(2, 888888, 'EURUSD.i', 'SHORT', 0.01, 1.09, 1.095, 1.08, 12.0, ?, ?, "
+        "'BROKER_SL', -1.61, -1.0, 0.5)",
+        ((now - timedelta(hours=22)).isoformat(), (now - timedelta(hours=20)).isoformat()),
+    )
+    db.execute(
+        "INSERT INTO trades (id, ticket, symbol, direction, volume, entry_price, sl, tp, "
+        "sl_distance_pips, opened_at) VALUES "
+        "(3, 999999, 'DBK.i', 'LONG', 0.05, 33.18, 32.69, 34.05, 40.0, ?)",
+        ((now - timedelta(hours=3)).isoformat(),),
+    )
+    db.commit()
+    db.close()
+    return journal
+
+
+class TestTimeWindow:
+    """`--hours` asks the question an operator has: what did it do today.
+
+    A count is the wrong unit for that. Twenty trades can be two hours or two
+    weeks, so the window is offered in the unit the question is asked in.
+    """
+
+    def test_twelve_hours_excludes_yesterday(self, recent: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        overview(connect(recent), 0, hours=12)
+        out = capsys.readouterr().out
+        assert "USDCHF" in out
+        assert "DBK" in out
+        assert "EURUSD" not in out, "the 20h-old trade is outside a 12h window"
+
+    def test_twenty_four_hours_reaches_further_back(self, recent: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        overview(connect(recent), 0, hours=24)
+        out = capsys.readouterr().out
+        assert "EURUSD" in out
+        assert "3 trade(s) in the last 24h" in out
+
+    def test_an_open_position_is_inside_the_window(self, recent: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """ "Nothing closed today" and "nothing was opened today" differ."""
+        overview(connect(recent), 0, hours=12)
+        out = capsys.readouterr().out
+        assert "DBK" in out
+        assert "open" in out
+
+    def test_a_quiet_window_is_not_an_empty_journal(self, recent: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """A quiet afternoon must not read as a broken database."""
+        overview(connect(recent), 0, hours=0.5)
+        out = capsys.readouterr().out
+        assert "No trades in the last 0.5h" in out
+        assert "recorded yet" not in out
+
+    def test_the_window_beats_the_count_when_both_are_given(self, recent: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        assert main(["--db", str(recent), "--hours", "12", "--list", "50"]) == 0
+        assert "in the last 12h" in capsys.readouterr().out
+
+    def test_a_negative_window_is_refused(self, recent: Path) -> None:
+        with pytest.raises(SystemExit):
+            main(["--db", str(recent), "--hours", "-5"])
+
+
+class TestExitAttribution:
+    """The "no rule ever acted" line is loud and is read as a finding.
+
+    It must therefore be right. It previously omitted PROFIT_BANKED, the
+    banking rule's own exit, and listed SPREAD_SQUEEZE_EXIT, a name the manager
+    never emits — so the first trade the banking rule ever closed would still
+    have been reported as proof that no rule had acted.
+    """
+
+    def credit(self, journal: Path, reason: str, capsys) -> str:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.execute("UPDATE trades SET exit_reason = ?", (reason,))
+        db.commit()
+        db.close()
+        overview(connect(journal), 10)
+        return capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "PROFIT_BANKED",
+            "PEAK_STALL",
+            "GIVEBACK_EXIT",
+            "TIME_EXIT",
+            "SESSION_DECAY",
+            "HEALTH_EXIT",
+            "SPREAD_SQUEEZE",
+            "EVENING_FLAT",
+            "NEWS_EXIT",
+            "EMERGENCY_CLOSE",
+            "ORPHAN_CLOSE",
+            "AI_CLOSE",
+            "AI_PARTIAL_CLOSE",
+            "PARTIAL_CLOSE",
+        ],
+    )
+    def test_a_closing_rule_is_credited(self, journal: Path, capsys, reason: str) -> None:  # type: ignore[no-untyped-def]
+        out = self.credit(journal, reason, capsys)
+        assert "1 exited by a rule of ours · 0 by the broker" in out
+        assert "not one exit was chosen" not in out
+
+    @pytest.mark.parametrize("reason", ["BROKER_SL", "SL", "TP", "BROKER_TP"])
+    def test_the_broker_keeps_what_is_the_brokers(self, journal: Path, capsys, reason: str) -> None:  # type: ignore[no-untyped-def]
+        out = self.credit(journal, reason, capsys)
+        assert "0 exited by a rule of ours · 1 by the broker" in out
+
+    @pytest.mark.parametrize("reason", ["PROFIT_LOCK", "BREAK_EVEN", "HEALTH_SECURE", "ATR_TRAIL"])
+    def test_a_stop_move_is_not_an_exit(self, journal: Path, capsys, reason: str) -> None:  # type: ignore[no-untyped-def]
+        """These move a stop and never close anything.
+
+        If one of them is what a trade died of, the recorded exit reason is
+        BROKER_SL and the broker is correctly credited. Counting the stop move
+        itself would claim a rule chose an exit it never chose.
+        """
+        out = self.credit(journal, reason, capsys)
+        assert "0 exited by a rule of ours · 1 by the broker" in out
+
+    def test_every_credited_name_is_one_the_manager_actually_emits(self) -> None:
+        """The bug class that produced SPREAD_SQUEEZE_EXIT: a plausible name.
+
+        A name nobody emits never matches, silently, forever. Pinned against
+        the source rather than against a second hand-written list, because two
+        hand-written lists is how the first one drifted.
+        """
+        source = (Path(__file__).resolve().parent.parent / "execution" / "manager.py").read_text(
+            encoding="utf-8"
+        )
+        for name in sorted(OUR_EXITS):
+            assert f'"{name}"' in source, f"{name} is not emitted by execution/manager.py"

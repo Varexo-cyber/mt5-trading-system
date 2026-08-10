@@ -15,6 +15,8 @@ of the difference each rule is responsible for.
     python scripts/postmortem.py USDCHF
     python scripts/postmortem.py --ticket 123456
     python scripts/postmortem.py            # the last closed trade, whatever it was
+    python scripts/postmortem.py --hours 24 # everything from the last day
+    python scripts/postmortem.py --list 20  # the last twenty, whenever they were
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -266,23 +268,57 @@ def _json(text: str | None) -> dict:
 
 #: Exits this system chose for itself, as opposed to the market reaching a
 #: level we left sitting at the broker.
+#: Management actions that *close* a position. `exit_reason` is set from the
+#: event action, and only a closing event carries an exit price, so this set is
+#: exactly the closing half of what `execution/manager.py` emits.
+#:
+#: It has to be kept honest, because the "not one exit was chosen by this
+#: system" line below is loud and is read as a finding. It previously omitted
+#: PROFIT_BANKED — the banking rule's own exit — and listed SPREAD_SQUEEZE_EXIT,
+#: a name the manager never emits (it says SPREAD_SQUEEZE). So the first trade
+#: the banking rule ever closed would still have been reported as proof that no
+#: rule had acted.
+#:
+#: Deliberately excluded: PROFIT_LOCK, BREAK_EVEN, HEALTH_SECURE,
+#: HEALTH_TIGHTEN, ATR_TRAIL, NEWS_BREAK_EVEN, AI_TIGHTEN_STOP,
+#: AI_PULL_TARGET_IN. Those move a stop or a target; they never close anything,
+#: so they cannot be an exit reason. If one of them is what a trade died of,
+#: the exit reason is BROKER_SL and the broker is correctly credited with it.
 _OUR_EXITS = frozenset(
     {
+        # banking and trailing rules
+        "PROFIT_BANKED",
         "PEAK_STALL",
         "GIVEBACK_EXIT",
-        "PROFIT_LOCK",
         "TIME_EXIT",
+        "SESSION_DECAY",
+        # health and market conditions
         "HEALTH_EXIT",
-        "HEALTH_SECURE",
-        "SPREAD_SQUEEZE_EXIT",
+        "SPREAD_SQUEEZE",
         "EVENING_FLAT",
+        "NEWS_EXIT",
+        "NEWS_EXIT_SENT",
+        # safety closes
+        "EMERGENCY_CLOSE",
+        "ORPHAN_CLOSE",
+        # the paid adviser, when the manager actually carried it out
+        "AI_CLOSE",
+        "AI_CLOSE_SENT",
+        "AI_PARTIAL_CLOSE",
         "PARTIAL_CLOSE",
     }
 )
 
 
-def overview(db: sqlite3.Connection, limit: int) -> None:
+def overview(db: sqlite3.Connection, limit: int, hours: float = 0.0) -> None:
     """Every recent trade on one screen, with the two columns that matter.
+
+    `hours` answers the question an operator actually has at the end of a
+    session: "what did it do today". A count is the wrong unit for that —
+    twenty trades can be two hours or two weeks — so the window is offered in
+    the unit the question is asked in. Open positions are included, because
+    "nothing closed since lunch" and "nothing was opened since lunch" are very
+    different findings and a closed-only list cannot tell them apart.
 
     `kept` is what survived to the exit as a share of the trade's best moment.
     It is the number that separates a losing strategy from a strategy that
@@ -294,15 +330,37 @@ def overview(db: sqlite3.Connection, limit: int) -> None:
     and invisible, because the guard loop that runs those rules was being
     starved by slow cycles.
     """
-    rows = db.execute(
+    columns = (
         "SELECT ticket, symbol, direction, sl_distance_pips, pnl_r, pnl_money, mae_r, mfe_r, "
         "exit_reason, closed_at FROM trades "
-        "ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
+    )
+    if hours > 0:
+        # Sorted and cut off by the same expression, so a trade cannot be
+        # inside the window by one clock and ordered by another. Timestamps are
+        # stored as ISO-8601 UTC text, which sorts and compares correctly as
+        # text without any parsing on the SQLite side.
+        since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        rows = db.execute(
+            columns + "WHERE COALESCE(closed_at, opened_at) >= ? "
+            "ORDER BY COALESCE(closed_at, opened_at) DESC",
+            (since,),
+        ).fetchall()
+        window = f"the last {hours:g}h"
+    else:
+        rows = db.execute(
+            columns + "ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        window = ""
     if not rows:
-        print("\n  No trades recorded yet.\n")
+        # An empty window and an empty journal are different findings. "Nothing
+        # in the last 12h" is a fact about the session; "no trades recorded" is
+        # a fact about the whole account, and reading the first as the second
+        # is how a quiet afternoon looks like a broken database.
+        print(f"\n  No trades in {window}.\n" if window else "\n  No trades recorded yet.\n")
         return
+    if window:
+        print(f"\n  {len(rows)} trade(s) in {window}.")
 
     print(
         f"\n  {'ticket':>10}  {'symbol':<11}{'dir':<7}{'stop':>7}{'R':>9}{'money':>12}"
@@ -347,7 +405,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ticket", type=int, default=0, help="exact broker ticket")
     parser.add_argument("--db", default="journal/trading.db", help="journal path")
     parser.add_argument("--list", type=int, default=0, help="instead, list the last N trades")
+    parser.add_argument(
+        "--hours",
+        type=float,
+        default=0.0,
+        help="instead, list every trade from the last N hours (e.g. 12, 24)",
+    )
     args = parser.parse_args(argv)
+    if args.hours < 0:
+        parser.error("--hours must be positive")
 
     path = ROOT / args.db
     if not path.exists():
@@ -356,6 +422,9 @@ def main(argv: list[str] | None = None) -> int:
 
     db = connect(path)
     try:
+        if args.hours:
+            overview(db, 0, args.hours)
+            return 0
         if args.list:
             overview(db, args.list)
             return 0
