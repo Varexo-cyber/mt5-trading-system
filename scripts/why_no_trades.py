@@ -40,6 +40,10 @@ _EXPECTED = {
     "POSITION_ALREADY_OPEN",
     "MAX_POSITIONS_REACHED",
     "CORRELATED_EXPOSURE",
+    "ENTRY_OVEREXTENDED",
+    "AI_WAIT_RETEST",
+    "ENTRY_MOVED_DURING_REVIEW",
+    "ENTRY_STATE_CHANGED_DURING_REVIEW",
 }
 
 #: What to do about each, in the operator's terms.
@@ -80,6 +84,27 @@ _ADVICE = {
         "as soon as the adverse move stops. If it dominates all day, either the "
         "analysis is consistently calling turns too soon or "
         "`analysis.confluence.confirmation_max_adverse_atr` is too tight."
+    ),
+    "ENTRY_OVEREXTENDED": (
+        "The direction passed, but entering now would chase an ATR-extended move at "
+        "the edge of its recent range. This is temporary: the same market is checked "
+        "again next cycle and may enter after a non-extended retest. If it dominates "
+        "normal liquid sessions, inspect `analysis.entry_quality` rather than lowering "
+        "directional signal thresholds."
+    ),
+    "AI_WAIT_RETEST": (
+        "Claude accepted the directional thesis but would not place a market order at "
+        "the current price. It asked for a retest; this is not stored as a veto and the "
+        "changed setup can be reviewed again."
+    ),
+    "ENTRY_MOVED_DURING_REVIEW": (
+        "The price or review age moved beyond the snapshot Claude judged. The order was "
+        "not chased with stale SL/TP sizing; fresh market data is analysed next cycle."
+    ),
+    "ENTRY_STATE_CHANGED_DURING_REVIEW": (
+        "The account's positions changed while Claude was reviewing the proposal. "
+        "Its slot, correlation or add-on context was stale, so no order used that "
+        "approval; the next cycle rebuilds it from the current account."
     ),
     "CURRENCY_CONCENTRATION": (
         "A second position leaning the same way on a currency already in the book. "

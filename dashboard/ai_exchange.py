@@ -48,6 +48,11 @@ def pair_ai_reviews(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]
                 exchange["status"] = "ERROR / FAIL CLOSED"
             elif decision.get("approved"):
                 exchange["status"] = "APPROVED"
+            elif decision.get("entry_timing") == "WAIT_RETEST":
+                # Directional agreement is not a confidence failure. Claude
+                # liked the thesis but refused this exact market price, and
+                # Jarvis will offer the changed setup again after a retest.
+                exchange["status"] = "WAITING FOR RETEST"
             elif decision.get("said_yes"):
                 # Approved on the merits and refused for want of conviction.
                 # Reporting these as VETO made a screen of them read as "Claude

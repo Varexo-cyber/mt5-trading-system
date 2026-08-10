@@ -984,6 +984,7 @@ def render_ai_exchange() -> None:
     decisions = [item for item in exchanges if item["status"] != "PENDING"]
     approvals = sum(item["status"] == "APPROVED" for item in decisions)
     vetoes = sum(item["status"] == "VETO" for item in decisions)
+    retests = sum(item["status"] == "WAITING FOR RETEST" for item in decisions)
     thin = sum(item["status"] == "UNDER THRESHOLD" for item in decisions)
     errors = sum(item["status"] == "ERROR / FAIL CLOSED" for item in decisions)
     pending = sum(item["status"] == "PENDING" for item in exchanges)
@@ -998,6 +999,7 @@ def render_ai_exchange() -> None:
         st.metric("Betaald naar Claude", len(exchanges) - replays, border=True)
         st.metric("Uit geheugen (gratis)", replays, border=True)
         st.metric("Goedgekeurd", approvals, border=True)
+        st.metric("Wacht op betere prijs", retests, border=True)
         st.metric("Veto", vetoes, border=True)
         st.metric("Te weinig zekerheid", thin, border=True)
         st.metric("API-/auditfouten", errors, border=True)
@@ -1050,6 +1052,9 @@ def render_ai_exchange() -> None:
                     "Betaald": "nee (geheugen)" if decision.get("replayed") else "ja",
                     "Duur (ms)": item["latency_ms"],
                     "Confidence": decision.get("confidence"),
+                    "Instapmoment": decision.get("entry_timing"),
+                    "Grens": decision.get("entry_boundary"),
+                    "Chase-risico": decision.get("chase_risk"),
                     "Claude zegt": decision.get("thesis") or decision.get("error"),
                     "Risico's": ", ".join(str(risk) for risk in decision.get("risks", []) or []),
                 }

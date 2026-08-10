@@ -1,6 +1,13 @@
 """Replayable analysis modules. No connector, clock, or filesystem access."""
 
 from analysis.confluence import ConfluenceEngine, TradeIdea
+from analysis.entry_quality import (
+    EntryTimingAssessment,
+    EntryTimingDecision,
+    ReviewDriftAssessment,
+    assess_entry_quality,
+    assess_review_drift,
+)
 from analysis.market_intelligence import (
     MarketObservation,
     OpportunityIntelligence,
@@ -16,17 +23,22 @@ from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, Volat
 
 __all__ = [
     "ConfluenceEngine",
+    "EntryTimingAssessment",
+    "EntryTimingDecision",
     "LevelReaction",
     "LiquiditySweep",
     "MarketObservation",
     "MarketRegime",
     "MarketStructure",
     "OpportunityIntelligence",
+    "ReviewDriftAssessment",
     "TradeIdea",
     "TrendMomentum",
     "VolatilityRegime",
     "apply_cross_market_context",
+    "assess_entry_quality",
     "assess_opportunity",
+    "assess_review_drift",
     "observe_market",
     "scout_market_snapshot",
     "world_state",

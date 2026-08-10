@@ -129,11 +129,24 @@ class Advice:
     #: over the wrong denominator. The operator then reads a cost they are not
     #: incurring and reaches for a fix that is not needed.
     replayed: bool = False
+    #: Directional agreement and executable timing are separate. WAIT_RETEST
+    #: means the thesis may be sound but this exact market order is too late;
+    #: unlike a veto it must not poison the symbol/direction memory.
+    entry_timing: str = "ENTER_NOW"
+    retest_level: float | None = None
+    #: Highest acceptable market entry for a LONG, lowest for a SHORT. Advisory
+    #: only: deterministic fresh-price checks remain authoritative.
+    entry_boundary: float | None = None
+    chase_risk: str = ""
 
     @property
     def below_threshold(self) -> bool:
         """Approved on the merits, refused for want of conviction."""
-        return self.said_yes and not self.approved
+        return self.said_yes and not self.approved and not self.waiting_for_retest
+
+    @property
+    def waiting_for_retest(self) -> bool:
+        return self.entry_timing == "WAIT_RETEST"
 
     def safe_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -1326,8 +1339,23 @@ def _parse_review(
         risks = payload["risks"]
         if not thesis or not isinstance(risks, list):
             raise TypeError("thesis/risks have invalid types")  # noqa: TRY301
+        entry_timing = (
+            str(payload.get("entry_timing", "ENTER_NOW" if approve else "VETO")).upper().strip()
+        )
+        if entry_timing not in {"ENTER_NOW", "WAIT_RETEST", "VETO"}:
+            raise ValueError("invalid entry_timing")  # noqa: TRY301
+        # `entry_timing` carries the more precise decision. Be tolerant when a
+        # provider interprets the older `approve` boolean as "send an order
+        # now" and therefore returns false alongside WAIT_RETEST: that is still
+        # a temporary timing wait, never a thesis veto worth memorising.
+        if entry_timing == "WAIT_RETEST":
+            approve = True
+        elif entry_timing == "VETO" or not approve:
+            approve = False
+            entry_timing = "VETO"
+        chase_risk = str(payload.get("chase_risk", "")).strip()
         return Advice(
-            approve and confidence >= minimum,
+            approve and entry_timing == "ENTER_NOW" and confidence >= minimum,
             confidence,
             thesis,
             tuple(str(item) for item in risks),
@@ -1337,6 +1365,10 @@ def _parse_review(
             said_yes=approve,
             threshold=minimum,
             usage=dict(usage or {}),
+            entry_timing=entry_timing,
+            retest_level=_optional_float(payload.get("retest_level")),
+            entry_boundary=_optional_float(payload.get("entry_boundary")),
+            chase_risk=chase_risk,
         )
     except (ValueError, KeyError, TypeError, json.JSONDecodeError):
         return Advice(
@@ -1639,6 +1671,25 @@ when the bars CONTRADICT the claim — a long whose lower timeframes are selling
 structure in the way, a quote too old for the level, a rationale that only restates its own
 indicator. Approve when the bars SUPPORT the direction and the stop and target are sensibly
 placed for it.
+
+ENTRY DIRECTION IS NOT ENTRY TIMING. Answer whether you would place a MARKET ORDER at the supplied
+entry now, not merely whether the market may eventually move that way. `ENTER_NOW` means both the
+direction and this price are sound. `WAIT_RETEST` means the directional thesis remains plausible
+but the price is stretched, the pullback is still active, or a breakout needs to hold/retest.
+`VETO` means the underlying trade is not sound. A WAIT is not a softer veto and must name the
+concrete price behaviour that would make the entry timely.
+
+For schema consistency set `approve=true` for both `ENTER_NOW` and `WAIT_RETEST`: in the latter you
+approve the directional thesis but explicitly do not approve a market order now. Set
+`approve=false` only with `VETO`. Jarvis treats `entry_timing` as the execution instruction.
+
+Do not call a large direction-aligned candle automatic confirmation. A 2.5 ATR M5 body, a close at
+the extreme of its range, or price far from its short EMA is first evidence of chase/exhaustion;
+it needs a specific reason why buying or selling *after* that move still offers favourable entry
+asymmetry. Higher-timeframe trend decides directional context, never permission to buy the local
+top or sell the local bottom. Rank says which candidate arrived first, not that its current price
+has edge. A target reach percentage is travel frequency, not win probability and not proof that
+the target is reached before the stop.
 
 THE BAR IS "SUPPORTED", NOT "PERFECT". This is the failure mode to avoid, and it is not
 hypothetical: an earlier version of this prompt produced seventy-four consecutive vetoes, every
@@ -2019,8 +2070,21 @@ _REVIEW_SCHEMA = {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "thesis": {"type": "string"},
         "risks": {"type": "array", "items": {"type": "string"}},
+        "entry_timing": {"type": "string", "enum": ["ENTER_NOW", "WAIT_RETEST", "VETO"]},
+        "retest_level": {"type": ["number", "null"]},
+        "entry_boundary": {"type": ["number", "null"]},
+        "chase_risk": {"type": "string"},
     },
-    "required": ["approve", "confidence", "thesis", "risks"],
+    "required": [
+        "approve",
+        "confidence",
+        "thesis",
+        "risks",
+        "entry_timing",
+        "retest_level",
+        "entry_boundary",
+        "chase_risk",
+    ],
     "additionalProperties": False,
 }
 

@@ -428,6 +428,46 @@ analysis:
       level_reaction: 0.0
       volatility_regime: 0.0
 
+  # Direction and entry price are separate decisions. These ATR-normalised
+  # limits stop the market-order path from buying the end of an impulse or
+  # selling after a vertical drop. WAIT is temporary: the symbol is analysed
+  # again next cycle and can enter after price offers a non-extended retest.
+  entry_quality:
+    enabled: true
+    fail_closed: true
+    timeframe: M5
+    extension_bars: 3
+    range_lookback_bars: 12
+    directional_extreme_location: 0.88
+    ema_period: 20
+    max_favourable_extension_atr:
+      forex: 1.25
+      crypto: 1.50
+      stock: 1.25
+      index: 1.35
+      metal: 1.35
+      commodity: 1.35
+      unknown: 1.00
+    max_single_bar_body_atr:
+      forex: 1.00
+      crypto: 1.30
+      stock: 1.20
+      index: 1.20
+      metal: 1.20
+      commodity: 1.20
+      unknown: 1.00
+    max_ema_distance_atr:
+      forex: 1.35
+      crypto: 1.60
+      stock: 1.50
+      index: 1.50
+      metal: 1.50
+      commodity: 1.50
+      unknown: 1.20
+    max_last_bar_adverse_atr: 0.20
+    max_review_price_drift_atr: 0.25
+    max_review_latency_seconds: 45
+
   # Ordering preferences only: never an entry gate, direction change, or risk
   # adjustment. Each market family gets a different microstructure preference.
   asset_class_routing:
