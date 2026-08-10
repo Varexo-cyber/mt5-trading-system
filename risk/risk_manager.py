@@ -43,6 +43,11 @@ log = get_logger(__name__)
 #: Money callback: (symbol, direction, volume, price) -> margin required.
 MarginEstimator = Callable[[str, Direction, float, float], float]
 
+# `jarvis-addon` is retained for positions opened by the first deployed
+# pyramiding build. New tickets use the operator-facing scalp name. MT5 stores
+# this comment on the position, so the distinction survives a restart.
+WINNER_SCALP_COMMENTS = frozenset({"jarvis-addon", "jarvis-scalp"})
+
 
 @dataclass(frozen=True, slots=True)
 class RiskState:
@@ -224,7 +229,23 @@ class RiskManager:
 
     # -- the gates ---------------------------------------------------------
 
-    def check_can_trade(self, state: RiskState) -> RiskDecision:
+    def _is_winner_scalp(self, position: Position) -> bool:
+        config = self.settings.trade_management.pyramiding
+        return (
+            config.enabled
+            and not config.counts_toward_position_limit
+            and position.comment in WINNER_SCALP_COMMENTS
+        )
+
+    def positions_counted_toward_limit(self, state: RiskState) -> tuple[Position, ...]:
+        """Primary trade ideas; bounded winner scalp tickets are tracked separately."""
+        return tuple(
+            position for position in state.open_positions if not self._is_winner_scalp(position)
+        )
+
+    def check_can_trade(
+        self, state: RiskState, *, allow_pyramid_overflow: bool = False
+    ) -> RiskDecision:
         """System-wide gates: is this system allowed to open anything at all?
 
         Evaluated most-severe first, so the reason recorded in the journal is
@@ -297,11 +318,12 @@ class RiskManager:
         # Scaled by what the account actually holds, so a deposit widens the
         # book and a drawdown narrows it without anyone editing a config file.
         max_positions = self.settings.effective_max_positions(state.equity)
-        if len(state.open_positions) >= max_positions:
+        counted_positions = self.positions_counted_toward_limit(state)
+        if len(counted_positions) >= max_positions and not allow_pyramid_overflow:
             return RiskDecision.block(
                 Reason.MAX_POSITIONS_REACHED,
-                f"{len(state.open_positions)} positions open, limit {max_positions} "
-                f"at {state.equity:.2f} equity",
+                f"{len(counted_positions)} primary trade ideas open, limit {max_positions} "
+                f"at {state.equity:.2f} equity ({len(state.open_positions)} total tickets)",
             )
 
         return RiskDecision.allow(
@@ -337,13 +359,14 @@ class RiskManager:
             )
 
         # Same-symbol exposure remains forbidden by default. The one explicit
-        # exception is a smaller, freshly approved add-on after every recorded
+        # exception is a smaller, freshly approved scalp after every recorded
         # leg is already winning. Opposite-direction hedges and additions to a
         # flat or losing idea remain blocked.
         if state.has_position_in(symbol):
             existing = state.positions_in(symbol)
             pyramid = self._pyramid_permission(
                 existing,
+                all_positions=state.open_positions,
                 direction=direction,
                 entry=entry,
                 allow=allow_pyramid,
@@ -363,6 +386,7 @@ class RiskManager:
         self,
         positions: tuple[Position, ...],
         *,
+        all_positions: tuple[Position, ...] | None = None,
         direction: Direction | None,
         entry: float | None,
         allow: bool,
@@ -381,6 +405,23 @@ class RiskManager:
                 Reason.POSITION_ALREADY_OPEN,
                 f"{len(positions)} legs already open, per-symbol ceiling "
                 f"{config.max_legs_per_symbol}",
+            )
+        active_symbols = {
+            position.symbol
+            for position in (all_positions or positions)
+            if self._is_winner_scalp(position)
+        }
+        symbol = positions[0].symbol if positions else None
+        if (
+            symbol is not None
+            and symbol not in active_symbols
+            and len(active_symbols) >= config.max_active_symbols
+        ):
+            return RiskDecision.block(
+                Reason.POSITION_ALREADY_OPEN,
+                f"winner scalp campaign already active on "
+                f"{', '.join(sorted(active_symbols))}; maximum active symbols is "
+                f"{config.max_active_symbols}",
             )
         if any(position.direction is not direction for position in positions):
             return RiskDecision.block(
@@ -407,11 +448,11 @@ class RiskManager:
         if weakest < config.min_existing_r:
             return RiskDecision.block(
                 Reason.POSITION_ALREADY_OPEN,
-                f"weakest existing leg is {weakest:+.2f}R; add-ons require every leg "
+                f"weakest existing leg is {weakest:+.2f}R; winner scalps require every leg "
                 f"at or above +{config.min_existing_r:.2f}R",
             )
         return RiskDecision.allow(
-            f"winner pyramid allowed: {len(positions)} existing leg(s), weakest " f"{weakest:+.2f}R"
+            f"winner scalp allowed: {len(positions)} existing leg(s), weakest " f"{weakest:+.2f}R"
         )
 
     def check_margin(
@@ -465,6 +506,7 @@ class RiskManager:
         if existing is not None and allow_pyramid:
             pyramid = self._pyramid_permission(
                 state.positions_in(sizing.symbol),
+                all_positions=state.open_positions,
                 direction=sizing.direction,
                 entry=sizing.entry,
                 allow=True,
@@ -568,7 +610,7 @@ class RiskManager:
     ) -> RiskDecision:
         """Run every pre-sizing gate in order and return the first refusal."""
         for decision in (
-            self.check_can_trade(state),
+            self.check_can_trade(state, allow_pyramid_overflow=allow_pyramid),
             self.check_symbol(
                 symbol,
                 state,

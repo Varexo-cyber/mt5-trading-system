@@ -1300,8 +1300,9 @@ class PyramidingConfig(Base):
     """A fresh, smaller entry added only after the existing idea has worked."""
 
     enabled: bool = False
-    #: Original position plus later legs. Each leg still consumes an account
-    #: position slot; this is not an unlimited side channel around exposure.
+    #: Original position plus later legs. A separate setting controls whether
+    #: the later winner-scalp tickets consume primary-idea slots; their own
+    #: risk, margin and this per-symbol ceiling always remain binding.
     max_legs_per_symbol: int = Field(default=2, ge=1, le=4)
     #: Every existing leg must have moved this far in its own recorded R before
     #: another is permitted. That is the mechanical line between pyramiding a
@@ -1314,6 +1315,13 @@ class PyramidingConfig(Base):
     risk_multiplier: float = Field(default=0.5, gt=0.0, le=1.0)
     #: An ordinary approval is not enough to stack the same thesis.
     minimum_ai_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    #: At most this many symbols may carry winner scalp legs simultaneously.
+    #: One keeps the extra attention concentrated on a single proven idea.
+    max_active_symbols: int = Field(default=1, ge=1, le=4)
+    #: When false, proven-winner scalp legs are extra tickets belonging to the
+    #: original trade idea rather than new primary ideas. Their risk, margin,
+    #: per-symbol leg ceiling and every entry filter still apply.
+    counts_toward_position_limit: bool = True
 
 
 class ManualPositionManagementConfig(Base):

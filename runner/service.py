@@ -827,7 +827,23 @@ class JarvisRunner:
         # "0 analysed" with no explanation anywhere.
         self.blocked_reason = "" if permission.approved else str(permission.reason)
         self.blocked_detail = "" if permission.approved else permission.detail
-        if not permission.approved:
+        position_slots_full = (
+            not permission.approved
+            and permission.reason is Reason.MAX_POSITIONS_REACHED
+            and self.settings.trade_management.pyramiding.enabled
+            and not self.settings.trade_management.pyramiding.counts_toward_position_limit
+        )
+        if position_slots_full:
+            # Four primary ideas may be full while one of them has earned a
+            # separately bounded winner scalp. Keep the free chart analysis
+            # running; `_process_candidate` lets only a proven same-symbol
+            # scalp bypass this one gate and rejects every new primary idea.
+            self.blocked_reason = str(Reason.MAX_POSITIONS_REACHED)
+            self.blocked_detail = (
+                f"{permission.detail}; primary slots full, scanning only for an eligible "
+                "winner scalp"
+            )
+        elif not permission.approved:
             log.warning(
                 "NEW RISK HALTED: %s - %s",
                 permission.reason,
@@ -1259,8 +1275,8 @@ class JarvisRunner:
                 symbol,
                 account.equity,
                 Reason.POSITION_ALREADY_OPEN,
-                f"add-on conviction {candidate.conviction:.1f} is below the "
-                f"{pyramid_config.minimum_conviction:.1f} pyramid floor; the existing "
+                f"winner scalp conviction {candidate.conviction:.1f} is below the "
+                f"{pyramid_config.minimum_conviction:.1f} scalp floor; the existing "
                 "position remains managed",
                 signals=list(idea.signals),
             )
@@ -1497,7 +1513,7 @@ class JarvisRunner:
             "sizing": sizing.journal_row(),
             "filters": filter_data,
             "open_positions": len(positions),
-            "entry_role": "winner_pyramid_addon" if is_addon else "primary",
+            "entry_role": "winner_scalp" if is_addon else "primary",
             "existing_symbol_legs": len(existing_legs),
             "quote_age_seconds": (
                 max(0.0, (context.now - context.tick.time).total_seconds())
@@ -1700,7 +1716,7 @@ class JarvisRunner:
         decision_context = {
             **filter_data,
             **ai_data,
-            "entry_role": "winner_pyramid_addon" if is_addon else "primary",
+            "entry_role": "winner_scalp" if is_addon else "primary",
             "existing_symbol_legs": len(existing_legs),
             "trade_thesis": (
                 candidate.intelligence.thesis if candidate.intelligence is not None else idea.reason
@@ -1781,7 +1797,7 @@ class JarvisRunner:
             deviation_points=self.settings.mt5.deviation_points,
             magic=self.settings.system.magic_number,
             comment=(
-                "jarvis-addon"
+                "jarvis-scalp"
                 if is_addon
                 else (
                     "jarvis-exp-live"
@@ -1868,7 +1884,7 @@ class JarvisRunner:
             trade_id=trade_id, kind="ENTRY", symbol=symbol, result=result
         )
         self.alerts.send(
-            f"Opened {'add-on ' if is_addon else ''}{symbol} {idea.direction.name} "
+            f"Opened {'winner scalp ' if is_addon else ''}{symbol} {idea.direction.name} "
             f"{sizing.volume:g} lots, "
             f"entry {result.filled_price:g}, SL {sizing.sl:g}, TP {sizing.tp:g}"
         )
