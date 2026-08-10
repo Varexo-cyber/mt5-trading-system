@@ -53,13 +53,15 @@ Bij iedere markt controleert hij eerst goedkoop:
 6. Kan volatiliteit (ATR) worden berekend?
 7. Hoe sterk en actief lijkt deze markt vergeleken met de rest van deze groep?
 
-De beste vijf uit de volledige catalogus mogen door naar de dure analyse. In het tabblad
-**Live scanner** zie je voor iedere inspectie het antwoord en de afwijsreden.
+Iedere goedkope-scan-overlever mag door naar de dure analyse, tot aan de ruime
+technische bovengrens van 2.000. Bij de huidige Eightcap-catalogus betekent dit
+dat niet alleen een vooraf gekozen top-5 wordt gelezen. In het tabblad **Live
+scanner** zie je voor iedere inspectie het antwoord en de afwijsreden.
 
 ## Wat gebeurt er in de diepe analyse?
 
-Voor maximaal vijf kandidaten haalt Jarvis gesloten candles op van D1, H4, H1,
-M15 en M5. Een candle die nog bezig is telt niet mee. Daarna kijkt de vaste
+Voor iedere overlevende kandidaat haalt Jarvis gesloten candles op van W1, D1,
+H4, H1, M15, M5 en M1. Een candle die nog bezig is telt niet mee. Daarna kijkt de vaste
 analyse-engine naar de kleine, vooraf bepaalde kern van signalen:
 
 - marktstructuur;
@@ -72,18 +74,32 @@ Hij probeert dus niet letterlijk iedere tradingtheorie van internet. Dat zou
 onmeetbaar en extreem gevoelig voor overfitting zijn. Alleen expliciet gebouwde
 en testbare regels tellen mee.
 
+De grafieken hebben niet allemaal hetzelfde stemrecht. Een H1-structuur- of
+momentumsignaal is een swingplan: D1/W1 mogen daar zwaar tegenin gaan. Een losse
+M15-liquidity-sweep is een intradayplan: stop en target komen van M15 en een
+tegengestelde D1-trend is alleen achtergrond. Pas als de nabije hogere
+timeframes samen duidelijk tegenwerken, wordt die korte trade geblokkeerd. Dit
+werkt exact hetzelfde voor BUY en SELL.
+
+Daarna vergelijkt Jarvis geldige kandidaten per marktsoort. Forex krijgt
+relatieve valutasterkte, aandelen en indices marktbreedte, crypto zijn eigen
+24/7-groep en metalen/commodities hun eigen groep en modulevoorkeur. Dit bepaalt
+alleen welke geldige kans eerst bekeken wordt; het kan geen afgewezen trade
+toveren.
+
 ## Wanneer mag een echte trade worden geplaatst?
 
 Een kandidaat moet daarna door alle poorten:
 
-1. Het symbool staat op de micro-live whitelist. Met deze rekening zijn dat nu
-   `EURUSD.i`, `GBPUSD.i`, `USDJPY.i` en `AUDUSD.i`.
-2. Er zijn niet te veel open posities of trades vandaag/deze week.
+1. Het contract is op dit account verhandelbaar en de echte lotsize past binnen
+   het actieve experimentele contract; een handgeschreven vier-symbolenlijst is
+   niet langer de catalogusgrens.
+2. De actuele positie- en blootstellingsgrenzen geven ruimte.
 3. Dagverlies, weekverlies en totale drawdown zitten onder hun grens.
 4. Het nieuwsfilter, sessiefilter, spreadfilter en correlatiefilter keuren goed.
 5. De berekende stoploss komt uit de marktstructuur en volatiliteit.
 6. De take-profit voldoet minimaal aan de ingestelde reward/risk-verhouding.
-7. De brokerlotgrootte kan echt binnen maximaal 1% rekeningrisico vallen. Kan
+7. De brokerlotgrootte kan echt binnen het actieve rekeningrisico vallen. Kan
    0,01 lot dat niet, dan wordt de trade overgeslagen; Jarvis rondt nooit omhoog.
 8. MT5 bevestigt dat er genoeg marge is.
 9. Claude ontvangt het begrensde tradevoorstel en mag alleen `approve` of `veto`
@@ -91,7 +107,7 @@ Een kandidaat moet daarna door alle poorten:
 10. Vlak voor verzenden controleert Jarvis STOP en de accountgrenzen nogmaals.
 
 Pas daarna stuurt Jarvis de order met stoploss en take-profit naar MT5. MT5
-stuurt hem naar Eightcap. Een hoge leverage verandert de 1%-risicoregel niet;
+stuurt hem naar Eightcap. Een hoge leverage verandert het risicocontract niet;
 leverage verlaagt alleen de vereiste marge.
 
 ## Wat gebeurt er na een order?
@@ -128,7 +144,18 @@ seconde werken. Er wordt dus niet iedere seconde een dure, inconsistente
 Claude-call gedaan.
 
 Iedere analysecyclus, afwijzing, orderpoging, fill, fout en sluiting wordt
-opgeslagen. Rapporten beschrijven dus ook waarom er géén trade kwam.
+opgeslagen. Rapporten beschrijven dus ook waarom er géén trade kwam. SQLite is
+het lokale uitvoeringsdagboek. Als `NEON_DATABASE_URL` op de VPS is ingesteld,
+worden beslissingen, trades, beheeracties, lessen, nieuws en Claude-weigeringen
+ook duurzaam in Neon opgeslagen.
+
+Een geweigerd maar uitvoerbaar plan wordt later passief gevolgd: zou de oude
+SL of TP eerst geraakt zijn? Zo leert het systeem of Claude en de filters vaak
+terecht weigerden. Die denkbeeldige trades worden nooit vermengd met echt geld.
+Pas na minimaal 40 werkelijk afgesloten, vergelijkbare trades mag de historie
+de volgorde van nieuwe geldige kandidaten een klein beetje wijzigen. Bij minder
+data is de invloed exact nul; risico, lotsize, SL, TP en toelatingspoorten
+blijven ongewijzigd.
 
 ## Zo zet je hem nu weer aan
 

@@ -390,6 +390,24 @@ analysis:
     minimum_agreement_ratio: 0.60
     target_r_multiple: 2.0
     atr_stop_multiple: 1.5
+    # A trade is judged by the chart that is expected to pay it. A single D1
+    # trend can warn an intraday reversal without pretending that a three-hour
+    # trade must reverse the whole week.
+    horizon_profiles:
+      swing:
+        planning_timeframe: H1
+        target_horizon_bars: 24
+        htf_trend_timeframes: [D1, W1]
+        minimum_htf_conflicts: 1
+        htf_trend_veto: 1.0
+        entry_timing_timeframes: [M15, M5]
+      intraday:
+        planning_timeframe: M15
+        target_horizon_bars: 12
+        htf_trend_timeframes: [H4, D1]
+        minimum_htf_conflicts: 2
+        htf_trend_veto: 1.0
+        entry_timing_timeframes: [M5, M1]
     # A trade must be able to pay its own spread. The spread filter asks whether
     # the spread is unusual for this hour; in the evening it is not, and the stop
     # did not widen with it. This is the gate that catches that.
@@ -409,6 +427,24 @@ analysis:
       # carries weight again.
       level_reaction: 0.0
       volatility_regime: 0.0
+
+  # Ordering preferences only: never an entry gate, direction change, or risk
+  # adjustment. Each market family gets a different microstructure preference.
+  asset_class_routing:
+    forex:
+      module_affinity: {trend_momentum: 2.0, liquidity_sweep: 2.0}
+    stock:
+      module_affinity: {market_structure: 2.0, trend_momentum: 2.0}
+    crypto:
+      module_affinity: {trend_momentum: 3.0, liquidity_sweep: 1.0}
+    index:
+      module_affinity: {market_structure: 2.0, trend_momentum: 2.0}
+    metal:
+      module_affinity: {trend_momentum: 2.0, liquidity_sweep: 2.0}
+    commodity:
+      module_affinity: {market_structure: 2.0, trend_momentum: 3.0}
+    unknown:
+      module_affinity: {}
 
 trade_management:
   pyramiding:
@@ -485,6 +521,14 @@ learning:
   shadow_min_expectancy_lift_r: 0.05
   shadow_confidence_level: 0.95
   shadow_resolution_hours: 72
+  # Only broker-confirmed closed trades count. Until forty comparable trades
+  # exist this is exactly neutral; afterwards it can only reorder candidates.
+  selection_calibration_enabled: true
+  selection_min_trades: 40
+  selection_shrinkage_trades: 80
+  selection_points_per_r: 6.0
+  selection_modifier_cap: 4.0
+  selection_refresh_minutes: 15
 
 scanner:
   # null = rank the entire broker catalogue every cycle.

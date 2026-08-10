@@ -136,11 +136,20 @@ Closed or stale markets remain visible with their rejection reason instead of
 being mistaken for a live opportunity.
 
 The **Market brain** section compares surviving setups using asset-specific
-context, H1/H4 regime and cross-market breadth. Claude's optional market scout
+context, H1/H4 regime and cross-market breadth. FX is ranked with relative
+base/quote strength, while stocks, indices, crypto, metals and commodities use
+their own family breadth and configured module affinities. Claude's optional market scout
 can independently nominate one already-valid setup and move it earlier in the
 queue. It is deliberately not another gate: WAIT, disagreement, malformed
 output or an API outage leaves the original queue unchanged. It cannot change
 risk, size, SL, TP or position management.
+
+Trade planning is horizon-aware. H1 structure and H4/H1 momentum remain swing
+plans whose higher-timeframe authority is D1/W1. A standalone M15 liquidity
+sweep becomes an intraday plan with an M15 stop/target horizon; one slow D1
+disagreement is context rather than an automatic veto, while aligned H4 and D1
+opposition still blocks it. The rule is direction-symmetric, so it does not
+manufacture longs by making shorts satisfy a weekly reversal test.
 
 Rejected executable plans are stored as passive counterfactuals and later
 resolved from M15 bars as TP, SL, timeout or ambiguous. This measures whether a
@@ -161,14 +170,17 @@ Every final Claude request and response is written both to the append-only
 `runtime/ai_reviews.jsonl` audit and to the journal's `ai_events` table. The
 exact closed candles shown to Claude are also stored in `bar_snapshots` for
 every candidate that reaches the final gate. Learning memory is rebuilt from
-closed journal trades at startup and labels fewer than 100 outcomes as
-anecdotal; it is bounded prompt context, not model retraining or automatic
-strategy rewriting.
+closed journal trades at startup and labels thin samples as anecdotal.
 
-Persistence is currently local: the configured journal is SQLite at
-`journal/trading.db`. No PostgreSQL, Neon, Supabase or other external database
-driver/connection variable is wired into this build. Supplying a database URL
-somewhere outside this configuration does not make the runner use it.
+SQLite at `journal/trading.db` remains the local execution record. When
+`NEON_DATABASE_URL` is present in the gitignored `config/.env`, the optional
+Postgres brain also stores typed decisions, real trades, management events,
+lessons, headlines, supervision and resolved counterfactuals. Refused plans
+remain separate from broker-confirmed trades. Only real closed trades may add a
+small, shrunk ordering modifier after at least 40 comparable outcomes; the
+database cannot approve a rejected setup or alter risk, size, SL, TP or entry
+thresholds. Run `.venv-live\Scripts\python.exe scripts\verify_brain.py --stats`
+on the VPS after updating to apply and verify the idempotent schema migration.
 
 The latest operator-supplied playbook backtest is negative: all five tested
 theories lost money and none beat a matched coin-direction control outside

@@ -4,6 +4,7 @@ from analysis.confluence import ConfluenceEngine, TradeIdea
 from analysis.market_intelligence import (
     MarketObservation,
     OpportunityIntelligence,
+    apply_cross_market_context,
     assess_opportunity,
     observe_market,
     scout_market_snapshot,
@@ -24,6 +25,7 @@ __all__ = [
     "TradeIdea",
     "TrendMomentum",
     "VolatilityRegime",
+    "apply_cross_market_context",
     "assess_opportunity",
     "observe_market",
     "scout_market_snapshot",

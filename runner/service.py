@@ -39,6 +39,7 @@ from analysis import (
     OpportunityIntelligence,
     TrendMomentum,
     VolatilityRegime,
+    apply_cross_market_context,
     assess_opportunity,
     observe_market,
     scout_market_snapshot,
@@ -62,7 +63,7 @@ from analysis.playbooks import (
     ScalpConfig,
     TrendPullback,
 )
-from brain import build_brain
+from brain import EdgeCalibration, build_brain
 from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
@@ -197,7 +198,9 @@ class AnalysedCandidate:
     def ranking_score(self) -> float:
         """Conviction plus bounded context, used only to decide who goes first."""
         modifier = (
-            self.intelligence.modifier + self.intelligence.scout_alignment
+            self.intelligence.modifier
+            + self.intelligence.scout_alignment
+            + self.intelligence.learned_alignment
             if self.intelligence is not None
             else 0.0
         )
@@ -317,11 +320,16 @@ class JarvisRunner:
         # Scoped by account number, so a demo and a live account writing to the
         # same database never pool their statistics into one misleading total.
         self.brain = build_brain(account=os.getenv("MT5_LOGIN", "") or self.settings.mode.value)
-        if self.brain.enabled and not self.brain.migrate():
-            log.warning(
-                "brain schema could not be applied; running without long-term memory",
-                extra={"event": "brain_migrate_failed", "why": self.brain.status.last_error},
-            )
+        self._edge_calibrations: list[EdgeCalibration] = []
+        self._edge_calibrations_at: datetime | None = None
+        if self.brain.enabled:
+            if not self.brain.migrate():
+                log.warning(
+                    "brain schema could not be applied; running without long-term memory",
+                    extra={"event": "brain_migrate_failed", "why": self.brain.status.last_error},
+                )
+            else:
+                self._sync_counterfactual_history()
         # Broker ticket -> the brain's own trade row, so a guard action can be
         # attached to the right position without a lookup on every event.
         self._brain_trades: dict[int, int | None] = {}
@@ -952,6 +960,46 @@ class JarvisRunner:
             if item is not None:
                 analysed.append(item)
         self._world_state = build_world_state(self._cycle_observations)
+        self._refresh_edge_calibrations()
+        observations = {row.symbol: row for row in self._cycle_observations}
+        routed: list[AnalysedCandidate] = []
+        for item in analysed:
+            observation = observations.get(item.symbol)
+            intelligence = item.intelligence
+            if observation is None or intelligence is None:
+                routed.append(item)
+                continue
+            spec = self.broker.spec(item.symbol)
+            routing = self.settings.analysis.asset_class_routing.get(
+                spec.asset_class.value,
+                self.settings.analysis.asset_class_routing["unknown"],
+            )
+            intelligence = apply_cross_market_context(
+                intelligence,
+                item.idea,
+                observation,
+                spec.asset_class,
+                self._world_state,
+                routing=routing,
+                cap=self.settings.analysis.market_regime.ranking_modifier_cap,
+            )
+            calibration = self._calibration_for(
+                asset_class=spec.asset_class.value,
+                setup_family=item.idea.setup_family,
+                horizon=item.idea.horizon,
+                direction=item.idea.direction.name if item.idea.direction else "",
+                regime=observation.regime,
+            )
+            if calibration is not None:
+                reasons = (*intelligence.reasons, calibration.summary())
+                intelligence = replace(
+                    intelligence,
+                    learned_alignment=calibration.modifier,
+                    reasons=reasons,
+                    thesis=f"{intelligence.thesis}; {calibration.summary()}",
+                )
+            routed.append(replace(item, intelligence=intelligence))
+        analysed = routed
         self._publish_market_intelligence(analysed)
         analysed.sort(key=lambda item: item.ranking_score, reverse=True)
         # In a drawdown, go less far down the ranked list. The candidates are
@@ -988,6 +1036,48 @@ class JarvisRunner:
                 },
             )
         return analysed
+
+    def _refresh_edge_calibrations(self) -> None:
+        """Refresh realised selection evidence on a bounded cadence.
+
+        Neon is remote and this runs inside the scan loop, so one query every
+        cycle would turn learning into latency. A missing database or thin
+        sample returns an empty list and therefore exactly the old ordering.
+        """
+        config = self.settings.learning
+        if not config.selection_calibration_enabled:
+            self._edge_calibrations = []
+            return
+        now = self.clock.now()
+        if self._edge_calibrations_at is not None and now - self._edge_calibrations_at < timedelta(
+            minutes=config.selection_refresh_minutes
+        ):
+            return
+        self._edge_calibrations_at = now
+        self._edge_calibrations = self.brain.edge_calibrations(
+            minimum_trades=config.selection_min_trades,
+            shrinkage_trades=config.selection_shrinkage_trades,
+            points_per_r=config.selection_points_per_r,
+            modifier_cap=config.selection_modifier_cap,
+        )
+
+    def _calibration_for(
+        self,
+        *,
+        asset_class: str,
+        setup_family: str,
+        horizon: str,
+        direction: str,
+        regime: str,
+    ) -> EdgeCalibration | None:
+        """Most-specific eligible estimate; exact, cross-regime, then broad."""
+        keys = (
+            (asset_class, setup_family, horizon, direction, regime),
+            (asset_class, setup_family, horizon, direction, "*"),
+            (asset_class, "*", "*", direction, "*"),
+        )
+        by_key = {item.key: item for item in self._edge_calibrations}
+        return next((by_key[key] for key in keys if key in by_key), None)
 
     def _apply_market_scout(
         self, analysed: list[AnalysedCandidate], batch: ScanBatch
@@ -1240,11 +1330,16 @@ class JarvisRunner:
                 },
             )
             return None
+        routing = self.settings.analysis.asset_class_routing.get(
+            asset_class.value,
+            self.settings.analysis.asset_class_routing["unknown"],
+        )
         intelligence = assess_opportunity(
             idea,
             observation,
             asset_class,
             cap=self.settings.analysis.market_regime.ranking_modifier_cap,
+            routing=routing,
         )
         return AnalysedCandidate(symbol, cycle_id, idea, context, intelligence)
 
@@ -1515,6 +1610,10 @@ class JarvisRunner:
             "open_positions": len(positions),
             "entry_role": "winner_scalp" if is_addon else "primary",
             "existing_symbol_legs": len(existing_legs),
+            "setup_family": idea.setup_family,
+            "trade_horizon": idea.horizon,
+            "planning_timeframe": idea.planning_timeframe,
+            "expected_horizon_minutes": idea.expected_horizon_minutes,
             "quote_age_seconds": (
                 max(0.0, (context.now - context.tick.time).total_seconds())
                 if context.tick is not None
@@ -1542,6 +1641,17 @@ class JarvisRunner:
             },
             "account_posture": self.posture.brief(),
             "global_market_state": self._world_state,
+            "trade_horizon": {
+                "name": idea.horizon,
+                "setup_family": idea.setup_family,
+                "planning_timeframe": idea.planning_timeframe,
+                "expected_minutes": idea.expected_horizon_minutes,
+                "instruction": (
+                    "Judge this trade against its stated horizon. A D1/W1 trend is decisive "
+                    "for a swing but context, not an automatic veto, for a short intraday "
+                    "plan unless the nearer structure also opposes it."
+                ),
+            },
         }
         if candidate.intelligence is not None:
             briefing["market_intelligence"] = candidate.intelligence.safe_dict()
@@ -1718,6 +1828,10 @@ class JarvisRunner:
             **ai_data,
             "entry_role": "winner_scalp" if is_addon else "primary",
             "existing_symbol_legs": len(existing_legs),
+            "setup_family": idea.setup_family,
+            "trade_horizon": idea.horizon,
+            "planning_timeframe": idea.planning_timeframe,
+            "expected_horizon_minutes": idea.expected_horizon_minutes,
             "trade_thesis": (
                 candidate.intelligence.thesis if candidate.intelligence is not None else idea.reason
             ),
@@ -1856,11 +1970,11 @@ class JarvisRunner:
             taken=True,
             equity=account.equity,
             conviction=idea.score,
-            playbook=(idea.signals[0] if idea.signals else ""),
+            playbook=idea.setup_family,
             entry=result.filled_price,
             stop_loss=sizing.sl,
             take_profit=sizing.tp,
-            filters=dict(filter_data),
+            filters=dict(decision_context),
             ai={
                 "verdict": "approved",
                 "confidence": advice.confidence,
@@ -2037,9 +2151,49 @@ class JarvisRunner:
         ):
             return
         self._counterfactuals_checked_at = now
-        resolve_counterfactuals(self.recorder, self.broker, now)
+        resolve_counterfactuals(
+            self.recorder,
+            self.broker,
+            now,
+            on_resolved=self._persist_counterfactual,
+        )
         resolve_management_baselines(self.recorder, self.broker, now)
         self.shadow.resolve(self.broker, now)
+
+    def _persist_counterfactual(self, row: dict[str, object]) -> None:
+        """Copy one resolved local shadow plan to the durable Neon brain."""
+        self.brain.record_counterfactual(**self._normalise_counterfactual(row))
+
+    def _normalise_counterfactual(self, row: dict[str, object]) -> dict[str, object]:
+        """Map a local SQLite shadow row to the typed Neon representation."""
+        opened_at = datetime.fromisoformat(str(row["opened_at"]))
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=self.clock.now().tzinfo)
+        resolved_at = row["resolved_at"]
+        if not isinstance(resolved_at, datetime):
+            resolved_at = datetime.fromisoformat(str(resolved_at))
+        if resolved_at.tzinfo is None:
+            resolved_at = resolved_at.replace(tzinfo=self.clock.now().tzinfo)
+        return {
+            "symbol": str(row["symbol"]),
+            "direction": str(row["direction"]),
+            "blocked_by": str(row["blocked_by"]),
+            "opened_at": opened_at,
+            "entry": float(row["entry_price"]),
+            "stop_loss": float(row["sl"]),
+            "take_profit": float(row["tp"]),
+            "resolved_at": resolved_at,
+            "outcome": str(row["outcome"]),
+            "pnl_r": float(row["pnl_r"]),
+        }
+
+    def _sync_counterfactual_history(self) -> None:
+        """Backfill local resolved refusals after a VPS rebuild or DB setup."""
+        rows = [
+            self._normalise_counterfactual(dict(row))
+            for row in self.recorder.resolved_shadow_trades()
+        ]
+        self.brain.record_counterfactuals(rows)
 
     def _record_paper_closures(self, events) -> None:  # type: ignore[no-untyped-def]
         for position, reason in events:
@@ -2749,7 +2903,14 @@ class JarvisRunner:
         # dominant higher-timeframe trend: D1 and W1 both show a clean,
         # sustained uptrend". A five-minute horizon is not a licence to trade
         # into a multi-week one.
-        against_the_tide = self.engine.higher_timeframe_conflict(context, play.direction)
+        profile = self.settings.analysis.confluence.horizon_profiles["intraday"]
+        against_the_tide = self.engine.higher_timeframe_conflict(
+            context,
+            play.direction,
+            timeframes=profile.htf_trend_timeframes,
+            threshold=profile.htf_trend_veto,
+            minimum_conflicts=profile.minimum_htf_conflicts,
+        )
         if against_the_tide is not None:
             log.info(
                 "playbook play stood down: %s",
@@ -2774,6 +2935,10 @@ class JarvisRunner:
             take_profit=play.take_profit,
             reason=f"{play.playbook}: {play.thesis}",
             signals=(),
+            setup_family=play.playbook,
+            horizon="intraday",
+            planning_timeframe=profile.planning_timeframe,
+            expected_horizon_minutes=play.horizon_minutes,
         )
 
     def _playbooks_may_execute(self) -> bool:

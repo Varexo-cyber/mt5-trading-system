@@ -1135,6 +1135,71 @@ class PlaybooksConfig(Base):
     min_conviction: float = Field(default=60.0, ge=0.0, le=100.0)
 
 
+class HorizonProfileConfig(Base):
+    """Planning authority for one expected holding horizon.
+
+    A short M15 reversal and an H1 swing may point the same way without being
+    the same trade.  This keeps their noise floor, realistic travel window and
+    higher-timeframe burden explicit instead of silently borrowing every rule
+    from H1.
+    """
+
+    planning_timeframe: str = "H1"
+    target_horizon_bars: int = Field(default=24, ge=2, le=200)
+    htf_trend_timeframes: tuple[str, ...] = ("D1", "W1")
+    minimum_htf_conflicts: int = Field(default=1, ge=1, le=5)
+    htf_trend_veto: float = Field(default=1.0, gt=0.0, le=5.0)
+    entry_timing_timeframes: tuple[str, ...] = ("M15", "M5")
+
+    @field_validator("planning_timeframe")
+    @classmethod
+    def _planning_timeframe_is_supported(cls, value: str) -> str:
+        Timeframe.parse(value)
+        return value.upper()
+
+    @field_validator("htf_trend_timeframes", "entry_timing_timeframes")
+    @classmethod
+    def _timeframes_are_supported(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for timeframe in value:
+            Timeframe.parse(timeframe)
+        return tuple(timeframe.upper() for timeframe in value)
+
+    @model_validator(mode="after")
+    def _conflict_count_fits_the_frames(self) -> HorizonProfileConfig:
+        if self.htf_trend_timeframes and self.minimum_htf_conflicts > len(
+            self.htf_trend_timeframes
+        ):
+            raise ValueError(
+                "minimum_htf_conflicts may not exceed the number of htf_trend_timeframes"
+            )
+        return self
+
+
+class AssetClassRoutingConfig(Base):
+    """Bounded ranking preferences for one market microstructure.
+
+    These numbers never create a setup. They decide which already executable
+    setup is considered first when position slots or AI calls are scarce.
+    """
+
+    module_affinity: dict[str, float] = Field(default_factory=dict)
+    trend_alignment_bonus: float = Field(default=4.0, ge=0.0, le=10.0)
+    range_reversal_bonus: float = Field(default=3.0, ge=0.0, le=10.0)
+    transition_penalty: float = Field(default=1.0, ge=0.0, le=10.0)
+    extreme_penalty: float = Field(default=6.0, ge=0.0, le=15.0)
+    countertrend_penalty: float = Field(default=3.0, ge=0.0, le=10.0)
+    cross_market_bonus: float = Field(default=3.0, ge=0.0, le=10.0)
+    cross_market_penalty: float = Field(default=2.0, ge=0.0, le=10.0)
+    cross_market_majority: float = Field(default=0.62, ge=0.5, le=0.9)
+
+    @field_validator("module_affinity")
+    @classmethod
+    def _affinities_are_bounded(cls, value: dict[str, float]) -> dict[str, float]:
+        if any(modifier < -10.0 or modifier > 10.0 for modifier in value.values()):
+            raise ValueError("asset-class module affinities must be between -10 and 10")
+        return value
+
+
 class ConfluenceConfig(Base):
     """Decision policy shared by paper, backtest and live execution."""
 
@@ -1213,6 +1278,33 @@ class ConfluenceConfig(Base):
     #: and about its timing at the same time.
     htf_trend_veto: float = Field(default=1.0, gt=0.0, le=5.0)
 
+    #: Horizon-specific authority. The legacy fields above remain the default
+    #: swing policy and keep old overlays/backtests reproducible. Live routing
+    #: uses these named profiles once present.
+    horizon_profiles: dict[str, HorizonProfileConfig] = Field(
+        default_factory=lambda: {
+            "swing": HorizonProfileConfig(),
+            "intraday": HorizonProfileConfig(
+                planning_timeframe="M15",
+                target_horizon_bars=12,
+                htf_trend_timeframes=("H4", "D1"),
+                minimum_htf_conflicts=2,
+                htf_trend_veto=1.0,
+                entry_timing_timeframes=("M5", "M1"),
+            ),
+        }
+    )
+
+    @field_validator("horizon_profiles")
+    @classmethod
+    def _required_horizons_exist(
+        cls, value: dict[str, HorizonProfileConfig]
+    ) -> dict[str, HorizonProfileConfig]:
+        missing = {"swing", "intraday"} - set(value)
+        if missing:
+            raise ValueError(f"analysis.confluence.horizon_profiles missing {sorted(missing)}")
+        return value
+
     #: Refuse to enter while price is actively running the other way.
     #:
     #: The engine finds a level, forms a view, and the order goes out on the
@@ -1274,6 +1366,29 @@ class AnalysisConfig(Base):
     market_regime: MarketRegimeConfig = MarketRegimeConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
+    asset_class_routing: dict[str, AssetClassRoutingConfig] = Field(
+        default_factory=lambda: {
+            "forex": AssetClassRoutingConfig(
+                module_affinity={"trend_momentum": 2.0, "liquidity_sweep": 2.0}
+            ),
+            "stock": AssetClassRoutingConfig(
+                module_affinity={"market_structure": 2.0, "trend_momentum": 2.0}
+            ),
+            "crypto": AssetClassRoutingConfig(
+                module_affinity={"trend_momentum": 3.0, "liquidity_sweep": 1.0}
+            ),
+            "index": AssetClassRoutingConfig(
+                module_affinity={"market_structure": 2.0, "trend_momentum": 2.0}
+            ),
+            "metal": AssetClassRoutingConfig(
+                module_affinity={"trend_momentum": 2.0, "liquidity_sweep": 2.0}
+            ),
+            "commodity": AssetClassRoutingConfig(
+                module_affinity={"market_structure": 2.0, "trend_momentum": 3.0}
+            ),
+            "unknown": AssetClassRoutingConfig(),
+        }
+    )
 
 
 # ------------------------------------------------------ trade management ---
@@ -1692,6 +1807,14 @@ class LearningConfig(Base):
     shadow_min_expectancy_lift_r: float = Field(default=0.05, ge=0.0, le=1.0)
     shadow_confidence_level: float = Field(default=0.95, ge=0.80, le=0.999)
     shadow_resolution_hours: int = Field(default=72, ge=1, le=720)
+    #: Realised broker trades may reorder already-valid candidates once the
+    #: segment has enough evidence. Never changes eligibility, prices or size.
+    selection_calibration_enabled: bool = True
+    selection_min_trades: int = Field(default=40, ge=30, le=10_000)
+    selection_shrinkage_trades: int = Field(default=80, ge=20, le=10_000)
+    selection_points_per_r: float = Field(default=6.0, ge=0.0, le=20.0)
+    selection_modifier_cap: float = Field(default=4.0, ge=0.0, le=10.0)
+    selection_refresh_minutes: int = Field(default=15, ge=1, le=1440)
 
 
 class ScannerConfig(Base):

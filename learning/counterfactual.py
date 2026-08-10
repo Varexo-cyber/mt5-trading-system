@@ -7,7 +7,9 @@ turns future filter tuning into an evidence question instead of an intuition.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pandas as pd
 
@@ -26,6 +28,7 @@ def resolve_counterfactuals(
     *,
     max_age: timedelta = timedelta(hours=72),
     limit: int = 50,
+    on_resolved: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> int:
     """Resolve a small queue of hypothetical trades from completed M15 bars."""
     resolved = 0
@@ -55,6 +58,16 @@ def resolve_counterfactuals(
         if outcome is None:
             continue
         recorder.resolve_shadow_trade(int(row["id"]), outcome=outcome, pnl_r=pnl_r)
+        if on_resolved is not None:
+            payload = dict(row)
+            payload.update({"resolved_at": now, "outcome": outcome, "pnl_r": pnl_r})
+            try:
+                on_resolved(payload)
+            except Exception:
+                log.exception(
+                    "counterfactual outcome persistence failed",
+                    extra={"event": "counterfactual_persistence_error", "symbol": row["symbol"]},
+                )
         resolved += 1
     return resolved
 

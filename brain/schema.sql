@@ -17,7 +17,9 @@
 --   4. It does not forget. Aggregates stay honest over months.
 --
 -- DESIGN RULE, AND IT IS THE IMPORTANT ONE: nothing in this database may move
--- a risk limit, a threshold, a weight or a lot size. It is evidence and it is
+-- a risk limit, a threshold, a weight or a lot size. Realised trades may only
+-- add a small, configured ordering modifier after the minimum sample; they
+-- cannot make a rejected setup eligible. Everything else is evidence and
 -- context for a prompt. The same rule `learning/memory.py` already states, for
 -- the same reason -- a learning system that can rewrite its own risk controls
 -- is how an account dies. Config changes by an edit, visible in a diff.
@@ -41,6 +43,11 @@ CREATE TABLE IF NOT EXISTS decisions (
     equity          NUMERIC(14, 2),
     conviction      NUMERIC(6, 2),
     playbook        TEXT,
+    asset_class     TEXT,
+    regime          TEXT,
+    session         TEXT,
+    horizon         TEXT,
+    planning_timeframe TEXT,
     entry           NUMERIC(18, 8),
     stop_loss       NUMERIC(18, 8),
     take_profit     NUMERIC(18, 8),
@@ -61,9 +68,47 @@ CREATE TABLE IF NOT EXISTS decisions (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Existing Neon databases predate the typed market context above. CREATE TABLE
+-- does not add columns, so migrations remain idempotent and explicit here.
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS asset_class TEXT;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS regime TEXT;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS session TEXT;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS horizon TEXT;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS planning_timeframe TEXT;
+
 CREATE INDEX IF NOT EXISTS decisions_symbol_time  ON decisions (symbol, decided_at DESC);
 CREATE INDEX IF NOT EXISTS decisions_reason_time  ON decisions (reason, decided_at DESC);
 CREATE INDEX IF NOT EXISTS decisions_taken_time   ON decisions (decided_at DESC) WHERE taken;
+CREATE INDEX IF NOT EXISTS decisions_segment_time ON decisions (
+    asset_class, playbook, horizon, direction, regime, decided_at DESC
+);
+
+-- Passive outcomes for executable plans that a gate or Claude refused. They
+-- grade the refusal; they never count as real trades and never calibrate live
+-- selection. Keeping that distinction in the schema prevents a later report
+-- from quietly mixing hypothetical fills with broker-confirmed positions.
+CREATE TABLE IF NOT EXISTS counterfactuals (
+    id              BIGSERIAL PRIMARY KEY,
+    fingerprint     TEXT        NOT NULL UNIQUE,
+    account         TEXT        NOT NULL,
+    symbol          TEXT        NOT NULL,
+    direction       TEXT        NOT NULL,
+    blocked_by      TEXT        NOT NULL,
+    opened_at       TIMESTAMPTZ NOT NULL,
+    entry           NUMERIC(18, 8) NOT NULL,
+    stop_loss       NUMERIC(18, 8) NOT NULL,
+    take_profit     NUMERIC(18, 8) NOT NULL,
+    resolved_at     TIMESTAMPTZ NOT NULL,
+    outcome         TEXT        NOT NULL,
+    pnl_r           NUMERIC(10, 4) NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS counterfactuals_gate_time
+    ON counterfactuals (blocked_by, resolved_at DESC);
+CREATE INDEX IF NOT EXISTS counterfactuals_symbol_time
+    ON counterfactuals (symbol, resolved_at DESC);
 
 -- One row per position that actually opened, closed out when it ends.
 CREATE TABLE IF NOT EXISTS trades (
