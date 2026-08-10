@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from config.loader import load_settings
+from config.loader import DEFAULT_CONFIG_PATH, load_settings
+from promotion.experimental import apply_experimental_live_limits
 
 
 @pytest.fixture(scope="module")
@@ -85,3 +86,14 @@ class TestScaling:
         matters; the number just has to stay sane.
         """
         assert scaled(settings, 0.0, step=50.0, ceiling=6, floor=1) == 1
+
+    def test_eightcap_experiment_exposes_exactly_four_total_slots(self) -> None:
+        overlay = DEFAULT_CONFIG_PATH.with_name("eightcap.yaml")
+        settings = apply_experimental_live_limits(
+            load_settings(DEFAULT_CONFIG_PATH, overlay=overlay, env_overrides=False)
+        )
+
+        assert settings.risk.equity_per_position == 0.0
+        assert settings.effective_max_positions(153.03) == 4
+        assert settings.trade_management.pyramiding.enabled
+        assert settings.trade_management.pyramiding.max_legs_per_symbol == 3

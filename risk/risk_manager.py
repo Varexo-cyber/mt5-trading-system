@@ -107,6 +107,9 @@ class RiskState:
     def has_position_in(self, symbol: str) -> bool:
         return any(position.symbol == symbol for position in self.open_positions)
 
+    def positions_in(self, symbol: str) -> tuple[Position, ...]:
+        return tuple(position for position in self.open_positions if position.symbol == symbol)
+
     def position_in(self, symbol: str) -> Position | None:
         return next((p for p in self.open_positions if p.symbol == symbol), None)
 
@@ -306,7 +309,16 @@ class RiskManager:
             f"dd {state.drawdown_pct:.2f}%, {state.trades_today}/{max_day} trades today"
         )
 
-    def check_symbol(self, symbol: str, state: RiskState, spec: InstrumentSpec) -> RiskDecision:
+    def check_symbol(
+        self,
+        symbol: str,
+        state: RiskState,
+        spec: InstrumentSpec,
+        *,
+        direction: Direction | None = None,
+        entry: float | None = None,
+        allow_pyramid: bool = False,
+    ) -> RiskDecision:
         """Per-symbol gates: whitelist, equity floor, and existing exposure."""
         allowed, reason_code = self.settings.symbol_allowed_at_equity(symbol, state.equity)
         if not allowed:
@@ -324,19 +336,83 @@ class RiskManager:
                 Reason.SYMBOL_NOT_TRADABLE, f"{symbol}: broker trade_mode={spec.trade_mode}"
             )
 
-        # One position per symbol, full stop. A second one is either averaging
-        # down (if same direction) or a hedge that nets to a worse spread paid
-        # twice — both are on the forbidden list.
+        # Same-symbol exposure remains forbidden by default. The one explicit
+        # exception is a smaller, freshly approved add-on after every recorded
+        # leg is already winning. Opposite-direction hedges and additions to a
+        # flat or losing idea remain blocked.
         if state.has_position_in(symbol):
-            existing = state.position_in(symbol)
-            assert existing is not None
+            existing = state.positions_in(symbol)
+            pyramid = self._pyramid_permission(
+                existing,
+                direction=direction,
+                entry=entry,
+                allow=allow_pyramid,
+            )
+            if pyramid.approved:
+                return pyramid
+            first = existing[0]
             return RiskDecision.block(
                 Reason.POSITION_ALREADY_OPEN,
-                f"{symbol}: position #{existing.ticket} ({existing.direction.name} "
-                f"{existing.volume:g} lots) is already open",
+                f"{symbol}: position #{first.ticket} ({first.direction.name} "
+                f"{first.volume:g} lots) is already open; {pyramid.detail}",
             )
 
         return RiskDecision.allow(f"{symbol} clear")
+
+    def _pyramid_permission(
+        self,
+        positions: tuple[Position, ...],
+        *,
+        direction: Direction | None,
+        entry: float | None,
+        allow: bool,
+    ) -> RiskDecision:
+        """Prove that another same-symbol leg adds to a winner, not a loser."""
+        config = self.settings.trade_management.pyramiding
+        if not allow or not config.enabled:
+            return RiskDecision.block(Reason.POSITION_ALREADY_OPEN, "pyramiding is not enabled")
+        if direction is None or entry is None:
+            return RiskDecision.block(
+                Reason.POSITION_ALREADY_OPEN,
+                "pyramiding needs the fresh direction and executable entry price",
+            )
+        if len(positions) >= config.max_legs_per_symbol:
+            return RiskDecision.block(
+                Reason.POSITION_ALREADY_OPEN,
+                f"{len(positions)} legs already open, per-symbol ceiling "
+                f"{config.max_legs_per_symbol}",
+            )
+        if any(position.direction is not direction for position in positions):
+            return RiskDecision.block(
+                Reason.POSITION_ALREADY_OPEN,
+                "the fresh direction conflicts with an existing leg; hedging is forbidden",
+            )
+        readings: list[float] = []
+        for position in positions:
+            row = self.journal.open_trade_by_ticket(position.ticket)
+            if row is None:
+                return RiskDecision.block(
+                    Reason.POSITION_ALREADY_OPEN,
+                    f"position #{position.ticket} has no recorded plan to measure R against",
+                )
+            original_stop = float(row["sl"])
+            risk = abs(position.price_open - original_stop)
+            if risk <= 0:
+                return RiskDecision.block(
+                    Reason.POSITION_ALREADY_OPEN,
+                    f"position #{position.ticket} has no measurable original risk",
+                )
+            readings.append((entry - position.price_open) * int(direction) / risk)
+        weakest = min(readings)
+        if weakest < config.min_existing_r:
+            return RiskDecision.block(
+                Reason.POSITION_ALREADY_OPEN,
+                f"weakest existing leg is {weakest:+.2f}R; add-ons require every leg "
+                f"at or above +{config.min_existing_r:.2f}R",
+            )
+        return RiskDecision.allow(
+            f"winner pyramid allowed: {len(positions)} existing leg(s), weakest " f"{weakest:+.2f}R"
+        )
 
     def check_margin(
         self, state: RiskState, symbol: str, direction: Direction, volume: float, price: float
@@ -369,7 +445,9 @@ class RiskManager:
 
     # -- forbidden practices -----------------------------------------------
 
-    def assert_not_forbidden(self, sizing: SizingResult, state: RiskState) -> None:
+    def assert_not_forbidden(
+        self, sizing: SizingResult, state: RiskState, *, allow_pyramid: bool = False
+    ) -> None:
         """Crash rather than execute a martingale, grid, or unstopped trade.
 
         These are assertions, not gates, and they raise instead of returning a
@@ -384,6 +462,15 @@ class RiskManager:
             raise ForbiddenStrategyError(f"{sizing.symbol}: order without a stop loss — forbidden")
 
         existing = state.position_in(sizing.symbol)
+        if existing is not None and allow_pyramid:
+            pyramid = self._pyramid_permission(
+                state.positions_in(sizing.symbol),
+                direction=sizing.direction,
+                entry=sizing.entry,
+                allow=True,
+            )
+            if pyramid.approved:
+                existing = None
         if existing is not None:
             if existing.direction is sizing.direction:
                 raise ForbiddenStrategyError(
@@ -469,9 +556,28 @@ class RiskManager:
 
     # -- convenience -------------------------------------------------------
 
-    def evaluate(self, state: RiskState, symbol: str, spec: InstrumentSpec) -> RiskDecision:
+    def evaluate(
+        self,
+        state: RiskState,
+        symbol: str,
+        spec: InstrumentSpec,
+        *,
+        direction: Direction | None = None,
+        entry: float | None = None,
+        allow_pyramid: bool = False,
+    ) -> RiskDecision:
         """Run every pre-sizing gate in order and return the first refusal."""
-        for decision in (self.check_can_trade(state), self.check_symbol(symbol, state, spec)):
+        for decision in (
+            self.check_can_trade(state),
+            self.check_symbol(
+                symbol,
+                state,
+                spec,
+                direction=direction,
+                entry=entry,
+                allow_pyramid=allow_pyramid,
+            ),
+        ):
             if not decision.approved:
                 log.info(
                     "trade blocked",

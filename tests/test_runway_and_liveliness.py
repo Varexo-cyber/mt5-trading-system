@@ -253,6 +253,51 @@ class TestLivelinessFilter:
         gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(bars(waking)))
         assert gate.check(ctx(spec, at(WEDNESDAY, 14, 30))).passed
 
+    def test_a_stuttering_recent_tape_is_blocked_even_when_atr_looks_normal(
+        self, spec: InstrumentSpec
+    ) -> None:
+        """SN-shaped data: enough range, but repeated missing intraday bars."""
+        series = bars([0.0010] * 200)
+        index = list(series.df.index)
+        for offset in range(170, 200):
+            index[offset] += timedelta(minutes=(offset - 170) // 3 * 5)
+        frame = series.df.copy()
+        frame.index = pd.DatetimeIndex(index)
+        broken = replace(series, df=frame)
+        gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(broken))
+
+        verdict = gate.check(ctx(spec, at(WEDNESDAY, 14, 30)))
+
+        assert not verdict.passed
+        assert verdict.reason is Reason.MARKET_TOO_QUIET
+        assert verdict.data["sparse_gap_fraction"] > 0.10
+
+    def test_a_tape_made_mostly_of_flat_bars_is_blocked(self, spec: InstrumentSpec) -> None:
+        series = bars([0.0010] * 170 + [0.0] * 18 + [0.0030] * 12)
+        config = LivelinessFilterConfig(max_flat_bar_fraction=0.50)
+        gate = LivelinessFilter(config, provider_for(series))
+
+        verdict = gate.check(ctx(spec, at(WEDNESDAY, 14, 30)))
+
+        assert not verdict.passed
+        assert verdict.reason is Reason.MARKET_TOO_QUIET
+        assert verdict.data["flat_bar_fraction"] > 0.50
+
+    def test_one_session_gap_does_not_block_an_exchange_market(self, spec: InstrumentSpec) -> None:
+        series = bars([0.0010] * 200)
+        index = list(series.df.index)
+        for offset in range(185, 200):
+            index[offset] += timedelta(hours=16)
+        frame = series.df.copy()
+        frame.index = pd.DatetimeIndex(index)
+        gapped = replace(series, df=frame)
+        gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(gapped))
+
+        verdict = gate.check(ctx(spec, at(WEDNESDAY, 14, 30)))
+
+        assert verdict.passed
+        assert verdict.data["sparse_gap_fraction"] < 0.10
+
     def test_a_short_history_defers_rather_than_blocking(self, spec: InstrumentSpec) -> None:
         """A cold start is not evidence that the market is asleep.
 
@@ -294,6 +339,9 @@ class TestLivelinessFilter:
     def test_min_bars_must_cover_the_recent_window(self) -> None:
         with pytest.raises(ValueError, match="below recent_bars"):
             LivelinessFilterConfig(recent_bars=50, min_bars=10)
+
+        with pytest.raises(ValueError, match="below quality_bars"):
+            LivelinessFilterConfig(quality_bars=50, min_bars=40)
 
 
 # --------------------------------------------------- reachability estimate ---

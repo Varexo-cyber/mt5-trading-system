@@ -396,10 +396,11 @@ risk:
   # Bij EUR 75 per slot:  87 -> 2 (de bodem),  225 -> 3,  300 -> 4 (het plafond
   # van micro_live). Een drawdown draait dat vanzelf weer terug. Het plafond
   # per modus blijft absoluut; groei loopt ernaartoe, nooit erdoorheen.
-  equity_per_position: 75
-  # Nooit minder dan twee, hoe klein het account ook is. Met één slot blokkeert
-  # één open trade elke andere kans zolang hij loopt.
-  min_concurrent_positions: 2
+  # Owner-authorised experiment: four live slots at the current account size.
+  # Sizing, margin, correlation and per-symbol rules still run for each one;
+  # this changes capacity, not the 2% budget of an ordinary entry.
+  equity_per_position: 0
+  min_concurrent_positions: 4
 
   # Commissie per lot per kant, in euro. Dit is geen boekhouding maar risico.
   #
@@ -496,8 +497,8 @@ risk:
   # The peak-to-current breaker is also explicitly off in the armed
   # Experimental Live contract. The remaining unconditional capital backstop is
   # the fixed EUR 50 floor in promotion/experimental.py. Re-arming does not move
-  # that floor. Also retained: 2% fixed risk per trade, two concurrent
-  # positions, every filter and Claude's veto.
+  # that floor. Also retained: 2% fixed risk per ordinary trade, four total
+  # position slots, every filter and Claude's veto.
   daily_loss_limit_pct: 0
   weekly_loss_limit_pct: 0
 
@@ -507,9 +508,9 @@ modes:
     max_sl_pips: 30
     max_trades_per_day: 0
     daily_loss_limit_pct: 0
-    # The ceiling, not the everyday number. What is actually allowed is earned
-    # from equity — see `risk.equity_per_position` — and at EUR 87 that is 2.
-    # Four is where it stops even after the account has grown into this mode's
+    # Four is the owner-authorised experimental-live capacity at every equity
+    # inside this mode; `risk.equity_per_position: 0` disables slot scaling.
+    # Four is also where it stops after the account has grown inside this mode's
     # EUR 500 range: four positions at 2% is 8% of equity at risk at once, and
     # with the daily and weekly limits switched off on this account that is as
     # far as simultaneous exposure should go.
@@ -517,3 +518,26 @@ modes:
     max_journal_detail: true
     min_equity: 50
     max_equity: 500
+
+trade_management:
+  # A fresh signal may add a half-risk leg only after every existing leg in
+  # that symbol is already at least +0.15R. This is pyramiding a winner, never
+  # averaging down. Original plus two add-ons is the hard per-symbol ceiling;
+  # all legs still consume the four total account slots above.
+  pyramiding:
+    enabled: true
+    max_legs_per_symbol: 3
+    min_existing_r: 0.15
+    minimum_conviction: 75
+    risk_multiplier: 0.5
+    minimum_ai_confidence: 0.65
+
+  # Positions opened by hand in MT5 use magic 0. Jarvis attaches a measured
+  # M15 ATR plan when SL/TP is missing, records the plan, and then runs exactly
+  # the same one-second mechanical management and Claude supervision over it.
+  manual_positions:
+    enabled: true
+    magic_numbers: [0]
+    stop_timeframe: M15
+    stop_atr_multiple: 1.5
+    target_reward_risk: 1.5

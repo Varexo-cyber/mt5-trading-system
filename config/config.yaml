@@ -255,6 +255,12 @@ filters:
     # breathe; a gate set near 1.0 would never let anything through.
     min_activity_ratio: 0.5
     min_bars: 40
+    # A gap can inflate ATR and make a thin CFD look active. These inspect the
+    # tape after the gap: occasional missing/flat bars pass, a stuttering feed
+    # like SN does not.
+    quality_bars: 30
+    max_sparse_gap_fraction: 0.10
+    max_flat_bar_fraction: 0.60
 
   spread:
     enabled: true
@@ -405,6 +411,19 @@ analysis:
       volatility_regime: 0.0
 
 trade_management:
+  pyramiding:
+    enabled: false
+    max_legs_per_symbol: 2
+    min_existing_r: 0.25
+    minimum_conviction: 75
+    risk_multiplier: 0.5
+    minimum_ai_confidence: 0.65
+  manual_positions:
+    enabled: false
+    magic_numbers: [0]
+    stop_timeframe: M15
+    stop_atr_multiple: 1.5
+    target_reward_risk: 1.5
   sl_atr_buffer_multiple: 0.5
   sl_atr_period: 14
   break_even_at_r: 0.6
