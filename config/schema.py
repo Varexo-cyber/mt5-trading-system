@@ -1930,6 +1930,38 @@ class LearningConfig(Base):
     selection_refresh_minutes: int = Field(default=15, ge=1, le=1440)
 
 
+class DataQuarantineConfig(Base):
+    """Skip the timeframe ladder for symbols the broker cannot supply.
+
+    Two failures are structural rather than momentary: too little history
+    ("8 closed bars available, 50 required") and holes inside trading weeks.
+    Both are properties of the broker's feed for that symbol, so re-deriving
+    them every cycle for an 800-symbol catalogue on one vCPU is pure waste.
+
+    This changes nothing about what may be traded. A held symbol was already
+    refused and is still refused; only the cost of saying so falls. The
+    candidate set can shrink here and never grow, so no spread, session,
+    liveliness or risk rule is reachable differently because of it.
+    """
+
+    enabled: bool = True
+    #: First hold after one bad fetch. Short, because a single gap may be a
+    #: momentary feed problem rather than a missing year of history.
+    initial_minutes: float = Field(default=60.0, gt=0.0, le=10_080.0)
+    #: Each repeat failure multiplies the hold. A symbol offering eight weekly
+    #: bars where fifty are needed does not need hourly re-checking all year.
+    backoff_multiple: float = Field(default=4.0, ge=1.0, le=100.0)
+    #: The ceiling, so nothing is ever held out permanently without another
+    #: look. A broker that backfills history is noticed within a day.
+    max_minutes: float = Field(default=1440.0, gt=0.0, le=43_200.0)
+
+    @model_validator(mode="after")
+    def _ceiling_above_floor(self) -> DataQuarantineConfig:
+        if self.max_minutes < self.initial_minutes:
+            raise ValueError("data_quarantine.max_minutes is below initial_minutes")
+        return self
+
+
 class ScannerConfig(Base):
     """How much of the broker catalogue is inspected per cycle.
 
@@ -1946,6 +1978,10 @@ class ScannerConfig(Base):
     to drop when it cannot.
     """
 
+    #: Stop re-fetching the ladder for symbols the broker has no usable history
+    #: for. Ordering and every gate are untouched; a held symbol was already
+    #: producing "no trade" and still does.
+    data_quarantine: DataQuarantineConfig = Field(default_factory=lambda: DataQuarantineConfig())
     #: Symbols cheaply ranked per cycle. None = the whole catalogue.
     batch_size: int | None = Field(default=None, ge=1)
     #: Top-ranked symbols promoted to full analysis each cycle. The ceiling is

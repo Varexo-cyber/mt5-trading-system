@@ -24,6 +24,13 @@ class Reason(StrEnum):
     #: clear edge, where the honest answer is to stand aside.
     METHODS_DISAGREE = "METHODS_DISAGREE"
     DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+    #: The broker's history for this symbol was already found unusable — too
+    #: few bars, or holes inside trading weeks — so the timeframe ladder was
+    #: not fetched again this cycle. Same outcome as DATA_UNAVAILABLE and kept
+    #: separate on purpose: one is a market that was examined and refused, the
+    #: other a market not examined because examining it has a known answer.
+    #: Reads as a saving in the report rather than as a fresh rejection.
+    DATA_QUARANTINED = "DATA_QUARANTINED"
     AI_VETO = "AI_VETO"
     #: The reviewer has already refused this instrument and direction several
     #: times for the same underlying reason, and nothing about that reason has
