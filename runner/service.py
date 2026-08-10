@@ -71,7 +71,8 @@ from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
 from core.data_manager import DataManager, atr
-from core.errors import TradingSystemError
+from core.data_quarantine import DataQuarantine
+from core.errors import DataIntegrityError, InsufficientDataError, TradingSystemError
 from core.startup import run_startup_guard
 from core.types import (
     AccountSnapshot,
@@ -440,6 +441,13 @@ class JarvisRunner:
         )
         self.filters = build_filter_chain(self.broker, self.settings, self.journal, self.clock)
         self.scanner = UniverseScanner(self.broker, self.settings, self.clock)
+        quarantine_config = self.settings.scanner.data_quarantine
+        self.quarantine = DataQuarantine(
+            enabled=quarantine_config.enabled,
+            initial_minutes=quarantine_config.initial_minutes,
+            backoff_multiple=quarantine_config.backoff_multiple,
+            max_minutes=quarantine_config.max_minutes,
+        )
         # The brain is handed over so the banking rule can consult what this
         # account's own closed trades say about when to take profit. It can
         # only ever lower the threshold — see `PositionManager._worth_taking`.
@@ -1337,6 +1345,21 @@ class JarvisRunner:
         self, symbol: str, asset_class, account
     ) -> AnalysedCandidate | None:
         cycle_id = str(uuid.uuid4())
+        now = self.clock.now()
+        # Asked before the ladder is fetched, because the fetch is the cost.
+        # A held symbol reaches the same verdict it reached last time; it just
+        # reaches it without eight timeframes of bars.
+        hold = self.quarantine.hold_for(symbol, now)
+        if hold is not None:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.DATA_QUARANTINED,
+                hold.summary(now),
+                extra={"failures": hold.failures, "retry_at": hold.until.isoformat()},
+            )
+            return None
         try:
             context = self.data.get_context(symbol, force_refresh=True)
             idea = self.engine.evaluate(context, self.settings.mode)
@@ -1347,8 +1370,15 @@ class JarvisRunner:
                 candidate = self.shadow_engine.evaluate(context, TradingMode.PAPER)
                 self.shadow.record(symbol, idea, candidate, self.clock.now())
         except (TradingSystemError, ValueError) as exc:
+            # Only the two structural failures are remembered. A stale quote or
+            # a dropped connection resolves on its own, and holding those would
+            # keep a market out of the scan for hours after it came back.
+            if isinstance(exc, InsufficientDataError | DataIntegrityError):
+                self.quarantine.record_failure(symbol, str(exc), now)
             self._record_skip(cycle_id, symbol, account.equity, Reason.DATA_UNAVAILABLE, str(exc))
             return None
+        # It analysed cleanly, so whatever was wrong with its history is gone.
+        self.quarantine.clear(symbol)
 
         # The other theories get their own look at the same chart. The swing
         # engine reads H1 structure; these read M5 impulse and M15 range, and

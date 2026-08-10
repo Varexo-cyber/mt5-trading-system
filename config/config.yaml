@@ -571,6 +571,19 @@ learning:
   selection_refresh_minutes: 15
 
 scanner:
+  # Do not re-fetch the timeframe ladder for a symbol whose history the broker
+  # has already proven it cannot supply: too few bars, or holes inside trading
+  # weeks. Both are properties of the feed rather than of this minute, so
+  # deriving them again every cycle over a large catalogue buys nothing.
+  #
+  # A compute saving and nothing else. A held symbol was already refused and is
+  # still refused; the candidate set can only shrink here. Every spread,
+  # session, liveliness and risk rule runs unchanged on what remains.
+  data_quarantine:
+    enabled: true
+    initial_minutes: 60
+    backoff_multiple: 4.0
+    max_minutes: 1440
   # null = rank the entire broker catalogue every cycle.
   batch_size: null
   # Top-ranked symbols promoted to full multi-timeframe analysis per cycle.

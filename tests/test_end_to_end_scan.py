@@ -255,3 +255,104 @@ class TestMixedCatalogue:
         assert all(r != Reason.RISK_EXCEEDS_CAP for _, r in decisions.values())
         assert not runner.broker.positions(magic=runner.settings.system.magic_number)
         runner.close()
+
+
+class TestDataQuarantine:
+    """The catalogue answer that does not change between cycles.
+
+    The live deck showed eight US shares refused every cycle for "80 bars
+    missing inside trading weeks" and "8 closed bars available, 50 required".
+    Both are properties of the broker's feed, not of the minute. Re-deriving
+    them for an 800-symbol catalogue on one vCPU was the most wasteful thing
+    the scanner did, so the answer is remembered and the ladder is not
+    refetched until the hold expires.
+
+    The property worth protecting is that this saves work and nothing else: a
+    held symbol was already refused and is still refused.
+    """
+
+    #: Continuous FX, so it is genuinely deep-analysed at 07:49 on a Monday.
+    #: The London shares in this catalogue are dropped by the cheap scan before
+    #: the ladder is reached, which would make every assertion below pass
+    #: without proving anything.
+    SYMBOL = "EURUSD"
+
+    def cycles(self, runner: JarvisRunner, fault: Exception | None) -> list[str]:
+        """Run two cycles with SYMBOL failing, and report the second's fetches."""
+        real = runner.data.get_context
+        fetched: list[str] = []
+
+        def watched(symbol: str, **kwargs: object):  # type: ignore[no-untyped-def]
+            fetched.append(symbol)
+            if symbol == self.SYMBOL and fault is not None:
+                raise fault
+            return real(symbol, **kwargs)  # type: ignore[arg-type]
+
+        runner.data.get_context = watched  # type: ignore[assignment]
+        runner.run_once()
+        assert self.SYMBOL in fetched, "the baseline must actually analyse this symbol"
+        fetched.clear()
+        runner.run_once()
+        return fetched
+
+    def test_the_baseline_refetches_every_cycle(self, runner: JarvisRunner) -> None:
+        """Without a fault there is nothing to remember, so nothing is skipped."""
+        assert self.SYMBOL in self.cycles(runner, None)
+        runner.close()
+
+    def test_gaps_in_the_feed_stop_the_refetch(self, runner: JarvisRunner) -> None:
+        from core.errors import DataIntegrityError
+
+        fetched = self.cycles(
+            runner, DataIntegrityError("EURUSD H4: 80 bars missing inside trading weeks (5.3%)")
+        )
+
+        assert self.SYMBOL not in fetched, "a held symbol must not cost a timeframe ladder"
+        assert fetched, "the rest of the catalogue must still be analysed"
+        runner.close()
+
+    def test_too_little_history_is_also_structural(self, runner: JarvisRunner) -> None:
+        from core.errors import InsufficientDataError
+
+        fetched = self.cycles(
+            runner, InsufficientDataError("EURUSD W1: 8 closed bars available, 50 required")
+        )
+
+        assert self.SYMBOL not in fetched
+        runner.close()
+
+    def test_a_transient_failure_is_retried_next_cycle(self, runner: JarvisRunner) -> None:
+        """A stale quote resolves when the venue reopens.
+
+        Holding it would keep a market out of the scan for hours after it came
+        back, which is the opposite of the point.
+        """
+        from core.errors import StaleDataError
+
+        fetched = self.cycles(runner, StaleDataError("EURUSD: newest bar is 3h old"))
+
+        assert self.SYMBOL in fetched, "a transient fault must not hold a symbol"
+        runner.close()
+
+    def test_the_journal_says_skipped_rather_than_rejected(self, runner: JarvisRunner) -> None:
+        """An operator must be able to tell a saving from a fresh refusal."""
+        from core.errors import DataIntegrityError
+
+        self.cycles(runner, DataIntegrityError("EURUSD H4: 80 bars missing"))
+        decision, reason = _decisions(runner)[self.SYMBOL]
+
+        assert reason == Reason.DATA_QUARANTINED
+        assert decision != "TRADE"
+        runner.close()
+
+    def test_a_held_symbol_never_becomes_a_trade(self, runner: JarvisRunner) -> None:
+        """The whole safety argument: a hold can only ever remove a candidate."""
+        from core.errors import DataIntegrityError
+
+        self.cycles(runner, DataIntegrityError("EURUSD H4: 80 bars missing"))
+        traded = [
+            symbol for symbol, (decision, _) in _decisions(runner).items() if decision == "TRADE"
+        ]
+
+        assert self.SYMBOL not in traded
+        runner.close()
