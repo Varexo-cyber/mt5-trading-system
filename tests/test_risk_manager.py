@@ -224,6 +224,52 @@ class TestSystemGates:
         )
         assert manager.check_can_trade(state).reason is Reason.MAX_POSITIONS_REACHED
 
+    def test_winner_scalp_tickets_do_not_consume_primary_idea_slots(
+        self, manager: RiskManager, settings: Settings
+    ) -> None:
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={"enabled": True, "counts_toward_position_limit": False}
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        positions = [
+            position("EURUSD"),
+            replace(position("EURUSD"), ticket=2, comment="jarvis-scalp"),
+            replace(position("EURUSD"), ticket=3, comment="jarvis-addon"),
+        ]
+        state = manager.build_state(account(1_000.0), positions)
+
+        assert manager.check_can_trade(state).approved
+        assert len(manager.positions_counted_toward_limit(state)) == 1
+
+    def test_only_a_proven_pyramid_may_bypass_full_primary_slots(
+        self, manager: RiskManager, settings: Settings
+    ) -> None:
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={"enabled": True, "counts_toward_position_limit": False}
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        state = manager.build_state(
+            account(1_000.0),
+            [position("EURUSD"), replace(position("GBPUSD"), ticket=2)],
+        )
+
+        assert manager.check_can_trade(state).reason is Reason.MAX_POSITIONS_REACHED
+        assert manager.check_can_trade(state, allow_pyramid_overflow=True).approved
+
     def test_daily_trade_count_blocks(
         self,
         manager: RiskManager,
@@ -386,6 +432,62 @@ class TestSymbolGates:
         assert decision.reason is Reason.POSITION_ALREADY_OPEN
         assert "weakest existing leg is -0.10R" in decision.detail
 
+    def test_full_primary_slots_never_turn_a_loser_into_an_overflow_scalp(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={
+                "enabled": True,
+                "counts_toward_position_limit": False,
+                "min_existing_r": 0.15,
+            }
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        sizing = PositionSizer(settings).size(
+            spec=spec,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.085,
+            sl=1.083,
+            tp=1.091,
+        )
+        Recorder(journal, clock, settings).record_trade_open(
+            cycle_pk=None,
+            sizing=sizing,
+            ticket=1,
+            entry_price=1.085,
+            equity_before=10_000.0,
+        )
+        state = manager.build_state(
+            account(10_000.0),
+            [position("EURUSD"), replace(position("GBPUSD"), ticket=2)],
+        )
+
+        decision = manager.evaluate(
+            state,
+            "EURUSD",
+            spec,
+            direction=Direction.LONG,
+            entry=1.0848,
+            allow_pyramid=True,
+        )
+
+        assert not decision.approved
+        assert decision.reason is Reason.POSITION_ALREADY_OPEN
+        assert "weakest existing leg is -0.10R" in decision.detail
+
     def test_pyramiding_never_overrides_the_per_symbol_leg_ceiling(
         self, manager: RiskManager, settings: Settings, spec: InstrumentSpec
     ) -> None:
@@ -414,6 +516,42 @@ class TestSymbolGates:
 
         assert not decision.approved
         assert "per-symbol ceiling 2" in decision.detail
+
+    def test_only_one_symbol_may_run_a_winner_scalp_campaign(
+        self, manager: RiskManager, settings: Settings, spec: InstrumentSpec
+    ) -> None:
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={
+                "enabled": True,
+                "counts_toward_position_limit": False,
+                "max_active_symbols": 1,
+            }
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        positions = [
+            position("GBPUSD"),
+            replace(position("EURUSD"), ticket=2, comment="jarvis-scalp"),
+        ]
+        state = manager.build_state(account(10_000.0), positions)
+
+        decision = manager.check_symbol(
+            "GBPUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.090,
+            allow_pyramid=True,
+        )
+
+        assert not decision.approved
+        assert "campaign already active on EURUSD" in decision.detail
 
 
 class TestMargin:

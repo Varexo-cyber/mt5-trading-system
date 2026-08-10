@@ -97,3 +97,8 @@ class TestScaling:
         assert settings.effective_max_positions(153.03) == 4
         assert settings.trade_management.pyramiding.enabled
         assert settings.trade_management.pyramiding.max_legs_per_symbol == 3
+        assert settings.trade_management.pyramiding.max_active_symbols == 1
+        assert not settings.trade_management.pyramiding.counts_toward_position_limit
+        assert settings.trade_management.pyramiding.risk_multiplier == 0.25
+        assert settings.trade_management.pyramiding.minimum_conviction == 85
+        assert settings.trade_management.pyramiding.minimum_ai_confidence == 0.80

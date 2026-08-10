@@ -418,6 +418,8 @@ trade_management:
     minimum_conviction: 75
     risk_multiplier: 0.5
     minimum_ai_confidence: 0.65
+    max_active_symbols: 1
+    counts_toward_position_limit: true
   manual_positions:
     enabled: false
     magic_numbers: [0]
