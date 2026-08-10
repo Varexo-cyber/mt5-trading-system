@@ -130,6 +130,36 @@ scanner:
   # full timeframe ladder. This is a coverage choice, not a looser trade gate.
   deep_candidates: 2000
 
+  # Three selection lanes. The complete catalogue is still inspected and
+  # analysed, but scarce position slots and paid Claude reviews go to familiar,
+  # liquid markets first. Only when those produce no executable proposal does
+  # the queue reach single-name shares and less liquid CFDs.
+  priority_asset_classes: [forex, crypto]
+  priority_symbols:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - USDCHF
+    - AUDUSD
+    - USDCAD
+    - NZDUSD
+    - EURJPY
+    - GBPJPY
+    - EURGBP
+    - BTCUSD
+    - ETHUSD
+    - SOLUSD
+    - XRPUSD
+    - XAUUSD
+    - US30
+    - US500
+    - NAS100
+    - US2000
+  # Inside a lane, a spread at 10% of the class cap receives nine more ranking
+  # points than one sitting at the cap. Directional evidence still decides the
+  # trade; this only stops expensive execution from winning a close comparison.
+  priority_spread_weight: 10.0
+
 analysis:
   confluence:
     # Measured, not guessed: fed a textbook uptrend, every symbol came back

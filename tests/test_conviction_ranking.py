@@ -20,7 +20,14 @@ from runner.service import AnalysedCandidate
 NOW = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)
 
 
-def candidate(symbol: str, score: float, confidence: float) -> AnalysedCandidate:
+def candidate(
+    symbol: str,
+    score: float,
+    confidence: float,
+    *,
+    tier: int = 0,
+    cost_priority: float = 0.0,
+) -> AnalysedCandidate:
     idea = TradeIdea(
         symbol=symbol,
         approved=True,
@@ -34,7 +41,12 @@ def candidate(symbol: str, score: float, confidence: float) -> AnalysedCandidate
         signals=(),
     )
     return AnalysedCandidate(
-        symbol, "cycle", idea, MarketContext(symbol=symbol, now=NOW, series={}, tick=None)
+        symbol,
+        "cycle",
+        idea,
+        MarketContext(symbol=symbol, now=NOW, series={}, tick=None),
+        market_priority_tier=tier,
+        cost_priority=cost_priority,
     )
 
 
@@ -74,3 +86,21 @@ def test_ranking_is_not_a_gate() -> None:
     items = [candidate("STRONG", 90.0, 0.9), candidate("WEAK", 61.0, 0.56)]
     assert len(ranked(items)) == 2
     assert "WEAK" in ranked(items)
+
+
+def test_preferred_market_lane_precedes_a_stronger_fallback_setup() -> None:
+    preferred = candidate("EURUSD.i", 55.0, 0.70, tier=1)
+    fallback = candidate("DB1", 90.0, 0.90, tier=0)
+
+    ordered = sorted([fallback, preferred], key=lambda item: item.selection_key, reverse=True)
+
+    assert [item.symbol for item in ordered] == ["EURUSD.i", "DB1"]
+
+
+def test_lower_spread_can_break_a_close_comparison_inside_one_lane() -> None:
+    cheaper = candidate("EURUSD.i", 70.0, 0.70, tier=1, cost_priority=9.0)
+    expensive = candidate("GBPUSD.i", 75.0, 0.70, tier=1, cost_priority=1.0)
+
+    ordered = sorted([expensive, cheaper], key=lambda item: item.selection_key, reverse=True)
+
+    assert [item.symbol for item in ordered] == ["EURUSD.i", "GBPUSD.i"]

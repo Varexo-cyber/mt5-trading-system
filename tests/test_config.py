@@ -43,6 +43,9 @@ class TestShippedConfig:
         assert settings.instruments.symbols_only == ()
         assert settings.scanner.batch_size is None
         assert settings.scanner.deep_candidates >= 847
+        assert settings.scanner.priority_asset_classes == ("forex", "crypto")
+        assert {"EURUSD", "BTCUSD", "XAUUSD"} <= set(settings.scanner.priority_symbols)
+        assert settings.scanner.priority_spread_weight > 0
         assert settings.ai.market_scout.enabled
         assert settings.analysis.playbooks.enabled
         assert not settings.analysis.playbooks.live_execution_enabled

@@ -179,6 +179,9 @@ class AnalysedCandidate:
     idea: TradeIdea
     context: MarketContext
     intelligence: OpportunityIntelligence | None = None
+    market_priority_tier: int = 0
+    spread_quality: float = 0.0
+    cost_priority: float = 0.0
 
     @property
     def conviction(self) -> float:
@@ -205,6 +208,22 @@ class AnalysedCandidate:
             else 0.0
         )
         return self.conviction + modifier
+
+    @property
+    def selection_score(self) -> float:
+        """Evidence score plus bounded execution-cost preference."""
+        return self.ranking_score + self.cost_priority
+
+    @property
+    def selection_key(self) -> tuple[int, float]:
+        """Strict market lane first, then evidence and cost inside that lane."""
+        return self.market_priority_tier, self.selection_score
+
+    @property
+    def market_priority_label(self) -> str:
+        return {2: "core_market", 1: "preferred_asset_class"}.get(
+            self.market_priority_tier, "catalogue_fallback"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -888,9 +907,9 @@ class JarvisRunner:
         #
         # So the chart work — which is the same work either way — happens for
         # every candidate before any of it is acted on, and the queue is sorted
-        # by the engine's own conviction. Everything downstream (risk, filters,
-        # sizing, the AI review, the order) then runs in that order, so the
-        # scarce slots and the paid reviews go to the best ideas available.
+        # by the configured market-quality lane first and the engine's own
+        # conviction plus spread quality inside that lane. Everything downstream
+        # (risk, filters, sizing, AI review, order) then runs in that order.
         analysed = self._analyse_batch(batch, account)
         analysed = self._apply_market_scout(analysed, batch)
         # Every candidate now gets the full chart analysis, so this is the
@@ -950,6 +969,7 @@ class JarvisRunner:
         stands when its turn comes, not as it stood at the top of the cycle.
         """
         analysed: list[AnalysedCandidate] = []
+        prescan = {candidate.symbol: candidate for candidate in batch.candidates}
         self._cycle_observations = []
         self._cycle_contexts = {}
         for candidate in batch.candidates:
@@ -962,6 +982,16 @@ class JarvisRunner:
                 )
                 continue
             if item is not None:
+                cheap = prescan.get(item.symbol)
+                if cheap is not None:
+                    item = replace(
+                        item,
+                        market_priority_tier=cheap.priority_tier,
+                        spread_quality=cheap.spread_quality,
+                        cost_priority=(
+                            cheap.spread_quality * self.settings.scanner.priority_spread_weight
+                        ),
+                    )
                 analysed.append(item)
         self._world_state = build_world_state(self._cycle_observations)
         self._refresh_edge_calibrations()
@@ -1004,12 +1034,12 @@ class JarvisRunner:
                 )
             routed.append(replace(item, intelligence=intelligence))
         analysed = routed
+        analysed.sort(key=lambda item: item.selection_key, reverse=True)
         self._publish_market_intelligence(analysed)
-        analysed.sort(key=lambda item: item.ranking_score, reverse=True)
-        # In a drawdown, go less far down the ranked list. The candidates are
-        # already ordered by conviction, so this says "only the best few" —
-        # scale-free, and it always leaves at least one reachable. It never
-        # touches position size.
+        # In a drawdown, go less far down the ranked list. Candidates are
+        # already ordered by market lane, conviction and execution cost, so
+        # this says "only the first few" and always leaves one reachable. It
+        # never touches position size.
         allowed = self.posture.max_candidates
         if allowed is not None and len(analysed) > allowed:
             log.info(
@@ -1027,14 +1057,14 @@ class JarvisRunner:
             analysed = analysed[:allowed]
         if analysed:
             log.info(
-                "ranked %d tradeable setups by conviction",
+                "ranked %d tradeable setups by market priority and conviction",
                 len(analysed),
                 extra={
                     "event": "conviction_ranking",
                     "candidates": len(analysed),
                     "best": [
                         f"{item.symbol} {item.idea.direction.name if item.idea.direction else '?'}"
-                        f" {item.ranking_score:.1f}"
+                        f" {item.selection_score:.1f} [{item.market_priority_label}]"
                         for item in analysed[:5]
                     ],
                 },
@@ -1203,7 +1233,7 @@ class JarvisRunner:
                 )
                 item = replace(item, intelligence=intelligence)
             promoted.append(item)
-        promoted.sort(key=lambda item: item.ranking_score, reverse=True)
+        promoted.sort(key=lambda item: item.selection_key, reverse=True)
         self._publish_market_intelligence(promoted)
         return promoted
 
@@ -1222,6 +1252,9 @@ class JarvisRunner:
                         "direction": item.idea.direction.name if item.idea.direction else None,
                         "conviction": round(item.conviction, 2),
                         "ranking_score": round(item.ranking_score, 2),
+                        "selection_score": round(item.selection_score, 2),
+                        "market_priority": item.market_priority_label,
+                        "spread_quality": round(item.spread_quality, 4),
                         "intelligence": (
                             item.intelligence.safe_dict() if item.intelligence is not None else None
                         ),
@@ -1637,10 +1670,14 @@ class JarvisRunner:
                 "rank": rank,
                 "of_tradeable_setups": of,
                 "conviction": round(candidate.conviction, 1),
+                "selection_score": round(candidate.selection_score, 1),
+                "market_priority": candidate.market_priority_label,
+                "spread_quality": round(candidate.spread_quality, 4),
                 "note": (
-                    "Rank 1 means the engine rated this the strongest setup it found across "
-                    "the whole catalogue this cycle. That is a reason to read it carefully, "
-                    "not a reason to approve it — the best of a weak field is still weak."
+                    "The queue handles configured core markets first, then preferred asset "
+                    "classes, then the catalogue fallback. Inside a lane, rank 1 means the "
+                    "strongest setup after evidence and spread quality. Priority is a reason "
+                    "to read it first, never a reason to approve a weak trade."
                 ),
             },
             "account_posture": self.posture.brief(),

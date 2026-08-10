@@ -1841,6 +1841,25 @@ class ScannerConfig(Base):
     #: impossible to configure, which is a policy decision that does not belong
     #: in a schema bound.
     deep_candidates: int = Field(default=12, ge=1, le=2000)
+    #: Selection lanes, highest-quality markets first. A preferred symbol is
+    #: lane 2, a preferred asset class lane 1, and everything else remains a
+    #: lane-0 fallback. This changes ordering only: every configured symbol is
+    #: still inspected and must pass the same analysis, filters and risk gates.
+    priority_asset_classes: tuple[
+        Literal["forex", "crypto", "stock", "index", "metal", "commodity"], ...
+    ] = ()
+    priority_symbols: tuple[str, ...] = ()
+    #: Low transaction cost may reorder candidates inside one lane, but can
+    #: never promote a fallback instrument ahead of a preferred market.
+    priority_spread_weight: float = Field(default=0.0, ge=0.0, le=25.0)
+
+    @field_validator("priority_symbols")
+    @classmethod
+    def _priority_symbols_are_normalised(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = tuple(dict.fromkeys(symbol.strip().upper() for symbol in value if symbol.strip()))
+        if len(cleaned) != len(value):
+            raise ValueError("scanner.priority_symbols must be non-empty and unique")
+        return cleaned
 
 
 class MarketScoutConfig(Base):
