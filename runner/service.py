@@ -324,14 +324,14 @@ class JarvisRunner:
         self.brain = build_brain(account=os.getenv("MT5_LOGIN", "") or self.settings.mode.value)
         self._edge_calibrations: list[EdgeCalibration] = []
         self._edge_calibrations_at: datetime | None = None
+        self._brain_schema_ready = False
         if self.brain.enabled:
-            if not self.brain.migrate():
+            self._brain_schema_ready = self.brain.migrate()
+            if not self._brain_schema_ready:
                 log.warning(
                     "brain schema could not be applied; running without long-term memory",
                     extra={"event": "brain_migrate_failed", "why": self.brain.status.last_error},
                 )
-            else:
-                self._sync_counterfactual_history()
         # Broker ticket -> the brain's own trade row, so a guard action can be
         # attached to the right position without a lookup on every event.
         self._brain_trades: dict[int, int | None] = {}
@@ -367,6 +367,8 @@ class JarvisRunner:
         self.journal.open()
         self.ai_ledger.backfill_database()
         self.recorder = Recorder(self.journal, self.clock, self.settings)
+        if self._brain_schema_ready:
+            self._sync_counterfactual_history()
         self.memory.synchronize_outcomes(
             self.journal.query(
                 "SELECT id, symbol, direction, closed_at, "
