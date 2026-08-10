@@ -32,6 +32,7 @@ import pytest
 import yaml
 
 from advisory.providers import Advice, Reflection, Supervision
+from brain.store import Brain
 from config.loader import DEFAULT_CONFIG_PATH, load_settings
 from config.schema import MT5Config
 from core.clock import SimulatedClock
@@ -141,6 +142,35 @@ def _decisions(runner: JarvisRunner) -> dict[str, tuple[str, str]]:
         "SELECT symbol, decision, reason FROM analysis_cycles ORDER BY id"
     ).fetchall()
     return {str(r[0]): (str(r[1]), str(r[2])) for r in rows}
+
+
+def test_enabled_brain_backfills_only_after_the_recorder_exists(
+    fake: FakeMT5,
+    settings: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A configured VPS database must not make runner construction crash."""
+    brain = Brain("postgresql://unused", account="test")
+    batches: list[list[dict[str, object]]] = []
+    monkeypatch.setattr(brain, "migrate", lambda: True)
+    monkeypatch.setattr(brain, "record_counterfactuals", lambda rows: batches.append(rows))
+    monkeypatch.setattr("runner.service.build_brain", lambda **_kwargs: brain)
+    connector = MT5Connector(MT5Config(), mt5_module=fake)
+
+    service = JarvisRunner(
+        connector,
+        settings,
+        tmp_path,
+        OperationMode.MONITOR,
+        advisor=_ApprovingAdvisor(),
+        clock=SimulatedClock(MONDAY),
+    )
+
+    assert batches == []
+    service.connect()
+    assert batches == [[]]
+    service.close()
 
 
 class TestMixedCatalogue:
