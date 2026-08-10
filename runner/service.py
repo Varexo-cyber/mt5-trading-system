@@ -1050,7 +1050,12 @@ class JarvisRunner:
         self._cycle_contexts = {}
         for candidate in batch.candidates:
             try:
-                item = self._analyse_candidate(candidate.symbol, candidate.asset_class, account)
+                item = self._analyse_candidate(
+                    candidate.symbol,
+                    candidate.asset_class,
+                    account,
+                    latest_bar=candidate.latest_bar,
+                )
             except Exception:
                 log.exception(
                     "candidate analysis failed; continuing with the rest of the batch",
@@ -1342,14 +1347,18 @@ class JarvisRunner:
         )
 
     def _analyse_candidate(  # type: ignore[no-untyped-def]
-        self, symbol: str, asset_class, account
+        self, symbol: str, asset_class, account, latest_bar: datetime | None = None
     ) -> AnalysedCandidate | None:
         cycle_id = str(uuid.uuid4())
         now = self.clock.now()
         # Asked before the ladder is fetched, because the fetch is the cost.
         # A held symbol reaches the same verdict it reached last time; it just
         # reaches it without eight timeframes of bars.
-        hold = self.quarantine.hold_for(symbol, now)
+        #
+        # `latest_bar` comes from the cheap scan, which has already read it. A
+        # bar newer than the one that failed means the venue has traded since,
+        # so the hold is released there and then rather than at its deadline.
+        hold = self.quarantine.hold_for(symbol, now, latest_bar)
         if hold is not None:
             self._record_skip(
                 cycle_id,
@@ -1374,7 +1383,7 @@ class JarvisRunner:
             # a dropped connection resolves on its own, and holding those would
             # keep a market out of the scan for hours after it came back.
             if isinstance(exc, InsufficientDataError | DataIntegrityError):
-                self.quarantine.record_failure(symbol, str(exc), now)
+                self.quarantine.record_failure(symbol, str(exc), now, latest_bar)
             self._record_skip(cycle_id, symbol, account.equity, Reason.DATA_UNAVAILABLE, str(exc))
             return None
         # It analysed cleanly, so whatever was wrong with its history is gone.

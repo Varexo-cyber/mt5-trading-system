@@ -579,11 +579,16 @@ scanner:
   # A compute saving and nothing else. A held symbol was already refused and is
   # still refused; the candidate set can only shrink here. Every spread,
   # session, liveliness and risk rule runs unchanged on what remains.
+  # Released early by the symbol's own next bar, so an exchange that opens
+  # again tomorrow does not sit out a clock. These minutes are only the
+  # backstop for when the scan cannot read a bar at all, and they are hours
+  # rather than days on purpose: dropping from a fetch every cycle to one an
+  # hour already removes 98.3% of the waste, and a full day removes 99.93%.
   data_quarantine:
     enabled: true
-    initial_minutes: 60
+    initial_minutes: 30
     backoff_multiple: 4.0
-    max_minutes: 1440
+    max_minutes: 240
   # null = rank the entire broker catalogue every cycle.
   batch_size: null
   # Top-ranked symbols promoted to full multi-timeframe analysis per cycle.

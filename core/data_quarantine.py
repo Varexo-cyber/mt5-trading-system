@@ -27,6 +27,17 @@ inside trading weeks. A stale quote is not one of them — that resolves the
 moment the venue reopens, and holding it would keep a market out of the scan
 for hours after it came back.
 
+THE HOLD IS NOT REALLY A TIMER. It is a bet that nothing has changed, and the
+first bar the venue prints settles that bet: a symbol whose exchange opens
+again tomorrow is released by its own new bar, not by the clock. The cheap scan
+already reports `latest_bar` for every candidate, so this costs nothing.
+
+The clock is only the backstop for when no bar can be read, and it is
+deliberately short. Going from a fetch every cycle to one an hour removes 98.3%
+of the waste; stretching that to a day removes 99.93%. The extra
+seven-hundredths of a percentage point is not worth being blind to a market for
+a day, so the ceiling is hours rather than days.
+
 Held in memory rather than on disk, deliberately. A restart re-learns the whole
 set within one cycle, which costs one expensive pass; a stale file that
 outlives a broker fixing its history costs a symbol nobody notices is missing.
@@ -45,20 +56,30 @@ log = get_logger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class Hold:
-    """One symbol being skipped, and when it will be tried again."""
+    """One symbol being skipped, and what would bring it back."""
 
     symbol: str
     until: datetime
     reason: str
     failures: int
+    #: Newest bar the cheap scan had seen when this symbol was held. A later
+    #: one means the venue has traded since, so the window is not the window
+    #: that failed and the answer is worth asking again.
+    latest_bar: datetime | None = None
 
     def minutes_left(self, now: datetime) -> float:
         return max(0.0, (self.until - now).total_seconds() / 60.0)
 
+    def superseded_by(self, latest_bar: datetime | None) -> bool:
+        if latest_bar is None or self.latest_bar is None:
+            return False
+        return latest_bar > self.latest_bar
+
     def summary(self, now: datetime) -> str:
         return (
             f"{self.symbol}: broker history unusable ({self.failures}x); "
-            f"re-checked in {self.minutes_left(now):.0f} min. {self.reason}"
+            f"re-checked on its next new bar, or in {self.minutes_left(now):.0f} min. "
+            f"{self.reason}"
         )
 
 
@@ -75,9 +96,9 @@ class DataQuarantine:
         self,
         *,
         enabled: bool = True,
-        initial_minutes: float = 60.0,
+        initial_minutes: float = 30.0,
         backoff_multiple: float = 4.0,
-        max_minutes: float = 1440.0,
+        max_minutes: float = 240.0,
     ) -> None:
         self.enabled = enabled
         self.initial_minutes = initial_minutes
@@ -85,21 +106,38 @@ class DataQuarantine:
         self.max_minutes = max_minutes
         self._holds: dict[str, Hold] = {}
 
-    def hold_for(self, symbol: str, now: datetime) -> Hold | None:
-        """The live hold on this symbol, or None if it should be analysed."""
+    def hold_for(
+        self, symbol: str, now: datetime, latest_bar: datetime | None = None
+    ) -> Hold | None:
+        """The live hold on this symbol, or None if it should be analysed.
+
+        A new bar releases it immediately, ahead of the clock. That is the
+        answer to "what if the exchange opens again tomorrow": the hold is not
+        really a timer, it is a bet that nothing has changed, and the first bar
+        the venue prints settles that bet. The clock is only the backstop for
+        when the scan could not report a bar at all.
+        """
         if not self.enabled:
             return None
         hold = self._holds.get(symbol)
         if hold is None:
             return None
+        if hold.superseded_by(latest_bar):
+            return None
         if now >= hold.until:
             # Expired. The failure count is kept: a symbol that has failed four
             # times and is about to fail a fifth should go straight back to the
-            # long hold rather than restart at an hour.
+            # long hold rather than restart at the initial window.
             return None
         return hold
 
-    def record_failure(self, symbol: str, reason: str, now: datetime) -> Hold:
+    def record_failure(
+        self,
+        symbol: str,
+        reason: str,
+        now: datetime,
+        latest_bar: datetime | None = None,
+    ) -> Hold:
         """Hold this symbol, longer each time it fails again."""
         previous = self._holds.get(symbol)
         failures = (previous.failures if previous else 0) + 1
@@ -114,6 +152,7 @@ class DataQuarantine:
             # full pandas message is three lines of noise there.
             reason=reason.strip().split("\n")[0][:200],
             failures=failures,
+            latest_bar=latest_bar,
         )
         self._holds[symbol] = hold
         log.info(
@@ -123,6 +162,7 @@ class DataQuarantine:
                 "symbol": symbol,
                 "failures": failures,
                 "minutes": round(minutes, 1),
+                "latest_bar": latest_bar.isoformat() if latest_bar else None,
                 "reason": hold.reason,
             },
         )

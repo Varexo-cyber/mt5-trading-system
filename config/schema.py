@@ -1942,18 +1942,24 @@ class DataQuarantineConfig(Base):
     refused and is still refused; only the cost of saying so falls. The
     candidate set can shrink here and never grow, so no spread, session,
     liveliness or risk rule is reachable differently because of it.
+
+    The hold is released early by the symbol's own next bar, so a market that
+    opens again tomorrow does not wait out a clock. These minutes are only the
+    backstop for when the scan cannot read a bar at all.
     """
 
     enabled: bool = True
     #: First hold after one bad fetch. Short, because a single gap may be a
     #: momentary feed problem rather than a missing year of history.
-    initial_minutes: float = Field(default=60.0, gt=0.0, le=10_080.0)
+    initial_minutes: float = Field(default=30.0, gt=0.0, le=10_080.0)
     #: Each repeat failure multiplies the hold. A symbol offering eight weekly
-    #: bars where fifty are needed does not need hourly re-checking all year.
+    #: bars where fifty are needed does not need re-checking every half hour.
     backoff_multiple: float = Field(default=4.0, ge=1.0, le=100.0)
-    #: The ceiling, so nothing is ever held out permanently without another
-    #: look. A broker that backfills history is noticed within a day.
-    max_minutes: float = Field(default=1440.0, gt=0.0, le=43_200.0)
+    #: The ceiling. Hours, not days: a fetch every cycle down to one an hour
+    #: already removes 98.3% of the waste, and stretching that to a day removes
+    #: 99.93%. Those last seven-hundredths of a percentage point do not buy
+    #: enough to be worth a day of blindness to a market.
+    max_minutes: float = Field(default=240.0, gt=0.0, le=43_200.0)
 
     @model_validator(mode="after")
     def _ceiling_above_floor(self) -> DataQuarantineConfig:
