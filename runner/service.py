@@ -436,6 +436,7 @@ class JarvisRunner:
             self.clock,
             self.kill_switch,
             margin_estimator=self.broker.estimate_margin,
+            manageability_probe=self._market_is_manageable,
         )
         self.filters = build_filter_chain(self.broker, self.settings, self.journal, self.clock)
         self.scanner = UniverseScanner(self.broker, self.settings, self.clock)
@@ -542,6 +543,45 @@ class JarvisRunner:
                 # us there now rather than after the rest of the interval.
                 return
             self.guard_tick()
+
+    def _market_is_manageable(self, symbol: str) -> bool:
+        """Can an order or a stop change on this symbol reach the venue right now?
+
+        This is a question about the market, not about the setup. A single-name
+        share whose exchange shut at 17:00 Amsterdam answers False: the position
+        cannot be closed, its stop cannot be moved, and nothing about it can be
+        secured until the venue reopens.
+
+        Two signals, both read from the broker and neither guessed:
+
+        1. `trade_mode`. Brokers that downgrade a symbol out of session to
+           close-only or disabled say so here, and that is decisive.
+        2. Quote age. Most CFD venues leave `trade_mode` at FULL and simply stop
+           publishing. A quote older than `unmanageable_quote_age_seconds` means
+           the venue has stopped quoting, which is the same thing said quietly.
+
+        Unclear answers return True — the market is assumed open and the
+        position keeps its slot. Releasing a slot is the loosening, so it
+        happens on evidence, never on the absence of it.
+        """
+        try:
+            spec = self.broker.spec(symbol)
+        except Exception:  # noqa: BLE001 - an unreadable symbol keeps its slot
+            return True
+        if not spec.is_tradable:
+            return False
+        try:
+            tick = self.broker.tick(symbol)
+        except Exception:  # noqa: BLE001 - as above
+            return True
+        if tick is None:
+            return True
+        age = (self.clock.now() - tick.time).total_seconds()
+        # A negative age means the broker's clock leads ours. That is a clock
+        # problem, not a shut venue, and it must not release a slot.
+        if age < 0:
+            return True
+        return age <= self.settings.risk.unmanageable_quote_age_seconds
 
     def _managed_positions(self) -> list[Position]:
         """Positions Jarvis has explicitly accepted responsibility for."""

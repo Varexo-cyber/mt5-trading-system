@@ -43,6 +43,10 @@ log = get_logger(__name__)
 #: Money callback: (symbol, direction, volume, price) -> margin required.
 MarginEstimator = Callable[[str, Direction, float, float], float]
 
+#: Market callback: symbol -> can an order or a stop change be sent right now?
+#: False means the venue is shut, not that the trade is a bad idea.
+ManageabilityProbe = Callable[[str], bool]
+
 # `jarvis-addon` is retained for positions opened by the first deployed
 # pyramiding build. New tickets use the operator-facing scalp name. MT5 stores
 # this comment on the position, so the distinction survives a restart.
@@ -141,6 +145,9 @@ class RiskManager:
     clock: Clock
     kill_switch: KillSwitch | None = None
     margin_estimator: MarginEstimator | None = None
+    #: Asks the broker whether a symbol's market is currently open. Optional:
+    #: without it every position counts toward the limit, as it always did.
+    manageability_probe: ManageabilityProbe | None = None
     #: Margin headroom to leave untouched. A position that consumes the last of
     #: free margin leaves nothing for the adverse excursion before the stop.
     margin_safety_factor: float = 2.0
@@ -237,10 +244,57 @@ class RiskManager:
             and position.comment in WINNER_SCALP_COMMENTS
         )
 
-    def positions_counted_toward_limit(self, state: RiskState) -> tuple[Position, ...]:
-        """Primary trade ideas; bounded winner scalp tickets are tracked separately."""
+    def _is_unmanageable(self, position: Position) -> bool:
+        """True when this position's market is shut and no action on it is possible.
+
+        A slot bounds how many trades are being *run*. A share whose exchange
+        closed cannot be closed, tightened, secured or reasoned about until the
+        venue reopens, so holding a slot for it buys nothing and costs every
+        opportunity the rest of the evening.
+
+        Fail-safe direction is deliberate and it is *toward counting*. Anything
+        unclear -- the probe is absent, the broker raised, the answer was not a
+        bool -- leaves the position counted, which is the current behaviour and
+        the tighter of the two. Only an unambiguous "this venue is not quoting"
+        releases a slot.
+        """
+        if not self.settings.risk.release_slots_when_unmanageable:
+            return False
+        probe = self.manageability_probe
+        if probe is None:
+            return False
+        try:
+            manageable = probe(position.symbol)
+        except Exception:  # noqa: BLE001 - an unreadable market keeps its slot
+            log.warning(
+                "cannot tell whether this market is open; position keeps its slot",
+                extra={
+                    "event": "manageability_unknown",
+                    "symbol": position.symbol,
+                    "ticket": position.ticket,
+                },
+            )
+            return False
+        if not isinstance(manageable, bool):
+            return False
+        return not manageable
+
+    def unmanageable_positions(self, state: RiskState) -> tuple[Position, ...]:
+        """Open tickets whose market is shut. They keep their risk, not their slot."""
         return tuple(
-            position for position in state.open_positions if not self._is_winner_scalp(position)
+            position for position in state.open_positions if self._is_unmanageable(position)
+        )
+
+    def positions_counted_toward_limit(self, state: RiskState) -> tuple[Position, ...]:
+        """Primary trade ideas the system can still act on.
+
+        Excluded: bounded winner scalp tickets, which are tracked separately,
+        and positions whose market is shut, which cannot be managed at all.
+        """
+        return tuple(
+            position
+            for position in state.open_positions
+            if not self._is_winner_scalp(position) and not self._is_unmanageable(position)
         )
 
     def check_can_trade(
@@ -319,16 +373,28 @@ class RiskManager:
         # book and a drawdown narrows it without anyone editing a config file.
         max_positions = self.settings.effective_max_positions(state.equity)
         counted_positions = self.positions_counted_toward_limit(state)
+        frozen = self.unmanageable_positions(state)
+        # Named in both the refusal and the approval. A slot count that silently
+        # disagrees with the terminal's position list is the kind of thing an
+        # operator debugs for an hour, so the arithmetic is always spelled out.
+        frozen_note = (
+            f"; {len(frozen)} ticket(s) excluded because their market is shut "
+            f"({', '.join(sorted({p.symbol for p in frozen}))})"
+            if frozen
+            else ""
+        )
         if len(counted_positions) >= max_positions and not allow_pyramid_overflow:
             return RiskDecision.block(
                 Reason.MAX_POSITIONS_REACHED,
                 f"{len(counted_positions)} primary trade ideas open, limit {max_positions} "
-                f"at {state.equity:.2f} equity ({len(state.open_positions)} total tickets)",
+                f"at {state.equity:.2f} equity ({len(state.open_positions)} total tickets)"
+                f"{frozen_note}",
             )
 
         return RiskDecision.allow(
             f"day {state.day_pnl_pct:+.2f}%, week {state.week_pnl_pct:+.2f}%, "
-            f"dd {state.drawdown_pct:.2f}%, {state.trades_today}/{max_day} trades today"
+            f"dd {state.drawdown_pct:.2f}%, {state.trades_today}/{max_day} trades today, "
+            f"{len(counted_positions)}/{max_positions} slots used{frozen_note}"
         )
 
     def check_symbol(
