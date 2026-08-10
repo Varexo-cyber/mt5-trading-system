@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
@@ -13,6 +14,9 @@ import pandas as pd
 from analysis.confluence import TradeIdea
 from config.schema import AIConfig
 from core.types import MarketContext, Timeframe
+from infra.logging import get_logger
+
+log = get_logger(__name__)
 
 # Claude Sonnet 5 and the Opus 4.7+ family reject `temperature`, `top_p` and
 # `top_k` outright, and run adaptive thinking whenever `thinking` is omitted.
@@ -868,6 +872,174 @@ def _reachability(frame: Any, distance: float, bars_ahead: int) -> dict[str, obj
     }
 
 
+def _direction_vote(value: float, threshold: float) -> int:
+    """Return -1/0/+1 only when a measured move clears its noise floor."""
+    if value > threshold:
+        return 1
+    if value < -threshold:
+        return -1
+    return 0
+
+
+def _timeframe_evidence(series: Any, count: int, direction_sign: int) -> dict[str, object]:
+    """Compact measurements over the exact closed bars sent to the reviewer.
+
+    This deliberately does not predict. It saves Claude from having to perform
+    arithmetic over hundreds of compact rows and, crucially, labels the one
+    interpretive field as a deterministic read rather than a market fact.
+    """
+    recent = series.df.tail(count)
+    if len(recent) < 2:
+        return {
+            "status": "insufficient_closed_bars",
+            "closed_bars_measured": len(recent),
+            "proposal_alignment": "unavailable",
+        }
+
+    closes = recent["close"].astype(float)
+    atr = _atr(recent)
+    last = recent.iloc[-1]
+    slow_bars = min(10, len(recent) - 1)
+    fast_bars = min(3, len(recent) - 1)
+    ema_span = min(20, len(recent))
+    ema = closes.ewm(span=ema_span, adjust=False).mean()
+    ema_slope_bars = min(5, len(ema) - 1)
+    window_high = float(recent["high"].max())
+    window_low = float(recent["low"].min())
+    window_range = window_high - window_low
+    candle_range = float(last["high"] - last["low"])
+    candle_body = float(last["close"] - last["open"])
+    upper_wick = float(last["high"] - max(last["open"], last["close"]))
+    lower_wick = float(min(last["open"], last["close"]) - last["low"])
+
+    def in_atr(value: float) -> float | None:
+        return round(value / atr, 3) if atr else None
+
+    slow_drift = in_atr(float(closes.iloc[-1] - closes.iloc[-1 - slow_bars]))
+    fast_drift = in_atr(float(closes.iloc[-1] - closes.iloc[-1 - fast_bars]))
+    close_vs_ema = in_atr(float(closes.iloc[-1] - ema.iloc[-1]))
+    ema_slope = in_atr(float(ema.iloc[-1] - ema.iloc[-1 - ema_slope_bars]))
+    measurements = [
+        (slow_drift, 0.15),
+        (fast_drift, 0.08),
+        (close_vs_ema, 0.10),
+        (ema_slope, 0.05),
+    ]
+    votes = [
+        _direction_vote(value, threshold) for value, threshold in measurements if value is not None
+    ]
+    positive = votes.count(1)
+    negative = votes.count(-1)
+    if positive >= 2 and positive > negative:
+        lean = "up"
+        lean_sign = 1
+    elif negative >= 2 and negative > positive:
+        lean = "down"
+        lean_sign = -1
+    else:
+        lean = "mixed_or_flat"
+        lean_sign = 0
+    if not direction_sign or not lean_sign:
+        alignment = "mixed_or_neutral"
+    elif lean_sign == direction_sign:
+        alignment = "supports_proposal"
+    else:
+        alignment = "opposes_proposal"
+
+    volume = recent.get("tick_volume")
+    median_volume = float(volume.tail(20).median()) if volume is not None else 0.0
+    return {
+        "status": "measured",
+        "closed_bars_measured": len(recent),
+        "last_close": round(float(closes.iloc[-1]), 6),
+        "atr14": round(atr, 6),
+        "slow_drift": {"bars": slow_bars, "atr": slow_drift},
+        "fast_drift": {"bars": fast_bars, "atr": fast_drift},
+        "ema": {
+            "span": ema_span,
+            "close_distance_atr": close_vs_ema,
+            "slope_bars": ema_slope_bars,
+            "slope_atr": ema_slope,
+        },
+        "close_location_in_sent_range_pct": (
+            round(100.0 * (float(closes.iloc[-1]) - window_low) / window_range, 1)
+            if window_range
+            else None
+        ),
+        "last_candle": {
+            "body_atr": in_atr(candle_body),
+            "range_atr": in_atr(candle_range),
+            "upper_wick_atr": in_atr(upper_wick),
+            "lower_wick_atr": in_atr(lower_wick),
+        },
+        "last_tick_volume_vs_20bar_median": (
+            round(float(last.get("tick_volume", 0)) / median_volume, 2) if median_volume else None
+        ),
+        "deterministic_lean": lean,
+        "proposal_alignment": alignment,
+    }
+
+
+def _evidence_brief(idea: TradeIdea, context: MarketContext) -> dict[str, object]:
+    """Facts Claude can verify against the exact compact bars in the payload."""
+    sign = int(idea.direction) if idea.direction is not None else 0
+    measured = {
+        timeframe.value: _timeframe_evidence(
+            series,
+            _BARS_SENT.get(timeframe.value, _BARS_SENT_DEFAULT),
+            sign,
+        )
+        for timeframe, series in context.series.items()
+    }
+    supporting = [
+        timeframe
+        for timeframe, facts in measured.items()
+        if facts.get("proposal_alignment") == "supports_proposal"
+    ]
+    opposing = [
+        timeframe
+        for timeframe, facts in measured.items()
+        if facts.get("proposal_alignment") == "opposes_proposal"
+    ]
+    neutral = [
+        timeframe
+        for timeframe, facts in measured.items()
+        if facts.get("proposal_alignment") in {"mixed_or_neutral", "unavailable"}
+    ]
+    return {
+        "provenance": {
+            "bar_source": "the exact closed OHLCV rows in timeframes below",
+            "calculation": "deterministic local arithmetic; no LLM and no imputation",
+            "live_tick_separate": True,
+            "warning": (
+                "deterministic_lean is a labelled summary of measurements, not a forecast; "
+                "Claude must verify it against the rows and may disagree"
+            ),
+            "alignment_method": (
+                "descriptive vote over 10-bar drift, 3-bar drift, close-versus-EMA and EMA "
+                "slope; it is an engine inference, not a prediction"
+            ),
+        },
+        "trade_question": {
+            "direction": idea.direction.name if idea.direction else None,
+            "setup_family": idea.setup_family,
+            "horizon": idea.horizon,
+            "planning_timeframe": idea.planning_timeframe,
+            "expected_horizon_minutes": idea.expected_horizon_minutes,
+        },
+        "directional_balance": {
+            "supports_proposal": supporting,
+            "opposes_proposal": opposing,
+            "mixed_or_unavailable": neutral,
+            "rule": (
+                "Higher timeframes are context for short trades, not automatic vetoes; judge their "
+                "importance against the stated planning timeframe and horizon."
+            ),
+        },
+        "timeframe_measurements": measured,
+    }
+
+
 def build_review_payload(
     idea: TradeIdea,
     context: MarketContext,
@@ -896,16 +1068,30 @@ def build_review_payload(
             "spread": context.tick.spread,
         }
 
-    # Is this target somewhere the market goes? Answered from its own history
-    # rather than from the risk-reward ratio that produced it.
+    # Is this target somewhere the market goes *within this plan's horizon*?
+    # An M15 scalp and an H1 swing cannot honestly share a 24-H1-bar yardstick.
     target_check: dict[str, object] = {}
-    signal = context.series.get(Timeframe.H1)
+    try:
+        planning_timeframe = Timeframe.parse(idea.planning_timeframe)
+    except ValueError:
+        planning_timeframe = Timeframe.H1
+    signal = context.series.get(planning_timeframe)
     if signal is not None and idea.entry:
         atr = _atr(signal.df)
+        timeframe_minutes = max(1, int(planning_timeframe.duration.total_seconds() / 60))
+        bars_ahead = max(1, math.ceil(idea.expected_horizon_minutes / timeframe_minutes))
         stop_distance = abs(idea.entry - idea.stop_loss) if idea.stop_loss else 0.0
         target_distance = abs(idea.take_profit - idea.entry) if idea.take_profit else 0.0
+        history = _reachability(signal.df.tail(400), target_distance, bars_ahead=bars_ahead)
+        direction_key = (
+            "moved_up_that_far_pct"
+            if idea.direction is not None and int(idea.direction) > 0
+            else "moved_down_that_far_pct"
+        )
         target_check = {
-            "timeframe": "H1",
+            "timeframe": planning_timeframe.value,
+            "expected_horizon_minutes": idea.expected_horizon_minutes,
+            "bars_ahead": bars_ahead,
             "atr14": round(atr, 6),
             "stop_distance": round(stop_distance, 6),
             "target_distance": round(target_distance, 6),
@@ -916,12 +1102,18 @@ def build_review_payload(
                 if context.tick is not None and stop_distance
                 else None
             ),
-            "history": _reachability(signal.df.tail(400), target_distance, bars_ahead=24),
+            "history": history,
+            "proposed_direction_reach_pct": history.get(direction_key),
             "note": (
-                "history: of every 24-hour window in the last 400 H1 bars, the share that "
-                "travelled at least the target distance. A low number means this target is "
-                "rarely reached in a day on this instrument, whatever the risk-reward says."
+                "history measures every available rolling window on the planning timeframe "
+                "using this proposal's expected horizon. It reports how often price travelled "
+                "at least the target distance, not how often this strategy would have won."
             ),
+        }
+    elif signal is None:
+        target_check = {
+            "timeframe": planning_timeframe.value,
+            "status": "planning_timeframe_unavailable",
         }
 
     payload: dict[str, object] = {
@@ -933,6 +1125,7 @@ def build_review_payload(
         "stop_loss": idea.stop_loss,
         "take_profit": idea.take_profit,
         "target_realism": target_check,
+        "evidence_brief": _evidence_brief(idea, context),
         "modules": [asdict(signal) for signal in idea.signals],
         "timeframes": timeframes,
         "decision_tick": tick,
@@ -1217,6 +1410,8 @@ def _parse_supervision(
         if not isinstance(raw_evidence, (list, tuple)):
             raise TypeError("evidence is not a list")  # noqa: TRY301
         evidence = tuple(str(item).strip() for item in raw_evidence if str(item).strip())
+        if len(evidence) > 6:
+            raise ValueError("too many evidence items")  # noqa: TRY301
         review_after = _optional_float(payload.get("review_after_minutes"))
         if review_after is not None and not 0.25 <= review_after <= 240.0:
             raise ValueError("review cadence outside supported range")  # noqa: TRY301
@@ -1267,6 +1462,7 @@ def _failed_supervision(provider: str, model: str, error: str, request_id: str =
     book, and failing to any price-bearing action would mean acting on a number
     that was never received.
     """
+    _log_advisory_failure("position_supervision", provider, model, error)
     return Supervision(
         "hold",
         f"{provider} supervision unavailable; mechanical management continues",
@@ -1279,6 +1475,7 @@ def _failed_supervision(provider: str, model: str, error: str, request_id: str =
 
 def _failed_advice(provider: str, model: str, exc: Exception) -> Advice:
     error = _safe_error(exc)
+    _log_advisory_failure("pretrade_review", provider, model, error)
     return Advice(
         False,
         0.0,
@@ -1290,20 +1487,40 @@ def _failed_advice(provider: str, model: str, exc: Exception) -> Advice:
 
 
 def _failed_reflection(provider: str, model: str, exc: Exception) -> Reflection:
+    error = _safe_error(exc)
+    _log_advisory_failure("posttrade_reflection", provider, model, error)
     return Reflection(
         f"{provider} reflection unavailable",
         provider=provider,
         model=model,
-        error=_safe_error(exc),
+        error=error,
     )
 
 
 def _failed_scout(provider: str, model: str, exc: Exception) -> ScoutDecision:
+    error = _safe_error(exc)
+    _log_advisory_failure("market_scout", provider, model, error)
     return ScoutDecision(
         thesis=f"{provider} market scout unavailable; deterministic pipeline continues",
         provider=provider,
         model=model,
-        error=_safe_error(exc),
+        error=error,
+    )
+
+
+def _log_advisory_failure(operation: str, provider: str, model: str, error: str) -> None:
+    """Make an API failure identifiable without ever printing its request."""
+    log.warning(
+        "%s failed: %s",
+        operation,
+        error,
+        extra={
+            "event": "ai_advisory_failed",
+            "operation": operation,
+            "provider": provider,
+            "model": model,
+            "safe_error": error,
+        },
     )
 
 
@@ -1345,12 +1562,31 @@ def _dumps(payload: Any) -> str:
 
 
 def _anthropic_schema(value: Any) -> Any:
-    """Remove unsupported raw-schema constraints; local parsing enforces them."""
+    """Remove unsupported raw-schema constraints; local parsing enforces them.
+
+    The Anthropic Python helper does the same transformation when using its
+    typed parse API. This project sends raw schemas because provider outputs
+    share one parser, so the transformation has to happen here as well.
+    """
     if isinstance(value, dict):
         return {
             key: _anthropic_schema(item)
             for key, item in value.items()
-            if key not in {"minimum", "maximum", "minLength", "maxLength"}
+            if key
+            not in {
+                "minimum",
+                "maximum",
+                "exclusiveMinimum",
+                "exclusiveMaximum",
+                "multipleOf",
+                "minLength",
+                "maxLength",
+                "pattern",
+                "maxItems",
+                "uniqueItems",
+                "minProperties",
+                "maxProperties",
+            }
         }
     if isinstance(value, list):
         return [_anthropic_schema(item) for item in value]
@@ -1381,13 +1617,21 @@ is; H1 and M15 say whether the entry sits at a sensible place in it; M5 and M1 s
 is moving toward the entry or away from it right now. An answer that could have been written from
 the module scores alone means the bars went unread.
 
+YOU ALSO HAVE A MEASURED EVIDENCE BRIEF. `evidence_brief.timeframe_measurements` is deterministic
+arithmetic over those exact same closed rows: drift in ATR, location inside the sent range,
+EMA distance and slope, candle anatomy and relative tick volume. It exists to prevent arithmetic
+mistakes and repetitive paraphrasing; it is not a second signal and its `deterministic_lean` is
+explicitly an inference, not a forecast. Verify it against the rows. Keep three categories apart:
+measured fact, engine inference, and unavailable data. Never turn one into another and never invent
+a pattern, event, level or probability that is not in the payload.
+
 JUDGE THE STOP AND THE TARGET AS PLACEMENTS. `target_realism` gives you the stop and target in
 ATR, the spread as a percentage of the stop, and — measured from this instrument's own recent
-history — how often it has actually travelled the target distance within a day. The engine sets
-the target at twice the stop by arithmetic; it never checks whether the market goes there. If
-that percentage is low the target is decorative, and the trade is really a bet on the stop not
-being hit. Veto a stop sitting inside ordinary noise, a stop or target on the wrong side of an
-obvious level in the bars you were given, and a spread eating a large share of the stop.
+history — how often it has actually travelled the target distance within THIS proposal's stated
+horizon on THIS proposal's planning timeframe. `proposed_direction_reach_pct` is a base-rate travel
+measurement, not a strategy win rate. If that percentage is low the target may be decorative.
+Veto a stop sitting inside ordinary noise, a stop or target on the wrong side of an obvious level
+in the bars you were given, and a spread eating a large share of the stop.
 
 WHAT TO ACTUALLY JUDGE. Read the closed bars yourself and check the proposal against them. Veto
 when the bars CONTRADICT the claim — a long whose lower timeframes are selling into the entry, a
@@ -1420,10 +1664,10 @@ Some setups genuinely are bad and deserve a plain veto — a stop inside recent 
 that needs the market to break a level it has already failed at twice, a trend that exists on one
 timeframe while the others range.
 
-YOU ARE CHOOSING, NOT JUST CHECKING. Around two hundred markets are analysed each cycle and this
-account can hold two positions. So the question is not "is this acceptable" but "is this among
-the best few of two hundred". An approval spends a scarce slot and costs money; a veto costs only
-an opportunity, and another candidate arrives within the minute. Grade accordingly.
+YOU ARE CHOOSING, NOT JUST CHECKING. Read the actual counts in `standing_this_cycle`, the actual
+open-position count in `executable_proposal`, and the actual account posture. Never substitute a
+memorised catalogue size, slot count or cycle duration. An approval spends a scarce slot and costs
+money; a veto costs an opportunity. Grade the supplied candidate against the supplied field.
 
 TEST THE OPPOSITE DIRECTION BEFORE YOU AGREE WITH THIS ONE. The engine proposes a side; you are
 not obliged to accept the framing. Ask honestly: from these same bars, would the trade in the
@@ -1511,7 +1755,12 @@ proposal has that shape, say so and decline. Equally, a symbol with a good recor
 lower bar. An instrument with no history is neutral, not suspect.
 
 Hard filters, risk limits and sizing have already run and are not yours to reconsider. You may not
-propose a different trade, or change volume, stop, target or risk. Never infer missing data."""
+propose a different trade, or change volume, stop, target or risk. Never infer missing data.
+
+RESPONSE DISCIPLINE. The thesis must identify the stated trade horizon; cite the strongest concrete
+support from the measured bars; cite the strongest contradiction and explain why it is or is not
+decisive at this horizon; and state why the opposite direction is weaker or equally plausible.
+Do not merely repeat module names, scores or their prose."""
 
 _SCOUT_INSTRUCTIONS = """You are an independent cross-market scout, not an order sender. You are
 given a compact point-in-time comparison of the strongest markets from one complete broker scan,

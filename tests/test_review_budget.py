@@ -15,6 +15,7 @@ reaches the reviewer first is by construction the best thing still standing.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -149,6 +150,36 @@ class TestBudget:
         service._reviewed(idea(), context(last_bar=1), {}, None)
         assert service.calls_made == 2
         assert service._review_budget_left() == 1
+
+    def test_a_materially_different_plan_on_the_same_bar_is_a_new_question(self) -> None:
+        service = runner(3)
+        original = idea()
+        relocated = replace(
+            original,
+            entry=original.entry + 0.0010,
+            stop_loss=original.stop_loss + 0.0010,
+            take_profit=original.take_profit + 0.0010,
+        )
+
+        service._reviewed(original, context(), {}, None)
+        service._reviewed(relocated, context(), {}, None)
+
+        assert service.calls_made == 2
+
+    def test_an_intraday_plan_expires_on_its_planning_bar_not_h1(self) -> None:
+        service = runner(3)
+        intraday = replace(
+            idea(),
+            setup_family="momentum_scalp",
+            horizon="intraday",
+            planning_timeframe="M5",
+            expected_horizon_minutes=60,
+        )
+
+        service._reviewed(intraday, context(last_bar=0), {}, None)
+        service._reviewed(intraday, context(last_bar=1), {}, None)
+
+        assert service.calls_made == 2
 
 
 class TestCachedReviewLookup:

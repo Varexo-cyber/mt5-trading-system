@@ -159,6 +159,42 @@ def test_anthropic_market_scout_nominates_without_approving_or_sizing(monkeypatc
     assert "risk_per_trade" not in str(captured["messages"])
 
 
+def test_anthropic_supervision_schema_removes_unsupported_max_items(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A raw `maxItems` made only the position manager return HTTP 400."""
+    captured: dict[str, object] = {}
+
+    class Messages:
+        def create(self, **kwargs):  # type: ignore[no-untyped-def]
+            captured.update(kwargs)
+            text = (
+                '{"action":"hold","reason":"nothing changed","confidence":0.8,'
+                '"stop_loss":null,"take_profit":null,"close_fraction":null,'
+                '"thesis_state":"intact","urgency":"routine","evidence":[],'
+                '"review_after_minutes":null}'
+            )
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=text)],
+                stop_reason="end_turn",
+                _request_id="supervision-1",
+            )
+
+    class Client:
+        def __init__(self, **_kwargs):  # type: ignore[no-untyped-def]
+            self.messages = Messages()
+
+    monkeypatch.setitem(__import__("sys").modules, "anthropic", SimpleNamespace(Anthropic=Client))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "unit-test-secret")
+    adviser = build_advisor(
+        AIConfig(enabled=True, provider="anthropic", anthropic_model="claude-test")
+    )
+
+    verdict = adviser.supervise({"symbol": "EURUSD.i"})
+
+    assert verdict.action == "hold"
+    assert not verdict.error
+    assert "maxItems" not in str(captured["output_config"])
+
+
 def test_anthropic_request_omits_parameters_the_current_models_reject() -> None:
     """Regression: `temperature=0` returned HTTP 400 and read as a permanent veto.
 
@@ -462,3 +498,59 @@ def test_the_reviewer_is_told_whether_the_target_is_ever_reached() -> None:
         > unreachable["history"]["moved_up_that_far_pct"]
     )
     assert unreachable["history"]["moved_up_that_far_pct"] == 0.0
+
+
+def test_review_evidence_uses_the_trade_horizon_and_labels_its_provenance() -> None:
+    index = pd.date_range("2026-01-01", periods=300, freq="15min", tz="UTC")
+    step = pd.Series(range(300), index=index) * 0.00002
+    frame = pd.DataFrame(
+        {
+            "open": 1.0 + step,
+            "high": 1.0004 + step,
+            "low": 0.9996 + step,
+            "close": 1.0001 + step,
+            "tick_volume": 100,
+        },
+        index=index,
+    )
+    now = index[-1].to_pydatetime() + timedelta(minutes=15)
+    context = MarketContext(
+        "EURUSD.i",
+        now,
+        {Timeframe.M15: Series("EURUSD.i", Timeframe.M15, frame, now)},
+        Tick("EURUSD.i", now, 1.0060, 1.0061),
+    )
+    idea = TradeIdea(
+        "EURUSD.i",
+        True,
+        Direction.LONG,
+        73,
+        0.78,
+        1.0061,
+        1.0049,
+        1.0080,
+        "intraday continuation",
+        (),
+        setup_family="momentum_scalp",
+        horizon="intraday",
+        planning_timeframe="M15",
+        expected_horizon_minutes=60,
+    )
+
+    payload = build_review_payload(idea, context, None)
+    target = payload["target_realism"]
+    brief = payload["evidence_brief"]
+
+    assert target["timeframe"] == "M15"
+    assert target["bars_ahead"] == 4
+    assert target["expected_horizon_minutes"] == 60
+    assert target["proposed_direction_reach_pct"] == target["history"]["moved_up_that_far_pct"]
+    assert brief["provenance"]["calculation"].startswith("deterministic")
+    facts = brief["timeframe_measurements"]["M15"]
+    assert facts["status"] == "measured"
+    assert facts["closed_bars_measured"] == 32
+    assert facts["proposal_alignment"] in {
+        "supports_proposal",
+        "opposes_proposal",
+        "mixed_or_neutral",
+    }
