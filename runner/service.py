@@ -133,8 +133,8 @@ _UNKNOWN_HEALTH: dict[str, object] = {
 #: back a hair short, and the gate refuses it anyway.
 _COST_MARGIN = 0.95
 
-#: The timeframe a review is tied to. H1 is where the weighted modules read
-#: their structure, so it is what defines "the same setup".
+#: Fallback review timeframe for legacy ideas or incomplete test contexts. New
+#: ideas key their verdict to their own planning timeframe.
 _REVIEW_TIMEFRAME = Timeframe.H1
 
 
@@ -285,8 +285,10 @@ class JarvisRunner:
         self.operation_ledger = OperationLedger(root / "runtime" / LEDGER_FILENAME)
         self.scan_activity = ScanActivityLedger(root / "runtime" / "scan_activity.json")
         self.experimental_contract: ExperimentalLiveContract | None = None
-        # (symbol, direction, fastest-timeframe bar close) -> the verdict given.
-        self._review_cache: dict[tuple[str, str, datetime], Advice] = {}
+        # Proposal identity -> the verdict given. The identity includes the
+        # idea's own planning timeframe and material price shape; see
+        # `_review_key` for why a fixed H1 key was not enough for intraday plans.
+        self._review_cache: dict[tuple[object, ...], Advice] = {}
         # Paid reviews spent in the cycle currently running; reset by run_once.
         self._reviews_this_cycle = 0
         # Refusals outlive the bar they were given on; see advisory/veto_memory.
@@ -2984,7 +2986,7 @@ class JarvisRunner:
         )
 
     @staticmethod
-    def _signal_atr(context: MarketContext) -> float:
+    def _signal_atr(context: MarketContext, *, timeframe: Timeframe = _REVIEW_TIMEFRAME) -> float:
         """ATR of the signal timeframe, the yardstick for "materially changed".
 
         Zero when the frame is missing rather than a guessed constant: the
@@ -2992,7 +2994,7 @@ class JarvisRunner:
         again. Erring the other way would silence a symbol on a scale nobody
         chose.
         """
-        series = context.series.get(_REVIEW_TIMEFRAME)
+        series = context.series.get(timeframe)
         if series is None or len(series.df) < 15:
             return 0.0
         frame = series.df
@@ -3086,27 +3088,53 @@ class JarvisRunner:
             return None
         return max(0, budget - self._reviews_this_cycle)
 
-    def _review_key(
-        self, idea: TradeIdea, context: MarketContext
-    ) -> tuple[str, str, datetime] | None:
-        """Symbol, direction, and the close of the timeframe the signal lives on.
+    def _review_key(self, idea: TradeIdea, context: MarketContext) -> tuple[object, ...] | None:
+        """Identity of the actual proposal Claude was asked to judge.
 
-        Keyed on the *fastest* timeframe first, which was wrong: with M1 in the
-        ladder a new bar closes every sixty seconds, so the cache expired every
-        minute and the same instrument went back to Claude four times in three
-        minutes with the same verdict. The one-minute bar is entry-timing
-        context; it is not what the setup is made of.
+        M1 was too fast and forced a paid rewording every minute. A fixed H1 was
+        then too slow: an M15 plan could materially change while the cache kept
+        returning the old answer. The proposal's planning timeframe is the
+        honest middle ground.
 
-        The signal timeframe is. While no new bar has closed on it the setup is
-        the same setup, and re-asking buys a re-worded copy of an answer already
-        held.
+        Price is bucketed at one quarter of that timeframe's ATR. This avoids a
+        tick invalidating the cache while ensuring a materially relocated entry
+        is a new question. Stop and target distances are included in ATR units,
+        so two different plans on the same candle cannot share an approval.
         """
         if idea.direction is None or not context.series:
             return None
-        series = context.series.get(_REVIEW_TIMEFRAME)
+        try:
+            planning = Timeframe.parse(idea.planning_timeframe)
+        except ValueError:
+            planning = _REVIEW_TIMEFRAME
+        series = context.series.get(planning)
         if series is None:
-            series = context.series[min(context.series, key=lambda tf: tf.duration)]
-        return (idea.symbol, idea.direction.name, series.last_bar_time)
+            planning = (
+                _REVIEW_TIMEFRAME
+                if _REVIEW_TIMEFRAME in context.series
+                else min(context.series, key=lambda tf: tf.duration)
+            )
+            series = context.series[planning]
+        atr = self._signal_atr(context, timeframe=planning)
+        if atr > 0:
+            entry_bucket: object = round(idea.entry / (atr * 0.25))
+            stop_shape: object = round(abs(idea.entry - idea.stop_loss) / atr, 2)
+            target_shape: object = round(abs(idea.take_profit - idea.entry) / atr, 2)
+        else:
+            entry_bucket = round(idea.entry, 8)
+            stop_shape = round(idea.stop_loss, 8)
+            target_shape = round(idea.take_profit, 8)
+        return (
+            idea.symbol,
+            idea.direction.name,
+            idea.setup_family,
+            idea.horizon,
+            planning.value,
+            series.last_bar_time,
+            entry_bucket,
+            stop_shape,
+            target_shape,
+        )
 
     def _report_feasibility(self, account: AccountSnapshot) -> None:
         """Log what this equity can actually express, before the first cycle.
