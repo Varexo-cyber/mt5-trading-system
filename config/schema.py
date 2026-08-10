@@ -742,6 +742,19 @@ class LivelinessFilterConfig(Base):
     min_activity_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     #: Bars needed before the ratio means anything at all.
     min_bars: int = Field(default=40, ge=10, le=1000)
+    #: Recent bars used to judge whether the feed is continuous enough to
+    #: execute. A large opening gap can make ATR/activity look healthy while
+    #: the tape after it prints only once every few minutes; this second view
+    #: measures that pathology directly.
+    quality_bars: int = Field(default=30, ge=10, le=240)
+    #: Share of recent timestamp gaps allowed to exceed one-and-a-half nominal
+    #: bars. One overnight/weekend gap in the window remains harmless, while a
+    #: stock CFD that repeatedly omits intraday bars is refused.
+    max_sparse_gap_fraction: float = Field(default=0.10, ge=0.0, le=1.0)
+    #: Share of recent bars allowed to have no high/low range at all. Flat bars
+    #: are valid occasionally; a tape made mostly of them is not executable
+    #: evidence, regardless of how attractive a higher-timeframe trend looks.
+    max_flat_bar_fraction: float = Field(default=0.60, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _windows_are_ordered(self) -> LivelinessFilterConfig:
@@ -755,6 +768,11 @@ class LivelinessFilterConfig(Base):
             raise ValueError(
                 f"min_bars ({self.min_bars}) is below recent_bars ({self.recent_bars}); "
                 f"the recent window would be padded with bars that do not exist"
+            )
+        if self.min_bars < self.quality_bars:
+            raise ValueError(
+                f"min_bars ({self.min_bars}) is below quality_bars "
+                f"({self.quality_bars}); continuity cannot be measured"
             )
         return self
 
@@ -1278,7 +1296,56 @@ class PositionHealthProfile(Base):
         return normalised
 
 
+class PyramidingConfig(Base):
+    """A fresh, smaller entry added only after the existing idea has worked."""
+
+    enabled: bool = False
+    #: Original position plus later legs. Each leg still consumes an account
+    #: position slot; this is not an unlimited side channel around exposure.
+    max_legs_per_symbol: int = Field(default=2, ge=1, le=4)
+    #: Every existing leg must have moved this far in its own recorded R before
+    #: another is permitted. That is the mechanical line between pyramiding a
+    #: winner and averaging down a loser.
+    min_existing_r: float = Field(default=0.25, ge=0.0, le=3.0)
+    #: The fresh full-market analysis must independently clear this bar.
+    minimum_conviction: float = Field(default=75.0, ge=0.0, le=100.0)
+    #: Add-on risk as a fraction of the ordinary per-trade budget. It may only
+    #: reduce size; values above one would turn confidence into leverage.
+    risk_multiplier: float = Field(default=0.5, gt=0.0, le=1.0)
+    #: An ordinary approval is not enough to stack the same thesis.
+    minimum_ai_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+
+
+class ManualPositionManagementConfig(Base):
+    """Adopt owner-opened MT5 positions into the same management ledger."""
+
+    enabled: bool = False
+    magic_numbers: tuple[int, ...] = (0,)
+    stop_timeframe: str = "M15"
+    stop_atr_multiple: float = Field(default=1.5, gt=0.0, le=10.0)
+    target_reward_risk: float = Field(default=1.5, ge=1.0, le=10.0)
+
+    @field_validator("stop_timeframe")
+    @classmethod
+    def _manual_timeframe_is_supported(cls, value: str) -> str:
+        normalised = value.strip().upper()
+        if normalised not in {item.value for item in Timeframe}:
+            raise ValueError(f"unsupported manual stop timeframe {value!r}")
+        return normalised
+
+    @field_validator("magic_numbers")
+    @classmethod
+    def _manual_magics_are_external(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if not value:
+            raise ValueError("manual magic_numbers must not be empty")
+        if any(item < 0 for item in value):
+            raise ValueError("manual magic_numbers must be non-negative")
+        return value
+
+
 class TradeManagementConfig(Base):
+    pyramiding: PyramidingConfig = PyramidingConfig()
+    manual_positions: ManualPositionManagementConfig = ManualPositionManagementConfig()
     #: ATR multiple added beyond the structural level, so a spread widening or
     #: a stop hunt of ordinary size does not take us out.
     sl_atr_buffer_multiple: float = Field(default=0.5, ge=0.0, le=3.0)

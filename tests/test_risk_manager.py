@@ -289,6 +289,132 @@ class TestSymbolGates:
         decision = manager.check_symbol("EURUSD", state, spec)
         assert decision.reason is Reason.POSITION_ALREADY_OPEN
 
+    def test_a_fresh_signal_may_add_to_a_recorded_winner(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={"enabled": True, "min_existing_r": 0.15}
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        sizing = PositionSizer(settings).size(
+            spec=spec,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.085,
+            sl=1.083,
+            tp=1.091,
+        )
+        Recorder(journal, clock, settings).record_trade_open(
+            cycle_pk=None,
+            sizing=sizing,
+            ticket=1,
+            entry_price=1.085,
+            equity_before=10_000.0,
+        )
+        state = manager.build_state(account(10_000.0), [position("EURUSD")])
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.0854,  # +0.20R against the recorded 20-pip initial risk.
+            allow_pyramid=True,
+        )
+
+        assert decision.approved
+        assert "weakest +0.20R" in decision.detail
+
+    def test_an_add_on_is_blocked_until_the_existing_trade_is_winning(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={"enabled": True, "min_existing_r": 0.15}
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        sizing = PositionSizer(settings).size(
+            spec=spec,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.085,
+            sl=1.083,
+            tp=1.091,
+        )
+        Recorder(journal, clock, settings).record_trade_open(
+            cycle_pk=None,
+            sizing=sizing,
+            ticket=1,
+            entry_price=1.085,
+            equity_before=10_000.0,
+        )
+        state = manager.build_state(account(10_000.0), [position("EURUSD")])
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.0848,
+            allow_pyramid=True,
+        )
+
+        assert not decision.approved
+        assert decision.reason is Reason.POSITION_ALREADY_OPEN
+        assert "weakest existing leg is -0.10R" in decision.detail
+
+    def test_pyramiding_never_overrides_the_per_symbol_leg_ceiling(
+        self, manager: RiskManager, settings: Settings, spec: InstrumentSpec
+    ) -> None:
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={"enabled": True, "max_legs_per_symbol": 2}
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        legs = [position("EURUSD"), replace(position("EURUSD"), ticket=2)]
+        state = manager.build_state(account(10_000.0), legs)
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.090,
+            allow_pyramid=True,
+        )
+
+        assert not decision.approved
+        assert "per-symbol ceiling 2" in decision.detail
+
 
 class TestMargin:
     def test_skipped_without_an_estimator(self, manager: RiskManager) -> None:

@@ -190,6 +190,7 @@ class Recorder:
         equity_before: float,
         opened_at: datetime | None = None,
         entry_state: str = "OPEN",
+        magic: int | None = None,
     ) -> int:
         """Record an opened trade and return its id.
 
@@ -213,7 +214,7 @@ class Recorder:
             (
                 cycle_pk,
                 ticket,
-                self.settings.system.magic_number,
+                self.settings.system.magic_number if magic is None else magic,
                 sizing.symbol,
                 sizing.direction.name,
                 sizing.volume,

@@ -86,6 +86,23 @@ class LivelinessFilter(Filter):
             return None
         return recent / baseline
 
+    def execution_quality(self, series: Series) -> tuple[float, float] | None:
+        """Return recent sparse-gap and flat-bar fractions.
+
+        ATR cannot distinguish a liquid trend from one discontinuous jump. The
+        timestamp index and the bar ranges can: a tradeable tape produces bars
+        at roughly its nominal cadence and most of those bars contain an actual
+        auction between more than one price.
+        """
+        df = series.df.tail(self.config.quality_bars)
+        if len(df) < self.config.quality_bars:
+            return None
+        expected_seconds = self.timeframe.duration.total_seconds()
+        gaps = df.index.to_series().diff().dropna().dt.total_seconds()
+        sparse = float((gaps > expected_seconds * 1.5).mean()) if len(gaps) else 0.0
+        flat = float(((df["high"] - df["low"]).abs() <= 0.0).mean())
+        return sparse, flat
+
     # -- gate --------------------------------------------------------------
 
     def check(self, ctx: FilterContext) -> FilterVerdict:
@@ -93,7 +110,9 @@ class LivelinessFilter(Filter):
             return FilterVerdict.allow(self.name, "liveliness filter disabled")
 
         try:
+            series = self.series_provider(ctx.symbol, self.timeframe)
             measured = self.activity(ctx.symbol)
+            quality = self.execution_quality(series)
         except Exception as exc:  # noqa: BLE001 - any data failure means unknown
             log.warning(
                 "cannot measure liveliness",
@@ -125,6 +144,33 @@ class LivelinessFilter(Filter):
                 activity_ratio=None,
             )
 
+        if quality is not None:
+            sparse, flat = quality
+            if sparse > self.config.max_sparse_gap_fraction:
+                return FilterVerdict.block(
+                    self.name,
+                    Reason.MARKET_TOO_QUIET,
+                    f"{ctx.symbol} has missing intervals in {sparse:.0%} of its recent "
+                    f"{self.timeframe.value} tape (limit "
+                    f"{self.config.max_sparse_gap_fraction:.0%}); higher-timeframe "
+                    "structure is not reliable enough to execute on this stuttering feed",
+                    activity_ratio=round(measured, 3),
+                    sparse_gap_fraction=round(sparse, 3),
+                    flat_bar_fraction=round(flat, 3),
+                )
+            if flat > self.config.max_flat_bar_fraction:
+                return FilterVerdict.block(
+                    self.name,
+                    Reason.MARKET_TOO_QUIET,
+                    f"{ctx.symbol} printed no intrabar range in {flat:.0%} of its recent "
+                    f"{self.timeframe.value} bars (limit "
+                    f"{self.config.max_flat_bar_fraction:.0%}); the chart is too thin "
+                    "for a dependable entry and exit",
+                    activity_ratio=round(measured, 3),
+                    sparse_gap_fraction=round(sparse, 3),
+                    flat_bar_fraction=round(flat, 3),
+                )
+
         floor = self.config.min_activity_ratio
         if measured < floor:
             return FilterVerdict.block(
@@ -142,4 +188,6 @@ class LivelinessFilter(Filter):
             f"moving at {measured:.0%} of its recent normal",
             activity_ratio=round(measured, 3),
             activity_floor=floor,
+            sparse_gap_fraction=(round(quality[0], 3) if quality is not None else None),
+            flat_bar_fraction=(round(quality[1], 3) if quality is not None else None),
         )

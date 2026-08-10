@@ -69,7 +69,15 @@ from core.clock import Clock, LiveClock
 from core.data_manager import DataManager, atr
 from core.errors import TradingSystemError
 from core.startup import run_startup_guard
-from core.types import AccountSnapshot, MarketContext, OrderRequest, Timeframe, TradingMode
+from core.types import (
+    AccountSnapshot,
+    Direction,
+    MarketContext,
+    OrderRequest,
+    Position,
+    Timeframe,
+    TradingMode,
+)
 from execution.manager import ManagementEvent, PositionManager
 from execution.paper_broker import PaperBroker
 from filters.base import FilterContext
@@ -98,9 +106,9 @@ from promotion.experimental import (
 from reporting.daily_report import DailyReportGenerator
 from reporting.execution_report import ExecutionReportGenerator
 from reporting.weekly_report import WeeklyReportGenerator
-from risk.position_sizer import PositionSizer
+from risk.position_sizer import PositionSizer, SizingResult
 from risk.posture import PostureAssessment, assess
-from risk.reasons import Reason
+from risk.reasons import Reason, RiskDecision
 from risk.risk_manager import RiskManager
 from scanner.universe import ScanBatch, UniverseScanner
 
@@ -476,6 +484,202 @@ class JarvisRunner:
                 return
             self.guard_tick()
 
+    def _managed_positions(self) -> list[Position]:
+        """Positions Jarvis has explicitly accepted responsibility for."""
+        positions = self.broker.positions()
+        allowed = {self.settings.system.magic_number}
+        manual = getattr(getattr(self.settings, "trade_management", None), "manual_positions", None)
+        if (
+            manual is not None
+            and manual.enabled
+            and getattr(self, "operation", None)
+            in {
+                OperationMode.DEMO,
+                OperationMode.LIVE,
+                OperationMode.EXPERIMENTAL_LIVE,
+            }
+        ):
+            allowed.update(manual.magic_numbers)
+        return [
+            position
+            for position in positions
+            if getattr(position, "magic", self.settings.system.magic_number) in allowed
+        ]
+
+    def _manual_adoption_enabled(self) -> bool:
+        manual = getattr(getattr(self.settings, "trade_management", None), "manual_positions", None)
+        return bool(
+            manual is not None
+            and manual.enabled
+            and getattr(self, "operation", None)
+            in {OperationMode.DEMO, OperationMode.LIVE, OperationMode.EXPERIMENTAL_LIVE}
+        )
+
+    def _adopt_manual_positions(self, account: AccountSnapshot) -> list[ManagementEvent]:
+        """Attach a measured plan to new owner-opened positions.
+
+        Magic zero positions used to be invisible to both the one-second guard
+        and Claude. Adoption is explicit and durable: missing protection is
+        attached first, then the exact plan is written to the journal. If the
+        broker refuses protection, the position is closed rather than claimed
+        as managed while remaining exposed.
+        """
+        config = self.settings.trade_management.manual_positions
+        if not config.enabled or self.operation not in {
+            OperationMode.DEMO,
+            OperationMode.LIVE,
+            OperationMode.EXPERIMENTAL_LIVE,
+        }:
+            return []
+        events: list[ManagementEvent] = []
+        for position in self.broker.positions():
+            if (
+                position.magic == self.settings.system.magic_number
+                or position.magic not in config.magic_numbers
+                or self.journal.open_trade_by_ticket(position.ticket) is not None
+            ):
+                continue
+            try:
+                protected = self._protect_manual_position(position)
+            except Exception as exc:
+                log.exception(
+                    "manual position could not be planned",
+                    extra={
+                        "event": "manual_adoption_failed",
+                        "ticket": position.ticket,
+                        "symbol": position.symbol,
+                    },
+                )
+                result = self.broker.close_position(position)
+                events.append(
+                    ManagementEvent(
+                        position.ticket,
+                        "MANUAL_UNPROTECTED_CLOSE" if result.ok else "MANUAL_CLOSE_REJECTED",
+                        f"could not attach a measured SL/TP plan ({type(exc).__name__}); "
+                        + ("position closed" if result.ok else "broker rejected emergency close"),
+                        result.filled_price if result.ok else None,
+                        position.profit + position.swap if result.ok else None,
+                    )
+                )
+                continue
+            sizing = self._manual_sizing(protected, account)
+            trade_id = self.recorder.record_trade_open(
+                cycle_pk=None,
+                sizing=sizing,
+                ticket=protected.ticket,
+                entry_price=protected.price_open,
+                equity_before=account.equity,
+                opened_at=protected.opened_at,
+                magic=protected.magic,
+            )
+            decision_id = self.brain.record_decision(
+                decided_at=self.clock.now(),
+                symbol=protected.symbol,
+                reason="MANUAL_ADOPTED",
+                mode=self.operation.value,
+                direction=protected.direction.name,
+                detail="owner-opened MT5 position adopted into Jarvis management",
+                taken=True,
+                equity=account.equity,
+                entry=protected.price_open,
+                stop_loss=protected.sl,
+                take_profit=protected.tp,
+                filters={"source": "manual_mt5", "magic": protected.magic},
+            )
+            self._brain_trades[protected.ticket] = self.brain.record_trade_opened(
+                ticket=protected.ticket,
+                decision_id=decision_id,
+                symbol=protected.symbol,
+                direction=protected.direction.name,
+                volume=protected.volume,
+                opened_at=protected.opened_at,
+                entry=protected.price_open,
+                stop_loss=protected.sl,
+                take_profit=protected.tp,
+                risk_money=sizing.actual_risk_money,
+            )
+            detail = (
+                f"manual MT5 position adopted as trade #{trade_id}; SL {protected.sl:g}, "
+                f"TP {protected.tp:g}, recorded risk {sizing.actual_risk_pct:.2f}%"
+            )
+            events.append(ManagementEvent(protected.ticket, "MANUAL_ADOPTED", detail))
+            self.alerts.send(
+                f"Jarvis adopted manual {protected.symbol} #{protected.ticket}: {detail}"
+            )
+        return events
+
+    def _protect_manual_position(self, position: Position) -> Position:
+        config = self.settings.trade_management.manual_positions
+        spec = self.broker.spec(position.symbol)
+        tick = self.broker.tick(position.symbol)
+        price = tick.bid if position.direction is Direction.LONG else tick.ask
+        sign = int(position.direction)
+        stop_valid = position.sl > 0 and (price - position.sl) * sign > spec.min_stop_distance_price
+        target_valid = (
+            position.tp > 0 and (position.tp - price) * sign > spec.min_stop_distance_price
+        )
+        if stop_valid and target_valid:
+            return position
+
+        if stop_valid:
+            sl = position.sl
+            risk_from_entry = abs(position.price_open - sl)
+        else:
+            timeframe = Timeframe.parse(config.stop_timeframe)
+            series = self.data.get_series(position.symbol, timeframe)
+            measured_atr = atr(series.df, self.settings.trade_management.sl_atr_period)
+            distance = max(
+                measured_atr * config.stop_atr_multiple,
+                spec.min_stop_distance_price * 2.0,
+                tick.spread * 3.0,
+            )
+            sl = spec.normalize_price(price - sign * distance)
+            risk_from_entry = abs(position.price_open - sl)
+
+        if target_valid:
+            tp = position.tp
+        else:
+            progress = (price - position.price_open) * sign
+            minimum_ahead = max(spec.min_stop_distance_price * 2.0, tick.spread * 3.0)
+            target_from_entry = max(
+                config.target_reward_risk * risk_from_entry,
+                progress + minimum_ahead,
+            )
+            tp = spec.normalize_price(position.price_open + sign * target_from_entry)
+        if sl == position.sl and tp == position.tp:
+            return position
+        result = self.broker.modify_stops(position, sl=sl, tp=tp)
+        if not result.ok:
+            raise TradingSystemError(
+                f"broker refused manual protection: {result.retcode_name} {result.comment}"
+            )
+        return replace(position, sl=sl, tp=tp)
+
+    def _manual_sizing(self, position: Position, account: AccountSnapshot) -> SizingResult:
+        spec = self.broker.spec(position.symbol)
+        distance = abs(position.price_open - position.sl)
+        commission = self.settings.risk.commission_per_lot(spec.asset_class.value)
+        risk_money = (spec.money_per_lot(distance) + commission) * position.volume
+        risk_pct = 100.0 * risk_money / account.equity if account.equity > 0 else 0.0
+        reward_risk = abs(position.tp - position.price_open) / distance if distance > 0 else 0.0
+        return SizingResult(
+            decision=RiskDecision.allow("owner-opened position adopted with broker protection"),
+            symbol=position.symbol,
+            direction=position.direction,
+            volume=position.volume,
+            entry=position.price_open,
+            sl=position.sl,
+            tp=position.tp,
+            intended_risk_money=risk_money,
+            intended_risk_pct=risk_pct,
+            actual_risk_money=risk_money,
+            actual_risk_pct=risk_pct,
+            sl_distance_price=distance,
+            sl_distance_pips=spec.price_to_pips(distance),
+            reward_risk=reward_risk,
+            raw_volume=position.volume,
+        )
+
     def guard_tick(self) -> list[ManagementEvent]:
         """One cheap pass over open positions. Never opens anything.
 
@@ -487,7 +691,11 @@ class JarvisRunner:
         positions: list = []
         try:
             self.broker.ensure_connected()
-            positions = self.broker.positions(magic=self.settings.system.magic_number)
+            if self._manual_adoption_enabled():
+                account = self.broker.account()
+                adopted = self._adopt_manual_positions(account)
+                self._record_management(adopted)
+            positions = self._managed_positions()
             if not positions:
                 self._publish_health(positions)
                 return []
@@ -525,7 +733,8 @@ class JarvisRunner:
         if isinstance(self.broker, PaperBroker):
             self._record_paper_closures(self.broker.mark_to_market())
         account = self.broker.account()
-        positions = self.broker.positions(magic=self.settings.system.magic_number)
+        self._record_management(self._adopt_manual_positions(account))
+        positions = self._managed_positions()
         if self._experimental_floor_tripped(account.equity, positions):
             return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
         reconciliation = self.manager.reconcile(positions)
@@ -540,13 +749,13 @@ class JarvisRunner:
                 "CRITICAL: reconciliation left unresolved broker risk; new risk halted"
             )
             self.risk.halt("broker/journal reconciliation left unresolved broker risk")
-        positions = self.broker.positions(magic=self.settings.system.magic_number)
+        positions = self._managed_positions()
         news_filter = next(
             (item for item in self.filters.filters if isinstance(item, NewsFilter)), None
         )
         if news_filter is not None:
             self._record_management(self.manager.manage_news(positions, news_filter))
-            positions = self.broker.positions(magic=self.settings.system.magic_number)
+            positions = self._managed_positions()
         # How the account should be carrying itself, given the last few trades.
         # Only ever tightens: less patience with a stalled trade, a higher bar
         # for a new one. Never larger size — see risk/posture.py.
@@ -577,14 +786,14 @@ class JarvisRunner:
         self._record_management(
             self.manager.manage(positions, self.clock.now(), self.posture.patience_multiplier)
         )
-        positions = self.broker.positions(magic=self.settings.system.magic_number)
+        positions = self._managed_positions()
         # The mechanical rules have had their say; now the judgement layer. It
         # runs after them deliberately — break-even and the ATR trail are
         # cheap, deterministic and always correct to apply, so they should not
         # wait on an API call, and the supervisor sees the position in the state
         # those rules left it.
         self._supervise_positions(positions)
-        positions = self.broker.positions(magic=self.settings.system.magic_number)
+        positions = self._managed_positions()
         state = self.risk.build_state(account, positions)
         if self.risk.circuit_breaker_tripped(state):
             for position in positions:
@@ -684,7 +893,7 @@ class JarvisRunner:
             if traded:
                 opened += 1
                 account = self.broker.account()
-                positions = self.broker.positions(magic=self.settings.system.magic_number)
+                positions = self._managed_positions()
                 state = self.risk.build_state(account, positions)
                 if not self.risk.check_can_trade(state).approved:
                     break
@@ -1040,7 +1249,30 @@ class JarvisRunner:
 
         spec = self.broker.spec(symbol)
         state = self.risk.build_state(account, positions)
-        risk_decision = self.risk.evaluate(state, symbol, spec)
+        existing_legs = state.positions_in(symbol)
+        pyramid_config = self.settings.trade_management.pyramiding
+        is_addon = bool(existing_legs)
+        allow_pyramid = is_addon and pyramid_config.enabled
+        if is_addon and candidate.conviction < pyramid_config.minimum_conviction:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.POSITION_ALREADY_OPEN,
+                f"add-on conviction {candidate.conviction:.1f} is below the "
+                f"{pyramid_config.minimum_conviction:.1f} pyramid floor; the existing "
+                "position remains managed",
+                signals=list(idea.signals),
+            )
+            return False
+        risk_decision = self.risk.evaluate(
+            state,
+            symbol,
+            spec,
+            direction=idea.direction,
+            entry=idea.entry,
+            allow_pyramid=allow_pyramid,
+        )
         if not risk_decision.approved:
             cycle_pk = self._record_skip(
                 cycle_id,
@@ -1053,6 +1285,14 @@ class JarvisRunner:
             self._record_counterfactual(cycle_pk, idea, risk_decision.reason)
             return False
 
+        # A same-symbol winner has already paid for its currency/sector slot.
+        # Exclude only those legs from the exposure filters; every other open
+        # market still constrains the book normally.
+        filter_positions = (
+            tuple(position for position in positions if position.symbol != symbol)
+            if is_addon
+            else positions
+        )
         filter_verdict, filter_data = self.filters.check(
             FilterContext(
                 symbol=symbol,
@@ -1060,7 +1300,7 @@ class JarvisRunner:
                 now=self.clock.now(),
                 direction=idea.direction,
                 tick=context.tick,
-                open_positions=positions,
+                open_positions=filter_positions,
             )
         )
         if not filter_verdict.passed:
@@ -1166,6 +1406,9 @@ class JarvisRunner:
             )
             return False
 
+        entry_risk_multiplier = self.risk.risk_multiplier(state)
+        if is_addon:
+            entry_risk_multiplier *= pyramid_config.risk_multiplier
         sizing = PositionSizer(self.settings).size(
             spec=spec,
             equity=account.equity,
@@ -1173,7 +1416,7 @@ class JarvisRunner:
             entry=idea.entry,
             sl=spec.normalize_price(idea.stop_loss),
             tp=spec.normalize_price(idea.take_profit),
-            risk_multiplier=self.risk.risk_multiplier(state),
+            risk_multiplier=entry_risk_multiplier,
             # The largest single cost of being wrong on this account, and the
             # gate cannot weigh it against commission and slippage unless it is
             # handed the live number. A setup cannot exist without a tick — the
@@ -1212,7 +1455,7 @@ class JarvisRunner:
             self.recorder.record_sizing(cycle_pk, sizing)
             self._record_counterfactual(cycle_pk, idea, margin.reason)
             return False
-        self.risk.assert_not_forbidden(sizing, state)
+        self.risk.assert_not_forbidden(sizing, state, allow_pyramid=allow_pyramid)
 
         # Monitor mode cannot send an order no matter what comes back, so a paid
         # verdict here buys nothing. Seventy-nine calls went out in one session
@@ -1254,6 +1497,8 @@ class JarvisRunner:
             "sizing": sizing.journal_row(),
             "filters": filter_data,
             "open_positions": len(positions),
+            "entry_role": "winner_pyramid_addon" if is_addon else "primary",
+            "existing_symbol_legs": len(existing_legs),
             "quote_age_seconds": (
                 max(0.0, (context.now - context.tick.time).total_seconds())
                 if context.tick is not None
@@ -1409,6 +1654,20 @@ class JarvisRunner:
                 else self._reviewed(idea, context, proposal, briefing)
             )
             ai_latency_ms = round((time.monotonic() - ai_started) * 1000, 1)
+            if (
+                is_addon
+                and advice.approved
+                and advice.confidence < pyramid_config.minimum_ai_confidence
+            ):
+                advice = replace(
+                    advice,
+                    approved=False,
+                    thesis=(
+                        f"Add-on refused: Claude confidence {advice.confidence:.2f} is below "
+                        f"the {pyramid_config.minimum_ai_confidence:.2f} stacking floor. "
+                        f"Original verdict: {advice.thesis}"
+                    ),
+                )
             try:
                 self.ai_ledger.append(
                     "pretrade_response",
@@ -1441,6 +1700,8 @@ class JarvisRunner:
         decision_context = {
             **filter_data,
             **ai_data,
+            "entry_role": "winner_pyramid_addon" if is_addon else "primary",
+            "existing_symbol_legs": len(existing_legs),
             "trade_thesis": (
                 candidate.intelligence.thesis if candidate.intelligence is not None else idea.reason
             ),
@@ -1520,7 +1781,13 @@ class JarvisRunner:
             deviation_points=self.settings.mt5.deviation_points,
             magic=self.settings.system.magic_number,
             comment=(
-                "jarvis-exp-live" if self.operation is OperationMode.EXPERIMENTAL_LIVE else "jarvis"
+                "jarvis-addon"
+                if is_addon
+                else (
+                    "jarvis-exp-live"
+                    if self.operation is OperationMode.EXPERIMENTAL_LIVE
+                    else "jarvis"
+                )
             ),
         )
         # Write the plan down before sending it. Between `order_send` returning
@@ -1601,7 +1868,8 @@ class JarvisRunner:
             trade_id=trade_id, kind="ENTRY", symbol=symbol, result=result
         )
         self.alerts.send(
-            f"Opened {symbol} {idea.direction.name} {sizing.volume:g} lots, "
+            f"Opened {'add-on ' if is_addon else ''}{symbol} {idea.direction.name} "
+            f"{sizing.volume:g} lots, "
             f"entry {result.filled_price:g}, SL {sizing.sl:g}, TP {sizing.tp:g}"
         )
         self.scan_activity.record_deep_decision(
@@ -1997,11 +2265,8 @@ class JarvisRunner:
                 fresh = next(
                     (
                         item
-                        for item in self.broker.positions(
-                            symbol=position.symbol,
-                            magic=self.settings.system.magic_number,
-                        )
-                        if item.ticket == position.ticket
+                        for item in self._managed_positions()
+                        if item.symbol == position.symbol and item.ticket == position.ticket
                     ),
                     None,
                 )
@@ -2867,7 +3132,7 @@ class JarvisRunner:
         account = self.broker.account()
         if self._experimental_floor_tripped(
             account.equity,
-            self.broker.positions(magic=self.settings.system.magic_number),
+            self._managed_positions(),
         ):
             return False
         self.experimental_contract.assert_compatible(account, self.settings)
@@ -2893,12 +3158,8 @@ class JarvisRunner:
         return True
 
     def _flatten_owned_positions(self, reason: str, *, positions=None):  # type: ignore[no-untyped-def]
-        """Close only this system's magic-number positions and report survivors."""
-        owned = (
-            tuple(positions)
-            if positions is not None
-            else tuple(self.broker.positions(magic=self.settings.system.magic_number))
-        )
+        """Close Jarvis entries and manual positions it explicitly adopted."""
+        owned = tuple(positions) if positions is not None else tuple(self._managed_positions())
         for position in owned:
             try:
                 result = self.broker.close_position(position)
@@ -2918,7 +3179,7 @@ class JarvisRunner:
                         "comment": result.comment,
                     },
                 )
-        remaining = tuple(self.broker.positions(magic=self.settings.system.magic_number))
+        remaining = tuple(self._managed_positions())
         if remaining:
             self.alerts.send(f"CRITICAL: {reason}; {len(remaining)} Jarvis position(s) still open")
         return remaining
