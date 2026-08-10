@@ -163,6 +163,8 @@ class TestWithoutADatabaseNothingChanges:
         assert null.record_trade_opened(ticket=1) is None
         assert null.record_trade_event(trade_id=1) is None
         assert null.record_trade_closed(ticket=1) is None
+        assert null.record_counterfactual(symbol="EURUSD") is None
+        assert null.record_counterfactuals([]) is None
         assert null.record_lessons(["x"]) is None
         assert null.record_headlines([]) == 0
         assert null.lessons() == []
@@ -269,7 +271,14 @@ class TestTheSchemaIsValidSql:
 
     def test_every_table_the_store_writes_to_is_created(self) -> None:
         sql = self.sql()
-        for table in ("decisions", "trades", "trade_events", "lessons", "headlines"):
+        for table in (
+            "decisions",
+            "counterfactuals",
+            "trades",
+            "trade_events",
+            "lessons",
+            "headlines",
+        ):
             assert f"CREATE TABLE IF NOT EXISTS {table}" in sql, table
 
     def test_it_is_safe_to_run_twice(self) -> None:

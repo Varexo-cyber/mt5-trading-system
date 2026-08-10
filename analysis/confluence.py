@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from config.schema import ConfluenceConfig
+from config.schema import ConfluenceConfig, HorizonProfileConfig
 from core.types import AnalysisModule, Direction, MarketContext, Signal, Timeframe, TradingMode
 
 
@@ -23,6 +23,10 @@ class TradeIdea:
     take_profit: float
     reason: str
     signals: tuple[Signal, ...]
+    setup_family: str = "swing_confluence"
+    horizon: str = "swing"
+    planning_timeframe: str = "H1"
+    expected_horizon_minutes: int = 1440
 
 
 class ConfluenceEngine:
@@ -80,16 +84,37 @@ class ConfluenceEngine:
                 ctx, signals, f"confluence score {score:.1f} below threshold", score, confidence
             )
 
-        against_the_tide = self.higher_timeframe_conflict(ctx, direction)
+        horizon, setup_family = self._classify_horizon(agreeing)
+        profile = self.config.horizon_profiles[horizon]
+
+        against_the_tide = self.higher_timeframe_conflict(
+            ctx,
+            direction,
+            timeframes=profile.htf_trend_timeframes,
+            threshold=profile.htf_trend_veto,
+            minimum_conflicts=profile.minimum_htf_conflicts,
+        )
         if against_the_tide is not None:
             return self._reject(ctx, signals, against_the_tide, score, confidence)
 
-        adverse = self._entry_timing_conflict(ctx, direction)
+        adverse = self._entry_timing_conflict(
+            ctx, direction, timeframes=profile.entry_timing_timeframes
+        )
         if adverse is not None:
             return self._reject(ctx, signals, adverse, score, confidence)
 
         entry = ctx.tick.ask if direction is Direction.LONG else ctx.tick.bid
-        frame = ctx.series[Timeframe.H1].df
+        planning_timeframe = Timeframe.parse(profile.planning_timeframe)
+        series = ctx.series.get(planning_timeframe)
+        if series is None:
+            return self._reject(
+                ctx,
+                signals,
+                f"{planning_timeframe.value} history missing for {horizon} planning",
+                score,
+                confidence,
+            )
+        frame = series.df
         atr = self._atr(frame)
         candidates = [
             signal.invalidation_price
@@ -127,7 +152,7 @@ class ConfluenceEngine:
             return self._reject(
                 ctx, signals, "could not construct a positive stop distance", score, confidence
             )
-        target, target_note = self._reachable_target(ctx, entry, risk, direction)
+        target, target_note = self._reachable_target(ctx, entry, risk, direction, profile=profile)
         if target is None:
             return self._reject(ctx, signals, target_note, score, confidence)
         return TradeIdea(
@@ -139,12 +164,27 @@ class ConfluenceEngine:
             entry=entry,
             stop_loss=stop,
             take_profit=target,
-            reason=f"{len(agreeing)} modules agree ({agreement:.0%})",
+            reason=(
+                f"{len(agreeing)} modules agree ({agreement:.0%}); "
+                f"{horizon} plan on {planning_timeframe.value}; target {target_note}"
+            ),
             signals=signals,
+            setup_family=setup_family,
+            horizon=horizon,
+            planning_timeframe=planning_timeframe.value,
+            expected_horizon_minutes=int(
+                planning_timeframe.duration.total_seconds() / 60 * profile.target_horizon_bars
+            ),
         )
 
     def _reachable_target(
-        self, ctx: MarketContext, entry: float, risk: float, direction: Direction
+        self,
+        ctx: MarketContext,
+        entry: float,
+        risk: float,
+        direction: Direction,
+        *,
+        profile: HorizonProfileConfig | None = None,
     ) -> tuple[float | None, str]:
         """Place the target where this market actually goes, not where R says.
 
@@ -165,14 +205,17 @@ class ConfluenceEngine:
         """
         config = self.config
         planned = risk * config.target_r_multiple
-        signal = ctx.series.get(Timeframe.H1)
-        if signal is None or len(signal.df) < config.target_horizon_bars * 3:
+        planning_timeframe = (
+            Timeframe.parse(profile.planning_timeframe) if profile else Timeframe.H1
+        )
+        horizon = profile.target_horizon_bars if profile else config.target_horizon_bars
+        signal = ctx.series.get(planning_timeframe)
+        if signal is None or len(signal.df) < horizon * 3:
             return entry + planned * int(direction), "no history to bound the target"
 
         frame = signal.df.tail(400)
         closes = frame["close"].to_numpy()
         extremes = (frame["high"] if direction is Direction.LONG else frame["low"]).to_numpy()
-        horizon = config.target_horizon_bars
         windows = len(closes) - horizon
         if windows <= 0:
             return entry + planned * int(direction), "no history to bound the target"
@@ -202,7 +245,15 @@ class ConfluenceEngine:
         note = "planned" if distance >= planned else f"trimmed to {achieved_r:.2f}R"
         return entry + distance * int(direction), note
 
-    def higher_timeframe_conflict(self, ctx: MarketContext, direction: Direction) -> str | None:
+    def higher_timeframe_conflict(
+        self,
+        ctx: MarketContext,
+        direction: Direction,
+        *,
+        timeframes: tuple[str, ...] | None = None,
+        threshold: float | None = None,
+        minimum_conflicts: int = 1,
+    ) -> str | None:
         """Refuse a trade taken straight into an established higher-timeframe trend.
 
         There was a timing gate for the timeframes *below* the bias and nothing
@@ -225,7 +276,10 @@ class ConfluenceEngine:
         strong, still-accelerating trend is what is banned, because the setup
         has to be right about the turn and about its timing at once.
         """
-        for timeframe in self.config.htf_trend_timeframes:
+        conflicts: list[tuple[str, float, str]] = []
+        wanted = self.config.htf_trend_timeframes if timeframes is None else timeframes
+        floor = self.config.htf_trend_veto if threshold is None else threshold
+        for timeframe in wanted:
             series = ctx.series.get(Timeframe(timeframe))
             bars = self.config.htf_trend_lookback
             if series is None or len(series.df) < bars + 2:
@@ -238,16 +292,27 @@ class ConfluenceEngine:
             slope = float(np.polyfit(np.arange(len(closes), dtype=float), closes, 1)[0])
             drift = slope * bars / atr / float(np.sqrt(bars))
             against = drift * -int(direction)
-            if against >= self.config.htf_trend_veto:
+            if against >= floor:
                 trend = "uptrend" if drift > 0 else "downtrend"
-                return (
-                    f"{direction.name.lower()} straight into an established {timeframe} "
-                    f"{trend}: {against:.2f} against the trade, "
-                    f"limit {self.config.htf_trend_veto:.2f}"
-                )
+                conflicts.append((timeframe, against, trend))
+        if len(conflicts) >= minimum_conflicts:
+            evidence = ", ".join(
+                f"{timeframe} {trend} ({against:.2f})" for timeframe, against, trend in conflicts
+            )
+            return (
+                f"{direction.name.lower()} straight into {len(conflicts)} established "
+                f"higher-timeframe trend(s): {evidence}; need {minimum_conflicts}, "
+                f"limit {floor:.2f} each"
+            )
         return None
 
-    def _entry_timing_conflict(self, ctx: MarketContext, direction: Direction) -> str | None:
+    def _entry_timing_conflict(
+        self,
+        ctx: MarketContext,
+        direction: Direction,
+        *,
+        timeframes: tuple[str, ...] | None = None,
+    ) -> str | None:
         """Refuse an entry the immediate price action is moving against.
 
         The engine went straight from an H4/H1 bias to an entry at the current
@@ -268,7 +333,8 @@ class ConfluenceEngine:
         timeframe is not an objection — only a move materially against the
         proposed direction is.
         """
-        for timeframe in self.config.entry_timing_timeframes:
+        wanted = self.config.entry_timing_timeframes if timeframes is None else timeframes
+        for timeframe in wanted:
             series = ctx.series.get(Timeframe(timeframe))
             if series is None or len(series.df) < 20:
                 continue
@@ -286,6 +352,27 @@ class ConfluenceEngine:
                     f"limit {self.config.entry_timing_max_adverse_atr:.2f}"
                 )
         return None
+
+    @staticmethod
+    def _classify_horizon(
+        agreeing: list[tuple[Signal, float]],
+    ) -> tuple[str, str]:
+        """Name the plan from the evidence that actually created it.
+
+        A standalone M15 sweep is an intraday reversal. Once H1 structure or
+        H4/H1 momentum also carries the direction, the market has supplied a
+        swing thesis and the slower planning authority is appropriate.
+        """
+        modules = {signal.module for signal, _weight in agreeing}
+        if modules == {"liquidity_sweep"}:
+            signal = agreeing[0][0]
+            timeframe = str(signal.details.get("timeframe", "M15"))
+            return "intraday", f"liquidity_sweep_{timeframe.lower()}"
+        if "market_structure" in modules:
+            return "swing", "market_structure_swing"
+        if "trend_momentum" in modules:
+            return "swing", "trend_momentum_swing"
+        return "swing", "+".join(sorted(modules)) or "swing_confluence"
 
     @staticmethod
     def _atr(frame: pd.DataFrame, period: int = 14) -> float:

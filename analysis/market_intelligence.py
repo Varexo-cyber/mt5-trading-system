@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from analysis.confluence import TradeIdea
+from config.schema import AssetClassRoutingConfig
 from core.instrument import AssetClass
 from core.types import MarketContext, Signal, Timeframe
 
@@ -81,6 +82,7 @@ class OpportunityIntelligence:
     reasons: tuple[str, ...]
     thesis: str
     scout_alignment: float = 0.0
+    learned_alignment: float = 0.0
 
     def safe_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -123,8 +125,10 @@ def assess_opportunity(
     asset_class: AssetClass,
     *,
     cap: float,
+    routing: AssetClassRoutingConfig | None = None,
 ) -> OpportunityIntelligence:
     """Return a bounded ranking modifier; never a pass/fail decision."""
+    policy = routing or AssetClassRoutingConfig()
     reasons: list[str] = []
     modifier = 0.0
     sign = int(idea.direction) if idea.direction is not None else 0
@@ -133,10 +137,10 @@ def assess_opportunity(
     if regime in {"trend_up", "trend_down"} and sign:
         regime_sign = 1 if regime == "trend_up" else -1
         if regime_sign == sign:
-            modifier += 6.0
+            modifier += policy.trend_alignment_bonus
             reasons.append("trade direction agrees with the H1/H4 persistence regime")
         else:
-            modifier -= 4.0
+            modifier -= policy.countertrend_penalty
             reasons.append("trade is counter to the H1/H4 persistence regime")
     elif regime == "range":
         reversal = any(
@@ -144,15 +148,31 @@ def assess_opportunity(
             for signal in idea.signals
         )
         if reversal:
-            modifier += 4.0
+            modifier += policy.range_reversal_bonus
             reasons.append("reversal evidence matches the measured range regime")
         else:
             reasons.append("range regime offers no extra support to this directional setup")
     elif regime == "transition":
-        reasons.append("market is transitioning; ranking receives no regime bonus")
+        modifier -= policy.transition_penalty
+        reasons.append("market is transitioning; ranking is reduced for ambiguity")
     elif regime == "extreme":
-        modifier -= 6.0
+        modifier -= policy.extreme_penalty
         reasons.append("realised volatility is extreme")
+
+    supporting = {
+        signal.module
+        for signal in idea.signals
+        if sign and signal.score * sign > 0 and signal.confidence > 0
+    }
+    affinities = [
+        policy.module_affinity[name] for name in supporting if name in policy.module_affinity
+    ]
+    if affinities:
+        affinity = sum(affinities) / len(affinities)
+        modifier += affinity
+        reasons.append(
+            f"{asset_class.value} routing adds {affinity:+.1f} for " + ", ".join(sorted(supporting))
+        )
 
     if sign and observation.direction_votes * sign > 0:
         alignment = min(3, abs(observation.direction_votes))
@@ -175,6 +195,86 @@ def assess_opportunity(
         asset_context=profile,
         reasons=tuple(reasons),
         thesis=thesis,
+    )
+
+
+def apply_cross_market_context(
+    intelligence: OpportunityIntelligence,
+    idea: TradeIdea,
+    observation: MarketObservation,
+    asset_class: AssetClass,
+    world: dict[str, object],
+    *,
+    routing: AssetClassRoutingConfig,
+    cap: float,
+) -> OpportunityIntelligence:
+    """Compare one valid setup with its peers without creating a signal.
+
+    FX uses relative currency strength. Stocks, indices and crypto use the
+    breadth of their own family. The adjustment remains ordering-only and is
+    deliberately absent when the cross-section is too small or mixed.
+    """
+    if idea.direction is None:
+        return intelligence
+    sign = int(idea.direction)
+    modifier = intelligence.modifier
+    reasons = list(intelligence.reasons)
+
+    if asset_class is AssetClass.FOREX:
+        bare = _bare_fx(observation.symbol)
+        strongest = set(world.get("strongest_currencies", []))
+        weakest = set(world.get("weakest_currencies", []))
+        if bare is not None:
+            base, quote = bare[:3], bare[3:]
+            aligned = (base in strongest and quote in weakest and sign > 0) or (
+                base in weakest and quote in strongest and sign < 0
+            )
+            opposed = (base in weakest and quote in strongest and sign > 0) or (
+                base in strongest and quote in weakest and sign < 0
+            )
+            if aligned:
+                modifier += routing.cross_market_bonus
+                reasons.append("relative currency strength confirms the FX direction")
+            elif opposed:
+                modifier -= routing.cross_market_penalty
+                reasons.append("relative currency strength leans against the FX direction")
+    elif asset_class in {
+        AssetClass.STOCK,
+        AssetClass.INDEX,
+        AssetClass.CRYPTO,
+        AssetClass.METAL,
+        AssetClass.COMMODITY,
+    }:
+        by_asset = world.get("by_asset", {})
+        counts = by_asset.get(asset_class.value, {}) if isinstance(by_asset, dict) else {}
+        markets = int(counts.get("markets", 0)) if isinstance(counts, dict) else 0
+        up = int(counts.get("up", 0)) if isinstance(counts, dict) else 0
+        down = int(counts.get("down", 0)) if isinstance(counts, dict) else 0
+        directional = up + down
+        if markets >= 3 and directional >= 3:
+            up_share = up / directional
+            majority = routing.cross_market_majority
+            aligned = (sign > 0 and up_share >= majority) or (sign < 0 and up_share <= 1 - majority)
+            opposed = (sign > 0 and up_share <= 1 - majority) or (sign < 0 and up_share >= majority)
+            if aligned:
+                modifier += routing.cross_market_bonus
+                reasons.append(f"{asset_class.value} breadth confirms the direction")
+            elif opposed:
+                modifier -= routing.cross_market_penalty
+                reasons.append(f"{asset_class.value} breadth leans against the direction")
+
+    modifier = max(-cap, min(cap, modifier))
+    return OpportunityIntelligence(
+        modifier=round(modifier, 2),
+        regime=intelligence.regime,
+        asset_context=intelligence.asset_context,
+        reasons=tuple(reasons),
+        thesis=(
+            f"{idea.direction.name} {idea.symbol} from {idea.reason}; "
+            f"regime={intelligence.regime}; " + "; ".join(reasons)
+        ),
+        scout_alignment=intelligence.scout_alignment,
+        learned_alignment=intelligence.learned_alignment,
     )
 
 

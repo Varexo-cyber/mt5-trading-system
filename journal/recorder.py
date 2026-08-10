@@ -526,6 +526,20 @@ class Recorder:
             ).fetchall()
         )
 
+    def resolved_shadow_trades(self, limit: int = 1000) -> list[Any]:
+        """Recent completed counterfactuals for idempotent Neon catch-up."""
+        return list(
+            self.journal.conn.execute(
+                """
+                SELECT * FROM shadow_trades
+                WHERE outcome IS NOT NULL AND resolved_at IS NOT NULL
+                ORDER BY resolved_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        )
+
     def resolve_shadow_trade(self, shadow_id: int, *, outcome: str, pnl_r: float) -> None:
         self.journal.conn.execute(
             "UPDATE shadow_trades SET resolved_at = ?, outcome = ?, pnl_r = ? WHERE id = ?",

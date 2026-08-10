@@ -140,27 +140,47 @@ def main(argv: list[str] | None = None) -> int:
         latency_ms=1234,
         model="verify",
     )
+    brain.record_counterfactual(
+        symbol="__VERIFY__",
+        direction="SHORT",
+        blocked_by="AI_VETO",
+        opened_at=now - timedelta(minutes=45),
+        entry=1.1000,
+        stop_loss=1.1010,
+        take_profit=1.0980,
+        resolved_at=now,
+        outcome="TP",
+        pnl_r=2.0,
+    )
     print("  close      ok")
     print("  lesson     ok")
     print("  supervision ok")
+    print("  counterfactual ok")
 
     # Read back through the exact queries the runner uses, not through
     # hand-written SELECTs. A schema that stores fine and cannot be read by the
     # briefing is the failure worth catching here.
     scoreboard = brain.scoreboard(symbol="__VERIFY__")
     lessons = brain.lessons(symbol="__VERIFY__")
+    gates = brain.gate_scoreboard(symbol="__VERIFY__")
+    readback_ok = bool(scoreboard and lessons and gates)
     print(
-        f"  read back  {'ok' if scoreboard and lessons else 'FAILED':<9}"
-        f"{len(scoreboard)} scoreline(s), {len(lessons)} lesson(s)"
+        f"  read back  {'ok' if readback_ok else 'FAILED':<9}"
+        f"{len(scoreboard)} scoreline(s), {len(lessons)} lesson(s), "
+        f"{len(gates)} gate scoreline(s)"
     )
     for line in scoreboard:
         print(f"               {line.summary()}")
     for lesson in lessons:
         print(f"               {lesson.summary()}")
+    if not any(line.blocked_by == "AI_VETO" for line in gates):
+        print("  counterfactual read back FAILED")
+        readback_ok = False
 
     if not args.keep:
         brain._run("DELETE FROM supervisions WHERE symbol = '__VERIFY__'")
         brain._run("DELETE FROM lessons WHERE symbol = '__VERIFY__'")
+        brain._run("DELETE FROM counterfactuals WHERE symbol = '__VERIFY__'")
         brain._run("DELETE FROM trades WHERE symbol = '__VERIFY__'")
         brain._run("DELETE FROM decisions WHERE symbol = '__VERIFY__'")
         print("  cleanup    ok       test rows removed")
@@ -171,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         print("  " + "-" * 70)
         for table in (
             "decisions",
+            "counterfactuals",
             "trades",
             "trade_events",
             "supervisions",
@@ -183,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     print("  " + "-" * 70)
     print(f"  {brain.status.summary()}")
     print()
-    if brain.status.failures:
+    if brain.status.failures or not readback_ok:
         print("  Some writes failed. The trading system would carry on without")
         print("  them — the brain is memory, not a risk control — but the memory")
         print("  would be incomplete. Fix this before relying on it.")

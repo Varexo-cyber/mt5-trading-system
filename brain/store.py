@@ -13,11 +13,13 @@ is a reason to be sad and not a reason to be unsafe. The account traded for
 months with a JSON file that had the same properties.
 
 THE SECOND RULE: nothing read from this database may move a risk limit, a
-threshold, a weight or a lot size. It becomes text in a prompt and rows in a
-report. `learning/memory.py` states the same rule and this one inherits it --
-a learning system that can rewrite its own risk controls is how an account
-dies, and a remote database that can do it is worse, because the change would
-not even be visible in a diff.
+threshold, a weight or a lot size. Realised trades have one bounded authority:
+after the configured minimum sample they may reorder setups that already
+passed every entry gate. They cannot create a setup or make it larger. All
+other reads become text in a prompt and rows in a report. A learning system
+that can rewrite its own risk controls is how an account dies, and a remote
+database that can do it is worse, because the change would not be visible in a
+diff.
 
 The connection string lives in `NEON_DATABASE_URL` in `config/.env`, which is
 gitignored. It is never logged, never written to the journal, and never sent to
@@ -146,6 +148,54 @@ class Scoreline:
         return (
             f"{self.direction} {self.symbol}: {self.trades} trades, "
             f"{self.wins} won, {self.total_r:+.2f}R total{kept}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeCalibration:
+    """Shrunk realised expectancy for ordering one already-valid setup."""
+
+    asset_class: str
+    setup_family: str
+    horizon: str
+    direction: str
+    regime: str
+    trades: int
+    mean_r: float
+    modifier: float
+    specificity: int
+
+    @property
+    def key(self) -> tuple[str, str, str, str, str]:
+        return (
+            self.asset_class,
+            self.setup_family,
+            self.horizon,
+            self.direction,
+            self.regime,
+        )
+
+    def summary(self) -> str:
+        return (
+            f"{self.trades} realised trades in this segment average {self.mean_r:+.2f}R; "
+            f"bounded ranking adjustment {self.modifier:+.2f}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class GateScoreline:
+    """Passive grade of plans refused by one gate."""
+
+    blocked_by: str
+    observations: int
+    hypothetical_wins: int
+    mean_r: float
+
+    def summary(self) -> str:
+        return (
+            f"{self.blocked_by}: {self.observations} resolved refused plans, "
+            f"{self.hypothetical_wins} would have won, averaging {self.mean_r:+.2f}R. "
+            "Counterfactual evidence only, not broker fills."
         )
 
 
@@ -313,16 +363,27 @@ class Brain:
         import json
 
         verdict = dict(ai or {})
+        measured = dict(filters or {})
+        intelligence = measured.get("market_intelligence")
+        intelligence = intelligence if isinstance(intelligence, Mapping) else {}
+        asset_context = intelligence.get("asset_context")
+        asset_context = asset_context if isinstance(asset_context, Mapping) else {}
+        asset_class = measured.get("asset_class") or asset_context.get("asset_class")
+        regime = measured.get("volatility_regime") or intelligence.get("regime")
+        session = measured.get("session")
+        horizon = measured.get("trade_horizon")
+        planning_timeframe = measured.get("planning_timeframe")
         row = self._run(
             """
             INSERT INTO decisions (
                 fingerprint, decided_at, account, mode, symbol, direction, reason,
-                detail, taken, equity, conviction, playbook, entry, stop_loss,
+                detail, taken, equity, conviction, playbook, asset_class, regime,
+                session, horizon, planning_timeframe, entry, stop_loss,
                 take_profit, filters, ai_verdict, ai_confidence, ai_reasoning,
                 ai_tokens, headlines
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s::jsonb, %s, %s, %s, %s, %s::jsonb
+                %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
             )
             ON CONFLICT (fingerprint) DO UPDATE SET detail = EXCLUDED.detail
             RETURNING id
@@ -340,10 +401,15 @@ class Brain:
                 equity,
                 conviction,
                 playbook or None,
+                asset_class,
+                regime,
+                session,
+                horizon,
+                planning_timeframe,
                 entry,
                 stop_loss,
                 take_profit,
-                json.dumps(dict(filters or {}), default=str),
+                json.dumps(measured, default=str),
                 verdict.get("verdict"),
                 verdict.get("confidence"),
                 verdict.get("reasoning"),
@@ -463,6 +529,107 @@ class Brain:
             ),
         )
         self.status.writes += 1
+
+    def record_counterfactual(
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        blocked_by: str,
+        opened_at: datetime,
+        entry: float,
+        stop_loss: float,
+        take_profit: float,
+        resolved_at: datetime,
+        outcome: str,
+        pnl_r: float,
+    ) -> None:
+        """Persist how one refused executable plan subsequently resolved.
+
+        Counterfactuals grade gates and the adviser. They are intentionally in
+        their own table so a hypothetical fill can never enter the realised
+        calibration query by accident.
+        """
+        self.record_counterfactuals(
+            [
+                {
+                    "symbol": symbol,
+                    "direction": direction,
+                    "blocked_by": blocked_by,
+                    "opened_at": opened_at,
+                    "entry": entry,
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                    "resolved_at": resolved_at,
+                    "outcome": outcome,
+                    "pnl_r": pnl_r,
+                }
+            ]
+        )
+
+    def record_counterfactuals(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        """Persist resolved refusals in one Neon round trip.
+
+        Startup catch-up may contain hundreds of local rows. Sending those one
+        statement at a time would delay the scanner for minutes on a remote
+        database, so Postgres expands one JSON payload server-side.
+        """
+        import json
+
+        payload: list[dict[str, Any]] = []
+        for row in rows:
+            opened_at = row["opened_at"]
+            payload.append(
+                {
+                    "fingerprint": fingerprint(
+                        self.account,
+                        row["symbol"],
+                        row["direction"],
+                        row["blocked_by"],
+                        opened_at.isoformat() if isinstance(opened_at, datetime) else opened_at,
+                        row["entry"],
+                        row["stop_loss"],
+                        row["take_profit"],
+                    ),
+                    **dict(row),
+                    "account": self.account,
+                }
+            )
+        if not payload:
+            return
+        self._run(
+            """
+            INSERT INTO counterfactuals (
+                fingerprint, account, symbol, direction, blocked_by, opened_at,
+                entry, stop_loss, take_profit, resolved_at, outcome, pnl_r
+            )
+            SELECT
+                row.fingerprint, row.account, row.symbol, row.direction,
+                row.blocked_by, row.opened_at, row.entry, row.stop_loss,
+                row.take_profit, row.resolved_at, row.outcome, row.pnl_r
+            FROM jsonb_to_recordset(%s::jsonb) AS row(
+                fingerprint TEXT,
+                account TEXT,
+                symbol TEXT,
+                direction TEXT,
+                blocked_by TEXT,
+                opened_at TIMESTAMPTZ,
+                entry NUMERIC,
+                stop_loss NUMERIC,
+                take_profit NUMERIC,
+                resolved_at TIMESTAMPTZ,
+                outcome TEXT,
+                pnl_r NUMERIC
+            )
+            ON CONFLICT (fingerprint) DO UPDATE SET
+                resolved_at = EXCLUDED.resolved_at,
+                outcome = EXCLUDED.outcome,
+                pnl_r = EXCLUDED.pnl_r,
+                updated_at = NOW()
+            """,
+            (json.dumps(payload, default=str),),
+        )
+        self.status.writes += len(payload)
 
     def record_lessons(
         self,
@@ -647,6 +814,107 @@ class Brain:
             for row in rows
         ]
 
+    def edge_calibrations(
+        self,
+        *,
+        minimum_trades: int,
+        shrinkage_trades: int,
+        points_per_r: float,
+        modifier_cap: float,
+    ) -> list[EdgeCalibration]:
+        """Bounded realised evidence for ordering already-valid candidates.
+
+        The three UNION branches form a fallback ladder: exact regime first,
+        then the same setup across regimes, then asset class plus direction.
+        All read only broker-confirmed closed trades. A segment with fewer than
+        ``minimum_trades`` is absent, which means exactly zero influence.
+        """
+        rows = self._run(
+            """
+            WITH realised AS (
+                SELECT
+                    COALESCE(d.asset_class, 'unknown') AS asset_class,
+                    COALESCE(d.playbook, 'unknown') AS setup_family,
+                    COALESCE(d.horizon, 'unknown') AS horizon,
+                    t.direction,
+                    COALESCE(d.regime, 'unknown') AS regime,
+                    t.pnl_r
+                FROM trades t
+                LEFT JOIN decisions d ON d.id = t.decision_id
+                WHERE t.account = %s AND t.closed_at IS NOT NULL AND t.pnl_r IS NOT NULL
+            )
+            SELECT asset_class, setup_family, horizon, direction, regime,
+                   COUNT(*), AVG(pnl_r), 3 AS specificity
+            FROM realised
+            GROUP BY asset_class, setup_family, horizon, direction, regime
+            HAVING COUNT(*) >= %s
+            UNION ALL
+            SELECT asset_class, setup_family, horizon, direction, '*',
+                   COUNT(*), AVG(pnl_r), 2 AS specificity
+            FROM realised
+            GROUP BY asset_class, setup_family, horizon, direction
+            HAVING COUNT(*) >= %s
+            UNION ALL
+            SELECT asset_class, '*', '*', direction, '*',
+                   COUNT(*), AVG(pnl_r), 1 AS specificity
+            FROM realised
+            GROUP BY asset_class, direction
+            HAVING COUNT(*) >= %s
+            """,
+            (self.account, minimum_trades, minimum_trades, minimum_trades),
+            fetch="all",
+        )
+        if not rows:
+            return []
+        estimates: list[EdgeCalibration] = []
+        for row in rows:
+            trades = int(row[5])
+            mean_r = float(row[6] or 0.0)
+            shrink = trades / (trades + max(1, shrinkage_trades))
+            raw = mean_r * shrink * points_per_r
+            modifier = max(-modifier_cap, min(modifier_cap, raw))
+            estimates.append(
+                EdgeCalibration(
+                    asset_class=str(row[0]),
+                    setup_family=str(row[1]),
+                    horizon=str(row[2]),
+                    direction=str(row[3]),
+                    regime=str(row[4]),
+                    trades=trades,
+                    mean_r=mean_r,
+                    modifier=round(modifier, 3),
+                    specificity=int(row[7]),
+                )
+            )
+        return sorted(estimates, key=lambda item: item.specificity, reverse=True)
+
+    def gate_scoreboard(self, *, symbol: str = "", limit: int = 12) -> list[GateScoreline]:
+        """How refused executable plans resolved after the decision."""
+        rows = self._run(
+            """
+            SELECT blocked_by, COUNT(*),
+                   COUNT(*) FILTER (WHERE pnl_r > 0), AVG(pnl_r)
+            FROM counterfactuals
+            WHERE account = %s AND (%s = '' OR symbol = %s)
+            GROUP BY blocked_by
+            ORDER BY COUNT(*) DESC
+            LIMIT %s
+            """,
+            (self.account, symbol, symbol, limit),
+            fetch="all",
+        )
+        if not rows:
+            return []
+        return [
+            GateScoreline(
+                blocked_by=str(row[0]),
+                observations=int(row[1]),
+                hypothetical_wins=int(row[2]),
+                mean_r=float(row[3] or 0.0),
+            )
+            for row in rows
+        ]
+
     def learned_bank_threshold(self, *, minimum_trades: int = MIN_TRADES_TO_LEARN) -> float | None:
         """Where this account's own trades say profit should be taken, in R.
 
@@ -720,6 +988,7 @@ class Brain:
         lessons = [item.summary() for item in self.lessons()]
         here = [line.summary() for line in self.scoreboard(symbol=symbol)]
         overall = [line.summary() for line in self.scoreboard()] if not symbol else []
+        gates = [line.summary() for line in self.gate_scoreboard()]
         brief: dict[str, Any] = {}
         if lessons:
             brief["lessons_from_past_trades"] = lessons
@@ -727,6 +996,8 @@ class Brain:
             brief["this_instrument_so_far"] = here
         if overall:
             brief["account_scoreboard"] = overall
+        if gates:
+            brief["refusal_outcomes"] = gates
         # Only once there is something to attach it to. Returned on its own it
         # is a payload key echoing back what the reviewer just asked about,
         # which is tokens spent to tell a model something it already knows —
@@ -769,6 +1040,12 @@ class NullBrain:
     def record_trade_closed(self, **_: Any) -> None:
         return None
 
+    def record_counterfactual(self, **_: Any) -> None:
+        return None
+
+    def record_counterfactuals(self, _rows: Sequence[Mapping[str, Any]] = ()) -> None:
+        return None
+
     def record_lessons(self, _lessons: Sequence[str] = (), **_kwargs: Any) -> None:
         return None
 
@@ -785,6 +1062,12 @@ class NullBrain:
         return []
 
     def scoreboard(self, **_: Any) -> list[Scoreline]:
+        return []
+
+    def edge_calibrations(self, **_: Any) -> list[EdgeCalibration]:
+        return []
+
+    def gate_scoreboard(self, **_: Any) -> list[GateScoreline]:
         return []
 
     def briefing(self, symbol: str = "", direction: str = "") -> dict[str, Any]:

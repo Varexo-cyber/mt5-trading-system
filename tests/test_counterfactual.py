@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 import pandas as pd
 
 from core.types import Direction
-from learning.counterfactual import classify_path, future_bars, resolve_management_baselines
+from learning.counterfactual import (
+    classify_path,
+    future_bars,
+    resolve_counterfactuals,
+    resolve_management_baselines,
+)
 
 
 def _bars(*rows: tuple[float, float, float]) -> pd.DataFrame:
@@ -62,6 +67,58 @@ def test_counterfactual_evidence_without_timestamps_fails_closed() -> None:
     opened = datetime(2026, 8, 1, 10, 7, tzinfo=UTC)
 
     assert future_bars([{"high": 2.0, "low": 1.0, "close": 1.5}], opened).empty
+
+
+def test_resolved_refusal_is_forwarded_to_durable_memory() -> None:
+    opened = datetime(2026, 8, 1, 10, 0, tzinfo=UTC)
+    now = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+
+    class Recorder:
+        def __init__(self) -> None:
+            self.forwarded: list[dict[str, object]] = []
+
+        @staticmethod
+        def unresolved_shadow_trades(_limit):  # type: ignore[no-untyped-def]
+            return [
+                {
+                    "id": 9,
+                    "symbol": "EURUSD.i",
+                    "direction": "LONG",
+                    "entry_price": 100.0,
+                    "sl": 98.0,
+                    "tp": 104.0,
+                    "opened_at": opened.isoformat(),
+                    "blocked_by": "AI_VETO",
+                }
+            ]
+
+        def resolve_shadow_trade(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            return None
+
+    class Broker:
+        @staticmethod
+        def copy_rates_range(*_args):  # type: ignore[no-untyped-def]
+            return [
+                {
+                    "time": int((opened + pd.Timedelta(minutes=15)).timestamp()),
+                    "high": 104.5,
+                    "low": 99.5,
+                    "close": 104.0,
+                }
+            ]
+
+    recorder = Recorder()
+    assert (
+        resolve_counterfactuals(
+            recorder,  # type: ignore[arg-type]
+            Broker(),  # type: ignore[arg-type]
+            now,
+            on_resolved=recorder.forwarded.append,
+        )
+        == 1
+    )
+    assert recorder.forwarded[0]["outcome"] == "TP"
+    assert recorder.forwarded[0]["pnl_r"] == 2.0
 
 
 def test_closed_trade_is_compared_with_untouched_original_plan() -> None:
