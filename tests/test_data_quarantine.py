@@ -30,7 +30,7 @@ HSBC = "HSBC H4: 80 bars missing inside trading weeks (5.3% of the window, limit
 
 @pytest.fixture
 def quarantine() -> DataQuarantine:
-    return DataQuarantine(initial_minutes=60.0, backoff_multiple=4.0, max_minutes=1440.0)
+    return DataQuarantine(initial_minutes=30.0, backoff_multiple=4.0, max_minutes=240.0)
 
 
 class TestHolding:
@@ -40,8 +40,8 @@ class TestHolding:
     def test_one_failure_holds_it_for_the_initial_window(self, quarantine: DataQuarantine) -> None:
         quarantine.record_failure("HSBC", HSBC, NOW)
 
-        assert quarantine.hold_for("HSBC", NOW + timedelta(minutes=59)) is not None
-        assert quarantine.hold_for("HSBC", NOW + timedelta(minutes=61)) is None
+        assert quarantine.hold_for("HSBC", NOW + timedelta(minutes=29)) is not None
+        assert quarantine.hold_for("HSBC", NOW + timedelta(minutes=31)) is None
 
     def test_the_hold_is_per_symbol(self, quarantine: DataQuarantine) -> None:
         quarantine.record_failure("HSBC", HSBC, NOW)
@@ -60,15 +60,15 @@ class TestBackoff:
         second = quarantine.record_failure("SPCX", "too short", NOW)
         third = quarantine.record_failure("SPCX", "too short", NOW)
 
-        assert first.until == NOW + timedelta(minutes=60)
-        assert second.until == NOW + timedelta(minutes=240)
-        assert third.until == NOW + timedelta(minutes=960)
+        assert first.until == NOW + timedelta(minutes=30)
+        assert second.until == NOW + timedelta(minutes=120)
+        assert third.until == NOW + timedelta(minutes=240)
 
     def test_the_hold_is_capped(self, quarantine: DataQuarantine) -> None:
         """Nothing is held out forever without another look."""
         for _ in range(20):
             hold = quarantine.record_failure("SPCX", "too short", NOW)
-        assert hold.until == NOW + timedelta(minutes=1440)
+        assert hold.until == NOW + timedelta(minutes=240)
 
     def test_an_expired_hold_keeps_its_count(self, quarantine: DataQuarantine) -> None:
         """A symbol about to fail its fifth time should not restart at an hour."""
@@ -79,7 +79,7 @@ class TestBackoff:
 
         again = quarantine.record_failure("SPCX", "too short", later)
         assert again.failures == 4
-        assert again.until == later + timedelta(minutes=1440)
+        assert again.until == later + timedelta(minutes=240)
 
 
 class TestRelease:
@@ -96,7 +96,7 @@ class TestRelease:
 
         fresh = quarantine.record_failure("HSBC", HSBC, NOW)
         assert fresh.failures == 1
-        assert fresh.until == NOW + timedelta(minutes=60)
+        assert fresh.until == NOW + timedelta(minutes=30)
 
     def test_clearing_an_unheld_symbol_is_harmless(self, quarantine: DataQuarantine) -> None:
         quarantine.clear("EURUSD")
@@ -116,10 +116,10 @@ class TestReporting:
 
     def test_the_summary_says_what_and_when(self, quarantine: DataQuarantine) -> None:
         hold = quarantine.record_failure("HSBC", HSBC, NOW)
-        summary = hold.summary(NOW + timedelta(minutes=15))
+        summary = hold.summary(NOW + timedelta(minutes=10))
 
         assert "HSBC" in summary
-        assert "45 min" in summary
+        assert "20 min" in summary
         assert "bars missing" in summary
 
     def test_a_multiline_reason_is_trimmed(self, quarantine: DataQuarantine) -> None:
@@ -140,3 +140,64 @@ class TestDisabled:
 
         assert config.enabled is True
         assert config.max_minutes >= config.initial_minutes
+
+
+class TestReopening:
+    """The hold is a bet that nothing changed. A new bar settles that bet.
+
+    The operator's question was the right one: if the exchange opens again
+    tomorrow morning, why should the symbol sit out a clock set last night?
+    It should not, and it does not — the venue's own first new bar releases it,
+    whatever the deadline says.
+    """
+
+    MONDAY_CLOSE = datetime(2026, 8, 10, 16, 30, tzinfo=UTC)
+    TUESDAY_OPEN = datetime(2026, 8, 11, 7, 0, tzinfo=UTC)
+
+    def test_a_new_bar_releases_the_hold_before_the_deadline(
+        self, quarantine: DataQuarantine
+    ) -> None:
+        quarantine.record_failure("HSBC", HSBC, NOW, latest_bar=self.MONDAY_CLOSE)
+
+        one_minute_later = NOW + timedelta(minutes=1)
+        assert quarantine.hold_for("HSBC", one_minute_later, self.MONDAY_CLOSE) is not None
+        assert quarantine.hold_for("HSBC", one_minute_later, self.TUESDAY_OPEN) is None
+
+    def test_the_same_bar_keeps_the_hold(self, quarantine: DataQuarantine) -> None:
+        """Nothing has printed since it failed, so nothing has changed."""
+        quarantine.record_failure("HSBC", HSBC, NOW, latest_bar=self.MONDAY_CLOSE)
+        assert quarantine.hold_for("HSBC", NOW, self.MONDAY_CLOSE) is not None
+
+    def test_an_older_bar_does_not_release_it(self, quarantine: DataQuarantine) -> None:
+        """A scan reporting a staler bar is a worse view, not a better market."""
+        quarantine.record_failure("HSBC", HSBC, NOW, latest_bar=self.MONDAY_CLOSE)
+        stale = self.MONDAY_CLOSE - timedelta(hours=4)
+        assert quarantine.hold_for("HSBC", NOW, stale) is not None
+
+    def test_an_unknown_bar_falls_back_to_the_clock(self, quarantine: DataQuarantine) -> None:
+        """No bar to compare is the case the deadline exists for."""
+        quarantine.record_failure("HSBC", HSBC, NOW, latest_bar=self.MONDAY_CLOSE)
+
+        assert quarantine.hold_for("HSBC", NOW, None) is not None
+        assert quarantine.hold_for("HSBC", NOW + timedelta(minutes=31), None) is None
+
+    def test_a_hold_taken_without_a_bar_still_expires(self, quarantine: DataQuarantine) -> None:
+        quarantine.record_failure("SPCX", "too short", NOW)
+
+        assert quarantine.hold_for("SPCX", NOW, self.TUESDAY_OPEN) is not None
+        assert quarantine.hold_for("SPCX", NOW + timedelta(minutes=31)) is None
+
+    def test_the_backstop_never_exceeds_four_hours(self, quarantine: DataQuarantine) -> None:
+        """An overnight market is re-examined several times before it opens.
+
+        Dropping from a fetch every cycle to one an hour already removes 98.3%
+        of the waste; a whole day removes 99.93%. Those last seven-hundredths
+        of a percentage point do not pay for a day of blindness.
+        """
+        for _ in range(10):
+            hold = quarantine.record_failure("SPCX", "too short", NOW)
+        assert hold.minutes_left(NOW) <= 240.0
+
+    def test_the_summary_mentions_the_new_bar_route(self, quarantine: DataQuarantine) -> None:
+        hold = quarantine.record_failure("HSBC", HSBC, NOW, latest_bar=self.MONDAY_CLOSE)
+        assert "next new bar" in hold.summary(NOW)
