@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from advisory.ledger import AIReviewLedger, read_recent_reviews, read_trade_reflections
-from advisory.providers import DisabledAdvisor, build_advisor, build_review_payload
+from advisory.providers import DisabledAdvisor, _parse_review, build_advisor, build_review_payload
 from analysis.confluence import TradeIdea
 from config.loader import load_settings
 from config.schema import AIConfig
@@ -48,7 +48,9 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
             block = SimpleNamespace(
                 type="text",
                 text=(
-                    '{"approve":true,"confidence":0.8,"thesis":"coherent","risks":["event risk"]}'
+                    '{"approve":true,"confidence":0.8,"thesis":"coherent",'
+                    '"risks":["event risk"],"entry_timing":"ENTER_NOW",'
+                    '"retest_level":null,"entry_boundary":1.401,"chase_risk":"low"}'
                 ),
             )
             return SimpleNamespace(
@@ -89,6 +91,8 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     safe_payload = build_review_payload(idea, context, {"actual_risk_pct": 1.0})
 
     assert advice.approved
+    assert advice.entry_timing == "ENTER_NOW"
+    assert advice.entry_boundary == pytest.approx(1.401)
     assert advice.request_id == "req-test"
     request_text = str(captured["messages"])
     assert "unit-test-secret" not in request_text
@@ -119,6 +123,39 @@ def test_anthropic_review_is_structured_compact_and_fail_closed(monkeypatch) -> 
     assert "minimum" not in str(output_config)
     # The thinking block must never reach the JSON parser.
     assert advice.thesis == "coherent"
+
+
+def test_wait_retest_is_not_misclassified_as_a_veto() -> None:
+    advice = _parse_review(
+        '{"approve":true,"confidence":0.82,"thesis":"direction sound, entry stretched",'
+        '"risks":["late entry"],"entry_timing":"WAIT_RETEST",'
+        '"retest_level":1.395,"entry_boundary":1.398,"chase_risk":"high"}',
+        "anthropic",
+        "claude-test",
+        0.6,
+        "req-wait",
+    )
+
+    assert not advice.approved
+    assert advice.said_yes
+    assert advice.waiting_for_retest
+    assert not advice.below_threshold
+
+
+def test_wait_retest_survives_a_provider_using_approve_as_order_now() -> None:
+    advice = _parse_review(
+        '{"approve":false,"confidence":0.82,"thesis":"wait for price",'
+        '"risks":[],"entry_timing":"WAIT_RETEST","retest_level":1.395,'
+        '"entry_boundary":1.398,"chase_risk":"high"}',
+        "anthropic",
+        "claude-test",
+        0.6,
+        "req-wait-false",
+    )
+
+    assert not advice.approved
+    assert advice.said_yes
+    assert advice.waiting_for_retest
 
 
 def test_anthropic_market_scout_nominates_without_approving_or_sizing(monkeypatch) -> None:  # type: ignore[no-untyped-def]

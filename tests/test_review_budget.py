@@ -81,6 +81,33 @@ def context(symbol: str = "EURUSD.i", *, last_bar: int = 0) -> MarketContext:
     )
 
 
+def swing_context(*, last_m5_bar: int = 0) -> MarketContext:
+    fast = context(last_bar=last_m5_bar)
+    h1_index = pd.date_range(NOW - pd.Timedelta(hours=59), periods=60, freq="h", tz=UTC)
+    base = 1.08 + np.cumsum(np.full(60, 0.0005))
+    h1 = pd.DataFrame(
+        {
+            "open": base,
+            "high": base + 0.001,
+            "low": base - 0.001,
+            "close": base + 0.0002,
+            "tick_volume": 100,
+            "spread": 12,
+            "real_volume": 0,
+        },
+        index=h1_index,
+    )
+    return MarketContext(
+        symbol=fast.symbol,
+        now=NOW,
+        series={
+            **fast.series,
+            Timeframe.H1: Series(fast.symbol, Timeframe.H1, h1, NOW),
+        },
+        tick=fast.tick,
+    )
+
+
 def idea(symbol: str = "EURUSD.i") -> TradeIdea:
     return TradeIdea(
         symbol=symbol,
@@ -150,6 +177,16 @@ class TestBudget:
         service._reviewed(idea(), context(last_bar=1), {}, None)
         assert service.calls_made == 2
         assert service._review_budget_left() == 1
+
+    def test_a_swing_wait_is_reconsidered_on_a_new_entry_timing_bar(self) -> None:
+        service = runner(3)
+        swing = idea()
+        assert swing.planning_timeframe == "H1"
+
+        service._reviewed(swing, swing_context(last_m5_bar=0), {}, None)
+        service._reviewed(swing, swing_context(last_m5_bar=1), {}, None)
+
+        assert service.calls_made == 2
 
     def test_a_materially_different_plan_on_the_same_bar_is_a_new_question(self) -> None:
         service = runner(3)

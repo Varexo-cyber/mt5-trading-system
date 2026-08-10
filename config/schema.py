@@ -1175,6 +1175,90 @@ class HorizonProfileConfig(Base):
         return self
 
 
+class EntryQualityConfig(Base):
+    """Whether a valid direction is still offered at a tradeable price.
+
+    Confluence answers *which way*. This policy answers the separate execution
+    question *is now still a sensible moment*. ATR-normalised limits keep the
+    same meaning across FX, crypto, indices and single-stock CFDs while the
+    per-asset mappings acknowledge their different short-horizon behaviour.
+    """
+
+    enabled: bool = True
+    #: Missing entry-timing data cannot prove that a market order is timely.
+    fail_closed: Literal[True] = True
+    timeframe: str = "M5"
+    extension_bars: int = Field(default=3, ge=1, le=20)
+    range_lookback_bars: int = Field(default=12, ge=4, le=100)
+    directional_extreme_location: float = Field(default=0.88, ge=0.5, le=1.0)
+    ema_period: int = Field(default=20, ge=3, le=200)
+    max_favourable_extension_atr: dict[str, float] = Field(
+        default_factory=lambda: {
+            "forex": 1.25,
+            "crypto": 1.50,
+            "stock": 1.25,
+            "index": 1.35,
+            "metal": 1.35,
+            "commodity": 1.35,
+            "unknown": 1.00,
+        }
+    )
+    max_single_bar_body_atr: dict[str, float] = Field(
+        default_factory=lambda: {
+            "forex": 1.00,
+            "crypto": 1.30,
+            "stock": 1.20,
+            "index": 1.20,
+            "metal": 1.20,
+            "commodity": 1.20,
+            "unknown": 1.00,
+        }
+    )
+    max_ema_distance_atr: dict[str, float] = Field(
+        default_factory=lambda: {
+            "forex": 1.35,
+            "crypto": 1.60,
+            "stock": 1.50,
+            "index": 1.50,
+            "metal": 1.50,
+            "commodity": 1.50,
+            "unknown": 1.20,
+        }
+    )
+    #: A pullback that is still moving materially against the proposal has not
+    #: become a retest yet. It is reconsidered after the next closed M5 bar.
+    max_last_bar_adverse_atr: float = Field(default=0.20, ge=0.0, le=2.0)
+    #: The AI reviewed one exact price shape. More drift than this invalidates
+    #: that review; it never becomes permission to chase the new price.
+    max_review_price_drift_atr: float = Field(default=0.25, gt=0.0, le=2.0)
+    max_review_latency_seconds: float = Field(default=45.0, gt=1.0, le=300.0)
+
+    @field_validator("timeframe")
+    @classmethod
+    def _entry_timeframe_is_supported(cls, value: str) -> str:
+        Timeframe.parse(value)
+        return value.upper()
+
+    @field_validator(
+        "max_favourable_extension_atr",
+        "max_single_bar_body_atr",
+        "max_ema_distance_atr",
+    )
+    @classmethod
+    def _asset_limits_are_complete(cls, value: dict[str, float]) -> dict[str, float]:
+        expected = {"forex", "crypto", "stock", "index", "metal", "commodity", "unknown"}
+        missing = expected - set(value)
+        extra = set(value) - expected
+        if missing or extra:
+            raise ValueError(
+                f"entry-quality asset limits require exactly {sorted(expected)}; "
+                f"missing={sorted(missing)}, extra={sorted(extra)}"
+            )
+        if any(limit <= 0.0 or limit > 10.0 for limit in value.values()):
+            raise ValueError("entry-quality ATR limits must be above zero and at most 10")
+        return value
+
+
 class AssetClassRoutingConfig(Base):
     """Bounded ranking preferences for one market microstructure.
 
@@ -1365,6 +1449,7 @@ class AnalysisConfig(Base):
     volatility_regime: VolatilityRegimeConfig = VolatilityRegimeConfig()
     market_regime: MarketRegimeConfig = MarketRegimeConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
+    entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
     asset_class_routing: dict[str, AssetClassRoutingConfig] = Field(
         default_factory=lambda: {

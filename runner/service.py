@@ -31,6 +31,7 @@ from advisory.scout import ScoutThrottle
 from advisory.veto_patterns import readable as veto_readable
 from analysis import (
     ConfluenceEngine,
+    EntryTimingDecision,
     LevelReaction,
     LiquiditySweep,
     MarketObservation,
@@ -40,7 +41,9 @@ from analysis import (
     TrendMomentum,
     VolatilityRegime,
     apply_cross_market_context,
+    assess_entry_quality,
     assess_opportunity,
+    assess_review_drift,
     observe_market,
     scout_market_snapshot,
 )
@@ -147,6 +150,31 @@ class _SupervisionSnapshot:
     giveback_fraction: float
     health_verdict: str
     health_severity: float
+
+
+@dataclass(frozen=True, slots=True)
+class _RevalidatedEntry:
+    """A paid approval rebound to fresh executable market and account state."""
+
+    account: AccountSnapshot
+    positions: tuple[Position, ...]
+    context: MarketContext
+    idea: TradeIdea
+    sizing: SizingResult
+    filter_data: dict[str, object]
+    review_binding: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class _EntryRevalidation:
+    plan: _RevalidatedEntry | None
+    reason: Reason
+    detail: str
+    extra: dict[str, object]
+
+    @property
+    def passed(self) -> bool:
+        return self.plan is not None
 
 
 #: AI verdicts retained. One per symbol and direction per bar of the fastest
@@ -1498,6 +1526,36 @@ class JarvisRunner:
             )
             return False
 
+        entry_quality = assess_entry_quality(
+            context,
+            idea.direction,
+            spec.asset_class,
+            self.settings.analysis.entry_quality,
+        )
+        if not entry_quality.passed:
+            if entry_quality.decision is EntryTimingDecision.DATA_UNAVAILABLE:
+                reason = Reason.DATA_UNAVAILABLE
+            elif entry_quality.reason_code == "PULLBACK_STILL_ACTIVE":
+                reason = Reason.AWAITING_CONFIRMATION
+            else:
+                reason = Reason.ENTRY_OVEREXTENDED
+            cycle_pk = self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                reason,
+                entry_quality.detail,
+                signals=list(idea.signals),
+                extra={**filter_data, "entry_quality": entry_quality.safe_dict()},
+            )
+            if entry_quality.decision is not EntryTimingDecision.DATA_UNAVAILABLE:
+                # The wait is an execution hypothesis, not a fact. Follow the
+                # untouched SL/TP in shadow so future OOS evidence can show
+                # whether refusing this late price actually reduced MAE or
+                # merely discarded winners. No broker order is created.
+                self._record_counterfactual(cycle_pk, idea, reason)
+            return False
+
         # Give the stop the room the costs demand, before anything is sized.
         #
         # The cost gate in the sizer would otherwise refuse this outright, and
@@ -1659,6 +1717,7 @@ class JarvisRunner:
             "market_intelligence": (
                 candidate.intelligence.safe_dict() if candidate.intelligence is not None else {}
             ),
+            "entry_quality": entry_quality.safe_dict(),
         }
         # What the reviewer cannot see from one chart: where this setup placed
         # among everything analysed this cycle, and how the account is carrying
@@ -1863,6 +1922,10 @@ class JarvisRunner:
             "ai_risks": advice.risks,
             "ai_request_id": advice.request_id,
             "ai_error": advice.error,
+            "ai_entry_timing": advice.entry_timing,
+            "ai_retest_level": advice.retest_level,
+            "ai_entry_boundary": advice.entry_boundary,
+            "ai_chase_risk": advice.chase_risk,
         }
         decision_context = {
             **filter_data,
@@ -1882,6 +1945,19 @@ class JarvisRunner:
             "global_market_state": self._world_state,
             "market_scout": self._last_scout.safe_dict(),
         }
+        if advice.waiting_for_retest:
+            cycle_pk = self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AI_WAIT_RETEST,
+                advice.thesis,
+                signals=list(idea.signals),
+                extra=decision_context,
+            )
+            self._record_review_snapshots(cycle_pk, symbol, request_payload)
+            self._record_counterfactual(cycle_pk, idea, Reason.AI_WAIT_RETEST)
+            return False
         if not advice.approved:
             # Remember it, so the next cycle does not buy this answer again.
             # Only a real verdict is worth remembering: a transport failure is
@@ -1910,6 +1986,46 @@ class JarvisRunner:
             self._record_review_snapshots(cycle_pk, symbol, request_payload)
             self._record_counterfactual(cycle_pk, idea, Reason.AI_VETO)
             return False
+
+        revalidation = self._revalidate_approved_entry(
+            candidate=candidate,
+            reviewed_idea=idea,
+            reviewed_account=account,
+            reviewed_positions=positions,
+            was_addon=is_addon,
+            advice=advice,
+            latency_seconds=ai_latency_ms / 1000.0,
+        )
+        if not revalidation.passed:
+            cycle_pk = self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                revalidation.reason,
+                revalidation.detail,
+                signals=list(idea.signals),
+                extra={**decision_context, "post_review_revalidation": revalidation.extra},
+            )
+            self._record_review_snapshots(cycle_pk, symbol, request_payload)
+            self._record_counterfactual(cycle_pk, idea, revalidation.reason)
+            return False
+        assert revalidation.plan is not None
+        plan = revalidation.plan
+        account = plan.account
+        positions = list(plan.positions)
+        context = plan.context
+        idea = plan.idea
+        sizing = plan.sizing
+        filter_data = plan.filter_data
+        existing_legs = tuple(position for position in positions if position.symbol == symbol)
+        decision_context = {
+            **decision_context,
+            **filter_data,
+            "existing_symbol_legs": len(existing_legs),
+            "reviewed_entry": candidate.idea.entry,
+            "executable_entry": idea.entry,
+            "post_review_revalidation": plan.review_binding,
+        }
         # Approved: whatever was held against this symbol no longer stands —
         # neither the refused shape nor the reason behind it. The reviewer has
         # just said yes to exactly the pair the pattern called hopeless, so the
@@ -2601,6 +2717,227 @@ class JarvisRunner:
         }
         write_json_atomic(self.health_file, payload)
 
+    def _revalidate_approved_entry(
+        self,
+        *,
+        candidate: AnalysedCandidate,
+        reviewed_idea: TradeIdea,
+        reviewed_account: AccountSnapshot,
+        reviewed_positions: list[Position],
+        was_addon: bool,
+        advice: Advice,
+        latency_seconds: float,
+    ) -> _EntryRevalidation:
+        """Rebind a paid approval to the price and account that will execute it.
+
+        The review is deliberately the slowest step in the entry path. A market
+        order sent after it must not inherit the old entry, size and reward/risk
+        merely because the direction stayed the same. Any material change waits
+        for a new cycle; a small change is repriced and every deterministic gate
+        is run again.
+        """
+
+        symbol = candidate.symbol
+        original = reviewed_idea
+        assert original.direction is not None
+
+        def fail(
+            reason: Reason, detail: str, extra: dict[str, object] | None = None
+        ) -> _EntryRevalidation:
+            return _EntryRevalidation(None, reason, detail, dict(extra or {}))
+
+        try:
+            fresh_context = self.data.get_context(symbol, force_refresh=True)
+            fresh_account = self.broker.account()
+            fresh_positions = self.broker.positions()
+            spec = self.broker.spec(symbol)
+        except (TradingSystemError, ValueError) as exc:
+            return fail(Reason.DATA_UNAVAILABLE, f"post-review refresh failed: {exc}")
+
+        if fresh_account.login != reviewed_account.login:
+            return fail(
+                Reason.ENTRY_STATE_CHANGED_DURING_REVIEW,
+                f"account changed from {reviewed_account.login} to {fresh_account.login} "
+                "during AI review",
+            )
+        before_tickets = {position.ticket for position in reviewed_positions}
+        after_tickets = {position.ticket for position in fresh_positions}
+        if before_tickets != after_tickets:
+            return fail(
+                Reason.ENTRY_STATE_CHANGED_DURING_REVIEW,
+                "open-position set changed during AI review; rebuild slot, correlation and "
+                "add-on context next cycle",
+                {
+                    "positions_before_review": sorted(before_tickets),
+                    "positions_after_review": sorted(after_tickets),
+                },
+            )
+
+        fresh_state = self.risk.build_state(fresh_account, fresh_positions)
+        existing_legs = fresh_state.positions_in(symbol)
+        if bool(existing_legs) != was_addon:
+            return fail(
+                Reason.ENTRY_STATE_CHANGED_DURING_REVIEW,
+                "the proposal changed between a primary entry and an add-on during AI review",
+            )
+        if fresh_context.tick is None:
+            return fail(Reason.DATA_UNAVAILABLE, "fresh post-review tick is missing")
+
+        fresh_entry = (
+            fresh_context.tick.ask
+            if original.direction is Direction.LONG
+            else fresh_context.tick.bid
+        )
+        drift = assess_review_drift(
+            fresh_context,
+            original.direction,
+            original.entry,
+            fresh_entry,
+            latency_seconds,
+            self.settings.analysis.entry_quality,
+        )
+        binding = {"review_drift": drift.safe_dict()}
+        if not drift.passed:
+            reason = (
+                Reason.DATA_UNAVAILABLE
+                if drift.decision is EntryTimingDecision.DATA_UNAVAILABLE
+                else Reason.ENTRY_MOVED_DURING_REVIEW
+            )
+            return fail(reason, drift.detail, binding)
+
+        if advice.entry_boundary is not None:
+            boundary_breached = (
+                original.direction is Direction.LONG and fresh_entry > advice.entry_boundary
+            ) or (original.direction is Direction.SHORT and fresh_entry < advice.entry_boundary)
+            if boundary_breached:
+                return fail(
+                    Reason.ENTRY_MOVED_DURING_REVIEW,
+                    f"fresh entry {fresh_entry:.8g} crossed Claude's {original.direction.name} "
+                    f"entry boundary {advice.entry_boundary:.8g}",
+                    binding,
+                )
+
+        fresh_idea = replace(original, entry=fresh_entry)
+        confirmed, adverse = self._entry_is_confirmed(fresh_context, fresh_idea)
+        if not confirmed:
+            assert adverse is not None
+            return fail(
+                Reason.AWAITING_CONFIRMATION,
+                f"fresh price has run {adverse:.2f} ATR against the "
+                f"{original.direction.name} after AI review; re-check next cycle",
+                binding,
+            )
+        timing = assess_entry_quality(
+            fresh_context,
+            original.direction,
+            spec.asset_class,
+            self.settings.analysis.entry_quality,
+        )
+        binding["entry_quality"] = timing.safe_dict()
+        if not timing.passed:
+            if timing.decision is EntryTimingDecision.DATA_UNAVAILABLE:
+                reason = Reason.DATA_UNAVAILABLE
+            elif timing.reason_code == "PULLBACK_STILL_ACTIVE":
+                reason = Reason.AWAITING_CONFIRMATION
+            else:
+                reason = Reason.ENTRY_OVEREXTENDED
+            return fail(reason, timing.detail, binding)
+
+        risk_decision = self.risk.evaluate(
+            fresh_state,
+            symbol,
+            spec,
+            direction=original.direction,
+            entry=fresh_entry,
+            allow_pyramid=was_addon and self.settings.trade_management.pyramiding.enabled,
+        )
+        if not risk_decision.approved:
+            return fail(risk_decision.reason, risk_decision.detail, binding)
+
+        filter_positions = (
+            tuple(position for position in fresh_positions if position.symbol != symbol)
+            if was_addon
+            else fresh_positions
+        )
+        filter_verdict, filter_data = self.filters.check(
+            FilterContext(
+                symbol=symbol,
+                spec=spec,
+                now=self.clock.now(),
+                direction=original.direction,
+                tick=fresh_context.tick,
+                open_positions=filter_positions,
+            )
+        )
+        if not filter_verdict.passed:
+            return fail(filter_verdict.reason, filter_verdict.detail, binding)
+
+        fresh_idea = self._widen_stop_for_costs(fresh_idea, spec)
+        affordable, share = self._spread_is_affordable(
+            fresh_context, fresh_idea.entry, fresh_idea.stop_loss
+        )
+        if not affordable:
+            return fail(
+                Reason.SPREAD_EATS_THE_STOP,
+                f"fresh spread is {share:.0%} of the "
+                f"{abs(fresh_idea.entry - fresh_idea.stop_loss):.5g} stop",
+                binding,
+            )
+        reachable, needed, runway = self._target_is_reachable_in_time(
+            fresh_context, fresh_idea, spec.asset_class.value
+        )
+        if not reachable:
+            assert needed is not None and runway is not None
+            return fail(
+                Reason.INSUFFICIENT_RUNWAY,
+                f"fresh target needs about {needed:.0f} min but only {runway:.0f} min remain",
+                binding,
+            )
+
+        risk_multiplier = self.risk.risk_multiplier(fresh_state)
+        if was_addon:
+            risk_multiplier *= self.settings.trade_management.pyramiding.risk_multiplier
+        sizing = PositionSizer(self.settings).size(
+            spec=spec,
+            equity=fresh_account.equity,
+            direction=original.direction,
+            entry=fresh_idea.entry,
+            sl=spec.normalize_price(fresh_idea.stop_loss),
+            tp=spec.normalize_price(fresh_idea.take_profit),
+            risk_multiplier=risk_multiplier,
+            spread_price=fresh_context.tick.spread,
+        )
+        if not sizing.approved:
+            return fail(sizing.reason, sizing.decision.detail, binding)
+        margin = self.risk.check_margin(
+            fresh_state,
+            symbol,
+            original.direction,
+            sizing.volume,
+            sizing.entry,
+        )
+        if not margin.approved:
+            return fail(margin.reason, margin.detail, binding)
+        self.risk.assert_not_forbidden(
+            sizing,
+            fresh_state,
+            allow_pyramid=was_addon and self.settings.trade_management.pyramiding.enabled,
+        )
+        return _EntryRevalidation(
+            _RevalidatedEntry(
+                fresh_account,
+                tuple(fresh_positions),
+                fresh_context,
+                fresh_idea,
+                sizing,
+                {**filter_data, "entry_quality": timing.safe_dict()},
+                binding,
+            ),
+            Reason.OK,
+            "fresh entry revalidated",
+            binding,
+        )
+
     def _entry_is_confirmed(
         self, context: MarketContext, idea: TradeIdea
     ) -> tuple[bool, float | None]:
@@ -3135,7 +3472,12 @@ class JarvisRunner:
         returning the old answer. The proposal's planning timeframe is the
         honest middle ground.
 
-        Price is bucketed at one quarter of that timeframe's ATR. This avoids a
+        Entry timing can deliberately be faster than the planning frame. A H1
+        swing that is waiting for an M5 retest must become a new question when
+        a new closed M5 bar arrives; otherwise a sound temporary WAIT remains
+        cached for nearly an hour after the requested retest has happened.
+
+        Price is bucketed at one quarter of the selected timeframe's ATR. This avoids a
         tick invalidating the cache while ensuring a materially relocated entry
         is a new question. Stop and target distances are included in ATR units,
         so two different plans on the same candle cannot share an approval.
@@ -3146,6 +3488,15 @@ class JarvisRunner:
             planning = Timeframe.parse(idea.planning_timeframe)
         except ValueError:
             planning = _REVIEW_TIMEFRAME
+        entry_quality_config = getattr(
+            getattr(self.settings, "analysis", None), "entry_quality", None
+        )
+        try:
+            timing = Timeframe.parse(getattr(entry_quality_config, "timeframe", "M5"))
+        except ValueError:
+            timing = Timeframe.M5
+        if timing.duration < planning.duration and timing in context.series:
+            planning = timing
         series = context.series.get(planning)
         if series is None:
             planning = (

@@ -127,6 +127,23 @@ def test_a_near_miss_is_not_reported_as_a_veto() -> None:
     assert pair_ai_reviews(rows)[0]["status"] == "UNDER THRESHOLD"
 
 
+def test_waiting_for_a_retest_is_not_reported_as_low_confidence() -> None:
+    rows = [
+        {"cycle_id": "c1", "event": "pretrade_request", "symbol": "EURUSD"},
+        {
+            "cycle_id": "c1",
+            "event": "pretrade_response",
+            "decision": {
+                "approved": False,
+                "said_yes": True,
+                "confidence": 0.82,
+                "entry_timing": "WAIT_RETEST",
+            },
+        },
+    ]
+    assert pair_ai_reviews(rows)[0]["status"] == "WAITING FOR RETEST"
+
+
 def test_a_real_veto_still_reads_as_a_veto() -> None:
     rows = [
         {"cycle_id": "c1", "event": "pretrade_request", "symbol": "EURUSD"},

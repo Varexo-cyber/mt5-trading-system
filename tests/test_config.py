@@ -114,6 +114,20 @@ class TestHardRules:
         with pytest.raises(ConfigError):
             load_settings(write(tmp_path, data), env_overrides=False)
 
+    def test_entry_quality_cannot_fail_open(self, raw: dict[str, Any], tmp_path: Path) -> None:
+        data = copy.deepcopy(raw)
+        data["analysis"]["entry_quality"]["fail_closed"] = False
+        with pytest.raises(ConfigError):
+            load_settings(write(tmp_path, data), env_overrides=False)
+
+    def test_entry_quality_requires_every_asset_class_limit(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        data = copy.deepcopy(raw)
+        del data["analysis"]["entry_quality"]["max_single_bar_body_atr"]["stock"]
+        with pytest.raises(ConfigError, match="max_single_bar_body_atr"):
+            load_settings(write(tmp_path, data), env_overrides=False)
+
     def test_news_window_cannot_be_narrowed(self, raw: dict[str, Any], tmp_path: Path) -> None:
         data = copy.deepcopy(raw)
         data["filters"]["news"]["high_impact"]["minutes_before"] = 30

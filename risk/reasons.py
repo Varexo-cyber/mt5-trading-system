@@ -58,6 +58,22 @@ class Reason(StrEnum):
     #: judgement on the setup — the setup may be right and simply early. It is
     #: re-examined every cycle and taken as soon as the adverse move stops.
     AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
+    #: Direction may be sound, but the current market order would chase a move
+    #: already stretched to the edge of its recent M5 range. Rechecked every
+    #: cycle; a pullback/retest can clear it without changing the thesis.
+    ENTRY_OVEREXTENDED = "ENTRY_OVEREXTENDED"
+    #: Claude agreed with the direction but explicitly judged the current price
+    #: too extended for a market order. Different from AI_VETO: the setup is not
+    #: remembered as bad and is offered again when its price shape changes.
+    AI_WAIT_RETEST = "AI_WAIT_RETEST"
+    #: The executable quote or elapsed time changed materially while the paid
+    #: review was in flight. The approval belongs to the old snapshot, not the
+    #: new price, so the setup returns next cycle instead of being chased.
+    ENTRY_MOVED_DURING_REVIEW = "ENTRY_MOVED_DURING_REVIEW"
+    #: Manual activity or another fill changed the account's open-position set
+    #: while Claude was judging it. The slot, correlation and add-on context in
+    #: that approval are stale, so a fresh cycle must form a new proposal.
+    ENTRY_STATE_CHANGED_DURING_REVIEW = "ENTRY_STATE_CHANGED_DURING_REVIEW"
     #: Reward-to-risk on structural levels is below the minimum.
     RR_BELOW_MINIMUM = "RR_BELOW_MINIMUM"
 
