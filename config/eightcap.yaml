@@ -432,6 +432,29 @@ risk:
   equity_per_position: 0
   min_concurrent_positions: 4
 
+  # Een positie waarvan de beurs dicht is bezet geen slot meer.
+  #
+  # AANLEIDING, en het was geen theorie. Op 10 augustus stonden er drie
+  # aandelen-CFD's open (ba, con, dbk). Hun beurs sluit om 17:00 Amsterdamse
+  # tijd. Daarna kan er niets meer mee: niet sluiten, geen stoploss verzetten,
+  # niet veiligstellen. Ze hielden wel drie van de vier slots bezet, dus het
+  # systeem kon de hele avond nog precies een trade openen.
+  #
+  # WAT DIT NIET DOET. De bevroren positie houdt zijn risico. Zijn slot
+  # vrijgeven betekent dat het gelijktijdige risico boven vier posities uit kan
+  # komen zolang een beurs dicht is, en bij de opening staat alles weer live.
+  # Wat het wel begrenst: margin (per order tegen de echte vrije margin
+  # gecontroleerd, nu al de krapste rem op dit account), het correlatiefilter,
+  # de regel van een idee per symbool, en elke entry-poort.
+  #
+  # Een quote mag tien minuten oud zijn voordat de markt als dicht geldt. Het
+  # spread-filter kapt al op 120 s voor aandelen, maar dat beantwoordt een
+  # andere vraag ("is deze prijs vers genoeg om op in te stappen") en die
+  # drempel hier gebruiken zou een slot teruggeven zodra een dun aandeel
+  # midden in de sessie even stilvalt.
+  release_slots_when_unmanageable: true
+  unmanageable_quote_age_seconds: 600
+
   # Commissie per lot per kant, in euro. Dit is geen boekhouding maar risico.
   #
   # Gemeten, niet geschat: een AUDNZD-stop-out van 0,06 lot kostte EUR 1,93

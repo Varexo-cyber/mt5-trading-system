@@ -369,6 +369,34 @@ class RiskConfig(Base):
     #: system that can hold only one position is a system that spends most of
     #: its day unable to act.
     min_concurrent_positions: int = Field(default=2, ge=1, le=10)
+    #: Should a position whose market is shut still consume a position slot?
+    #:
+    #: A slot exists to bound how many trades the system is *running* at once.
+    #: A single-name share whose exchange closed at 17:00 is not being run: it
+    #: cannot be closed, its stop cannot be moved, it cannot be secured, and no
+    #: management decision about it is possible until the venue reopens. Three
+    #: of those held four slots hostage on a live account and left the scanner
+    #: one usable slot for the entire evening.
+    #:
+    #: WHAT THIS DOES NOT DO, AND IT MATTERS. The frozen position keeps its
+    #: risk. Releasing its slot means simultaneous risk can exceed
+    #: `max_concurrent_positions` x the per-trade budget while a market is
+    #: shut, and every one of those tickets becomes live again at the reopen.
+    #: What still bounds it: margin (checked per order against real free
+    #: margin), the correlation filter, per-symbol exposure, and every entry
+    #: gate. This trades a hard ceiling for capacity, on purpose.
+    #:
+    #: Default False keeps the historical behaviour. It is switched on per
+    #: account, in that account's config, where the choice is visible.
+    release_slots_when_unmanageable: bool = False
+    #: How stale a quote must be before its market counts as shut.
+    #:
+    #: Deliberately far above the spread filter's `max_tick_age_seconds` (120s
+    #: for shares). That gate asks "is this quote fresh enough to price an
+    #: entry"; this one asks "has this venue stopped quoting altogether", and
+    #: answering the second question with the first would hand a slot back
+    #: every time a thin share went quiet for two minutes mid-session.
+    unmanageable_quote_age_seconds: int = Field(default=600, ge=60, le=86_400)
     #: Trades a day, or 0 for no cap. See `UNLIMITED_TRADES` below for why 0 is
     #: a defensible setting and not a hole in the risk model.
     max_trades_per_day: int = Field(default=3, ge=0, le=50)
