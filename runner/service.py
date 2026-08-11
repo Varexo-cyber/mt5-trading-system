@@ -245,6 +245,7 @@ class AnalysedCandidate:
             self.intelligence.modifier
             + self.intelligence.scout_alignment
             + self.intelligence.learned_alignment
+            + self.intelligence.recent_refusals
             if self.intelligence is not None
             else 0.0
         )
@@ -1126,6 +1127,16 @@ class JarvisRunner:
                     reasons=reasons,
                     thesis=f"{intelligence.thesis}; {calibration.summary()}",
                 )
+            penalty = self._recent_refusal_penalty(item)
+            if penalty < 0.0:
+                intelligence = replace(
+                    intelligence,
+                    recent_refusals=penalty,
+                    reasons=(
+                        *intelligence.reasons,
+                        f"the reviewer has refused this direction recently ({penalty:+.1f})",
+                    ),
+                )
             routed.append(replace(item, intelligence=intelligence))
         analysed = routed
         analysed.sort(key=lambda item: item.selection_key, reverse=True)
@@ -1188,6 +1199,34 @@ class JarvisRunner:
             points_per_r=config.selection_points_per_r,
             modifier_cap=config.selection_modifier_cap,
         )
+
+    def _recent_refusal_penalty(self, item: AnalysedCandidate) -> float:
+        """Send a repeatedly refused direction to the back of the review queue.
+
+        `veto_memory` already suppresses the *identical* proposal -- same entry
+        and stop within a quarter of an ATR. On a live tick that window is
+        almost never hit: the deck showed forty-five paid calls against one
+        served from memory, and thirty-two of the forty-five came back VETO.
+        The price drifts a few points, the setup is technically new, and the
+        same argument is bought again.
+
+        This is a different question and a cheaper one. Not "may this trade" --
+        the memory already answers that, and this changes no gate -- but "who
+        gets one of the three paid reviews this cycle". A symbol the reviewer
+        turned down twice in the last hour is a worse use of that budget than
+        one it has not seen, whatever the price has done since.
+
+        Bounded and decaying, so a refusal fades rather than blacklisting a
+        market: two points per recent refusal, four at most, and gone once the
+        memory's own window expires.
+        """
+        direction = item.idea.direction
+        if direction is None:
+            return 0.0
+        record = self.veto_memory.standing(item.symbol, direction.name, self.clock.now())
+        if record is None:
+            return 0.0
+        return -min(4.0, 2.0 * record.repeats)
 
     def _calibration_for(
         self,

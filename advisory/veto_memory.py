@@ -155,6 +155,26 @@ class VetoMemory:
             return None
         return record
 
+    def standing(self, symbol: str, direction: str, now: datetime) -> VetoRecord | None:
+        """A live refusal for this market and side, whatever the price has done.
+
+        `recall` answers "may this exact proposal be suppressed" and is strict
+        about it -- same entry and stop within a quarter of an ATR -- because
+        silencing a setup that genuinely moved would be discarding new
+        evidence. On a live tick that window is almost never hit: the deck
+        showed forty-five paid calls against one served from memory, thirty-two
+        of them refused.
+
+        This answers a different and much cheaper question: has the reviewer
+        turned this direction down lately. Nothing may be blocked on it. It
+        exists so a scarce paid review goes to a market that was not just
+        refused, and it must never be wired into a gate.
+        """
+        record = self._records.get((symbol, direction))
+        if record is None or now >= record.expires_at:
+            return None
+        return record
+
     def active(self, now: datetime) -> list[VetoRecord]:
         """Every refusal still in force, newest suppression first."""
         return sorted(
