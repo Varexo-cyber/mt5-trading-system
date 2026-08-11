@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from analysis.market_intelligence import (
     assess_opportunity,
 )
 from brain.store import Brain
+from config.loader import DEFAULT_CONFIG_PATH, load_settings
 from config.schema import AssetClassRoutingConfig
 from core.instrument import AssetClass
 from core.types import Direction, Signal
@@ -170,3 +172,78 @@ def test_decision_writes_typed_market_segment_for_future_calibration() -> None:
     assert "asset_class, regime" in str(captured["sql"])
     params = captured["params"]
     assert params[12:17] == ("forex", "range", "london", "intraday", "M15")  # type: ignore[index]
+
+
+class TestTheCalibrationCanActuallyReachThisAccount:
+    """A learner that runs and changes no ordering has not learned anything.
+
+    The shipped defaults are calibrated for a system trading hundreds of times
+    a month. On forty-seven trades they failed twice over: no segment ever met
+    the forty-trade floor, and had one met it the modifier would have been
+    -0.39 points against confluence scores spanning 38.8 to 58.8 — one and a
+    half percent of the range, invisible.
+
+    The account's loudest fact is that it is worse at longs than shorts
+    (-6.95R over 27 against -2.02R over 20). These pin that the machinery can
+    now express it.
+    """
+
+    def modifier(self, settings, trades: int, mean_r: float) -> float:
+        learning = settings.learning
+        shrink = trades / (trades + learning.selection_shrinkage_trades)
+        raw = mean_r * shrink * learning.selection_points_per_r
+        cap = learning.selection_modifier_cap
+        return max(-cap, min(cap, raw))
+
+    @pytest.fixture
+    def live(self):  # type: ignore[no-untyped-def]
+        return load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+    def test_the_floor_is_reachable_at_this_volume(self, live) -> None:  # type: ignore[no-untyped-def]
+        assert live.learning.selection_min_trades <= 20
+
+    def test_the_direction_split_this_account_shows_is_visible(self, live) -> None:  # type: ignore[no-untyped-def]
+        """The gap has to be worth more than rounding against a 20-point spread."""
+        longs = self.modifier(live, 27, -6.95 / 27)
+        shorts = self.modifier(live, 20, -2.02 / 20)
+
+        assert longs < shorts, "the worse direction must rank below the better one"
+        assert shorts - longs > 1.0, f"gap of {shorts - longs:.2f} points is still noise"
+
+    def test_it_stays_a_nudge_and_never_a_takeover(self, live) -> None:
+        """Even a segment losing a full R per trade is bounded by the cap."""
+        ruinous = self.modifier(live, 500, -1.0)
+
+        assert ruinous >= -live.learning.selection_modifier_cap
+        assert live.learning.selection_modifier_cap <= 5.0
+
+    def test_a_thin_segment_still_barely_whispers(self, live) -> None:
+        """Shrinkage is the protection, not the floor.
+
+        Ten trades earns a proportionally tiny voice rather than nothing
+        followed, one trade later, by a full one.
+        """
+        thin = self.modifier(live, 10, -6.95 / 27)
+        thick = self.modifier(live, 200, -6.95 / 27)
+
+        assert abs(thin) < abs(thick) / 2
+
+    def test_the_ladder_ends_at_direction_alone(self) -> None:
+        """The only rung a backfilled trade can match.
+
+        A trade copied from the local journal has no decision behind it, so its
+        asset class reads 'unknown' and it can never match a live 'forex'
+        candidate in the finer buckets. Without this rung the ladder stops
+        above the only evidence a small account has.
+        """
+        source = (Path(__file__).resolve().parent.parent / "runner" / "service.py").read_text(
+            encoding="utf-8"
+        )
+        assert '("*", "*", "*", direction, "*")' in source
+
+        store = (Path(__file__).resolve().parent.parent / "brain" / "store.py").read_text(
+            encoding="utf-8"
+        )
+        assert "GROUP BY direction" in store, "the query must produce that rung"

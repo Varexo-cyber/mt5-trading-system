@@ -1946,9 +1946,23 @@ class LearningConfig(Base):
     #: Realised broker trades may reorder already-valid candidates once the
     #: segment has enough evidence. Never changes eligibility, prices or size.
     selection_calibration_enabled: bool = True
-    selection_min_trades: int = Field(default=40, ge=30, le=10_000)
-    selection_shrinkage_trades: int = Field(default=80, ge=20, le=10_000)
-    selection_points_per_r: float = Field(default=6.0, ge=0.0, le=20.0)
+    #: Trades a segment needs before it may speak at all.
+    #:
+    #: The floor goes down to ten because the shrinkage below is the real
+    #: protection and it is continuous: a ten-trade segment is multiplied by
+    #: 10/(10+shrinkage), so a thin sample earns a proportionally tiny voice
+    #: rather than being silenced by a cliff and then, one trade later, given a
+    #: full one. A hard floor on top of shrinkage is belt-and-braces that in
+    #: practice just switched the whole mechanism off on any account trading
+    #: less than a few hundred times a month.
+    selection_min_trades: int = Field(default=40, ge=10, le=10_000)
+    #: How fast a segment earns its full voice. Lower means a small account's
+    #: own evidence counts sooner; the cap still bounds the total effect.
+    selection_shrinkage_trades: int = Field(default=80, ge=5, le=10_000)
+    #: Ranking points per R of measured expectancy, after shrinkage. Has to be
+    #: large enough that the result is visible against the spread of confluence
+    #: scores, or the calibration runs and changes no ordering at all.
+    selection_points_per_r: float = Field(default=6.0, ge=0.0, le=40.0)
     selection_modifier_cap: float = Field(default=4.0, ge=0.0, le=10.0)
     selection_refresh_minutes: int = Field(default=15, ge=1, le=1440)
 
