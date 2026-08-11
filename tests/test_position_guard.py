@@ -1835,3 +1835,52 @@ class TestTheAccountLearningWhenToTakeIt:
         made = self.manager(Broken(), bank_at_r=0.3)
 
         assert made._worth_taking(risk_money=10.0) == pytest.approx(3.0)
+
+
+def test_the_learned_bank_threshold_can_be_switched_off_on_evidence() -> None:
+    """The mechanism is sound; whether banking sooner is *better* is measured.
+
+    `management_baselines` replayed ten banked trades against their own
+    untouched stop and target. PEAK_STALL took +0.43R where holding paid
+    +1.92R; PROFIT_BANKED took +0.33R against +1.20R; nine of the ten did worse
+    than doing nothing. The learned threshold can only lower the bar, so it
+    makes that fire sooner and more often -- the wrong direction until the
+    baseline turns.
+
+    The flag exists rather than a deleted call so switching back is one line.
+    """
+    broker, journal = BrokerStub(), JournalStub()
+
+    class OpinionatedBrain:
+        def learned_bank_threshold(self, **_: object) -> float:
+            return 0.05  # far below the configured 0.30
+
+    settings = load_settings(env_overrides=False)
+    management = settings.trade_management.model_copy(update={"use_learned_bank_threshold": False})
+    off = PositionManager(
+        broker,  # type: ignore[arg-type]
+        journal,  # type: ignore[arg-type]
+        settings.model_copy(update={"trade_management": management}),
+        OpinionatedBrain(),
+    )
+    on = PositionManager(
+        broker,  # type: ignore[arg-type]
+        journal,  # type: ignore[arg-type]
+        settings,
+        OpinionatedBrain(),
+    )
+    off.equity = on.equity = 10_000.0
+
+    assert off._worth_taking(100.0) > on._worth_taking(
+        100.0
+    ), "with the learned floor off, the bar to bank must stay higher"
+
+
+def test_it_is_on_by_default_and_off_for_this_account() -> None:
+    """Default on: lowering the bar can only reduce exposure. Off here because
+    this account's own baseline says the reduction costs more than it saves."""
+    from config.loader import DEFAULT_CONFIG_PATH
+
+    assert load_settings(env_overrides=False).trade_management.use_learned_bank_threshold is True
+    live = load_settings(overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False)
+    assert live.trade_management.use_learned_bank_threshold is False

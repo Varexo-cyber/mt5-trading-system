@@ -596,6 +596,25 @@ modes:
     max_equity: 500
 
 trade_management:
+  # Het leren van de bankdrempel staat UIT, en dat is op bewijs.
+  #
+  # `management_baselines` speelde tien gebankte trades na tegen hun eigen
+  # onaangeraakte stop en doel, over dezelfde uren:
+  #
+  #   PEAK_STALL       3 trades   pakte +0,43R   vasthouden gaf +1,92R   -1,49R
+  #   PROFIT_BANKED    3 trades   pakte +0,33R   vasthouden gaf +1,20R   -0,87R
+  #   SPREAD_SQUEEZE   3 trades   pakte +0,42R   vasthouden gaf +0,93R   -0,51R
+  #
+  # Negen van de tien deden het slechter dan niets doen. Deze regels winnen
+  # elke keer dat ze vuren, en winnen veel minder dan de trade ging opleveren.
+  # Twaalf-uit-twaalf las als het beste onderdeel van dit systeem en was in
+  # werkelijkheid de duurste gewoonte erin.
+  #
+  # De geleerde drempel kan de lat alleen verlagen, dus die laat het eerder en
+  # vaker gebeuren. Dat is precies de verkeerde kant op tot de baseline zegt
+  # dat vroeg banken loont. Zet hem terug op true zodra die kolom kantelt.
+  use_learned_bank_threshold: false
+
   # Bijkopen op een winnaar, en alleen als hij nog loopt.
   #
   # WAT ER MIS WAS. `min_existing_r` stond op 0,25 en `bank_at_r` op 0,30. Die
@@ -684,3 +703,4 @@ learning:
   selection_shrinkage_trades: 25
   selection_points_per_r: 15.0
   selection_modifier_cap: 4.0
+
