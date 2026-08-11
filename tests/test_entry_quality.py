@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -124,3 +125,48 @@ def test_missing_entry_chart_fails_closed() -> None:
     verdict = assess_entry_quality(bare, Direction.LONG, AssetClass.FOREX, config())
 
     assert verdict.decision is EntryTimingDecision.DATA_UNAVAILABLE
+
+
+class TestPlaybookVerdictTravelsWithTheRefusal:
+    """One journal row must carry both readings of the same bars.
+
+    `momentum_scalp` asks for a shallow pullback off a fresh M5 impulse.
+    `entry_quality` refuses a price sitting at the extreme of its recent range.
+    Whether those two descriptions land on the same bars decides whether the
+    scalp theory can ever be validated honestly — a theory whose entries a
+    later gate refuses cannot be measured by running it.
+
+    Nobody could take that measurement, because whichever gate fired first
+    owned the row and the other verdict was simply not written. This pins the
+    carrying of the playbook verdict through to the refusal, so a day of live
+    running answers it.
+    """
+
+    def test_the_candidate_carries_what_the_playbooks_saw(self) -> None:
+        from runner.service import AnalysedCandidate
+
+        assert "playbooks" in AnalysedCandidate.__dataclass_fields__
+
+    def test_it_defaults_to_absent_rather_than_to_a_guess(self) -> None:
+        """Playbooks may be switched off entirely; that is not an empty verdict."""
+        from runner.service import AnalysedCandidate
+
+        assert AnalysedCandidate.__dataclass_fields__["playbooks"].default is None
+
+    def test_the_refusal_records_both_readings_together(self) -> None:
+        """The shape the analysis depends on, asserted on the source.
+
+        A future edit that drops `playbook_note` from the skip would silently
+        restore the blind spot: every test would still pass and the number
+        would quietly stop being answerable.
+        """
+        source = (Path(__file__).resolve().parent.parent / "runner" / "service.py").read_text(
+            encoding="utf-8"
+        )
+        marker = source.index('"entry_quality": entry_quality.safe_dict()')
+        window = source[marker : marker + 200]
+
+        assert "playbook_note" in window, (
+            "the entry-quality refusal no longer records what the playbooks saw; "
+            "the scalp-versus-chase overlap becomes unmeasurable again"
+        )

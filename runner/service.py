@@ -208,6 +208,18 @@ class AnalysedCandidate:
     idea: TradeIdea
     context: MarketContext
     intelligence: OpportunityIntelligence | None = None
+    #: What the short-horizon theories saw on the same chart, carried so the
+    #: execution phase can record it beside whatever refused the entry.
+    #:
+    #: Without this the two verdicts land on different journal rows — whichever
+    #: gate fires first writes the row — and the one question worth asking
+    #: about them cannot be asked at all: how often does a playbook call a
+    #: setup tradeable while `entry_quality` calls the same bars a chase.
+    #: `momentum_scalp` wants a shallow pullback off an impulse and
+    #: `entry_quality` refuses prices sitting at a range extreme, and whether
+    #: those two descriptions collide in practice is a measurement nobody could
+    #: take.
+    playbooks: object | None = None
     market_priority_tier: int = 0
     spread_quality: float = 0.0
     cost_priority: float = 0.0
@@ -1485,7 +1497,7 @@ class JarvisRunner:
             cap=self.settings.analysis.market_regime.ranking_modifier_cap,
             routing=routing,
         )
-        return AnalysedCandidate(symbol, cycle_id, idea, context, intelligence)
+        return AnalysedCandidate(symbol, cycle_id, idea, context, intelligence, verdict)
 
     def _process_candidate(  # type: ignore[no-untyped-def]
         self,
@@ -1611,6 +1623,18 @@ class JarvisRunner:
             spec.asset_class,
             self.settings.analysis.entry_quality,
         )
+        # Recorded on the same row as the refusal, and that is the whole point.
+        # `momentum_scalp` asks for a shallow pullback off a fresh impulse;
+        # `entry_quality` refuses a price sitting at its range extreme. Those
+        # two descriptions may or may not be the same bars — nobody could say,
+        # because whichever gate fired first owned the journal row and the
+        # other verdict was simply absent. Written together, one day of running
+        # turns the argument into a number.
+        playbook_note = (
+            {"playbooks": candidate.playbooks.summary()}  # type: ignore[attr-defined]
+            if candidate.playbooks is not None
+            else {}
+        )
         if not entry_quality.passed:
             if entry_quality.decision is EntryTimingDecision.DATA_UNAVAILABLE:
                 reason = Reason.DATA_UNAVAILABLE
@@ -1625,7 +1649,11 @@ class JarvisRunner:
                 reason,
                 entry_quality.detail,
                 signals=list(idea.signals),
-                extra={**filter_data, "entry_quality": entry_quality.safe_dict()},
+                extra={
+                    **filter_data,
+                    "entry_quality": entry_quality.safe_dict(),
+                    **playbook_note,
+                },
             )
             if entry_quality.decision is not EntryTimingDecision.DATA_UNAVAILABLE:
                 # The wait is an execution hypothesis, not a fact. Follow the
