@@ -1531,6 +1531,7 @@ class JarvisRunner:
                     "ai_veto_repeats": remembered.repeats,
                     "ai_confidence": remembered.confidence,
                 },
+                total_score=idea.score,
             )
             return None
         routing = self.settings.analysis.asset_class_routing.get(
@@ -1934,6 +1935,7 @@ class JarvisRunner:
                 f"{symbol} {idea.direction.name} clears it immediately.",
                 signals=list(idea.signals),
                 extra={**filter_data, "veto_pattern": pattern.tag},
+                total_score=idea.score,
             )
             return False
 
@@ -1965,6 +1967,7 @@ class JarvisRunner:
                 f"one — it was not asked about, and it is first in line next cycle.",
                 signals=list(idea.signals),
                 extra=filter_data,
+                total_score=idea.score,
             )
             return False
         if self.memory.has_evidence():
@@ -2136,6 +2139,7 @@ class JarvisRunner:
                 advice.thesis,
                 signals=list(idea.signals),
                 extra=decision_context,
+                total_score=idea.score,
             )
             self._record_review_snapshots(cycle_pk, symbol, request_payload)
             self._record_counterfactual(cycle_pk, idea, Reason.AI_VETO)
