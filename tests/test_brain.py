@@ -528,3 +528,92 @@ class TestGradingTheAdviser:
 
     def test_the_null_brain_accepts_it(self) -> None:
         assert NullBrain().record_supervision(trade_id=1, action="hold") is None
+
+
+class TestTheBrainCatchesUpOnRealisedTrades:
+    """The account could not read its own history, and it cost money.
+
+    The brain only ever received trades opened after it was armed, so a journal
+    holding forty-seven closed trades faced a Neon table holding twenty-two.
+    `learned_bank_threshold` needs forty before it will speak, so it stayed
+    silent, `bank_at_r` stayed at its configured 0.30, and a USDCAD short that
+    peaked at +0.23R -- seven hundredths under the line -- was closed at -0.10R
+    instead of banked. The floor the learned threshold would have returned is
+    0.15R, which takes that trade.
+
+    Counterfactuals already had this catch-up. Realised trades, which are what
+    every learned threshold is actually built on, did not.
+    """
+
+    def captured(self) -> tuple[Brain, list[tuple]]:
+        brain = Brain("postgresql://u:p@host/db", account="test")
+        seen: list[tuple] = []
+
+        def run(sql, params=None, fetch=None):  # type: ignore[no-untyped-def]
+            seen.append((sql, params))
+            return
+
+        brain._run = run  # type: ignore[assignment]
+        return brain, seen
+
+    def row(self, ticket: int) -> dict[str, object]:
+        return {
+            "ticket": ticket,
+            "symbol": "USDCAD.i",
+            "direction": "SHORT",
+            "volume": 0.03,
+            "opened_at": NOW,
+            "entry": 1.39333,
+            "stop_loss": 1.39475,
+            "take_profit": 1.39040,
+            "risk_money": 2.82,
+            "closed_at": NOW,
+            "exit_price": 1.39348,
+            "exit_reason": "AI_CLOSE_SENT",
+            "pnl_money": -0.28,
+            "pnl_r": -0.10,
+            "mfe_r": 0.23,
+            "mae_r": -0.17,
+        }
+
+    def test_a_batch_goes_in_one_round_trip(self) -> None:
+        """Forty-seven single statements against a remote database at startup
+        would delay the first scan; Postgres expands one JSON payload."""
+        brain, seen = self.captured()
+
+        sent = brain.record_trade_history([self.row(i) for i in range(47)])
+
+        assert sent == 47
+        assert len(seen) == 1, "one statement, not forty-seven"
+
+    def test_it_never_overwrites_what_the_runner_already_wrote(self) -> None:
+        """A live row carries its decision_id. A backfilled copy knows less."""
+        brain, seen = self.captured()
+        brain.record_trade_history([self.row(1)])
+        sql = seen[0][0]
+
+        assert "ON CONFLICT (account, ticket, opened_at) DO NOTHING" in sql
+        assert "DO UPDATE" not in sql
+
+    def test_the_excursions_the_thresholds_are_built_on_are_carried(self) -> None:
+        """`learned_bank_threshold` reads mfe_r against pnl_r and nothing else.
+
+        A backfill that dropped those columns would fill the table and still
+        leave the account unable to learn, which is the failure this fixes
+        wearing a different face.
+        """
+        brain, seen = self.captured()
+        brain.record_trade_history([self.row(1)])
+        sql = seen[0][0]
+
+        for column in ("mfe_r", "mae_r", "pnl_r", "exit_reason"):
+            assert column in sql
+
+    def test_an_empty_journal_costs_no_round_trip(self) -> None:
+        brain, seen = self.captured()
+
+        assert brain.record_trade_history([]) == 0
+        assert seen == []
+
+    def test_the_null_brain_answers_it_too(self) -> None:
+        assert NullBrain().record_trade_history([{"ticket": 1}]) == 0
