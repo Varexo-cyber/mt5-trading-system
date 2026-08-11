@@ -1315,6 +1315,12 @@ class AssetClassRoutingConfig(Base):
 class ConfluenceConfig(Base):
     """Decision policy shared by paper, backtest and live execution."""
 
+    #: Reuse module analysis until a new bar closes. Every module reads only
+    #: closed bars — no tick, no wall clock — so identical frames give
+    #: identical signals and this returns the same answer, not an approximation
+    #: of it. The escape hatch exists because a future module that broke that
+    #: purity would be very hard to spot from the outside.
+    cache_signals_per_bar: bool = True
     score_threshold: float = Field(default=55.0, ge=1.0, le=100.0)
     minimum_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
     minimum_directional_modules: int = Field(default=2, ge=1, le=10)
