@@ -91,13 +91,48 @@ def connect(path: Path) -> sqlite3.Connection:
     return db
 
 
+def conviction_band(score: float | None, threshold: float | None) -> str:
+    """How far above its own bar the engine rated this setup.
+
+    Measured against the threshold rather than in absolute points, because the
+    threshold is a config value that has already moved once (55 to 40) and a
+    fixed band would silently mean something different afterwards.
+    """
+    if score is None:
+        return "unrecorded"
+    bar = threshold if threshold and threshold > 0 else 40.0
+    over = score - bar
+    if over < 5:
+        return "0-5 over the bar"
+    if over < 10:
+        return "5-10 over the bar"
+    if over < 20:
+        return "10-20 over the bar"
+    return "20+ over the bar"
+
+
 def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket]]:
     """Closed trades, sliced every way the journal can support."""
-    rows = db.execute(
-        "SELECT symbol, direction, pnl_r, pnl_money, mfe_r, exit_reason, opened_at "
-        "FROM trades WHERE closed_at IS NOT NULL AND closed_at >= ? AND pnl_r IS NOT NULL",
-        (since.isoformat(),),
-    ).fetchall()
+    columns = (
+        "SELECT t.symbol, t.direction, t.pnl_r, t.pnl_money, t.mfe_r, t.exit_reason, "
+        "t.opened_at{extra} FROM trades t{join} "
+        "WHERE t.closed_at IS NOT NULL AND t.closed_at >= ? AND t.pnl_r IS NOT NULL"
+    )
+    try:
+        # The cycle that produced the trade carries the score the engine gave
+        # it. Joined rather than assumed present: a journal predating the
+        # analysis tables, or a hand-built one, must still produce a report.
+        rows = db.execute(
+            columns.format(
+                extra=", c.total_score, c.score_threshold",
+                join=" LEFT JOIN analysis_cycles c ON c.id = t.cycle_pk",
+            ),
+            (since.isoformat(),),
+        ).fetchall()
+        scored = True
+    except sqlite3.OperationalError:
+        rows = db.execute(columns.format(extra="", join=""), (since.isoformat(),)).fetchall()
+        scored = False
 
     slices: dict[str, dict[str, Bucket]] = {
         "instrument": {},
@@ -105,6 +140,12 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
         "direction": {},
         "what closed it": {},
     }
+    if scored:
+        # Does the engine's own confidence predict anything? Nobody had asked.
+        # A setup scoring 58.5 against a bar of 40 lost money on the same day a
+        # 39.8 was refused, and "hold the ones we are sure about" is only a
+        # strategy if being sure means something here.
+        slices["how sure the engine was"] = {}
 
     def into(slice_name: str, key: str, row: sqlite3.Row) -> None:
         bucket = slices[slice_name].setdefault(key, Bucket(key))
@@ -119,6 +160,12 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
         except ValueError:
             hour = -1
         into("session", session_of(hour) if hour >= 0 else "unknown", row)
+        if scored:
+            into(
+                "how sure the engine was",
+                conviction_band(row["total_score"], row["score_threshold"]),
+                row,
+            )
     return slices
 
 

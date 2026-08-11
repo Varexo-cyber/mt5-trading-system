@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.scorecard import main, session_of
+from scripts.scorecard import conviction_band, main, session_of
 
 
 @pytest.fixture
@@ -218,3 +218,70 @@ class TestInterventionsAgainstHolding:
         """A missing measurement is a missing section, never a crash."""
         assert main(["--db", str(journal), "--days", "30"]) == 0
         assert "DID STEPPING IN BEAT LEAVING IT ALONE" not in capsys.readouterr().out
+
+
+class TestDoesBeingSureMeanAnything:
+    """ "Hold the ones we are sure about" is only a strategy if sure means something.
+
+    Nobody had ever asked. A setup scoring 58.5 against a bar of 40 lost money
+    on the same day a 39.8 was refused, and the engine's own confidence was
+    never once compared against what the trades did. Conviction-scaled exits
+    would be fitting noise until this bucket says otherwise.
+    """
+
+    def scored(self, journal: Path, rows: list[tuple[float, float]]) -> Path:
+        db = sqlite3.connect(journal)
+        db.executescript(
+            "CREATE TABLE IF NOT EXISTS analysis_cycles "
+            "(id INTEGER PRIMARY KEY, total_score REAL, score_threshold REAL);"
+            "ALTER TABLE trades ADD COLUMN cycle_pk INTEGER;"
+        )
+        now = datetime.now(UTC)
+        for i, (score, pnl) in enumerate(rows, start=500):
+            db.execute("INSERT INTO analysis_cycles VALUES (?,?,?)", (i, score, 40.0))
+            db.execute(
+                "INSERT INTO trades (id, cycle_pk, symbol, direction, pnl_r, pnl_money, "
+                "mfe_r, exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    i,
+                    i,
+                    "EURUSD",
+                    "LONG",
+                    pnl,
+                    pnl * 3,
+                    0.3,
+                    "BROKER_SL",
+                    (now - timedelta(hours=8)).isoformat(),
+                    (now - timedelta(hours=3)).isoformat(),
+                ),
+            )
+        db.commit()
+        db.close()
+        return journal
+
+    def test_the_bands_are_measured_against_the_bar_not_in_raw_points(self) -> None:
+        """The threshold has already moved once, 55 to 40. A fixed band would
+        have quietly changed meaning underneath a month of history."""
+        assert conviction_band(44.0, 40.0) == conviction_band(59.0, 55.0)
+        assert conviction_band(58.5, 40.0) == "10-20 over the bar"
+        assert conviction_band(41.0, 40.0) == "0-5 over the bar"
+        assert conviction_band(70.0, 40.0) == "20+ over the bar"
+
+    def test_a_missing_score_is_named_rather_than_guessed(self) -> None:
+        assert conviction_band(None, 40.0) == "unrecorded"
+
+    def test_the_report_splits_trades_by_how_sure_it_was(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        self.scored(journal, [(42.0, -0.5), (43.0, -0.4), (58.0, 0.8), (59.0, 0.6)])
+        main(["--db", str(journal), "--days", "30", "--min-sample", "1"])
+        out = capsys.readouterr().out
+
+        assert "HOW SURE THE ENGINE WAS" in out
+        assert "0-5 over the bar" in out
+        assert "10-20 over the bar" in out
+
+    def test_a_journal_without_the_analysis_table_still_reports(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """An older journal loses the section, never the whole report."""
+        assert main(["--db", str(journal), "--days", "30"]) == 0
+        assert "HOW SURE THE ENGINE WAS" not in capsys.readouterr().out
