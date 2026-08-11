@@ -36,10 +36,22 @@ class TestShippedConfig:
         settings = load_settings(env_overrides=False)
         assert not settings.mode.is_live
 
-    def test_eightcap_overlay_covers_every_surviving_catalogue_symbol(self) -> None:
+    def test_eightcap_overlay_scans_markets_that_differ_from_each_other(self) -> None:
+        """Four families that are genuinely four bets, not one bet four times.
+
+        The overlay ran for a night with no narrowing at all: 83,183 decisions,
+        zero trades. Half the work went to single-name shares whose history the
+        broker cannot supply, and two thirds of everything that did produce a
+        signal died on CORRELATED_EXPOSURE — correctly, because UK shares track
+        their index above 0.7 on H1.
+
+        `stock` is therefore out. That is a narrowing and not a loosening: no
+        gate moved, only the noise the gates were tripping over.
+        """
         overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"
         settings = load_settings(overlay=overlay, env_overrides=False)
-        assert settings.instruments.asset_classes == ()
+        assert settings.instruments.asset_classes == ("forex", "metal", "index", "crypto")
+        assert "stock" not in settings.instruments.asset_classes
         assert settings.instruments.symbols_only == ()
         assert settings.scanner.batch_size is None
         assert settings.scanner.deep_candidates >= 847
@@ -417,10 +429,9 @@ class TestTradeFrequency:
         )
         assert settings.instruments.symbol_suffix == ".i"
         assert settings.instruments.universe_mode == "affordable"
-        # Empty means no asset-class narrowing: symbols_get() remains the source
-        # of truth, so all current and future supported Eightcap catalogue rows
-        # are inspected rather than only FX, metals and indices.
-        assert settings.instruments.asset_classes == ()
+        # Narrowed back to four families that move independently of one another.
+        # See the coverage test above for the night of measurement behind it.
+        assert settings.instruments.asset_classes == ("forex", "metal", "index", "crypto")
         assert settings.instruments.symbols_only == ()
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
         assert settings.ai.anthropic_model == "claude-sonnet-5"

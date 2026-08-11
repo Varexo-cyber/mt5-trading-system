@@ -47,13 +47,36 @@ instruments:
   # for a week. That is the real cost of the slow markets, not their quality.
   #
   # Values: forex, metal, index, commodity, stock, crypto.
-  # Empty is deliberate: ask MT5 for the live account's complete catalogue on
-  # every cycle. This currently covers RAW FX, metals, indices, commodities,
-  # stocks and every crypto Eightcap exposes, and automatically includes future
-  # additions without maintaining a hand-written symbol list. Closed,
-  # untradeable, stale or excessively expensive markets are still inspected and
-  # reported, but remain blocked before deep analysis or order execution.
-  asset_classes: []
+  #
+  # Terug naar deze vier na een nacht meten met de volledige catalogus. Dat
+  # experiment leverde in twaalf uur 83.183 beslissingen op en nul trades, en
+  # de reden stond in het journaal:
+  #
+  #   DATA_QUARANTINED    36.835  44,3%   broker heeft de historie niet
+  #   DATA_UNAVAILABLE     6.231   7,5%   idem
+  #   CORRELATED_EXPOSURE  2.801           66% van alles dat een signaal werd
+  #
+  # Meer dan de helft van al het werk ging naar losse aandelen waarvan de
+  # broker geen bruikbare balken levert. Van wat er wél doorheen kwam sneuvelde
+  # twee derde op correlatie, en terecht: op H1 over 200 balken bewegen de
+  # Britse en Europese aandelen vrijwel allemaal boven 0,7 mee met hun index.
+  # RR, MB, ENR en AAL naast een open UK100 zijn niet vier trades maar één
+  # trade met vier lots erop, en de poort weigerde dat correct.
+  #
+  # DIT IS EEN VERSMALLING, GEEN VERSOEPELING. Er gaat geen enkele poort open.
+  # Wat verdwijnt is de ruis waar de poorten op stukliepen, en wat overblijft
+  # zijn markten die echt van elkaar verschillen: EURUSD, XAUUSD, BTCUSD en
+  # US500 zijn vier weddenschappen, geen vier keer dezelfde.
+  #
+  # Wat dit NIET raakt: een reeds open aandelenpositie. De guard leest zijn
+  # posities rechtstreeks bij de broker, niet uit dit universum, dus stops,
+  # bankregels, health en de avonduitfasering blijven er onverkort op draaien.
+  # Alleen het zóéken naar nieuwe aandelen stopt.
+  #
+  # `commodity` staat er bewust niet bij maar is de eerste kandidaat om toe te
+  # voegen: olie is een genuinely andere weddenschap dan FX, goud of een index,
+  # en meer echte spreiding is precies wat de correlatiepoort ademruimte geeft.
+  asset_classes: [forex, metal, index, crypto]
 
   # Or watch a single instrument. Leave empty for the list above; set e.g.
   # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded
