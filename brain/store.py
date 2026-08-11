@@ -59,6 +59,14 @@ BRIEFED_LESSONS = 10
 #: learned from fifteen trades is a level learned from one week's weather.
 MIN_TRADES_TO_LEARN = 40
 
+#: Closed trades needed on ONE side before long and short are reported apart.
+#: Lower than `MIN_TRADES_TO_LEARN` because the two do different jobs: that one
+#: guards a threshold the system then acts on by itself, this one only puts a
+#: sentence in front of a reviewer who can weigh it against the chart. Fifteen
+#: is around where a three-to-one split between the sides stops being something
+#: four trades could have produced.
+MIN_TRADES_TO_SPLIT_SIDES = 15
+
 #: Floor on the learned threshold, in R. Below this the profit does not clear
 #: the spread and commission it costs to collect, so banking there converts a
 #: small win into a small loss. `_cost_of_leaving` measures the real figure per
@@ -148,6 +156,47 @@ class Scoreline:
         return (
             f"{self.direction} {self.symbol}: {self.trades} trades, "
             f"{self.wins} won, {self.total_r:+.2f}R total{kept}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SideRecord:
+    """What one side of the market has returned across every instrument.
+
+    `scoreboard` groups by symbol *and* direction, which is the right shape for
+    "how has gold treated us" and the wrong shape for the question this answers.
+    Sixty-four trades spread across thirty instruments produce thirty lines of
+    one and two trades each: individually meaningless, and the reviewer was
+    being handed the top twelve of them as though they were evidence.
+
+    Collapsed to the side alone, the same trades say something no single chart
+    can show — on this account the long book lost roughly three times what the
+    short book lost over a comparable number of trades. That is the largest
+    measured asymmetry in the record and nothing in the payload mentioned it.
+
+    Evidence for the reviewer to weigh, never a gate. A side that has lost is a
+    reason to want more from a setup, and it is not on its own a reason to
+    refuse one: the sample is small, and refusing every long outright would be
+    letting one month of weather close half the market permanently.
+    """
+
+    direction: str
+    trades: int
+    total_r: float
+    wins: int
+
+    @property
+    def mean_r(self) -> float:
+        return self.total_r / self.trades if self.trades else 0.0
+
+    @property
+    def win_rate(self) -> float:
+        return self.wins / self.trades if self.trades else 0.0
+
+    def summary(self) -> str:
+        return (
+            f"{self.direction}: {self.trades} trades, {self.win_rate:.0%} won, "
+            f"{self.total_r:+.2f}R total, {self.mean_r:+.2f}R per trade"
         )
 
 
@@ -867,6 +916,39 @@ class Brain:
             for row in rows
         ]
 
+    def side_records(self, *, minimum_trades: int = MIN_TRADES_TO_SPLIT_SIDES) -> list[SideRecord]:
+        """Realised R per side, for the whole account, or nothing.
+
+        Withheld below `minimum_trades` on a side rather than reported with a
+        caveat. "LONG: 3 trades, -1.20R per trade" is not a weaker version of
+        the finding, it is a different and false one, and a reviewer handed a
+        number will use it however much hedging surrounds it. Silence is the
+        honest output of an empty sample.
+        """
+        rows = self._run(
+            """
+            SELECT direction, COUNT(*), SUM(pnl_r), COUNT(*) FILTER (WHERE pnl_r > 0)
+            FROM trade_history
+            WHERE account = %s AND pnl_r IS NOT NULL AND direction <> ''
+            GROUP BY direction
+            HAVING COUNT(*) >= %s
+            ORDER BY COUNT(*) DESC
+            """,
+            (self.account, minimum_trades),
+            fetch="all",
+        )
+        if not rows:
+            return []
+        return [
+            SideRecord(
+                direction=str(row[0]),
+                trades=int(row[1]),
+                total_r=float(row[2] or 0.0),
+                wins=int(row[3]),
+            )
+            for row in rows
+        ]
+
     def edge_calibrations(
         self,
         *,
@@ -1063,9 +1145,24 @@ class Brain:
         here = [line.summary() for line in self.scoreboard(symbol=symbol)]
         overall = [line.summary() for line in self.scoreboard()] if not symbol else []
         gates = [line.summary() for line in self.gate_scoreboard()]
+        sides = self.side_records()
         brief: dict[str, Any] = {}
         if lessons:
             brief["lessons_from_past_trades"] = lessons
+        # Ahead of the per-instrument lines, because it is the one figure here
+        # drawn from the whole record rather than from a handful of trades, and
+        # a payload is read in the order it is written.
+        if sides:
+            brief["how_each_side_has_actually_done"] = {
+                "records": [record.summary() for record in sides],
+                "weight": (
+                    "Realised broker fills on this account, every instrument pooled. "
+                    "The largest sample in this briefing and still small. Treat a losing "
+                    "side as a reason to require more from the setup in front of you — "
+                    "a clearer structure, a better location — and not as a standing "
+                    "veto on that direction."
+                ),
+            }
         if here:
             brief["this_instrument_so_far"] = here
         if overall:
@@ -1139,6 +1236,9 @@ class NullBrain:
         return []
 
     def scoreboard(self, **_: Any) -> list[Scoreline]:
+        return []
+
+    def side_records(self, **_: Any) -> list[SideRecord]:
         return []
 
     def edge_calibrations(self, **_: Any) -> list[EdgeCalibration]:

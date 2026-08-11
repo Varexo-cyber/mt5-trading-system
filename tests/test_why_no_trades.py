@@ -101,3 +101,93 @@ class TestTheCostOfADiscardedApproval:
         which reads as "none were discarded" rather than as an error."""
         add(journal, "NO_SIGNAL", BEFORE, count=5)
         assert main(["--db", str(journal), "--hours", "4"]) == 0
+
+
+class TestWhereTheCandidatesActuallyGo:
+    """ "Does anything reach the reviewer at all" was unanswerable from this report.
+
+    A league table of reasons cannot answer it. NO_SIGNAL is nearly always the
+    top row and nearly always should be, and it says nothing about whether the
+    eleven gates behind it are passable. Twelve serial gates each taking a
+    modest share leave very little at the end, and only a stage-by-stage count
+    shows which one is doing it.
+    """
+
+    def test_it_prints_how_many_got_as_far_as_being_paid_for(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        add(journal, "NO_SIGNAL", BEFORE, count=90)
+        add(journal, "ENTRY_OVEREXTENDED", BEFORE, count=6)
+        add(journal, "AI_VETO", BEFORE, count=4)
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "4  reached the paid reviewer   (4.0% of everything scanned)" in out
+
+    def test_a_gate_that_stops_everything_is_named_before_the_reviewer(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The case the operator keeps hitting: a whole night, no trades, and
+        the review budget blamed for something no candidate ever got near."""
+        add(journal, "SPREAD_EATS_THE_STOP", BEFORE, count=50)
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "-50  can the trade pay its own costs" in out
+        assert "Nothing was sent to Claude at all" in out
+
+    def test_a_reason_missing_from_the_stage_table_is_shown_not_swallowed(
+        self, journal: Path, capsys
+    ) -> None:
+        """A reason added to the enum and not added here would otherwise
+        silently inflate the survivor count -- the one number this section
+        exists to get right."""
+        add(journal, "NO_SIGNAL", BEFORE, count=10)
+        add(journal, "SOME_FUTURE_GATE", BEFORE, count=3)
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "not yet classified: SOME_FUTURE_GATE" in out
+        assert "0  reached the paid reviewer" in out
+
+    def test_a_discarded_approval_is_counted_below_the_review_not_above_it(
+        self, journal: Path, capsys
+    ) -> None:
+        """It survived every free gate and was paid for. Counting it as a
+        pre-review loss would hide exactly the waste worth seeing."""
+        add(journal, "NO_SIGNAL", BEFORE, count=8)
+        add(journal, "ENTRY_MOVED_DURING_REVIEW", AFTER, count=2)
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "2  reached the paid reviewer" in out
+        assert "-2  approved, then the price moved before the order went out" in out
+
+
+class TestTheWarningFlagMeansSomething:
+    def test_a_designed_gate_is_not_flagged_as_a_fault(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """A concentration limit refusing a doubled bet is the system working.
+        Flagging it alongside a missing calendar taught the operator to ignore
+        the flag, which is worse than not having one."""
+        add(journal, "CURRENCY_CONCENTRATION", BEFORE, count=5)
+        add(journal, "SPREAD_EATS_THE_STOP", BEFORE, count=5)
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "! CURRENCY_CONCENTRATION" not in out
+        assert "! SPREAD_EATS_THE_STOP" not in out
+
+    def test_a_real_fault_still_is(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """No calendar stops every symbol, all day, silently."""
+        add(journal, "NEWS_CALENDAR_UNAVAILABLE", BEFORE, count=5)
+
+        main(["--db", str(journal), "--hours", "4"])
+
+        assert "! NEWS_CALENDAR_UNAVAILABLE" in capsys.readouterr().out
