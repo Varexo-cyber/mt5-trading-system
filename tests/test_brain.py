@@ -15,6 +15,7 @@ with two sightings, and a decision written twice after a retry is one decision.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -617,3 +618,44 @@ class TestTheBrainCatchesUpOnRealisedTrades:
 
     def test_the_null_brain_answers_it_too(self) -> None:
         assert NullBrain().record_trade_history([{"ticket": 1}]) == 0
+
+
+class TestTheOperatorCanSeeWhatItLearned:
+    """Row counts prove the memory fills. They do not prove anything reads it.
+
+    A database nothing reads is decoration, and until now the two places a
+    stored trade actually changes behaviour were invisible even when they
+    worked: nothing printed the banking threshold the history produced, and
+    nothing printed the ranking adjustments. "Is it learning" had no answer
+    short of reading the source.
+    """
+
+    def test_the_report_shows_both_learners(self) -> None:
+        source = (Path(__file__).resolve().parent.parent / "scripts" / "verify_brain.py").read_text(
+            encoding="utf-8"
+        )
+
+        assert "learned_bank_threshold()" in source, "the threshold that changes when it banks"
+        assert "edge_calibrations(" in source, "the adjustment that changes what ranks first"
+
+    def test_it_says_what_the_threshold_will_actually_do(self) -> None:
+        """A learned number nobody can compare to the configured one is noise.
+
+        `_worth_taking` takes the minimum of the two, so the operator needs
+        both and the result, not one figure in isolation.
+        """
+        source = (Path(__file__).resolve().parent.parent / "scripts" / "verify_brain.py").read_text(
+            encoding="utf-8"
+        )
+
+        assert "bank_at_r" in source
+        assert "min(configured, learned)" in source
+
+    def test_it_says_plainly_when_there_is_not_enough_evidence_yet(self) -> None:
+        """Silence reads as breakage. "Not yet, and here is what it needs" does not."""
+        source = (Path(__file__).resolve().parent.parent / "scripts" / "verify_brain.py").read_text(
+            encoding="utf-8"
+        )
+
+        assert "not yet" in source
+        assert "MIN_TRADES_TO_LEARN" in source
