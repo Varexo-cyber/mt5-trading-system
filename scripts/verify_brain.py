@@ -30,7 +30,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from brain import DSN_ENV, Brain, build_brain
-from config.loader import load_credentials
+from brain.store import MIN_TRADES_TO_LEARN
+from config.loader import load_credentials, load_settings
 
 
 def redacted(dsn: str) -> str:
@@ -200,6 +201,46 @@ def main(argv: list[str] | None = None) -> int:
         ):
             row = brain._run(f"SELECT COUNT(*) FROM {table}", fetch="one")
             print(f"  {table:<16}{row[0] if row else '?':>10}")
+
+        # Row counts prove the memory is filling. They say nothing about
+        # whether anything reads it, and a database nothing reads is
+        # decoration. These two are the only places a stored trade changes what
+        # the system does, so they are the only honest answer to "is it
+        # learning" -- printed as the numbers they actually produce.
+        print()
+        print("  WHAT IT HAS LEARNED, AND WHAT THAT CHANGES")
+        print("  " + "-" * 70)
+
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        configured = settings.trade_management.bank_at_r
+        learned = brain.learned_bank_threshold()
+        if learned is None:
+            need = MIN_TRADES_TO_LEARN
+            print(f"  banking     not yet    needs {need} closed trades in a band; using")
+            print(f"                         the configured {configured:.2f}R")
+        else:
+            effective = min(configured, learned)
+            print(f"  banking     {learned:.2f}R      its own history says take profit here")
+            print(f"                         configured {configured:.2f}R, so it now banks at ")
+            print(f"                         {effective:.2f}R -- earlier, never later")
+
+        learning = settings.learning
+        estimates = brain.edge_calibrations(
+            minimum_trades=learning.selection_min_trades,
+            shrinkage_trades=learning.selection_shrinkage_trades,
+            points_per_r=learning.selection_points_per_r,
+            modifier_cap=learning.selection_modifier_cap,
+        )
+        if not estimates:
+            print(f"  ranking     not yet    no segment has {learning.selection_min_trades} trades")
+        else:
+            print("  ranking     ok         ordering only; cannot approve a refused setup")
+            for item in sorted(estimates, key=lambda e: e.modifier)[:8]:
+                where = " ".join(part for part in item.key if part != "*") or "everything"
+                print(
+                    f"               {where:<26}{item.trades:>4} trades  "
+                    f"{item.mean_r:+.2f}R  ->  {item.modifier:+.2f} punten"
+                )
 
     print("  " + "-" * 70)
     print(f"  {brain.status.summary()}")
