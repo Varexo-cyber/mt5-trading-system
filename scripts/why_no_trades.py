@@ -27,19 +27,151 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+#: The entry path in the order the runner walks it, so the report can say where
+#: candidates are actually lost rather than only which reason is commonest.
+#:
+#: A flat league table of reasons cannot answer the question people actually
+#: ask, which is "does anything reach the reviewer at all". NO_SIGNAL is nearly
+#: always the top row and nearly always should be — most markets offer nothing
+#: most of the time — and it says nothing about whether the eleven gates behind
+#: it are passable. Twelve serial gates each rejecting a modest share leaves
+#: very little at the end, and only a stage-by-stage count shows which one is
+#: doing it.
+#:
+#: Every row in the journal died at exactly one gate, so the arithmetic is a
+#: real funnel: what enters a stage is everything that survived the stages
+#: above it. Reasons are grouped by *where in the code* they fire, which is why
+#: INSUFFICIENT_RUNWAY sits with the cost gates — the sharper of its two checks
+#: runs after sizing, not with the session filters.
+_STAGES: tuple[tuple[str, frozenset[str]], ...] = (
+    (
+        "usable market data",
+        frozenset(
+            {
+                "DATA_UNAVAILABLE",
+                "DATA_QUARANTINED",
+                "MARKET_CLOSED",
+                "STALE_QUOTE",
+                "SYMBOL_NOT_TRADABLE",
+                "SYMBOL_NOT_WHITELISTED",
+                "SYMBOL_BLOCKED_BY_EQUITY",
+            }
+        ),
+    ),
+    ("a setup on the chart at all", frozenset({"NO_SIGNAL", "METHODS_DISAGREE"})),
+    (
+        "room in the book",
+        frozenset(
+            {
+                "MAX_POSITIONS_REACHED",
+                "MAX_TRADES_PER_DAY",
+                "MAX_TRADES_PER_WEEK",
+                "POSITION_ALREADY_OPEN",
+                "DAILY_LOSS_LIMIT_HIT",
+                "WEEKLY_LOSS_LIMIT_HIT",
+                "MAX_DRAWDOWN_CIRCUIT_BREAKER",
+                "KILL_SWITCH_ENGAGED",
+                "SYSTEM_HALTED",
+                "LIVE_NOT_ARMED",
+            }
+        ),
+    ),
+    (
+        "session, news and exposure filters",
+        frozenset(
+            {
+                "OUTSIDE_TRADABLE_SESSION",
+                "ROLLOVER_WINDOW",
+                "EVENING_WIND_DOWN",
+                "WEEKEND_EDGE",
+                "MARKET_TOO_QUIET",
+                "SPREAD_TOO_WIDE",
+                "NEWS_BLACKOUT",
+                "NEWS_CALENDAR_UNAVAILABLE",
+                "HEADLINE_PRESSURE",
+                "HEADLINES_UNAVAILABLE",
+                "CORRELATED_EXPOSURE",
+                "CURRENCY_CONCENTRATION",
+                "SECTOR_CONCENTRATION",
+                "LOSS_COOLDOWN",
+            }
+        ),
+    ),
+    ("entry timing", frozenset({"AWAITING_CONFIRMATION", "ENTRY_OVEREXTENDED"})),
+    (
+        "can the trade pay its own costs",
+        frozenset(
+            {
+                "SPREAD_EATS_THE_STOP",
+                "SL_TOO_TIGHT_FOR_COSTS",
+                "SL_TOO_TIGHT_FOR_BROKER",
+                "SL_TOO_WIDE_FOR_ACCOUNT",
+                "RR_BELOW_MINIMUM",
+                "INVALID_STOP",
+                "RISK_EXCEEDS_CAP",
+                "TRADE_SKIPPED_UNDERCAPITALIZED",
+                "INSUFFICIENT_MARGIN",
+                "MARGIN_ESTIMATE_FAILED",
+                "INSUFFICIENT_RUNWAY",
+            }
+        ),
+    ),
+    (
+        "worth buying an opinion about",
+        frozenset({"AI_VETO_PATTERN_KNOWN", "AI_REVIEW_BUDGET_SPENT"}),
+    ),
+)
+
+#: What Claude did with the ones that got there, kept apart from the stages
+#: above because these are the only rows that cost money.
+_REVIEWED = frozenset({"AI_VETO", "AI_WAIT_RETEST"})
+
+#: Approved and then thrown away by the recheck on a fresh quote.
+_AFTER_REVIEW = frozenset({"ENTRY_MOVED_DURING_REVIEW", "ENTRY_STATE_CHANGED_DURING_REVIEW"})
+
 #: Reasons that mean "the system is working as designed", separated from the
 #: ones that mean "something is misconfigured". The distinction is the whole
 #: point: no-trade is the normal state, and only some causes of it are faults.
+#:
+#: The list started small and every gate added since has defaulted to "!", so a
+#: healthy session now prints an exclamation mark against nearly every line and
+#: the mark stopped carrying information. A flag on everything is a flag on
+#: nothing. What belongs here is any gate whose firing is the system doing its
+#: job — a concentration limit refusing a doubled bet, a cost gate refusing a
+#: stop the spread would eat, a quiet market. What stays out is the short list
+#: below of things that should not be happening at all.
 _EXPECTED = {
     "NO_SIGNAL",
+    "METHODS_DISAGREE",
     "AI_VETO",
+    "AI_VETO_PATTERN_KNOWN",
+    "AI_REVIEW_BUDGET_SPENT",
     "MARKET_CLOSED",
+    "DATA_QUARANTINED",
     "OUTSIDE_TRADABLE_SESSION",
     "WEEKEND_EDGE",
     "ROLLOVER_WINDOW",
+    "EVENING_WIND_DOWN",
+    "NEWS_BLACKOUT",
+    "HEADLINE_PRESSURE",
+    "MARKET_TOO_QUIET",
+    "INSUFFICIENT_RUNWAY",
+    "SPREAD_TOO_WIDE",
+    "SPREAD_EATS_THE_STOP",
+    "SL_TOO_TIGHT_FOR_COSTS",
+    "SL_TOO_TIGHT_FOR_BROKER",
+    "SL_TOO_WIDE_FOR_ACCOUNT",
+    "RR_BELOW_MINIMUM",
+    "TRADE_SKIPPED_UNDERCAPITALIZED",
     "POSITION_ALREADY_OPEN",
     "MAX_POSITIONS_REACHED",
+    "MAX_TRADES_PER_DAY",
+    "MAX_TRADES_PER_WEEK",
     "CORRELATED_EXPOSURE",
+    "CURRENCY_CONCENTRATION",
+    "SECTOR_CONCENTRATION",
+    "LOSS_COOLDOWN",
+    "AWAITING_CONFIRMATION",
     "ENTRY_OVEREXTENDED",
     "AI_WAIT_RETEST",
     "ENTRY_MOVED_DURING_REVIEW",
@@ -183,6 +315,8 @@ def main(argv: list[str] | None = None) -> int:
     counts = Counter(str(row["reason"]) for row in rows)
     print(f"\n{len(rows)} decisions in the last {args.hours:g}h · {traded} became trades\n")
 
+    _print_funnel(counts, len(rows), traded)
+
     # Refused before the review, or after paying for it?
     #
     # Both look identical here -- ENTRY_OVEREXTENDED either way -- and they are
@@ -276,6 +410,56 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {row['symbol']:<12} {row['reason']:<28} {_summarise(str(row['detail']))}")
     print()
     return 0
+
+
+def _print_funnel(counts: Counter[str], total: int, traded: int) -> None:
+    """Where the candidates went, in the order the gates run.
+
+    Reads top to bottom: everything scanned, then what each stage took out of
+    it, then what survived to be paid for. The number people are looking for is
+    the one on the "reached the paid reviewer" line, and it has never been
+    printed anywhere before.
+    """
+    print("FROM SCAN TO A PAID REVIEW")
+    print(f"  {total:>6}  decisions recorded")
+    remaining = total
+    for label, reasons in _STAGES:
+        lost = sum(count for reason, count in counts.items() if reason in reasons)
+        if lost:
+            print(f"  {-lost:>6}  {label}")
+        remaining -= lost
+
+    # Anything the stage table does not know about. Printed rather than folded
+    # into a bucket: a reason added to the enum and not added here would
+    # otherwise silently inflate the survivor count, which is the one number
+    # this whole section exists to get right.
+    staged = {reason for _, group in _STAGES for reason in group}
+    known = staged | _REVIEWED | _AFTER_REVIEW | {"OK"}
+    unmapped = {reason: count for reason, count in counts.items() if reason not in known}
+    if unmapped:
+        lost = sum(unmapped.values())
+        print(f"  {-lost:>6}  not yet classified: {', '.join(sorted(unmapped))}")
+        remaining -= lost
+
+    share = 100.0 * remaining / total if total else 0.0
+    print(f"  {'':>6}  {'-' * 46}")
+    print(f"  {remaining:>6}  reached the paid reviewer   ({share:.1f}% of everything scanned)")
+
+    refused = sum(count for reason, count in counts.items() if reason in _REVIEWED)
+    discarded = sum(count for reason, count in counts.items() if reason in _AFTER_REVIEW)
+    if refused:
+        print(f"  {-refused:>6}  Claude declined or asked for a retest")
+    if discarded:
+        print(f"  {-discarded:>6}  approved, then the price moved before the order went out")
+    print(f"  {traded:>6}  became trades")
+
+    if remaining == 0 and total:
+        print(
+            "\n  Nothing was sent to Claude at all. Every candidate died at a free gate,\n"
+            "  so the review budget is irrelevant right now — the stage taking the\n"
+            "  largest bite above is the only thing worth changing."
+        )
+    print()
 
 
 def _summarise(detail: str) -> str:

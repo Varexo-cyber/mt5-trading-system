@@ -21,6 +21,7 @@ import pytest
 
 from brain.store import (
     DSN_ENV,
+    MIN_TRADES_TO_SPLIT_SIDES,
     Brain,
     BrainStatus,
     Lesson,
@@ -659,3 +660,84 @@ class TestTheOperatorCanSeeWhatItLearned:
 
         assert "not yet" in source
         assert "MIN_TRADES_TO_LEARN" in source
+
+
+class TestWhichSideTheAccountLosesOn:
+    """The largest measured asymmetry in the record, and it was never said.
+
+    `scoreboard` groups by symbol *and* direction. Sixty-four trades spread
+    across thirty instruments come back as thirty lines of one and two trades,
+    and the reviewer was handed the top twelve of them. Pooled by side the same
+    trades carry a real finding — one book losing several times what the other
+    lost over a comparable number of trades — and no chart shows it.
+    """
+
+    def brain_answering(self, rows) -> Brain:  # type: ignore[no-untyped-def]
+        made = Brain("postgresql://u:p@host/db", account="test")
+        made._run = lambda *_args, **_kwargs: rows  # type: ignore[assignment]
+        return made
+
+    def test_it_reports_per_trade_expectancy_not_just_a_total(self) -> None:
+        """A total is a function of how many trades were taken. The per-trade
+        figure is the one that compares the two sides."""
+        brain = self.brain_answering([("LONG", 27, -6.95, 7), ("SHORT", 20, -2.02, 8)])
+
+        long_side, short_side = brain.side_records()
+
+        assert long_side.mean_r == pytest.approx(-0.257, abs=0.001)
+        assert short_side.mean_r == pytest.approx(-0.101, abs=0.001)
+        assert "-0.26R per trade" in long_side.summary()
+        assert "26% won" in long_side.summary()
+
+    def test_a_side_with_too_few_trades_is_not_reported_at_all(self) -> None:
+        """The floor is enforced in SQL, so what is asserted here is that the
+        configured minimum is what actually reaches the database. Reporting
+        "LONG: 3 trades, -1.20R per trade" is not a weaker finding, it is a
+        false one, and a reviewer handed a number will use it."""
+        seen: list[object] = []
+        brain = Brain("postgresql://u:p@host/db", account="test")
+
+        def run(_sql: str, params=(), **_kwargs):  # type: ignore[no-untyped-def]
+            seen.append(params)
+            return []
+
+        brain._run = run  # type: ignore[assignment]
+
+        assert brain.side_records() == []
+        assert seen[0][-1] == MIN_TRADES_TO_SPLIT_SIDES
+
+    def brain_briefing_on(self, sides) -> Brain:  # type: ignore[no-untyped-def]
+        """A store where only the per-side query answers.
+
+        `briefing` fans out over four queries and they return different row
+        shapes, so a stub that answers them all identically crashes on whichever
+        one it does not fit rather than testing anything.
+        """
+        made = Brain("postgresql://u:p@host/db", account="test")
+
+        def run(sql: str, _params=(), **_kwargs):  # type: ignore[no-untyped-def]
+            return sides if "GROUP BY direction" in sql else []
+
+        made._run = run  # type: ignore[assignment]
+        return made
+
+    def test_the_briefing_carries_it_and_says_it_is_not_a_veto(self) -> None:
+        """A losing side must raise the bar for the setup in front of the
+        reviewer, never close that direction outright. One month of weather is
+        not a reason to stop trading half the market."""
+        brain = self.brain_briefing_on([("LONG", 27, -6.95, 7)])
+
+        section = brain.briefing("EURUSD", "LONG")["how_each_side_has_actually_done"]
+
+        assert "LONG: 27 trades" in section["records"][0]
+        assert "not as a standing" in section["weight"]
+
+    def test_an_empty_record_leaves_the_payload_untouched(self) -> None:
+        """An empty section is tokens spent telling the reviewer nothing, and
+        worse, it makes a memory with no evidence look like one with some."""
+        brain = self.brain_briefing_on([])
+
+        assert "how_each_side_has_actually_done" not in brain.briefing("EURUSD", "LONG")
+
+    def test_no_database_answers_the_way_an_empty_one_would(self) -> None:
+        assert NullBrain().side_records() == []
