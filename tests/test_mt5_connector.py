@@ -7,6 +7,7 @@ demand against a real broker, and exactly what must be handled correctly.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -563,3 +564,73 @@ def test_a_call_without_keywords_passes_no_keyword_mapping() -> None:
     # Calls that genuinely need keywords must still get them.
     assert connector._call("history_deals_get", position=7) == "history"
     assert seen["kwargs"] == {"position": 7}
+
+
+class TestTheOffsetIsKnownBeforeAnyPositionIsRead:
+    """Positions are read first on a fresh process, and the offset starts at zero.
+
+    `_update_server_offset` runs only from `tick()`. The runner reads open
+    positions before ticking anything, so a broker clock three hours ahead
+    wrote an `opened_at` three hours in the future -- into the journal, and
+    afterwards into a price request the terminal answered with a bare "Call
+    failed" every fifteen minutes for the life of the row:
+
+        copy_rates_range(start=...T14:40:08+00:00, end=...T12:21:23+00:00)
+
+    It cannot be repaired downstream. The gap between such a timestamp and now
+    is the offset minus the position's age, and that age is the very thing
+    being read, so no arithmetic recovers the offset from one value. It has to
+    be known first.
+    """
+
+    def test_connecting_establishes_the_offset(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        fake.now = datetime.now(UTC) + timedelta(hours=3)
+
+        connector.connect()
+
+        assert connector.server_offset == timedelta(hours=3)
+
+    def test_a_position_read_straight_after_connecting_is_in_utc(
+        self, connector: MT5Connector, fake: FakeMT5
+    ) -> None:
+        """The whole point, expressed as the thing that was broken."""
+        fake.now = datetime.now(UTC) + timedelta(hours=3)
+        connector.connect()
+
+        opened_forty_minutes_ago = int(
+            (datetime.now(UTC) + timedelta(hours=3) - timedelta(minutes=40)).timestamp()
+        )
+        moment = connector._normalise_mt5_timestamp(opened_forty_minutes_ago)
+
+        assert moment < datetime.now(UTC), "a trade cannot have opened in the future"
+        assert abs((datetime.now(UTC) - moment).total_seconds() - 2400) < 120
+
+    def test_a_future_timestamp_is_reported_rather_than_quietly_passed_on(
+        self, connector: MT5Connector, fake: FakeMT5, caplog
+    ) -> None:
+        """If one still arrives, something bypassed the priming and the journal
+        is about to be handed a trade that opens after now."""
+        connector.connect()
+        connector._server_offset = timedelta(0)
+
+        with caplog.at_level(logging.ERROR):
+            connector._normalise_mt5_timestamp(
+                int((datetime.now(UTC) + timedelta(hours=3)).timestamp())
+            )
+
+        assert any("lands in the future" in record.message for record in caplog.records)
+
+    def test_an_ordinary_past_timestamp_says_nothing(
+        self, connector: MT5Connector, fake: FakeMT5, caplog
+    ) -> None:
+        connector.connect()
+
+        with caplog.at_level(logging.ERROR):
+            moment = connector._normalise_mt5_timestamp(
+                int((datetime.now(UTC) - timedelta(hours=2)).timestamp())
+            )
+
+        assert abs((datetime.now(UTC) - moment).total_seconds() - 7200) < 5
+        assert not [r for r in caplog.records if "lands in the future" in r.message]

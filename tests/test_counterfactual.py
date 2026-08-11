@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
@@ -174,3 +174,76 @@ def test_closed_trade_is_compared_with_untouched_original_plan() -> None:
     assert recorder.recorded["outcome"] == "TP"
     assert recorder.recorded["baseline_pnl_r"] == 2.0
     assert recorder.recorded["actual_pnl_r"] == 0.5
+
+
+class TestABackwardsRangeIsNotAskedTwice:
+    """A trade cannot open after now, and the terminal cannot answer as if it did.
+
+    The live log showed this every fifteen minutes:
+
+        SymbolNotAvailableError: USDCAD.i: copy_rates_range(
+            start=2026-08-11T14:40:08+00:00, end=2026-08-11T12:21:23+00:00)
+            failed ([-1] Terminal: Call failed)
+
+    Start after end, by three hours minus the forty-one minutes the trade had
+    been open: a broker clock three hours ahead, written as UTC. The row never
+    resolved, so it returned on the next pass and printed the same traceback
+    forever, hiding anything real underneath it.
+    """
+
+    def journal_with(self, opened: datetime):  # type: ignore[no-untyped-def]
+        class Journal:
+            def unresolved_management_baselines(self, limit: int = 50):  # type: ignore[no-untyped-def]
+                return [
+                    {
+                        "id": 1,
+                        "symbol": "USDCAD.i",
+                        "direction": "SHORT",
+                        "entry_price": 1.39333,
+                        "sl": 1.39475,
+                        "tp": 1.39040,
+                        "opened_at": opened.isoformat(),
+                        "pnl_r": -0.10,
+                    }
+                ]
+
+        class Recorder:
+            journal = Journal()
+
+        return Recorder()
+
+    class LoudBroker:
+        """Records whether the terminal was troubled at all."""
+
+        def __init__(self) -> None:
+            self.asked = 0
+
+        def copy_rates_range(self, *_args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+            self.asked += 1
+            raise RuntimeError("Terminal: Call failed")
+
+    def test_a_future_open_never_reaches_the_terminal(self) -> None:
+        now = datetime(2026, 8, 11, 12, 21, 23, tzinfo=UTC)
+        broker = self.LoudBroker()
+
+        resolved = resolve_management_baselines(
+            self.journal_with(now + timedelta(hours=2, minutes=19)),  # type: ignore[arg-type]
+            broker,  # type: ignore[arg-type]
+            now,
+        )
+
+        assert resolved == 0
+        assert broker.asked == 0, "asking a backwards range is what produced the traceback"
+
+    def test_an_ordinary_open_is_still_asked(self) -> None:
+        """The guard must be about the ordering, not about skipping work."""
+        now = datetime(2026, 8, 11, 12, 21, 23, tzinfo=UTC)
+        broker = self.LoudBroker()
+
+        resolve_management_baselines(
+            self.journal_with(now - timedelta(hours=1)),  # type: ignore[arg-type]
+            broker,  # type: ignore[arg-type]
+            now,
+        )
+
+        assert broker.asked == 1
