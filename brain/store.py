@@ -567,6 +567,59 @@ class Brain:
             ]
         )
 
+    def record_trade_history(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """Copy closed trades the local journal has and this database does not.
+
+        WHY THIS EXISTS, and it cost real money before it did. The brain only
+        ever received trades opened after it was switched on, so a journal
+        holding forty-seven closed trades faced a Neon table holding twenty-two.
+        `learned_bank_threshold` needs forty before it will speak, so it stayed
+        silent, `bank_at_r` stayed at its configured 0.30, and a USDCAD short
+        that peaked at +0.23R -- seven hundredths under the line -- was closed
+        at -0.10R instead of banked. The account's own history said to take
+        0.15R, and the account could not see its own history.
+
+        Counterfactuals already had this catch-up. Realised trades, which are
+        what every learned threshold is actually built on, did not.
+
+        Returns how many rows were sent rather than how many were new: the
+        unique constraint settles that server-side, and asking would cost a
+        round trip to learn nothing worth acting on.
+        """
+        import json
+
+        payload = [dict(row) for row in rows]
+        if not payload:
+            return 0
+        self._run(
+            """
+            INSERT INTO trades (
+                account, ticket, symbol, direction, volume, opened_at, entry,
+                stop_loss, take_profit, risk_money, closed_at, exit_price,
+                exit_reason, pnl_money, pnl_r, mfe_r, mae_r
+            )
+            SELECT
+                %s, row.ticket, row.symbol, row.direction, row.volume,
+                row.opened_at, row.entry, row.stop_loss, row.take_profit,
+                row.risk_money, row.closed_at, row.exit_price, row.exit_reason,
+                row.pnl_money, row.pnl_r, row.mfe_r, row.mae_r
+            FROM jsonb_to_recordset(%s::jsonb) AS row(
+                ticket BIGINT, symbol TEXT, direction TEXT, volume NUMERIC,
+                opened_at TIMESTAMPTZ, entry NUMERIC, stop_loss NUMERIC,
+                take_profit NUMERIC, risk_money NUMERIC, closed_at TIMESTAMPTZ,
+                exit_price NUMERIC, exit_reason TEXT, pnl_money NUMERIC,
+                pnl_r NUMERIC, mfe_r NUMERIC, mae_r NUMERIC
+            )
+            -- Never overwrite. A row already here was written by the runner as
+            -- it happened, with its decision_id attached; a backfilled copy
+            -- knows strictly less and must not replace the better record.
+            ON CONFLICT (account, ticket, opened_at) DO NOTHING
+            """,
+            (self.account, json.dumps(payload, default=str)),
+        )
+        self.status.writes += len(payload)
+        return len(payload)
+
     def record_counterfactuals(self, rows: Sequence[Mapping[str, Any]]) -> None:
         """Persist resolved refusals in one Neon round trip.
 
@@ -1045,6 +1098,9 @@ class NullBrain:
 
     def record_counterfactuals(self, _rows: Sequence[Mapping[str, Any]] = ()) -> None:
         return None
+
+    def record_trade_history(self, _rows: Sequence[Mapping[str, Any]] = ()) -> int:
+        return 0
 
     def record_lessons(self, _lessons: Sequence[str] = (), **_kwargs: Any) -> None:
         return None

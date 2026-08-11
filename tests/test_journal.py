@@ -519,3 +519,62 @@ class TestEquityPeakIsGenuinelyMonotonic:
         # Re-opening runs the collapse over whatever is there.
         with Journal(path, SimulatedClock(moment)) as reopened:
             assert reopened.equity_peak() == 112.0
+
+
+class TestClosedTradesForTheBrain:
+    """What the long-term memory is allowed to learn from."""
+
+    def rows(self, journal, **overrides):  # type: ignore[no-untyped-def]
+        base = {
+            "ticket": 111,
+            "symbol": "USDCAD.i",
+            "direction": "SHORT",
+            "volume": 0.03,
+            "entry_price": 1.39333,
+            "sl": 1.39475,
+            "tp": 1.39040,
+            "risk_money": 2.82,
+            "risk_pct": 1.92,
+            "sl_distance_pips": 14.2,
+            "planned_rr": 2.06,
+            "magic": 770101,
+            "equity_before": 147.02,
+            "opened_at": "2026-08-11T10:01:17+00:00",
+            "closed_at": "2026-08-11T10:53:29+00:00",
+            "exit_price": 1.39348,
+            "exit_reason": "AI_CLOSE_SENT",
+            "pnl_money": -0.28,
+            "pnl_r": -0.10,
+            "mfe_r": 0.23,
+            "mae_r": -0.17,
+            "entry_state": "OPEN",
+        }
+        base.update(overrides)
+        columns = ", ".join(base)
+        marks = ", ".join("?" for _ in base)
+        journal.conn.execute(
+            f"INSERT INTO trades ({columns}) VALUES ({marks})", tuple(base.values())
+        )
+        journal.conn.commit()
+
+    def test_a_closed_trade_is_offered(self, journal) -> None:  # type: ignore[no-untyped-def]
+        self.rows(journal)
+        found = journal.closed_trades_for_brain()
+
+        assert len(found) == 1
+        assert found[0]["mfe_r"] == pytest.approx(0.23), "the column every threshold reads"
+
+    def test_an_open_trade_is_not(self, journal) -> None:  # type: ignore[no-untyped-def]
+        self.rows(journal, ticket=112, closed_at=None)
+        assert journal.closed_trades_for_brain() == []
+
+    def test_an_abandoned_intent_is_not(self, journal) -> None:  # type: ignore[no-untyped-def]
+        """An order that never became a position is not evidence about trading."""
+        self.rows(journal, ticket=113, entry_state="ABANDONED")
+        assert journal.closed_trades_for_brain() == []
+
+    def test_a_row_without_a_ticket_is_not(self, journal) -> None:  # type: ignore[no-untyped-def]
+        """No ticket means no idempotency key, so it would re-insert on every
+        restart and quietly weight itself more heavily each time."""
+        self.rows(journal, ticket=None)
+        assert journal.closed_trades_for_brain() == []

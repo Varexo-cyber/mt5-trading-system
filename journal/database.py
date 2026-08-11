@@ -835,6 +835,28 @@ class Journal:
             (mae_r, mfe_r, trade_id),
         )
 
+    def closed_trades_for_brain(self, limit: int = 5000) -> list[sqlite3.Row]:
+        """Every real closed trade, for catching the long-term memory up.
+
+        Abandoned intents are excluded: those are rows for orders that never
+        became positions, and a learned threshold built on trades that did not
+        happen would be worse than one built on nothing.
+
+        A ticket is required. Without one there is no idempotency key on the far
+        side, so the same trade would insert again on every restart and quietly
+        weight itself more heavily each time.
+        """
+        return list(
+            self.conn.execute(
+                "SELECT ticket, symbol, direction, volume, entry_price, sl, tp, risk_money, "
+                "opened_at, closed_at, exit_price, exit_reason, pnl_money, pnl_r, mfe_r, mae_r "
+                "FROM trades WHERE closed_at IS NOT NULL AND ticket IS NOT NULL "
+                "AND COALESCE(entry_state, 'OPEN') != 'ABANDONED' "
+                "ORDER BY closed_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        )
+
     def unresolved_management_baselines(self, limit: int = 50) -> list[sqlite3.Row]:
         """Closed real trades not yet compared with their original SL/TP plan."""
         return list(

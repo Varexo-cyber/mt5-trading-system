@@ -429,6 +429,7 @@ class JarvisRunner:
         self.recorder = Recorder(self.journal, self.clock, self.settings)
         if self._brain_schema_ready:
             self._sync_counterfactual_history()
+            self._sync_trade_history()
         self.memory.synchronize_outcomes(
             self.journal.query(
                 "SELECT id, symbol, direction, closed_at, "
@@ -2458,6 +2459,57 @@ class JarvisRunner:
             for row in self.recorder.resolved_shadow_trades()
         ]
         self.brain.record_counterfactuals(rows)
+
+    def _sync_trade_history(self) -> None:
+        """Give the brain the closed trades it was switched on too late to see.
+
+        The brain only ever received trades opened after it was armed, so a
+        journal holding forty-seven closed trades faced a Neon table holding
+        twenty-two. Every learned threshold is built on that table and every
+        one of them has a minimum sample, so the account could not read its own
+        history and kept using the configured defaults instead.
+
+        Refusals already had this catch-up; the realised trades the thresholds
+        are actually made of did not.
+
+        Failures are swallowed: the brain is memory, not a risk control, and a
+        Neon hiccup at startup must not stop the account from trading.
+        """
+        try:
+            rows = [
+                self._trade_history_row(dict(row)) for row in self.journal.closed_trades_for_brain()
+            ]
+            sent = self.brain.record_trade_history(rows)
+        except Exception:
+            log.exception("could not backfill trade history", extra={"event": "brain_backfill"})
+            return
+        if sent:
+            log.info(
+                "trade history offered to the brain",
+                extra={"event": "brain_backfill", "rows": sent},
+            )
+
+    @staticmethod
+    def _trade_history_row(row: dict[str, object]) -> dict[str, object]:
+        """One local journal trade in the shape the brain's table expects."""
+        return {
+            "ticket": int(row["ticket"] or 0),
+            "symbol": str(row["symbol"]),
+            "direction": str(row["direction"]),
+            "volume": float(row["volume"] or 0.0),
+            "opened_at": str(row["opened_at"]),
+            "entry": float(row["entry_price"] or 0.0),
+            "stop_loss": float(row["sl"] or 0.0),
+            "take_profit": _optional_float(row.get("tp")),
+            "risk_money": float(row["risk_money"] or 0.0),
+            "closed_at": str(row["closed_at"]),
+            "exit_price": _optional_float(row.get("exit_price")),
+            "exit_reason": _optional_string(row.get("exit_reason")),
+            "pnl_money": _optional_float(row.get("pnl_money")),
+            "pnl_r": _optional_float(row.get("pnl_r")),
+            "mfe_r": _optional_float(row.get("mfe_r")),
+            "mae_r": _optional_float(row.get("mae_r")),
+        }
 
     def _record_paper_closures(self, events) -> None:  # type: ignore[no-untyped-def]
         for position, reason in events:
