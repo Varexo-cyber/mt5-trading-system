@@ -648,3 +648,39 @@ trade_management:
     stop_timeframe: M15
     stop_atr_multiple: 1.5
     target_reward_risk: 1.5
+
+# Leren op het volume dat dit account echt draait.
+#
+# WAT ER MIS WAS, en het was dubbel mis. De standaardwaarden zijn gekalibreerd
+# op een systeem dat honderden trades per maand doet. Op 47 trades betekende
+# dat:
+#
+#   1. `selection_min_trades: 40` per segment. Met 47 trades over 26
+#      instrumenten haalt geen enkel segment dat. Nooit actief.
+#   2. En als hij wél draaide deed hij niets. Reken de longs door met de oude
+#      getallen: 27 trades, gemiddeld -0,257R, shrink 27/(27+80) = 0,25, keer
+#      6 punten = -0,39 punt. De scores lopen van 38,8 tot 58,5. Anderhalve
+#      procent van het bereik. Onzichtbaar.
+#
+# Met deze getallen wordt het:
+#
+#   LONG   27 trades, -0,257R  ->  -2,00 punt
+#   SHORT  20 trades, -0,101R  ->  -0,67 punt      verschil 1,33 punt
+#
+# Een echte duw op een bereik van 20 punten, nog altijd afgetopt op +/-4.
+#
+# De shrinkage is wat dit veilig houdt, niet de vloer. Een segment met tien
+# trades wordt vermenigvuldigd met 10/(10+25) = 0,29 en krijgt dus een
+# evenredig kleine stem in plaats van eerst niets en een trade later alles.
+#
+# EN HET BELANGRIJKSTE: dit is uitsluitend volgorde. `learned_alignment` gaat
+# naar `selection_key` en die wordt alleen gebruikt in `analysed.sort(...)`.
+# Het raakt de score die tegen de drempel van 40 wordt gehouden niet aan, dus
+# het kan een afgewezen setup nooit alsnog geldig maken en nooit een positie
+# vergroten. Het kan alleen bepalen wat er eerst aan de beurt is van dingen die
+# al door elke poort heen zijn.
+learning:
+  selection_min_trades: 15
+  selection_shrinkage_trades: 25
+  selection_points_per_r: 15.0
+  selection_modifier_cap: 4.0

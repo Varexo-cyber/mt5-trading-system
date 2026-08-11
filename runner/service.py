@@ -1203,6 +1203,13 @@ class JarvisRunner:
             (asset_class, setup_family, horizon, direction, regime),
             (asset_class, setup_family, horizon, direction, "*"),
             (asset_class, "*", "*", direction, "*"),
+            # Direction alone, and on a small account it is the only rung that
+            # ever fires. The finer buckets need more trades than a month
+            # produces, and a trade backfilled from the local journal has no
+            # decision behind it, so its asset class reads 'unknown' and can
+            # never match a live 'forex' candidate above. Without this the
+            # ladder ends above the only evidence that exists.
+            ("*", "*", "*", direction, "*"),
         )
         by_key = {item.key: item for item in self._edge_calibrations}
         return next((by_key[key] for key in keys if key in by_key), None)

@@ -913,8 +913,29 @@ class Brain:
             FROM realised
             GROUP BY asset_class, direction
             HAVING COUNT(*) >= %s
+            -- Direction alone, and it is the branch that actually fires on a
+            -- small account. Two things converge here: the finer buckets need
+            -- samples a forty-trade month cannot supply, and a trade
+            -- backfilled from the local journal has no decision behind it, so
+            -- its asset class reads 'unknown' and it can never match a live
+            -- 'forex' candidate in the branches above. "This account is worse
+            -- at longs than shorts" needs neither an asset class nor a setup
+            -- family to be true, and on this book it is the single loudest
+            -- thing the history says.
+            UNION ALL
+            SELECT '*', '*', '*', direction, '*',
+                   COUNT(*), AVG(pnl_r), 0 AS specificity
+            FROM realised
+            GROUP BY direction
+            HAVING COUNT(*) >= %s
             """,
-            (self.account, minimum_trades, minimum_trades, minimum_trades),
+            (
+                self.account,
+                minimum_trades,
+                minimum_trades,
+                minimum_trades,
+                minimum_trades,
+            ),
             fetch="all",
         )
         if not rows:
