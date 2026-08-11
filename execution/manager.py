@@ -1405,6 +1405,31 @@ class PositionManager:
         r_now = ((price - position.price_open) * sign / risk) if risk else None
 
         if verdict.action == "close":
+            # The same gate the health reading has to pass, and it was missing
+            # here for no reason anybody wrote down.
+            #
+            # Thirty days measured the asymmetry exactly. HEALTH_EXIT, which is
+            # gated, closed nine trades at -0.45R average. BROKER_SL, which is
+            # what happens when nothing intervenes, ran six to -0.57R. AI_CLOSE,
+            # ungated, closed eight at -0.60R -- worse than leaving the stop
+            # alone. The gated rule beat the stop and the ungated one lost to
+            # it, which is the shape of a missing gate rather than a bad
+            # adviser.
+            #
+            # The reasoning is the same either way: a stop already sits at the
+            # broker, guaranteed and free. Closing at market can only win the
+            # distance between here and there, and when that distance costs
+            # more in spread and commission than it saves, the close is paying
+            # to lose more. Claude's opinion about direction does not change
+            # that arithmetic.
+            if not self._worth_paying_to_leave(position, risk, tick):
+                return ManagementEvent(
+                    position.ticket,
+                    "AI_EXIT_NOT_WORTH_PAYING",
+                    f"close refused: the stop is nearer than the exit costs "
+                    f"({verdict.reason})"[:400],
+                    r_at_action=r_now,
+                )
             result = self.broker.close_position(position)
             if not result.ok:
                 return ManagementEvent(

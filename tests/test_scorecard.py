@@ -10,6 +10,7 @@ earns its keep.
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -133,3 +134,87 @@ class TestSessionBuckets:
 
     def test_the_dead_hours_are_named_rollover(self) -> None:
         assert session_of(22) == "rollover"
+
+
+class TestInterventionsAgainstHolding:
+    """ "Nought for eight" is not a verdict until you know what holding paid.
+
+    A rule that only ever fires on trades already going wrong shows a losing
+    record while still losing less than doing nothing would have. The baseline
+    replays each trade's untouched original stop and target over the same hours
+    it really spanned, and `lift` is the only column that can condemn or
+    acquit an exit rule.
+
+    `management_baselines` was written by the resolver and read by nothing,
+    which is how AI_CLOSE could sit at 0-for-8 in a report for a month with no
+    way to tell rescues from mistakes.
+    """
+
+    def measured(self, journal: Path, rows: list[tuple]) -> Path:
+        db = sqlite3.connect(journal)
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS management_baselines (
+                trade_id INTEGER PRIMARY KEY, observed_at TEXT, resolved_at TEXT,
+                outcome TEXT, baseline_pnl_r REAL, actual_pnl_r REAL, lift_r REAL);
+        """)
+        now = datetime.now(UTC)
+        for trade_id, reason, actual, baseline in rows:
+            db.execute(
+                "INSERT INTO trades (id, symbol, direction, pnl_r, pnl_money, mfe_r, "
+                "exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    trade_id,
+                    "EURUSD",
+                    "LONG",
+                    actual,
+                    actual,
+                    0.2,
+                    reason,
+                    (now - timedelta(hours=6)).isoformat(),
+                    (now - timedelta(hours=2)).isoformat(),
+                ),
+            )
+            db.execute(
+                "INSERT INTO management_baselines (trade_id, observed_at, resolved_at, "
+                "outcome, baseline_pnl_r, actual_pnl_r, lift_r) VALUES (?,?,?,?,?,?,?)",
+                (
+                    trade_id,
+                    now.isoformat(),
+                    now.isoformat(),
+                    "SL",
+                    baseline,
+                    actual,
+                    actual - baseline,
+                ),
+            )
+        db.commit()
+        db.close()
+        return journal
+
+    def test_a_rule_that_lost_less_than_holding_is_credited(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """Nought for two, and still the right call both times."""
+        self.measured(
+            journal, [(90, "HEALTH_EXIT", -0.45, -1.00), (91, "HEALTH_EXIT", -0.40, -1.00)]
+        )
+        main(["--db", str(journal), "--days", "30", "--min-sample", "1"])
+        out = capsys.readouterr().out
+
+        assert "DID STEPPING IN BEAT LEAVING IT ALONE" in out
+        assert "HEALTH_EXIT" in out
+        assert "+0.57R" in out, "average lift of +0.575R over the untouched stop"
+        assert "2/2" in out
+
+    def test_a_rule_that_paid_to_do_worse_is_exposed(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """The finding worth having: an exit that beat nothing."""
+        self.measured(journal, [(92, "AI_CLOSE", -0.60, -0.10), (93, "AI_CLOSE", -0.80, +0.20)])
+        main(["--db", str(journal), "--days", "30", "--min-sample", "1"])
+        out = capsys.readouterr().out
+
+        assert "AI_CLOSE" in out
+        assert "-0.75R" in out, "it cost 0.75R a trade against leaving the position alone"
+        assert "0/2" in out
+
+    def test_an_old_journal_without_the_table_still_reports(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """A missing measurement is a missing section, never a crash."""
+        assert main(["--db", str(journal), "--days", "30"]) == 0
+        assert "DID STEPPING IN BEAT LEAVING IT ALONE" not in capsys.readouterr().out

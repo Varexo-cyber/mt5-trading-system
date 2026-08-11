@@ -141,6 +141,45 @@ def refused(db: sqlite3.Connection, since: datetime) -> dict[str, Bucket]:
     return gates
 
 
+def intervened(db: sqlite3.Connection, since: datetime) -> list[sqlite3.Row]:
+    """Every rule that closed a trade early, beside what holding would have paid.
+
+    `management_baselines` has been filled since the resolver was written and
+    read by nothing, which is how "AI_CLOSE is nought for eight" could sit in a
+    report for a month with no way to tell whether those eight were rescues or
+    mistakes. Nought for eight is not damning on its own: a rule that only ever
+    fires on trades already going wrong shows a losing record while still
+    losing less than doing nothing would have.
+
+    The baseline settles it. It replays the untouched original stop and target
+    over the same hours the trade really spanned, so `lift` is the honest
+    question — did stepping in beat leaving it alone — and it is the only
+    column here that can condemn or acquit an exit rule.
+    """
+    # A journal written before the baseline resolver existed simply has no such
+    # table. This is a read-only report and must not die on an old database:
+    # an absent measurement is a missing section, not a crash.
+    try:
+        return db.execute(
+            """
+        SELECT t.exit_reason AS name,
+               COUNT(*) AS trades,
+               AVG(b.actual_pnl_r) AS actual,
+               AVG(b.baseline_pnl_r) AS baseline,
+               AVG(b.lift_r) AS lift,
+               SUM(CASE WHEN b.lift_r > 0 THEN 1 ELSE 0 END) AS better
+        FROM management_baselines b
+        JOIN trades t ON t.id = b.trade_id
+        WHERE t.closed_at >= ? AND t.exit_reason IS NOT NULL
+        GROUP BY t.exit_reason
+        ORDER BY AVG(b.lift_r)
+        """,
+            (since.isoformat(),),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
 def unresolved(db: sqlite3.Connection, since: datetime) -> int:
     row = db.execute(
         "SELECT COUNT(*) AS n FROM shadow_trades WHERE opened_at >= ? AND pnl_r IS NULL",
@@ -179,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
         slices = taken(db, since)
         gates = refused(db, since)
         pending = unresolved(db, since)
+        interventions = intervened(db, since)
     finally:
         db.close()
 
@@ -207,6 +247,25 @@ def main(argv: list[str] | None = None) -> int:
                 f"  {gate.name:<22}{gate.trades:>7}{gate.wins:>6}{gate.net_r:>+9.2f}R"
                 f"   {verdict} {abs(gate.net_r):.2f}R"
             )
+    if interventions:
+        print()
+        print("  DID STEPPING IN BEAT LEAVING IT ALONE")
+        print("  Each early close replayed against its own untouched stop and target.")
+        print(f"  {'':22}{'trades':>7}{'got':>9}{'holding':>9}{'lift':>9}{'better':>8}")
+        print("  " + "-" * 66)
+        for row in interventions:
+            if int(row["trades"]) < args.min_sample:
+                continue
+            lift = float(row["lift"])
+            print(
+                f"  {row['name']!s:<22}{int(row['trades']):>7}"
+                f"{float(row['actual']):>+8.2f}R{float(row['baseline']):>+8.2f}R"
+                f"{lift:>+8.2f}R{int(row['better']):>5}/{int(row['trades'])}"
+            )
+        print()
+        print("  A negative lift means the rule paid to do worse than nothing. A losing")
+        print("  record with a positive lift is a rule earning its keep on bad trades.")
+
     if pending:
         print(f"\n  {pending} blocked setup(s) not yet resolved and excluded.")
 
