@@ -18,9 +18,11 @@ stopping everything.
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 import sys
 from collections import Counter
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -364,41 +366,7 @@ def main(argv: list[str] | None = None) -> int:
         print("What the engine actually said:")
         for detail, count in details.most_common(6):
             print(f"  {count:>5}x  {detail}")
-        scored = [
-            float(row["total_score"])
-            for row in rows
-            if row["total_score"] is not None and float(row["total_score"]) > 0
-        ]
-        if scored:
-            threshold = next(
-                (float(r["score_threshold"]) for r in rows if r["score_threshold"] is not None),
-                0.0,
-            )
-            best = max(scored)
-            print(
-                f"\n  Best score reached: {best:.1f} against a {threshold:.1f} threshold "
-                f"({len(scored)} setups scored above zero)."
-            )
-            if best < threshold:
-                print(
-                    "  Nothing came close. Either conditions genuinely offer nothing, or "
-                    "the threshold is set above what this engine produces."
-                )
-        else:
-            # Distinguish "the modules saw nothing" from "the column is empty".
-            # Skip rows carried no score until recently, so this branch fired
-            # and announced that nothing was firing while the detail text on
-            # the very same rows read "confluence score 41.9 below threshold".
-            # A diagnostic that contradicts itself is worse than none.
-            scored_in_text = sum(1 for row in rows if "confluence score" in str(row["detail"]))
-            if scored_in_text:
-                print(
-                    f"\n  {scored_in_text} decisions name a score in their detail text but the "
-                    "score column is empty.\n  Those rows predate the score being recorded on "
-                    "skips; read the detail lines above instead."
-                )
-            else:
-                print("\n  No setup scored above zero at all — no module fired on any market.")
+        _print_score_reach(rows)
 
     for reason in counts:
         if reason not in _EXPECTED and reason != "OK" and reason in _ADVICE:
@@ -410,6 +378,64 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {row['symbol']:<12} {row['reason']:<28} {_summarise(str(row['detail']))}")
     print()
     return 0
+
+
+#: "confluence score 37.5 below threshold", as the engine writes it on the skip.
+_SCORE_IN_TEXT = re.compile(r"confluence score (\d+(?:\.\d+)?)")
+
+
+def _print_score_reach(rows: Sequence[sqlite3.Row]) -> None:
+    """How close the engine actually came to its own threshold.
+
+    Two sources say the same thing and only one of them was read. The
+    `total_score` column is populated on a small minority of rows, and the
+    detail text names the number on every scored skip. Reading the column alone
+    produced the line "Best score reached: 58.5 ... (3 setups scored above
+    zero)" on a night with thirty-five thousand NO_SIGNAL rows, six of which
+    were visibly quoting scores in the mid-thirties two lines further up. Three
+    is the number of rows with a populated column, not the number of setups
+    that scored, and printing it as the latter is a diagnostic contradicting
+    itself on the same screen.
+
+    Both sources are merged, and what matters is not the single best score but
+    how much of the distribution is within reach: a threshold nothing comes
+    within twenty points of is a different problem from one being missed by two.
+    """
+    scores = [
+        float(row["total_score"])
+        for row in rows
+        if row["total_score"] is not None and float(row["total_score"]) > 0
+    ]
+    from_column = len(scores)
+    scores += [
+        float(match.group(1))
+        for row in rows
+        if (match := _SCORE_IN_TEXT.search(str(row["detail"] or "")))
+    ]
+    if not scores:
+        print("\n  No setup scored above zero at all — no module fired on any market.")
+        return
+
+    threshold = next(
+        (float(row["score_threshold"]) for row in rows if row["score_threshold"] is not None),
+        0.0,
+    )
+    best = max(scores)
+    print(f"\n  {len(scores)} setups scored above zero, best {best:.1f} against {threshold:.1f}.")
+    if from_column < len(scores):
+        print(
+            f"  ({from_column} of those come from the score column and the rest were read "
+            "out of\n  the detail text, which is where older skip rows recorded it.)"
+        )
+    if threshold > 0:
+        near = sum(1 for score in scores if threshold - 5.0 <= score < threshold)
+        over = sum(1 for score in scores if score >= threshold)
+        print(f"  {over} cleared it; {near} came within 5 points and did not.")
+    if best < threshold:
+        print(
+            "  Nothing cleared it. Either conditions genuinely offer nothing, or the "
+            "threshold\n  is set above what this engine produces."
+        )
 
 
 def _print_funnel(counts: Counter[str], total: int, traded: int) -> None:
