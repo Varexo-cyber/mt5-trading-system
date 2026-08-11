@@ -35,9 +35,59 @@ class ConfluenceEngine:
     def __init__(self, modules: list[AnalysisModule], config: ConfluenceConfig) -> None:
         self.modules = modules
         self.config = config
+        #: symbol -> (bar fingerprint, signals). One entry per symbol, so a
+        #: whole broker catalogue costs a few hundred small tuples.
+        self._signal_cache: dict[str, tuple[tuple[tuple[str, object], ...], tuple[Signal, ...]]] = (
+            {}
+        )
+
+    def _bar_fingerprint(self, ctx: MarketContext) -> tuple[tuple[str, object], ...] | None:
+        """Identity of the closed bars this evaluation would read.
+
+        None means "do not cache": an empty frame is a transient condition, and
+        freezing a verdict taken during one would outlive its cause.
+        """
+        marks: list[tuple[str, object]] = []
+        for timeframe, series in ctx.series.items():
+            frame = series.df
+            if frame is None or frame.empty:
+                return None
+            marks.append((timeframe.value, frame.index[-1]))
+        return tuple(sorted(marks)) if marks else None
+
+    def _signals(self, ctx: MarketContext) -> tuple[Signal, ...]:
+        """Module analysis, recomputed only once a new bar has closed.
+
+        THE WHOLE JUSTIFICATION IS PURITY, so it is stated where it can be
+        checked: no module in `analysis/modules.py` reads `ctx.tick` or
+        `ctx.now`. Each one reads closed bars out of `ctx.series` and nothing
+        else, so identical frames give identical signals. This returns the same
+        answer, not a cheaper approximation of one.
+
+        It matters because the live journal showed a single symbol reporting
+        confluence score 38.8 eighty-two times in twelve hours. That score can
+        only move when a bar closes, and the fastest frame in the ladder is M5,
+        so eleven of every twelve evaluations recomputed a number that could
+        not have changed — for every symbol in the catalogue, on one vCPU
+        shared with the one-second position guard.
+
+        The bars were already cached; `DataManager._bar_closed_since` does
+        that. What this removes is the pandas, not the I/O.
+        """
+        if not self.config.cache_signals_per_bar:
+            return tuple(module.analyze(ctx) for module in self.modules)
+        fingerprint = self._bar_fingerprint(ctx)
+        if fingerprint is None:
+            return tuple(module.analyze(ctx) for module in self.modules)
+        cached = self._signal_cache.get(ctx.symbol)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        signals = tuple(module.analyze(ctx) for module in self.modules)
+        self._signal_cache[ctx.symbol] = (fingerprint, signals)
+        return signals
 
     def evaluate(self, ctx: MarketContext, mode: TradingMode) -> TradeIdea:
-        signals = tuple(module.analyze(ctx) for module in self.modules)
+        signals = self._signals(ctx)
         if ctx.tick is None:
             return self._reject(ctx, signals, "no executable quote")
 

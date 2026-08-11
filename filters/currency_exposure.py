@@ -162,16 +162,39 @@ class CurrencyExposureFilter(Filter):
         if sign * already < self.config.max_positions_per_asset_class:
             return None
         side = "long" if sign > 0 else "short"
+        # Name the tickets actually standing in the way.
+        #
+        # This used to end with a fixed illustration -- "FRA40 long beside
+        # UK100 long is not two trades" -- printed whatever the account held.
+        # On a book holding neither, an operator reading the journal goes
+        # hunting for two positions that do not exist. A canned example in the
+        # place where the evidence belongs is worse than no explanation, so the
+        # rule stays in the config comment and the message reports the facts.
+        blocking = sorted(
+            {
+                position.symbol
+                for position in ctx.open_positions
+                if int(position.direction) == sign and self._class_of(position.symbol) == klass
+            }
+        )
+        held = f" ({', '.join(blocking)})" if blocking else ""
         return FilterVerdict.block(
             self.name,
             Reason.SECTOR_CONCENTRATION,
-            f"already {side} {klass} on {abs(already)} open position(s); this would "
-            f"make it {abs(already) + 1}. FRA40 long beside UK100 long is not two "
-            f"trades, it is one bet on equities with a second lot on it",
+            f"already {side} {klass} on {abs(already)} open position(s){held}; this would "
+            f"make it {abs(already) + 1}, which is one bet on {klass} carrying a second lot "
+            f"rather than two trades",
             asset_class=klass,
             standing=already,
             would_be=already + sign,
+            blocking_positions=blocking,
         )
+
+    def _class_of(self, symbol: str) -> str | None:
+        try:
+            return str(self.spec_provider(symbol).asset_class.value)
+        except Exception:  # noqa: BLE001 - an unreadable spec just goes unnamed
+            return None
 
     def check(self, ctx: FilterContext) -> FilterVerdict:
         if not self.config.enabled or not ctx.open_positions:
