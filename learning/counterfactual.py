@@ -97,6 +97,30 @@ def resolve_management_baselines(
         opened = datetime.fromisoformat(str(row["opened_at"]))
         if opened.tzinfo is None:
             opened = opened.replace(tzinfo=UTC)
+        # A trade cannot have opened after now, and asking the terminal for a
+        # backwards range gets a bare "Call failed" with a traceback -- every
+        # fifteen minutes, forever, because the row never resolves and comes
+        # back on the next pass.
+        #
+        # It happens when a position is read before the broker-to-UTC offset
+        # has been learned: `positions()` normalises with an offset that starts
+        # at zero, so a server clock three hours ahead writes a timestamp three
+        # hours in the future. That is a bug at the writing end and this cannot
+        # repair it -- inventing an opening time would put fiction into the
+        # evidence -- but it can refuse to retry a question with no answer, and
+        # say what is actually wrong instead of printing MT5's shrug.
+        if opened >= now:
+            log.warning(
+                "management baseline skipped: the trade is recorded as opening in the future",
+                extra={
+                    "event": "management_baseline_future_open",
+                    "symbol": row["symbol"],
+                    "opened_at": opened.isoformat(),
+                    "now": now.isoformat(),
+                    "ahead_by_minutes": round((opened - now).total_seconds() / 60.0, 1),
+                },
+            )
+            continue
         try:
             raw = broker.copy_rates_range(str(row["symbol"]), Timeframe.M15.mt5_value, opened, now)
             frame = future_bars(raw, opened)

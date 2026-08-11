@@ -196,6 +196,7 @@ class MT5Connector:
                     },
                 )
                 self._verify_constants()
+                self._prime_server_offset()
                 return account
             except (MT5ConnectionError, MT5NotAvailableError) as exc:
                 last_error = exc
@@ -463,7 +464,42 @@ class MT5Connector:
         return value
 
     def _normalise_mt5_timestamp(self, timestamp: int) -> datetime:
-        return datetime.fromtimestamp(timestamp, tz=UTC) - self._server_offset
+        """Broker server time to UTC, learning the offset here if it has to.
+
+        The offset is normally estimated from tick timestamps, but it starts at
+        zero and only `tick()` updates it. Positions and deals are read at
+        startup before any tick on a fresh process, so a server clock three
+        hours ahead produced an `opened_at` three hours in the future -- stored
+        in the journal that way, and then asked of the terminal as a backwards
+        price range that fails with a bare "Call failed" every fifteen minutes
+        for the life of the row.
+
+        A trade cannot open after now, so a converted time in the future is
+        proof the offset is still unlearned rather than a fact about the trade.
+        The gap is the offset, whole hours by definition, so it is adopted here
+        instead of returning a value known to be wrong. The tolerance is a
+        minute of clock skew, well under the smallest real offset.
+        """
+        moment = datetime.fromtimestamp(timestamp, tz=UTC) - self._server_offset
+        ahead = moment - datetime.now(UTC)
+        if ahead > timedelta(minutes=1):
+            # Cannot be repaired from here, only reported. The gap is the
+            # offset minus however old this position or deal is, and that age
+            # is exactly what is being asked for -- so there is no arithmetic
+            # that recovers the offset from one timestamp. `connect()` learns
+            # it from a tick before anything reads positions, which is where
+            # this is actually prevented; if one still arrives, something
+            # bypassed that and the journal is about to be given a trade that
+            # opens in the future.
+            log.error(
+                "broker timestamp lands in the future; the server offset is not yet known",
+                extra={
+                    "event": "timestamp_ahead_of_now",
+                    "ahead_minutes": round(ahead.total_seconds() / 60.0, 1),
+                    "offset_hours": self._server_offset.total_seconds() / 3600.0,
+                },
+            )
+        return moment
 
     def _deal_reason(self, value: int) -> str:
         names = (
@@ -558,6 +594,70 @@ class MT5Connector:
             last=float(getattr(raw, "last", 0.0)),
             volume=int(getattr(raw, "volume", 0)),
         )
+
+    def _prime_server_offset(self) -> None:
+        """Learn the broker-to-UTC offset before anything reads a position.
+
+        The offset starts at zero and only `tick()` updates it, but on a fresh
+        process the runner reads open positions first. A server clock three
+        hours ahead then produced an `opened_at` three hours in the future --
+        written to the journal that way, and afterwards asked of the terminal
+        as a backwards price range that failed with a bare "Call failed" every
+        fifteen minutes for the life of the row.
+
+        It cannot be repaired downstream: the gap between such a timestamp and
+        now is the offset minus the position's age, and the age is the very
+        thing being read. So it has to be known first, and one tick is what
+        knows it.
+
+        Best effort on purpose. A symbol that will not quote at this moment --
+        a shut exchange, a name this broker spells differently -- is a reason
+        to carry on with the offset unset, exactly as before, not a reason to
+        refuse to connect.
+        """
+        for symbol in self._priming_symbols():
+            try:
+                self.tick(symbol)
+            except Exception:  # noqa: BLE001 - a quiet symbol is not a failed connection
+                continue
+            if self._offset_confirmed_at is not None:
+                log.info(
+                    "server offset established before any position was read",
+                    extra={
+                        "event": "server_offset_primed",
+                        "symbol": symbol,
+                        "offset_hours": self._server_offset.total_seconds() / 3600.0,
+                    },
+                )
+                return
+        log.warning(
+            "could not establish the server clock offset at connect; timestamps read "
+            "before the first tick may be wrong",
+            extra={"event": "server_offset_unprimed"},
+        )
+
+    def _priming_symbols(self, limit: int = 4) -> list[str]:
+        """A few majors as the broker spells them, for one quoting tick.
+
+        Read off the catalogue rather than assumed, because this connector does
+        not know the account's suffix -- Eightcap writes EURUSD.i -- and a
+        hardcoded "EURUSD" would silently quote nothing and leave the offset
+        exactly as unset as before.
+        """
+        try:
+            catalogue = self.symbols()
+        except Exception:  # noqa: BLE001 - no catalogue is not a failed connection
+            return []
+        wanted = ("EURUSD", "USDJPY", "GBPUSD", "AUDUSD")
+        found: list[str] = []
+        for base in wanted:
+            for item in catalogue:
+                if item.name.upper().startswith(base) and item.name not in found:
+                    found.append(item.name)
+                    break
+            if len(found) >= limit:
+                break
+        return found
 
     def _update_server_offset(self, server_time: datetime) -> None:
         """Estimate broker-server-to-UTC offset from a fresh tick timestamp.
