@@ -136,3 +136,73 @@ def test_unreadable_file_starts_empty_rather_than_crashing(tmp_path: Path) -> No
     path = tmp_path / "veto.json"
     path.write_text("{ not json", encoding="utf-8")
     assert VetoMemory(path).recall("SPX500", "LONG", 1.0, 0.9, NOW) is None
+
+
+class TestWhoGetsAScarcePaidReview:
+    """`recall` is strict on purpose, and that is why almost nothing hits it.
+
+    Suppressing a proposal needs the same entry and stop within a quarter of an
+    ATR, because silencing a setup that genuinely moved would be discarding new
+    evidence. On a live tick the price drifts out of that window within a cycle,
+    so the deck showed forty-five paid calls against exactly one served from
+    memory -- and thirty-two of the forty-five came back VETO. The same argument
+    was bought over and over at slightly different prices.
+
+    `standing` answers the cheaper question, and it is only ever allowed to
+    reorder a queue: has the reviewer turned this direction down lately.
+    """
+
+    def refused(self, tmp_path, now: datetime, **kwargs):  # type: ignore[no-untyped-def]
+        memory = VetoMemory(tmp_path / "veto.json")
+        memory.remember(
+            "EURUSD",
+            "LONG",
+            entry=kwargs.get("entry", 1.0850),
+            stop=1.0830,
+            atr=0.0010,
+            thesis="buying into a bounce against intraday momentum",
+            confidence=0.32,
+            now=now,
+        )
+        return memory
+
+    def test_a_drifted_price_still_counts_as_recently_refused(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """The case `recall` misses and this exists for."""
+        now = datetime(2026, 8, 11, 17, 0, tzinfo=UTC)
+        memory = self.refused(tmp_path, now)
+
+        # Four ATR away: a genuinely different price, so suppression correctly
+        # declines -- but the reviewer's opinion of this direction is minutes old.
+        assert memory.recall("EURUSD", "LONG", 1.0890, 1.0870, now) is None
+        assert memory.standing("EURUSD", "LONG", now) is not None
+
+    def test_it_expires_with_the_refusal_itself(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """A fading opinion, not a blacklist."""
+        now = datetime(2026, 8, 11, 17, 0, tzinfo=UTC)
+        memory = self.refused(tmp_path, now)
+
+        assert memory.standing("EURUSD", "LONG", now + timedelta(days=1)) is None
+
+    def test_the_other_side_is_untouched(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        now = datetime(2026, 8, 11, 17, 0, tzinfo=UTC)
+        memory = self.refused(tmp_path, now)
+
+        assert memory.standing("EURUSD", "SHORT", now) is None
+        assert memory.standing("GBPUSD", "LONG", now) is None
+
+    def test_repeats_are_carried_so_the_penalty_can_grow(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        now = datetime(2026, 8, 11, 17, 0, tzinfo=UTC)
+        memory = self.refused(tmp_path, now)
+        memory.remember(
+            "EURUSD",
+            "LONG",
+            entry=1.0855,
+            stop=1.0835,
+            atr=0.0010,
+            thesis="again",
+            confidence=0.30,
+            now=now + timedelta(minutes=5),
+        )
+
+        record = memory.standing("EURUSD", "LONG", now + timedelta(minutes=6))
+        assert record is not None and record.repeats == 2

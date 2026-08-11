@@ -83,6 +83,11 @@ class OpportunityIntelligence:
     thesis: str
     scout_alignment: float = 0.0
     learned_alignment: float = 0.0
+    #: Negative, and only ever negative: how recently and how often the paid
+    #: reviewer refused this symbol in this direction. Ordering only, like the
+    #: two above -- it decides who reaches a scarce review first, never whether
+    #: anything may be traded.
+    recent_refusals: float = 0.0
 
     def safe_dict(self) -> dict[str, object]:
         return asdict(self)
