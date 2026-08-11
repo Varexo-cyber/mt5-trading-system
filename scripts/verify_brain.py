@@ -21,6 +21,7 @@ without the password reaching a terminal, a screenshot or a log.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,7 +30,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from brain import DSN_ENV, Brain, build_brain
+from brain import DSN_ENV, Brain, NullBrain, build_brain
 from brain.store import MIN_TRADES_TO_LEARN
 from config.loader import load_credentials, load_settings
 
@@ -66,6 +67,10 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"  BRAIN — {redacted(brain.dsn)}")
     print("  " + "-" * 70)
+
+    # Defaults to the verification brain so the teardown below is safe when
+    # --stats was not asked for; the stats block swaps in the live account.
+    reader: Brain | NullBrain = brain
 
     if not brain.migrate():
         print(f"  schema     FAILED   {brain.status.last_error}")
@@ -207,17 +212,44 @@ def main(argv: list[str] | None = None) -> int:
         # decoration. These two are the only places a stored trade changes what
         # the system does, so they are the only honest answer to "is it
         # learning" -- printed as the numbers they actually produce.
+        # Under the runner's account, not this script's.
+        #
+        # Everything above runs as `verify`, which is right: it writes marked
+        # test rows and deletes them, and doing that under the live account
+        # would put fiction in the evidence. But both learners filter on
+        # `account`, so asking them as `verify` reads a table with nothing in
+        # it -- and the first version of this report did exactly that. It
+        # printed sixty-five stored trades and "not yet" on the same screen,
+        # which is worse than printing nothing at all.
+        real_account = os.getenv("MT5_LOGIN", "")
+        if real_account:
+            reader = build_brain(account=real_account)
+
         print()
-        print("  WHAT IT HAS LEARNED, AND WHAT THAT CHANGES")
+        print(f"  WHAT IT HAS LEARNED, AND WHAT THAT CHANGES  (account {real_account or '?'})")
         print("  " + "-" * 70)
 
         settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
         configured = settings.trade_management.bank_at_r
-        learned = brain.learned_bank_threshold()
+        # "Not yet" without a count sends the operator back to guessing, which
+        # is the whole failure this section exists to end. Both learners read
+        # closed trades under this account that recorded an excursion, so that
+        # is the number that decides whether the answer is "wait" or "something
+        # upstream is not writing".
+        usable = reader._run(
+            "SELECT COUNT(*) FROM trades WHERE account = %s AND closed_at IS NOT NULL "
+            "AND pnl_r IS NOT NULL AND mfe_r IS NOT NULL AND mfe_r > 0",
+            (real_account,),
+            fetch="one",
+        )
+        eligible = int(usable[0]) if usable else 0
+        print(f"  evidence    {eligible:<10}closed trades here with a recorded peak")
+
+        learned = reader.learned_bank_threshold()
         if learned is None:
             need = MIN_TRADES_TO_LEARN
-            print(f"  banking     not yet    needs {need} closed trades in a band; using")
-            print(f"                         the configured {configured:.2f}R")
+            print(f"  banking     not yet    needs {need} of those, in one excursion band;")
+            print(f"                         using the configured {configured:.2f}R")
         else:
             effective = min(configured, learned)
             print(f"  banking     {learned:.2f}R      its own history says take profit here")
@@ -225,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"                         {effective:.2f}R -- earlier, never later")
 
         learning = settings.learning
-        estimates = brain.edge_calibrations(
+        estimates = reader.edge_calibrations(
             minimum_trades=learning.selection_min_trades,
             shrinkage_trades=learning.selection_shrinkage_trades,
             points_per_r=learning.selection_points_per_r,
@@ -254,6 +286,8 @@ def main(argv: list[str] | None = None) -> int:
     print("  Ready. The runner will start writing on its next cycle.")
     print()
     brain.close()
+    if reader is not brain:
+        reader.close()
     return 0
 
 
