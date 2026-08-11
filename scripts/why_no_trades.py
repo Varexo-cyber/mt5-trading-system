@@ -169,8 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            f"SELECT symbol, decision, reason, detail, total_score, score_threshold "
-            f"FROM analysis_cycles WHERE {where} ORDER BY id DESC",
+            f"SELECT symbol, decision, reason, detail, total_score, score_threshold, "
+            f"context_json FROM analysis_cycles WHERE {where} ORDER BY id DESC",
             params,
         ).fetchall()
 
@@ -182,6 +182,33 @@ def main(argv: list[str] | None = None) -> int:
     traded = sum(1 for row in rows if str(row["decision"]) == "TRADE")
     counts = Counter(str(row["reason"]) for row in rows)
     print(f"\n{len(rows)} decisions in the last {args.hours:g}h · {traded} became trades\n")
+
+    # Refused before the review, or after paying for it?
+    #
+    # Both look identical here -- ENTRY_OVEREXTENDED either way -- and they are
+    # completely different findings. Before the review is the system working:
+    # the gate cost nothing and saved a paid opinion. After the review is money
+    # spent on an answer that was thrown away, because the entry gates all run
+    # again on a fresh tick once Claude replies, and a forty-second reply is
+    # long enough for a marginal setup to cross its own limit.
+    #
+    # The runner already records `post_review_revalidation` on exactly those
+    # rows; nothing ever read it, so the waste was invisible.
+    paid_then_refused = Counter(
+        str(row["reason"])
+        for row in rows
+        if "post_review_revalidation" in str(row["context_json"] or "")
+    )
+    if paid_then_refused:
+        spent = sum(paid_then_refused.values())
+        print(f"{spent} of these were refused AFTER a paid review had already approved them:")
+        for reason, count in paid_then_refused.most_common():
+            print(f"    {reason:<34}{count:>5}")
+        print(
+            "  The review is the slowest step in the entry path, so every gate runs\n"
+            "  again on a fresh quote once it answers. A setup sitting on its limit\n"
+            "  when the question is asked is a coin flip by the time it is answered.\n"
+        )
 
     width = max(len(reason) for reason in counts)
     for reason, count in counts.most_common():
