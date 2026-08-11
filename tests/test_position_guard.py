@@ -127,6 +127,16 @@ class BrokerStub:
         self.closed.append((position.ticket, volume))
         return OrderResult(filled_price=self.price, filled_volume=volume or position.volume)
 
+    def closed_position(self, _ticket: int):  # type: ignore[no-untyped-def]
+        """Deal history has not caught up yet, which is the ordinary case.
+
+        The manager already handles it — the event is recorded as *_SENT and
+        reconciliation fills in the settled price afterwards. Returning None
+        keeps the stub honest about that rather than inventing a record the
+        broker has not produced.
+        """
+        return
+
     def modify_stops(self, _position, sl, tp) -> OrderResult:  # type: ignore[no-untyped-def]
         del tp
         self.modified.append(sl)
@@ -1641,6 +1651,42 @@ class TestPayingToLeaveWhenTheStopIsAlreadyThere:
 
         assert self.act(broker, blind) is None
         assert self.act(broker, measured) is not None, "0.55R saved now beats 0.25R to leave"
+
+    def test_an_ai_close_faces_the_same_arithmetic(self) -> None:
+        """The gate the health reading passes, applied to the adviser too.
+
+        Thirty days measured the asymmetry. HEALTH_EXIT, gated, averaged
+        -0.45R over nine trades. Letting the stop do it, BROKER_SL, averaged
+        -0.57R over six. AI_CLOSE, ungated, averaged -0.60R over eight -- worse
+        than leaving the position alone. The gated rule beat the stop and the
+        ungated one lost to it, which is the shape of a missing gate rather
+        than a bad adviser. An opinion about direction does not change what
+        crossing the spread costs.
+        """
+        broker, journal = BrokerStub(spread=0.5), JournalStub()
+        at(broker, -0.95)  # 0.05R of room against 0.25R to collect it
+
+        event = self.manager(broker, journal).apply_supervision(
+            position(),
+            Supervision("close", "momentum has gone", confidence=0.90, provider="test"),
+        )
+
+        assert event is not None and event.action == "AI_EXIT_NOT_WORTH_PAYING"
+        assert broker.closed == [], "the free stop two pips away was the cheaper exit"
+
+    def test_an_ai_close_with_real_distance_to_save_still_goes_through(self) -> None:
+        """A cost comparison, not a veto on the adviser."""
+        broker, journal = BrokerStub(spread=0.2), JournalStub()
+        at(broker, -0.25)  # 0.75R of room against 0.05R to cross it
+
+        event = self.manager(broker, journal).apply_supervision(
+            position(),
+            Supervision("close", "target will not be reached", confidence=0.90, provider="test"),
+        )
+
+        assert event is not None
+        assert event.action in {"AI_CLOSE", "AI_CLOSE_SENT"}
+        assert broker.closed, "there was real distance to save and it was taken"
 
     def test_a_tighten_is_never_blocked_by_this(self) -> None:
         """Moving a stop costs nothing to place and risks less afterwards.
