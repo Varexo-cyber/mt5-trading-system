@@ -720,9 +720,23 @@ class PositionManager:
         worth_taking = self.equity * config.bank_at_equity_pct / 100.0
         if risk_money > 0:
             worth_taking = min(worth_taking, risk_money * config.bank_at_r)
-            learned = self._learned_bank_r()
-            if learned is not None:
-                worth_taking = min(worth_taking, risk_money * learned)
+            # Switched off on evidence, and the evidence arrived the same day
+            # this was wired up. `management_baselines` replayed ten banked
+            # trades against their own untouched stop and target: PEAK_STALL
+            # took +0.43R where holding paid +1.92R, PROFIT_BANKED took +0.33R
+            # against +1.20R, and nine of the ten did worse than doing nothing.
+            # These rules win every time they fire and win far less than the
+            # trade was going to.
+            #
+            # The learned threshold can only ever lower the bar, so it makes
+            # that fire sooner and more often. Until the baseline says early
+            # banking pays, amplifying it is the wrong direction, and the flag
+            # is here rather than a deleted call so turning it back on is one
+            # line when the evidence changes.
+            if config.use_learned_bank_threshold:
+                learned = self._learned_bank_r()
+                if learned is not None:
+                    worth_taking = min(worth_taking, risk_money * learned)
         return worth_taking
 
     def _learned_bank_r(self) -> float | None:

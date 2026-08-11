@@ -1812,6 +1812,15 @@ class TradeManagementConfig(Base):
     #: the top of that range it is not a banking rule: it demands nearly the
     #: whole trade. See `PositionManager._worth_taking`.
     bank_at_r: float = Field(default=0.3, ge=0.0, le=3.0)
+    #: Let the account's own history lower `bank_at_r`, never raise it.
+    #:
+    #: Default on because the mechanism is sound and the direction is safe --
+    #: it can only take profit sooner, which is less exposure. Whether taking
+    #: profit sooner is *better* is a separate question, and the answer lives
+    #: in `management_baselines`: every banked trade replayed against its own
+    #: untouched stop and target. Turn this off wherever that baseline says
+    #: early banking gives back more than it protects.
+    use_learned_bank_threshold: bool = True
     #: How hard price must be coming BACK against the position to earn a hold,
     #: in random-walk units — see `analysis.position_health.drift_score`.
     #:
