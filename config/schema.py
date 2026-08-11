@@ -1541,7 +1541,24 @@ class PyramidingConfig(Base):
     #: Every existing leg must have moved this far in its own recorded R before
     #: another is permitted. That is the mechanical line between pyramiding a
     #: winner and averaging down a loser.
+    #:
+    #: Keep it above `trade_management.bank_at_r`, or the two rules fight: the
+    #: banking rule closes a stalling winner at that level, so a scalp floor
+    #: underneath it can only ever fire in the sliver between the two, and the
+    #: guard checks banking every second while the scanner looks for add-ons
+    #: once a cycle. Above it, a leg that is still open past the banking level
+    #: is one the pace check judged to be still running, which is exactly the
+    #: leg worth adding to.
     min_existing_r: float = Field(default=0.25, ge=0.0, le=3.0)
+    #: Refuse to stack on a leg whose broker stop still sits behind its entry.
+    #:
+    #: This is what bounds a scalp campaign. With the original leg closed to
+    #: loss, the worst case is the add-on's own quarter-size risk instead of
+    #: every leg's full risk arriving together. Checked against the position
+    #: the broker holds rather than the plan in the journal, because a journal
+    #: that says break-even and a broker that never received the modification
+    #: is precisely the state this exists to refuse.
+    require_stop_beyond_entry: bool = True
     #: The fresh full-market analysis must independently clear this bar.
     minimum_conviction: float = Field(default=75.0, ge=0.0, le=100.0)
     #: Add-on risk as a fraction of the ordinary per-trade budget. It may only

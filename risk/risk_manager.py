@@ -510,6 +510,10 @@ class RiskManager:
                     f"position #{position.ticket} has no measurable original risk",
                 )
             readings.append((entry - position.price_open) * int(direction) / risk)
+        # Asked before the stop is inspected, and the order is deliberate: a
+        # leg that is losing should be reported as losing. "Its stop is behind
+        # its entry" is true of every loser and says nothing about why this one
+        # was refused.
         weakest = min(readings)
         if weakest < config.min_existing_r:
             return RiskDecision.block(
@@ -517,8 +521,29 @@ class RiskManager:
                 f"weakest existing leg is {weakest:+.2f}R; winner scalps require every leg "
                 f"at or above +{config.min_existing_r:.2f}R",
             )
+        # The broker's own stop, not the plan's. A leg in profit whose stop is
+        # still behind its entry can give the whole gain back and finish at
+        # -1R; stacking on it makes the same uncertainty bigger rather than
+        # betting on further upside. Once the guard has walked the stop to
+        # entry, the leg is closed to loss and the worst case of the whole
+        # campaign is the add-on's own quarter-size risk.
+        #
+        # Read off the position because that is what the broker will honour if
+        # this process dies. A journal claiming break-even while the broker
+        # never received the modification is exactly the state this refuses.
+        if config.require_stop_beyond_entry:
+            for position in positions:
+                secured = (position.sl - position.price_open) * int(direction)
+                if position.sl <= 0 or secured < 0:
+                    return RiskDecision.block(
+                        Reason.POSITION_ALREADY_OPEN,
+                        f"position #{position.ticket} is {weakest:+.2f}R up but its stop is "
+                        f"still at {position.sl:g}, behind the {position.price_open:g} entry; "
+                        f"a scalp may only be stacked on a leg that can no longer lose",
+                    )
         return RiskDecision.allow(
-            f"winner scalp allowed: {len(positions)} existing leg(s), weakest " f"{weakest:+.2f}R"
+            f"winner scalp allowed: {len(positions)} existing leg(s), weakest {weakest:+.2f}R, "
+            f"every stop at or beyond entry"
         )
 
     def check_margin(

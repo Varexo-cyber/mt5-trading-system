@@ -21,7 +21,7 @@ from infra.killswitch import KillSwitch
 from journal.database import Journal
 from journal.recorder import Recorder
 from risk.position_sizer import PositionSizer
-from risk.reasons import Reason
+from risk.reasons import Reason, RiskDecision
 from risk.risk_manager import RiskManager
 from tests.fakes.fake_mt5 import eurusd_spec
 
@@ -369,7 +369,11 @@ class TestSymbolGates:
             entry_price=1.085,
             equity_before=10_000.0,
         )
-        state = manager.build_state(account(10_000.0), [position("EURUSD")])
+        # Stop walked up to entry by the guard: the leg can no longer lose,
+        # which is what makes a second lot a bet on more upside rather than a
+        # bigger bet on the same uncertainty.
+        secured = replace(position("EURUSD"), sl=1.085)
+        state = manager.build_state(account(10_000.0), [secured])
 
         decision = manager.check_symbol(
             "EURUSD",
@@ -382,6 +386,7 @@ class TestSymbolGates:
 
         assert decision.approved
         assert "weakest +0.20R" in decision.detail
+        assert "every stop at or beyond entry" in decision.detail
 
     def test_an_add_on_is_blocked_until_the_existing_trade_is_winning(
         self,
@@ -1094,3 +1099,210 @@ class TestDisabledLossLimits:
                     "risk.weekly_loss_limit_pct": 5.0,
                 },
             )
+
+
+class TestScalpOnlyOnProtectedWinners:
+    """A scalp may only be stacked on a leg that can no longer lose.
+
+    This is what bounds a winner-scalp campaign. With the original leg's stop
+    at entry, the worst case is the add-on's own quarter-size risk rather than
+    every leg's full risk arriving at once. Without it, three legs on one
+    symbol are three full stops that fail together, which is the shape of the
+    thing the whole forbidden-practices assertion exists to prevent.
+
+    The floor and the stop answer different questions, and both are asked:
+    +0.60R says the idea worked, the stop says the profit is safe.
+    """
+
+    def armed(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+        *,
+        stop: float,
+        require: bool = True,
+    ) -> RiskDecision:
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={
+                "enabled": True,
+                "min_existing_r": 0.15,
+                "require_stop_beyond_entry": require,
+            }
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        sizing = PositionSizer(settings).size(
+            spec=spec,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.085,
+            sl=1.083,
+            tp=1.091,
+        )
+        Recorder(journal, clock, settings).record_trade_open(
+            cycle_pk=None,
+            sizing=sizing,
+            ticket=1,
+            entry_price=1.085,
+            equity_before=10_000.0,
+        )
+        state = manager.build_state(account(10_000.0), [replace(position("EURUSD"), sl=stop)])
+        return manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.0854,  # +0.20R, comfortably over the 0.15 floor.
+            allow_pyramid=True,
+        )
+
+    def test_a_winner_still_exposed_to_loss_is_refused(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        """+0.20R with the original stop still 20 pips below entry."""
+        decision = self.armed(manager, settings, journal, clock, spec, stop=1.083)
+
+        assert not decision.approved
+        assert decision.reason is Reason.POSITION_ALREADY_OPEN
+        assert "can no longer lose" in decision.detail
+
+    def test_a_stop_exactly_at_entry_qualifies(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        """Break-even is the line, and being on it counts as being past it."""
+        assert self.armed(manager, settings, journal, clock, spec, stop=1.085).approved
+
+    def test_a_stop_already_locking_profit_qualifies(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        assert self.armed(manager, settings, journal, clock, spec, stop=1.0852).approved
+
+    def test_a_missing_stop_is_refused(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        """No stop at the broker is the worst case, not a neutral one."""
+        decision = self.armed(manager, settings, journal, clock, spec, stop=0.0)
+
+        assert not decision.approved
+        assert "can no longer lose" in decision.detail
+
+    def test_the_check_can_be_switched_off(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        decision = self.armed(manager, settings, journal, clock, spec, stop=1.083, require=False)
+        assert decision.approved
+
+    def test_it_is_required_by_default(self) -> None:
+        from config.schema import PyramidingConfig
+
+        assert PyramidingConfig().require_stop_beyond_entry is True
+
+    def test_a_loser_is_reported_as_losing_not_as_unprotected(
+        self,
+        manager: RiskManager,
+        settings: Settings,
+        journal: Journal,
+        clock: SimulatedClock,
+        spec: InstrumentSpec,
+    ) -> None:
+        """Every loser has its stop behind entry; that is not why it was refused.
+
+        Saying so would bury the actual reason under a fact that is true of
+        every losing position in existence.
+        """
+        pyramid = settings.trade_management.pyramiding.model_copy(
+            update={"enabled": True, "min_existing_r": 0.15}
+        )
+        manager.settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"pyramiding": pyramid}
+                )
+            },
+            deep=True,
+        )
+        sizing = PositionSizer(settings).size(
+            spec=spec,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.085,
+            sl=1.083,
+            tp=1.091,
+        )
+        Recorder(journal, clock, settings).record_trade_open(
+            cycle_pk=None,
+            sizing=sizing,
+            ticket=1,
+            entry_price=1.085,
+            equity_before=10_000.0,
+        )
+        state = manager.build_state(account(10_000.0), [position("EURUSD")])
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.0848,  # -0.10R: the idea has not worked at all.
+            allow_pyramid=True,
+        )
+
+        assert not decision.approved
+        assert "weakest existing leg is -0.10R" in decision.detail
+
+
+class TestScalpFloorClearsTheBankingRule:
+    """The two rules must not fight over the same sliver of an R.
+
+    `bank_at_r` closes a stalling winner; a scalp floor beneath it can only
+    fire in the gap between the two, and the guard checks banking every second
+    while the scanner looks for add-ons once a cycle. The shipped overlay has
+    to keep the floor above the banking level, or the feature is switched off
+    while looking switched on.
+    """
+
+    def test_the_shipped_overlay_puts_the_scalp_floor_above_the_bank_level(self) -> None:
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+        pyramiding = settings.trade_management.pyramiding
+        if not pyramiding.enabled:
+            pytest.skip("winner scalps are off in this overlay")
+
+        assert pyramiding.min_existing_r > settings.trade_management.bank_at_r
+        assert pyramiding.require_stop_beyond_entry is True
+        assert pyramiding.risk_multiplier <= 0.5, "an add-on may never be the bigger bet"

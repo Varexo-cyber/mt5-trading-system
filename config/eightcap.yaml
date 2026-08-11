@@ -596,16 +596,43 @@ modes:
     max_equity: 500
 
 trade_management:
-  # A fresh, exceptionally strong signal may add a small scalp leg only after
-  # every existing leg in that symbol is already at least +0.25R. This is
-  # pyramiding a winner, never averaging down. Original plus two scalp legs is
-  # the hard per-symbol ceiling. The scalp tickets do not consume the four
-  # primary-idea slots, but their size, margin, SL and every entry filter remain
-  # binding. Only one symbol may carry scalp legs at a time.
+  # Bijkopen op een winnaar, en alleen als hij nog loopt.
+  #
+  # WAT ER MIS WAS. `min_existing_r` stond op 0,25 en `bank_at_r` op 0,30. Die
+  # twee vochten: de bankregel sluit een haperende winnaar op 0,30R, dus de
+  # scalp kon alleen vuren in het spleetje van vijf honderdsten daaronder. En
+  # de guard kijkt elke seconde of hij moet banken terwijl de scanner eens per
+  # cyclus naar bijkopen kijkt, dus die zestig-tegen-een liep ook nog eens de
+  # verkeerde kant op. Praktisch was het een uitgeschakelde functie die eruitzag
+  # alsof hij aanstond.
+  #
+  # WAT ER NU STAAT. De vloer ligt op 0,60R, boven de bankdrempel. Een leg die
+  # dáár nog open is, is er een die de pace-check als doorlopend beoordeelde --
+  # want was hij gaan haperen, dan had de bankregel hem al genomen. Precies de
+  # leg waar bijkopen over gaat: bewezen richting, beweging nog intact.
+  #
+  # WAT HET RISICO BEGRENST, en dit is de belangrijkste regel van de vier:
+  # `require_stop_beyond_entry`. Er mag alleen gestapeld worden op een leg
+  # waarvan de stop bij de broker op of voorbij de instap staat. Die leg kan
+  # dus niets meer verliezen, en het slechtste geval van een hele campagne is
+  # het kwart-risico van de bijkoop -- ongeveer 0,5% -- in plaats van elke leg
+  # die tegelijk zijn volle 2% raakt. Gecontroleerd op de positie die de broker
+  # aanhoudt, niet op het plan in het journaal: een journaal dat break-even
+  # zegt terwijl de broker de wijziging nooit kreeg is juist wat dit weigert.
+  #
+  # Daarbovenop: een verse analyse met conviction >= 85 (je drempel is 40),
+  # Claude >= 0,80 (normale vloer 0,55), dezelfde richting, en een kwart van de
+  # normale inzet. Origineel plus twee scalp-legs is het harde plafond, en maar
+  # een symbool tegelijk.
+  #
+  # Wat dit NIET is: averaging down. Elke leg moet in de winst staan en boven
+  # water beschermd zijn voordat de volgende mag. Een verliezende leg sluit de
+  # hele campagne af.
   pyramiding:
     enabled: true
     max_legs_per_symbol: 3
-    min_existing_r: 0.25
+    min_existing_r: 0.60
+    require_stop_beyond_entry: true
     minimum_conviction: 85
     risk_multiplier: 0.25
     minimum_ai_confidence: 0.80
