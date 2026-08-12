@@ -1110,6 +1110,59 @@ class VolatilityRegimeConfig(Base):
         return self
 
 
+class DriftContinuationConfig(Base):
+    """Join a move that is already happening, in the direction it is going.
+
+    The hole this fills, found on a live day: `trend_momentum` runs on 20/50
+    EMAs over H4 and H1, so it goes quiet long before a market turns and turns
+    long after the move began; `liquidity_sweep` needs a wick through a 20-bar
+    extreme on the very last candle and is a reversal pattern anyway. Between
+    the slow module and the rare one sits an hour of clean one-way drift, and
+    on 12 August GBPUSD spent the day in exactly that state while the engine
+    tried 344 times to buy it and never once proposed a short.
+    """
+
+    enabled: bool = True
+    #: M15 rather than H1: an hour of drift is four bars here and one there,
+    #: and one bar cannot be tested for consistency at all.
+    timeframe: str = "M15"
+    lookback_bars: int = Field(default=8, ge=3, le=200)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    #: Net movement over the window, in ATR, before this says anything. A
+    #: market that has drifted a tenth of an ATR has not moved, it has breathed.
+    minimum_drift_atr: float = Field(default=1.0, ge=0.0, le=20.0)
+    #: Where confidence saturates. Twice the floor, so an ordinary qualifying
+    #: move sits in the middle of the range rather than at its top.
+    confident_drift_atr: float = Field(default=2.0, gt=0.0, le=40.0)
+    #: Share of bars in the window that must close with the move.
+    #:
+    #: The condition that keeps this out of chop, and the reason it is not
+    #: simply the refused long turned upside down. A market that ends the hour
+    #: lower having gone up, down, up and down has the same net drift as one
+    #: that ground steadily lower; only the second is going somewhere. The live
+    #: exit note that named this failure put it as "4 of 5 closing adverse".
+    minimum_consistency: float = Field(default=0.65, ge=0.0, le=1.0)
+    #: Below the swing modules' 65-75. A drift is real evidence and it is the
+    #: weakest kind here: it says the move happened, not that it continues.
+    score: float = Field(default=55.0, gt=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    scale_confidence_by: float = Field(default=0.40, ge=0.0, le=2.0)
+    maximum_confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+
+    @field_validator("timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _coherent(self) -> DriftContinuationConfig:
+        if self.confident_drift_atr < self.minimum_drift_atr:
+            raise ValueError("confident drift must not be below the minimum drift")
+        if self.base_confidence > self.maximum_confidence:
+            raise ValueError("drift base confidence exceeds maximum")
+        return self
+
+
 class MarketRegimeConfig(Base):
     """Non-directional context used for ranking and Claude briefing.
 
@@ -1420,7 +1473,10 @@ class ConfluenceConfig(Base):
     #: Which modules assert that a trend is continuing, and therefore have
     #: their premise contradicted by a measured range. Named rather than
     #: inferred, so a new module has to be classified deliberately.
-    trend_continuation_modules: tuple[str, ...] = ("trend_momentum",)
+    trend_continuation_modules: tuple[str, ...] = (
+        "trend_momentum",
+        "drift_continuation",
+    )
     require_target_base_rate: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
     #: counts up and down moves independently over the same windows, so it is
@@ -1589,6 +1645,7 @@ class AnalysisConfig(Base):
     level_reaction: LevelReactionConfig = LevelReactionConfig()
     volatility_regime: VolatilityRegimeConfig = VolatilityRegimeConfig()
     market_regime: MarketRegimeConfig = MarketRegimeConfig()
+    drift_continuation: DriftContinuationConfig = DriftContinuationConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

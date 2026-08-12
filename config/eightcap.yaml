@@ -288,7 +288,30 @@ analysis:
     # lists exactly what is still missing, and the runner alerts on it at every
     # experimental-live start. This line is the deliberate, reviewable act of
     # accepting that; nothing promotes a module to live on its own any more.
-    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep]
+    # `drift_continuation` erbij, op uitdrukkelijk verzoek van de eigenaar en
+    # naar aanleiding van 12 augustus.
+    #
+    # WAT ER MISTE. GBPUSD daalde die dag vrijwel onafgebroken. De engine
+    # probeerde hem de hele dag te kopen — 233 M15- en 111 M5-weigeringen met
+    # "price is moving against the long" — en stelde geen enkele keer een short
+    # voor. Niet omdat een poort er een tegenhield, maar omdat geen module er
+    # naar keek: `trend_momentum` draait op 20/50 EMA's over H4 en H1 en valt
+    # dus stil ruim voordat een markt draait, en `liquidity_sweep` wil een wick
+    # door een 20-bars extreem op de laatste candle en is bovendien een
+    # omkeerpatroon. Tussen die twee in ligt een uur schone eenrichtingsdrift.
+    #
+    # WAT DIT NIET IS: de geweigerde koop omgedraaid. Dat zou een signaal uit
+    # een poort verzinnen, en in een zijwaartse markt betaal je dan elke keer
+    # de spread heen en terug. Deze meet iets positiefs — dat de prijs
+    # daadwerkelijk is afgelegd, en consistent — en zwijgt als dat niet zo is.
+    #
+    # WAT HEM UIT DE CHOP HOUDT, drie dingen: minimaal 1 ATR verplaatsing,
+    # minstens 65% van de bars die met de beweging mee sluiten, en hij staat
+    # geregistreerd als continuation-module zodat de range-poort hem weigert
+    # zodra de regime-meter "range" zegt. Daarboven weigert `entry_quality`
+    # nog steeds een instap aan het uiteinde van de range — dat is wat hem
+    # belet de bodem te verkopen van de beweging die hij net opmerkte.
+    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, drift_continuation]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #

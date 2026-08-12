@@ -32,6 +32,7 @@ from advisory.scout import ScoutThrottle
 from advisory.veto_patterns import readable as veto_readable
 from analysis import (
     ConfluenceEngine,
+    DriftContinuation,
     EntryTimingDecision,
     LevelReaction,
     LiquiditySweep,
@@ -342,6 +343,7 @@ class JarvisRunner:
                 LevelReaction(self.settings.analysis.level_reaction),
                 VolatilityRegime(self.settings.analysis.volatility_regime),
                 MarketRegime(self.settings.analysis.market_regime),
+                DriftContinuation(self.settings.analysis.drift_continuation),
             ],
             self.settings.analysis.confluence,
         )
