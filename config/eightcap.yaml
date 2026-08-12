@@ -449,7 +449,18 @@ filters:
     #
     # Dit levert mínder trades op, niet meer. Wat het weghaalt zijn de trades
     # die er nooit hadden moeten zijn.
-    require_home_session: true
+    #
+    # UIT, op uitdrukkelijke instructie van de eigenaar nadat bovenstaande was
+    # voorgelegd: er moet dag en nacht gehandeld worden, en de spread is wat de
+    # bescherming moet leveren. Het filter blijft in de code staan en is met
+    # deze ene regel weer aan te zetten.
+    #
+    # Wat dit dus terugbrengt: EURCAD om 03:00 met Frankfurt en Toronto dicht,
+    # en NDX100 uren nadat de Nasdaq sloot. De reden dat de spread dat niet
+    # afvangt staat in `filters/home_session.py` — een dun boek hoeft geen
+    # brede spread te tonen. Wat de reviewer nu wel meekrijgt, ook zonder dit
+    # filter, is `home_session_open: false` in de payload; dat blijft staan.
+    require_home_session: false
 
 risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
