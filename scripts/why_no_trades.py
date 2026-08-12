@@ -115,6 +115,7 @@ _STAGES: tuple[tuple[str, frozenset[str]], ...] = (
                 "INSUFFICIENT_MARGIN",
                 "MARGIN_ESTIMATE_FAILED",
                 "INSUFFICIENT_RUNWAY",
+                "TARGET_RARELY_REACHED",
             }
         ),
     ),
@@ -158,6 +159,7 @@ _EXPECTED = {
     "HEADLINE_PRESSURE",
     "MARKET_TOO_QUIET",
     "INSUFFICIENT_RUNWAY",
+    "TARGET_RARELY_REACHED",
     "SPREAD_TOO_WIDE",
     "SPREAD_EATS_THE_STOP",
     "SL_TOO_TIGHT_FOR_COSTS",
@@ -266,6 +268,16 @@ _ADVICE = {
         "needs longer than the time remaining at the market's current pace. Expected "
         "in the last hour of the session; if it dominates all day, the floor or "
         "`filters.runway.travel_efficiency` is set too conservatively."
+    ),
+    "TARGET_RARELY_REACHED": (
+        "The target sits at a distance this instrument does not actually cover often "
+        "enough for the plan's own reward-to-risk to break even, or covers more "
+        "readily in the opposite direction. Measured over its own recent history on "
+        "the planning timeframe. Reach rate is an upper bound on win rate, so below "
+        "break-even the plan cannot work before the stop and the spread are even "
+        "counted. If it dominates, the target multiple is too ambitious for these "
+        "markets: check `analysis.confluence.target_r_multiple` before loosening "
+        "`target_reach_margin_pct`."
     ),
     "MARKET_TOO_QUIET": (
         "The market is ranging well below its own recent normal, so a target priced "

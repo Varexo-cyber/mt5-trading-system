@@ -128,6 +128,12 @@ class Reason(StrEnum):
     #: inside this window" — they say nothing about the minute before it, which
     #: is how a position gets opened at 20:14 and flattened by us at 20:15.
     INSUFFICIENT_RUNWAY = "INSUFFICIENT_RUNWAY"
+    #: The target sits at a distance this instrument does not cover often
+    #: enough for the plan's own reward-to-risk to break even, or covers more
+    #: readily in the opposite direction. Measured over its own recent history
+    #: on the planning timeframe. Different from INSUFFICIENT_RUNWAY, which
+    #: asks whether there is TIME; this asks whether the market goes there.
+    TARGET_RARELY_REACHED = "TARGET_RARELY_REACHED"
     #: The market has gone to sleep: recent bar ranges are far below this
     #: instrument's own recent normal. A target measured in ATR is unreachable
     #: when the market has stopped producing ATR, and the spread is paid anyway.

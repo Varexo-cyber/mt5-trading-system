@@ -1355,6 +1355,31 @@ class ConfluenceConfig(Base):
     minimum_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
     minimum_directional_modules: int = Field(default=2, ge=1, le=10)
     minimum_agreement_ratio: float = Field(default=0.60, ge=0.5, le=1.0)
+    #: Refuse a target this market does not actually reach often enough for the
+    #: plan's own reward-to-risk to break even.
+    #:
+    #: The measurement already existed and was computed only to be printed in
+    #: the review payload, where the reviewer read it and refused the trade.
+    #: Six consecutive live refusals cited exactly this number: UK100 at 30.2%,
+    #: CADCHF at 30.1%, AUDUSD at "37.0% up against 37.5% down, essentially a
+    #: coin flip". Five cents a time to be told something the engine had in
+    #: hand before it asked.
+    #:
+    #: Arithmetic rather than opinion: reach rate is an upper bound on win
+    #: rate, because a trade cannot win without the market travelling to its
+    #: target. Below the break-even hit rate the plan cannot work even before
+    #: the stop, the spread and the commission are counted.
+    require_reachable_target: bool = True
+    #: Percentage points demanded ABOVE break-even. Small on purpose: reach
+    #: counts up and down moves independently over the same windows, so it is
+    #: not the probability of hitting the target before the stop and must not
+    #: be read as one. It is a floor for what cannot work, not a forecast.
+    target_reach_margin_pct: float = Field(default=3.0, ge=0.0, le=40.0)
+    #: Refuse when this instrument covers the target distance MORE often in the
+    #: opposite direction. Live: AUDSGD proposed LONG at 38.1% up against 46.8%
+    #: down over the same horizon. The direction came from an EMA and the
+    #: target from a multiplier, and nothing ever compared the two.
+    require_direction_advantage: bool = True
     target_r_multiple: float = Field(default=2.0, ge=1.0, le=10.0)
     #: The target is also bounded by how far this instrument actually travels.
     #: `entry + 2R` is arithmetic and never asks whether the market goes there;
