@@ -61,12 +61,34 @@ class TrendMomentum:
             atr = _atr(frame, self.config.atr_period)
             slope = float(fast_ema.diff(self.config.slope_lookback).iloc[-1])
             direction = 1 if fast > slow and slope > 0 else -1 if fast < slow and slope < 0 else 0
+            # Does the tape agree with where the EMAs are sitting?
+            #
+            # An EMA is a position, not a direction. When a market tops out the
+            # fast EMA stays above the slow one for hours and its five-bar
+            # slope stays positive a while longer, so this module goes on
+            # proposing longs into a falling market. GBPUSD on 12 August: 344
+            # refusals reading "price is moving against the long", two that got
+            # through, both losers, and the worse of them taken on this module
+            # alone reporting "H4 and H1 EMA/momentum aligned bullish".
+            #
+            # Raw close-to-close drift over a handful of bars, which is the
+            # measurement the reviewer cites in refusal after refusal and the
+            # one nothing here ever read. Zero drift is not disagreement.
+            drift_bars = self.config.drift_agreement_bars
+            if direction and drift_bars and len(close) > drift_bars:
+                drift = float(close.iloc[-1] - close.iloc[-1 - drift_bars])
+                if drift * direction < 0:
+                    direction = 0
+                details_drift = drift
+            else:
+                details_drift = None
             reads.append(direction)
             details[timeframe.value] = {
                 f"ema{self.config.fast_ema}": fast,
                 f"ema{self.config.slow_ema}": slow,
                 f"ema{self.config.fast_ema}_slope_{self.config.slope_lookback}": slope,
                 f"atr{self.config.atr_period}": atr,
+                f"close_drift_{self.config.drift_agreement_bars}": details_drift,
             }
             if timeframe is timeframes[1] and direction:
                 recent = frame.iloc[-self.config.invalidation_lookback :]
