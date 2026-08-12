@@ -24,7 +24,12 @@ import pytest
 
 from scripts.review_value import main
 
-NOW = datetime(2026, 8, 11, 12, 0, tzinfo=UTC)
+#: Relative to the real clock, not a frozen date. The script filters by "hours
+#: ago", so a fixed constant means every offset here drifts further from the
+#: window as the calendar moves on — a 25-hour-old row written against a fixed
+#: August date silently fell outside a 48-hour window once the day rolled over,
+#: and the test failed for a reason that had nothing to do with the code.
+NOW = datetime.now(UTC)
 
 USAGE = {
     "input_tokens": 20_000,
