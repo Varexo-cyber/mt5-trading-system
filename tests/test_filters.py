@@ -21,6 +21,7 @@ from core.instrument import AssetClass, InstrumentSpec
 from core.types import Direction, Position, Series, Tick, Timeframe
 from filters.base import Filter, FilterChain, FilterContext, FilterVerdict
 from filters.correlation_filter import CorrelationFilter
+from filters.home_session import home_sessions
 from filters.session_filter import SessionFilter
 from filters.spread_filter import SpreadFilter
 from journal.database import Journal
@@ -627,3 +628,99 @@ class TestPerClassWindDown:
     ) -> None:
         assert filter_.evening_flat_window("forex") is filter_.evening_flat
         assert filter_.evening_flat_window("index") is not filter_.evening_flat
+
+
+class TestTheInstrumentsOwnMarketMustBeOpen:
+    """Two live trades, and the gap between them and the session filter.
+
+    NDX100 short at 00:51 UTC, five hours after the Nasdaq closed. EURCAD short
+    at 03:03 UTC with Frankfurt and Toronto both shut. Both passed, because
+    Asia was running and Asia is on the allowed list -- and Asia prices neither
+    instrument. `tradable_sessions` gives one global answer for the whole
+    catalogue and never asks about the symbol in front of it.
+    """
+
+    def config(self) -> SessionFilterConfig:
+        return SessionFilterConfig(
+            tradable_sessions=("asia", "london", "newyork"),
+            require_home_session=True,
+        )
+
+    def eurcad(self) -> InstrumentSpec:
+        return InstrumentSpec.from_mt5(
+            eurusd_spec(name="EURCAD", currency_base="EUR", currency_profit="CAD")
+        )
+
+    def test_a_euro_canada_cross_is_refused_in_the_asian_session(self) -> None:
+        """03:03 UTC on the live trade. Neither leg has a home market open."""
+        moment = datetime(2026, 3, 11, 3, 3, tzinfo=UTC)
+
+        verdict = SessionFilter(self.config()).check(context(self.eurcad(), now=moment))
+
+        assert verdict.reason is Reason.HOME_SESSION_CLOSED
+        assert "london, newyork" in verdict.detail
+
+    def test_the_same_cross_is_allowed_once_london_opens(self) -> None:
+        moment = datetime(2026, 3, 11, 9, 0, tzinfo=UTC)
+
+        assert SessionFilter(self.config()).check(context(self.eurcad(), now=moment)).passed
+
+    def test_a_yen_cross_is_allowed_in_the_asian_session(self) -> None:
+        """The gate is about the instrument, not about disliking the hour."""
+        audjpy = InstrumentSpec.from_mt5(
+            eurusd_spec(name="AUDJPY", currency_base="AUD", currency_profit="JPY")
+        )
+        moment = datetime(2026, 3, 11, 3, 3, tzinfo=UTC)
+
+        assert SessionFilter(self.config()).check(context(audjpy, now=moment)).passed
+
+    def test_crypto_has_no_home_session_to_be_closed(self) -> None:
+        crypto = InstrumentSpec.from_mt5(
+            xauusd_spec(name="BTCUSD", path="Cryptos\\High Cap\\BTCUSD", currency_base="USD")
+        )
+        moment = datetime(2026, 3, 11, 3, 3, tzinfo=UTC)
+
+        verdict = SessionFilter(self.config()).check(
+            context(crypto, now=moment, bid=116_000.0, spread=2.70)
+        )
+
+        # Answered by the continuous-market branch well above this gate, which
+        # is why there is no home-session key on the verdict to inspect. What
+        # matters is that a market with no closing time is never refused for
+        # being closed.
+        assert verdict.passed
+        assert verdict.reason is not Reason.HOME_SESSION_CLOSED
+        assert home_sessions(crypto) == frozenset()
+
+    def test_an_unmapped_currency_is_allowed_rather_than_banned(self) -> None:
+        """Refusing on ignorance would silently ban a whole symbol. Letting one
+        trade through is the cheaper of the two failures by a wide margin."""
+        exotic = InstrumentSpec.from_mt5(
+            eurusd_spec(name="USDZZZ", currency_base="ZZZ", currency_profit="QQQ")
+        )
+        moment = datetime(2026, 3, 11, 3, 3, tzinfo=UTC)
+
+        verdict = SessionFilter(self.config()).check(context(exotic, now=moment))
+
+        assert verdict.passed
+        assert verdict.data["home_session_open"] is None
+
+    def test_it_is_off_unless_asked_for(self) -> None:
+        """It removes trades, so it must never arrive by surprise."""
+        moment = datetime(2026, 3, 11, 3, 3, tzinfo=UTC)
+        permissive = SessionFilterConfig(tradable_sessions=("asia", "london", "newyork"))
+
+        assert SessionFilter(permissive).check(context(self.eurcad(), now=moment)).passed
+
+    def test_the_reviewer_is_told_even_when_nothing_is_blocked(self) -> None:
+        """`filter_data` goes into the payload. Claude approved both of those
+        trades and had no way to see that it was reading an out-of-hours chart;
+        a timestamp is not the same as being told the market is shut."""
+        moment = datetime(2026, 3, 11, 3, 3, tzinfo=UTC)
+        permissive = SessionFilterConfig(tradable_sessions=("asia", "london", "newyork"))
+
+        verdict = SessionFilter(permissive).check(context(self.eurcad(), now=moment))
+
+        assert verdict.passed
+        assert verdict.data["home_session_open"] is False
+        assert verdict.data["home_sessions"] == ["london", "newyork"]
