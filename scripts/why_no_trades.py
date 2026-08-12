@@ -317,7 +317,17 @@ def main(argv: list[str] | None = None) -> int:
     counts = Counter(str(row["reason"]) for row in rows)
     print(f"\n{len(rows)} decisions in the last {args.hours:g}h · {traded} became trades\n")
 
-    _print_funnel(counts, len(rows), traded)
+    # A refusal replayed from the veto memory lands in the journal as AI_VETO,
+    # exactly like one that was paid for, and there is no way to tell them
+    # apart from the reason column. The runner writes `ai_veto_remembered` on
+    # precisely those rows.
+    remembered = sum(
+        1
+        for row in rows
+        if str(row["reason"]) == "AI_VETO"
+        and "ai_veto_remembered" in str(row["context_json"] or "")
+    )
+    _print_funnel(counts, len(rows), traded, remembered)
 
     # Refused before the review, or after paying for it?
     #
@@ -443,19 +453,27 @@ def _print_score_reach(rows: Sequence[sqlite3.Row]) -> None:
         )
 
 
-def _print_funnel(counts: Counter[str], total: int, traded: int) -> None:
+def _print_funnel(counts: Counter[str], total: int, traded: int, remembered: int = 0) -> None:
     """Where the candidates went, in the order the gates run.
 
     Reads top to bottom: everything scanned, then what each stage took out of
-    it, then what survived to be paid for. The number people are looking for is
-    the one on the "reached the paid reviewer" line, and it has never been
-    printed anywhere before.
+    it, then what survived to be paid for.
+
+    `remembered` is the correction that makes the bottom line mean what it
+    says. A refusal replayed from the veto memory is written to the journal as
+    AI_VETO, indistinguishable in the reason column from one the account paid
+    for, and counting those below the line inflated "reached the paid reviewer"
+    by an order of magnitude -- 751 against 84 real calls on a live twelve
+    hours, which turned a $4.79 daily API bill into a reported $40 one. They
+    belong with the other gate that suppresses a call before it is made.
     """
     print("FROM SCAN TO A PAID REVIEW")
     print(f"  {total:>6}  decisions recorded")
     remaining = total
     for label, reasons in _STAGES:
         lost = sum(count for reason, count in counts.items() if reason in reasons)
+        if "opinion" in label:
+            lost += remembered
         if lost:
             print(f"  {-lost:>6}  {label}")
         remaining -= lost
@@ -475,8 +493,10 @@ def _print_funnel(counts: Counter[str], total: int, traded: int) -> None:
     share = 100.0 * remaining / total if total else 0.0
     print(f"  {'':>6}  {'-' * 46}")
     print(f"  {remaining:>6}  reached the paid reviewer   ({share:.1f}% of everything scanned)")
+    if remembered:
+        print(f"  {'':>6}  ({remembered} of the refusals above were replayed free from memory)")
 
-    refused = sum(count for reason, count in counts.items() if reason in _REVIEWED)
+    refused = sum(count for reason, count in counts.items() if reason in _REVIEWED) - remembered
     discarded = sum(count for reason, count in counts.items() if reason in _AFTER_REVIEW)
     if refused:
         print(f"  {-refused:>6}  Claude declined or asked for a retest")
@@ -514,9 +534,16 @@ def _group(detail: str) -> str:
     return _NUMBER.sub("N", _summarise(detail))
 
 
-#: Any decimal or percentage inside a detail sentence. Replaced before counting
-#: so one gate reads as one gate.
-_NUMBER = re.compile(r"\d+(?:\.\d+)?%?")
+#: A measurement inside a detail sentence, replaced before counting so one gate
+#: reads as one gate.
+#:
+#: The lookbehind is doing real work: without it, M5 and M15 both collapse to
+#: "MN" and two different timeframes are reported as one cause. A timeframe is
+#: part of the name of the thing being described, not a measurement of it.
+#: Digits are excluded from the lookbehind as well as letters, or "M15" matches
+#: at its second digit and becomes "M1N" — the engine simply advances one
+#: character and tries again once the first position is rejected.
+_NUMBER = re.compile(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?%?")
 
 
 if __name__ == "__main__":
