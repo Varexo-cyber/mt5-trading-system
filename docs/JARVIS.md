@@ -14,11 +14,18 @@
   analysis modules are explicitly listed as independently validated.
 - `EXPERIMENTAL_LIVE`: a separate, explicitly accepted real-money experiment.
   It is bound to one login/server/currency contract. In the current owner-set
-  contract it fixes both requested and maximum risk at 2% per trade, has the
-  peak-to-current drawdown breaker switched off, and stops at the fixed EUR 50
-  equity floor. The dashboard reads these values from the armed contract rather
-  than repeating constants. It does not pretend the current research modules
-  have passed normal live promotion.
+  contract an ordinary trade risks 2%, rising along a ramp to at most 6% and
+  only on a reviewer confidence of 0.90; total open risk across every position
+  is capped at 12%; the peak-to-current drawdown breaker is switched off; and
+  it stops at the fixed EUR 50 equity floor. The dashboard reads these values
+  from the armed contract rather than repeating constants. It does not pretend
+  the current research modules have passed normal live promotion.
+
+  The contract is versioned, and conviction-scaled staking bumped it to
+  version 2. An approval armed before that change is refused at startup with a
+  message naming the re-arm: an old contract describes an envelope this build
+  no longer runs, and reinterpreting it silently is the exact drift arming
+  exists to prevent.
 
 Opening MT5 alone does not start Jarvis. Start it through the dashboard or one
 of the launchers. MT5 must remain open and logged in.

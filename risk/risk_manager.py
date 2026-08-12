@@ -46,6 +46,8 @@ MarginEstimator = Callable[[str, Direction, float, float], float]
 #: Market callback: symbol -> can an order or a stop change be sent right now?
 #: False means the venue is shut, not that the trade is a bad idea.
 ManageabilityProbe = Callable[[str], bool]
+#: symbol -> InstrumentSpec, for valuing the risk on an open position.
+SpecLookup = Callable[[str], object]
 
 # `jarvis-addon` is retained for positions opened by the first deployed
 # pyramiding build. New tickets use the operator-facing scalp name. MT5 stores
@@ -199,6 +201,70 @@ class RiskManager:
         log.critical("trading halted", extra={"event": "risk_halt", "reason": reason})
 
     # -- anti-martingale ---------------------------------------------------
+
+    def open_risk_pct(self, state: RiskState, spec_for: SpecLookup | None = None) -> float:
+        """How much of the account is at risk across every open position, now.
+
+        Measured on each position's CURRENT stop rather than the one it opened
+        with, which is the honest reading and also the generous one: a winner
+        whose stop has walked to break-even is risking nothing and stops
+        consuming the budget, freeing room for the next trade.
+
+        A position with no stop at the broker counts as its full notional
+        against the cap. That is deliberately pessimistic — an unstopped
+        position has unbounded downside and the whole point of the cap is to
+        refuse the next trade when the book is already loaded.
+
+        Returns 0.0 when nothing can be measured. The cap is a limit on known
+        exposure, and it must never block trading because a spec lookup
+        failed; every other gate is still standing behind it.
+        """
+        if state.equity <= 0 or not state.open_positions:
+            return 0.0
+        total = 0.0
+        for position in state.open_positions:
+            spec = None
+            if spec_for is not None:
+                try:
+                    spec = spec_for(position.symbol)
+                except Exception:  # noqa: BLE001 - an unreadable spec must not block
+                    spec = None
+            if spec is None:
+                continue
+            distance = (
+                abs(position.price_open - position.sl) if position.sl else abs(position.price_open)
+            )
+            try:
+                total += spec.money_per_lot(distance) * position.volume
+            except Exception:  # noqa: BLE001 - as above
+                continue
+        return 100.0 * total / state.equity
+
+    def room_for_more_risk(
+        self, state: RiskState, wanted_pct: float, spec_for: SpecLookup | None = None
+    ) -> float:
+        """`wanted_pct`, trimmed to what the total-exposure cap still allows.
+
+        Returns the stake this trade may actually take. Zero means the book is
+        already full and the caller must not open anything.
+
+        This is the guard that makes conviction-scaled staking survivable. Four
+        slots at a fixed 2% is 8% of the account at risk at once; four slots at
+        a conviction-scaled 6% is 24%, on an account of a hundred and forty
+        euros with the daily and weekly loss limits switched off. Raising the
+        per-trade ceiling without this is not the change that was asked for.
+        """
+        cap = self.settings.risk.max_total_open_risk_pct
+        if cap <= 0:
+            return wanted_pct
+        used = self.open_risk_pct(state, spec_for)
+        remaining = cap - used
+        # Snapped, because `cap - used` on a book that exactly fills the cap
+        # lands a few parts in 10^13 above zero, and the contract here is that
+        # zero means full. A remainder that size is not room for anything.
+        if remaining < 1e-9:
+            return 0.0
+        return min(wanted_pct, remaining)
 
     def risk_multiplier(self, state: RiskState) -> float:
         """Risk scaling for the next trade. Never above 1.0.
@@ -632,7 +698,34 @@ class RiskManager:
         # the losing-streak multiplier already applied. Comparing it against
         # what this risk manager sanctioned catches exactly that, and is immune
         # to lot rounding because both sides are decisions rather than outcomes.
-        sanctioned = self.settings.effective_risk_pct() * self.risk_multiplier(state)
+        #
+        # THE CEILING, NOT THE ORDINARY STAKE, once conviction scaling is on,
+        # and that is a genuine loss of resolution which should be stated
+        # rather than buried. Before conviction staking existed there was one
+        # sanctioned number and this line caught any deviation from it at all.
+        # Now an approval may legitimately be sized anywhere between the floor
+        # and the ceiling, so what this can still prove is that the stake never
+        # left the sanctioned envelope — not that it was the exact right point
+        # inside it.
+        #
+        # What keeps the actual rule intact is structural rather than numeric:
+        # the stake is a pure function of the REVIEWER'S CONFIDENCE
+        # (`ConvictionRiskConfig.stake_for`), and nothing on that path reads the
+        # losing streak, the day's P&L, or the last trade's outcome. A stake
+        # cannot rise because something lost, because the loss is not an input.
+        # The multiplier below still shrinks the whole envelope after a streak,
+        # and `PositionSizer.size` still crashes outright on any multiplier
+        # above 1.0, which is the way recovery sizing would actually be
+        # expressed.
+        conviction = self.settings.risk.conviction_risk
+        ceiling = (
+            max(self.settings.effective_risk_pct(), conviction.ceiling_pct)
+            if conviction.enabled
+            else self.settings.effective_risk_pct()
+        )
+        sanctioned = min(ceiling, self.settings.effective_max_risk_pct()) * self.risk_multiplier(
+            state
+        )
         if sizing.intended_risk_pct > sanctioned + 1e-9:
             raise ForbiddenStrategyError(
                 f"{sizing.symbol}: sizing intends {sizing.intended_risk_pct:.3f}% but "

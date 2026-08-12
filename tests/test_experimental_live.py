@@ -12,8 +12,11 @@ from config.schema import MT5Config
 from core.mt5_connector import MT5Connector
 from core.types import AccountSnapshot
 from promotion.experimental import (
+    CONTRACT_VERSION,
     EXPERIMENTAL_EQUITY_FLOOR,
     EXPERIMENTAL_MAX_DRAWDOWN_PCT,
+    EXPERIMENTAL_MAX_STAKE_PCT,
+    EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT,
     EXPERIMENTAL_RISK_PER_TRADE_PCT,
     ExperimentalLiveContract,
     apply_experimental_live_limits,
@@ -101,8 +104,12 @@ def test_experimental_settings_fix_risk_without_promoting_modules() -> None:
 
     # 2%, because 1% of EUR 100 buys 0.0077 lots against a 0.01 minimum and
     # therefore cannot express a trade at all. See EXPERIMENTAL_RISK_PER_TRADE_PCT.
+    # This is the ORDINARY stake and remains what an unremarkable approval gets.
     assert experimental.effective_risk_pct() == EXPERIMENTAL_RISK_PER_TRADE_PCT
-    assert experimental.effective_max_risk_pct() == EXPERIMENTAL_RISK_PER_TRADE_PCT
+    # The ceiling is a different number now. Only a reviewer confidence of 0.90
+    # reaches it; see EXPERIMENTAL_MAX_STAKE_PCT.
+    assert experimental.effective_max_risk_pct() == EXPERIMENTAL_MAX_STAKE_PCT
+    assert experimental.risk.max_total_open_risk_pct == EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT
     # Zero: the automatic peak-to-current halt is off for this experiment, by
     # explicit choice. The fixed capital floor is the only unconditional stop
     # that remains — see EXPERIMENTAL_MAX_DRAWDOWN_PCT for the reasoning.
@@ -114,6 +121,104 @@ def test_experimental_settings_fix_risk_without_promoting_modules() -> None:
         == original.analysis.confluence.live_enabled_modules
     )
     assert original.analysis.confluence.live_enabled_modules == ()
+
+
+def test_arming_forces_the_conviction_ramp_rather_than_reading_it() -> None:
+    """A config edit must not be able to widen what the live account may stake.
+
+    That is the whole reason arming exists, and the conviction ramp is the
+    newest way it could have been got round: leaving `conviction_risk` to the
+    overlay would have made the per-trade ceiling a yaml value again.
+    """
+    settings = apply_experimental_live_limits(load_settings(env_overrides=False))
+    ramp = settings.risk.conviction_risk
+
+    assert ramp.enabled
+    assert ramp.floor_pct == EXPERIMENTAL_RISK_PER_TRADE_PCT
+    assert ramp.ceiling_pct == EXPERIMENTAL_MAX_STAKE_PCT
+    # The floor equals the old fixed stake, so nothing an ordinary approval gets
+    # has changed. Only setups above the confidence floor are sized differently.
+    assert ramp.stake_for(0.60) == EXPERIMENTAL_RISK_PER_TRADE_PCT
+    assert ramp.stake_for(1.00) == EXPERIMENTAL_MAX_STAKE_PCT
+
+
+def test_a_contract_armed_before_conviction_staking_must_be_re_armed(
+    tmp_path: Path,
+) -> None:
+    """The operational point of the version bump.
+
+    A contract armed under the old build describes an envelope this build no
+    longer runs — one stake, no ceiling, no aggregate cap. Silently
+    reinterpreting it would mean the account trades a 6% ceiling that nobody
+    ever confirmed, which is exactly the drift arming exists to prevent.
+    """
+    settings = apply_experimental_live_limits(load_settings(env_overrides=False))
+    stale = ExperimentalLiveContract(
+        version=1,
+        login=5_049_535,
+        server="Eightcap-Live",
+        currency="EUR",
+        initial_equity=140.0,
+        risk_per_trade_pct=EXPERIMENTAL_RISK_PER_TRADE_PCT,
+        max_drawdown_pct=EXPERIMENTAL_MAX_DRAWDOWN_PCT,
+        phrase="BEVESTIG EXPERIMENTEEL LIVE",
+        armed_at=datetime.now(UTC).isoformat(),
+    )
+
+    with pytest.raises(RuntimeError, match="re-arm"):
+        stale.assert_compatible(account(equity=140.0), settings)
+
+
+def test_a_fresh_contract_records_the_whole_envelope(tmp_path: Path) -> None:
+    contract = write_contract(tmp_path, account(equity=140.0))
+
+    assert contract.version == CONTRACT_VERSION
+    assert contract.max_stake_pct == EXPERIMENTAL_MAX_STAKE_PCT
+    assert contract.max_total_open_risk_pct == EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT
+    # It survives the round trip through disk, which is the only reason it is
+    # written down at all.
+    assert ExperimentalLiveContract.load(contract_path(tmp_path)) == contract
+
+
+def test_a_config_reaching_past_the_contract_ceiling_is_refused(tmp_path: Path) -> None:
+    """The check that makes the contract binding rather than decorative."""
+    settings = apply_experimental_live_limits(load_settings(env_overrides=False))
+    over_reaching = settings.model_copy(
+        update={
+            "risk": settings.risk.model_copy(
+                update={
+                    "conviction_risk": settings.risk.conviction_risk.model_copy(
+                        update={"ceiling_pct": EXPERIMENTAL_MAX_STAKE_PCT + 2.0}
+                    )
+                }
+            )
+        }
+    )
+    contract = write_contract(tmp_path, account(equity=140.0))
+
+    with pytest.raises(RuntimeError, match="conviction staking reaches"):
+        contract.assert_compatible(account(equity=140.0), over_reaching)
+
+
+def test_a_conviction_floor_below_the_ordinary_stake_is_refused(tmp_path: Path) -> None:
+    """A floor under 2% would quietly SHRINK unremarkable trades — the opposite
+    of what was authorised, and invisible in the sizing line."""
+    settings = apply_experimental_live_limits(load_settings(env_overrides=False))
+    shrunken = settings.model_copy(
+        update={
+            "risk": settings.risk.model_copy(
+                update={
+                    "conviction_risk": settings.risk.conviction_risk.model_copy(
+                        update={"floor_pct": 1.0}
+                    )
+                }
+            )
+        }
+    )
+    contract = write_contract(tmp_path, account(equity=140.0))
+
+    with pytest.raises(RuntimeError, match="conviction staking floors at"):
+        contract.assert_compatible(account(equity=140.0), shrunken)
 
 
 def test_shipped_config_cannot_trade_live_without_an_explicit_promotion() -> None:

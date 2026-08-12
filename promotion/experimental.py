@@ -32,7 +32,48 @@ EXPERIMENTAL_LIVE_PHRASE = "BEVESTIG EXPERIMENTEEL LIVE"
 # below) and the fixed capital floor is what ends it now. At 2% of an 88 EUR
 # account, roughly 1.77 EUR a trade, the distance from here to that floor is a
 # great many losing trades rather than a handful.
+#
+# This is now the FLOOR of a ramp rather than the whole story. See
+# `EXPERIMENTAL_MAX_STAKE_PCT` below: an ordinary approval is still sized at
+# exactly this number, and only a reviewer confidence above 0.70 buys more.
 EXPERIMENTAL_RISK_PER_TRADE_PCT = 2.0
+
+# The most one trade may risk, reached only at maximum reviewer confidence.
+#
+# Authorised by the owner in these words: minimum 2%, up to 6-8% on a highly
+# convincing setup, less as the conviction falls. Six rather than eight, and
+# that is a choice worth naming: eight percent of a 140 EUR account is 11.20
+# EUR a trade against a 50 EUR floor, which is eight maximum-conviction losers
+# from the end of the experiment. Six makes it eleven. The owner authorised the
+# range; this picks the conservative end of it, and moving to eight is a
+# one-line edit plus a re-arm.
+#
+# WHAT DECIDES WHERE ON THE RAMP A TRADE LANDS is the reviewer's confidence and
+# NOT the engine's own conviction score. That distinction is the whole design.
+# The engine's conviction is measured on this account twice over not to predict
+# the outcome — the "20+ points over the bar" bucket was the worst of all of
+# them at -4.92R over 23 trades, and across 84 paid reviews the 40-45 band
+# produced nothing useful while 20-25 produced 33%. Staking on that number
+# would put the most money on the trades the record says are the worst.
+#
+# The reviewer's confidence has not been proven either. It is simply the one
+# number in the chain that has not yet been disproven, and the ramp starts at
+# 0.70 — well above the 0.55 approval bar — so that an approval which merely
+# cleared the bar is sized exactly as it was before any of this existed.
+EXPERIMENTAL_MAX_STAKE_PCT = 6.0
+
+# The most the whole book may risk at once, across every open position.
+#
+# Four slots at the 6% ceiling is 24% of the account on the table at one time,
+# and nothing in the per-trade rules would have noticed. Six percent is a
+# decision about one trade; twenty-four percent is a decision about the
+# account, and no one made it. This is that decision: twelve percent, so two
+# maximum-conviction trades fill the book and a third waits for one of them to
+# close or to move its stop to break-even.
+#
+# Measured against the CURRENT stop of each open position, so banking a stop at
+# break-even genuinely frees capacity rather than merely appearing to.
+EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 12.0
 # Zero: the automatic peak-to-current halt is off for this experiment.
 #
 # The operator turned it off after seeing what it left. At 88.28 EUR against a
@@ -65,6 +106,12 @@ EXPERIMENTAL_MAX_DRAWDOWN_PCT = 0.0
 # number. Reaching it flattens everything and halts until a human restarts.
 EXPERIMENTAL_EQUITY_FLOOR = 50.0
 
+# Bumped from 1 when conviction-scaled staking arrived. A contract armed before
+# that change describes an envelope this build no longer runs — it pins one
+# stake and knows nothing about a ceiling or an aggregate cap — so it must be
+# re-armed rather than silently reinterpreted.
+CONTRACT_VERSION = 2
+
 
 @dataclass(frozen=True, slots=True)
 class ExperimentalLiveContract:
@@ -79,6 +126,12 @@ class ExperimentalLiveContract:
     max_drawdown_pct: float
     phrase: str
     armed_at: str
+    #: Defaulted only so that a version-1 file still *loads*, which is what
+    #: lets `assert_compatible` reject it by name instead of the loader
+    #: throwing `EXPERIMENTAL_LIVE_CONTRACT_INVALID` at an operator who has no
+    #: way to tell a stale contract from a corrupt one.
+    max_stake_pct: float = 0.0
+    max_total_open_risk_pct: float = 0.0
 
     @classmethod
     def create(cls, account: AccountSnapshot) -> ExperimentalLiveContract:
@@ -87,7 +140,7 @@ class ExperimentalLiveContract:
         if account.equity <= 0:
             raise RuntimeError("EXPERIMENTAL_LIVE_REQUIRES_POSITIVE_EQUITY")
         return cls(
-            version=1,
+            version=CONTRACT_VERSION,
             login=account.login,
             server=account.server,
             currency=account.currency,
@@ -96,6 +149,8 @@ class ExperimentalLiveContract:
             max_drawdown_pct=EXPERIMENTAL_MAX_DRAWDOWN_PCT,
             phrase=EXPERIMENTAL_LIVE_PHRASE,
             armed_at=datetime.now(UTC).isoformat(),
+            max_stake_pct=EXPERIMENTAL_MAX_STAKE_PCT,
+            max_total_open_risk_pct=EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT,
         )
 
     @classmethod
@@ -129,8 +184,12 @@ class ExperimentalLiveContract:
 
     def assert_compatible(self, account: AccountSnapshot, settings: Settings) -> None:
         failures: list[str] = []
-        if self.version != 1:
-            failures.append("unsupported contract version")
+        if self.version != CONTRACT_VERSION:
+            failures.append(
+                f"contract is version {self.version} but this build writes version "
+                f"{CONTRACT_VERSION} — conviction-scaled staking changed the envelope, "
+                f"so re-arm with rearm_experimental_live.cmd"
+            )
         if self.phrase != EXPERIMENTAL_LIVE_PHRASE:
             failures.append("confirmation phrase mismatch")
         if self.login != account.login:
@@ -161,10 +220,44 @@ class ExperimentalLiveContract:
                 f"effective risk resolves to {settings.effective_risk_pct():.2f}% but the "
                 f"contract binds it to {self.risk_per_trade_pct:.2f}%"
             )
-        if settings.effective_max_risk_pct() > self.risk_per_trade_pct + 1e-9:
+        if abs(self.max_stake_pct - EXPERIMENTAL_MAX_STAKE_PCT) > 1e-9:
+            failures.append(
+                f"contract caps a single trade at {self.max_stake_pct:.2f}% but this build "
+                f"caps it at {EXPERIMENTAL_MAX_STAKE_PCT:.2f}% — re-arm"
+            )
+        if abs(self.max_total_open_risk_pct - EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT) > 1e-9:
+            failures.append(
+                f"contract caps total open risk at {self.max_total_open_risk_pct:.2f}% but "
+                f"this build caps it at {EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT:.2f}% — re-arm"
+            )
+        # The per-trade ceiling, not the ordinary stake. These are two different
+        # numbers now: an ordinary approval is sized at `risk_per_trade_pct` and
+        # a very convincing one may reach `max_stake_pct`, so a ceiling above the
+        # ordinary stake is the intended state rather than a loosened limit.
+        if settings.effective_max_risk_pct() > self.max_stake_pct + 1e-9:
             failures.append(
                 f"effective risk ceiling is {settings.effective_max_risk_pct():.2f}%, above "
-                f"the contract's {self.risk_per_trade_pct:.2f}%"
+                f"the contract's {self.max_stake_pct:.2f}%"
+            )
+        conviction = settings.risk.conviction_risk
+        if conviction.enabled and conviction.ceiling_pct > self.max_stake_pct + 1e-9:
+            failures.append(
+                f"conviction staking reaches {conviction.ceiling_pct:.2f}%, above the "
+                f"contract's {self.max_stake_pct:.2f}%"
+            )
+        if conviction.enabled and conviction.floor_pct + 1e-9 < self.risk_per_trade_pct:
+            # A floor below the ordinary stake would make this change quietly
+            # SHRINK unremarkable trades, which is the opposite of what was asked
+            # for and would be invisible in the sizing line.
+            failures.append(
+                f"conviction staking floors at {conviction.floor_pct:.2f}%, below the "
+                f"contract's ordinary {self.risk_per_trade_pct:.2f}%"
+            )
+        if settings.risk.max_total_open_risk_pct > self.max_total_open_risk_pct + 1e-9:
+            failures.append(
+                f"configured total open risk cap is "
+                f"{settings.risk.max_total_open_risk_pct:.2f}%, above the contract's "
+                f"{self.max_total_open_risk_pct:.2f}%"
             )
         if settings.risk.max_drawdown_circuit_breaker_pct > self.max_drawdown_pct + 1e-9:
             failures.append(
@@ -210,16 +303,28 @@ def _breaker_for(settings: Settings) -> float:
 def apply_experimental_live_limits(settings: Settings) -> Settings:
     """Return the fixed, non-configurable risk envelope for this experiment."""
     system = settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})
+    # The conviction ramp is forced here rather than read from the overlay, for
+    # the same reason every other number in this function is: the point of
+    # arming is that the envelope cannot drift with a config edit. A yaml change
+    # to `risk.conviction_risk` cannot widen what this account can stake.
     risk = settings.risk.model_copy(
         update={
             "risk_per_trade_pct": EXPERIMENTAL_RISK_PER_TRADE_PCT,
-            "max_risk_per_trade_pct": EXPERIMENTAL_RISK_PER_TRADE_PCT,
+            "max_risk_per_trade_pct": EXPERIMENTAL_MAX_STAKE_PCT,
+            "max_total_open_risk_pct": EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT,
             "max_drawdown_circuit_breaker_pct": _breaker_for(settings),
+            "conviction_risk": settings.risk.conviction_risk.model_copy(
+                update={
+                    "enabled": True,
+                    "floor_pct": EXPERIMENTAL_RISK_PER_TRADE_PCT,
+                    "ceiling_pct": EXPERIMENTAL_MAX_STAKE_PCT,
+                }
+            ),
         }
     )
     limits = dict(settings.modes)
     limits[TradingMode.MICRO_LIVE.value] = limits[TradingMode.MICRO_LIVE.value].model_copy(
-        update={"max_risk_per_trade_pct": EXPERIMENTAL_RISK_PER_TRADE_PCT}
+        update={"max_risk_per_trade_pct": EXPERIMENTAL_MAX_STAKE_PCT}
     )
     # `live_enabled_modules` is deliberately NOT derived here. Auto-promoting
     # every weighted module the moment the experiment is armed would mean an

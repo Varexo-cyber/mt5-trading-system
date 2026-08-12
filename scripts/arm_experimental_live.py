@@ -100,6 +100,19 @@ def main() -> int:
             f"risk {contract.risk_per_trade_pct:.1f}%, drawdown {contract.max_drawdown_pct:.1f}%, "
             f"equity floor {contract.equity_floor:.2f} {contract.currency}."
         )
+        # Spelled out because the headline number is no longer the whole story.
+        # "risk 2.0%" alone now understates by a factor of three what a single
+        # very convincing setup may stake.
+        print(
+            f"  stake per trade   {contract.risk_per_trade_pct:.1f}% ordinary, rising to "
+            f"{contract.max_stake_pct:.1f}% only on a reviewer confidence of 0.90\n"
+            f"                    = {account.equity * contract.risk_per_trade_pct / 100:.2f}"
+            f" to {account.equity * contract.max_stake_pct / 100:.2f} "
+            f"{contract.currency} at today's equity\n"
+            f"  total open risk   {contract.max_total_open_risk_pct:.1f}% across all "
+            f"positions at once; a trade that cannot get its ordinary "
+            f"{contract.risk_per_trade_pct:.1f}% waits"
+        )
         # Which of the two backstops will actually stop you, at today's equity.
         #
         # The floor is the deeper one and is rarely what bites; the peak-to-
