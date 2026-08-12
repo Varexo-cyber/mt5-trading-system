@@ -111,6 +111,27 @@ def conviction_band(score: float | None, threshold: float | None) -> str:
     return "20+ over the bar"
 
 
+def score_band(score: float | None) -> str:
+    """The raw confluence score, in fixed five-point bands.
+
+    Deliberately absolute where `conviction_band` is deliberately relative, and
+    the two answer opposite questions. Relative to the bar is right for "does
+    being far above our own standard mean anything", and it becomes useless the
+    moment the bar itself moves: drop the threshold from 40 to 35 and "0-5 over
+    the bar" silently stops describing scores of 40-45 and starts describing
+    35-40. Comparing before against after would then be comparing two different
+    populations under one label.
+
+    This is the slice that survives a threshold change, and the only one that
+    can answer the question the change is being made to test: do the setups
+    scoring 35-40 actually return less than the ones scoring 40-45?
+    """
+    if score is None:
+        return "unrecorded"
+    floor = int(score // 5 * 5)
+    return f"score {floor}-{floor + 5}"
+
+
 def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket]]:
     """Closed trades, sliced every way the journal can support."""
     columns = (
@@ -146,6 +167,11 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
         # 39.8 was refused, and "hold the ones we are sure about" is only a
         # strategy if being sure means something here.
         slices["how sure the engine was"] = {}
+        # Absolute bands beside the relative ones, so lowering the threshold
+        # can be judged instead of merely done. Without this the report
+        # relabels itself the moment the bar moves and the comparison the move
+        # exists to make becomes impossible to draw.
+        slices["what the raw score was"] = {}
 
     def into(slice_name: str, key: str, row: sqlite3.Row) -> None:
         bucket = slices[slice_name].setdefault(key, Bucket(key))
@@ -166,6 +192,7 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
                 conviction_band(row["total_score"], row["score_threshold"]),
                 row,
             )
+            into("what the raw score was", score_band(row["total_score"]), row)
     return slices
 
 

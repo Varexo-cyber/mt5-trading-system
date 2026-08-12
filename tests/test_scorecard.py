@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.scorecard import conviction_band, main, session_of
+from scripts.scorecard import conviction_band, main, score_band, session_of
 
 
 @pytest.fixture
@@ -285,3 +285,29 @@ class TestDoesBeingSureMeanAnything:
         """An older journal loses the section, never the whole report."""
         assert main(["--db", str(journal), "--days", "30"]) == 0
         assert "HOW SURE THE ENGINE WAS" not in capsys.readouterr().out
+
+
+class TestAThresholdChangeCanBeJudged:
+    """`conviction_band` is measured against the bar, which is right for "does
+    being sure mean anything" and useless for judging a move of the bar itself.
+
+    Drop the threshold from 40 to 35 and "0-5 over the bar" stops describing
+    scores of 40-45 and starts describing 35-40, under the same label. The
+    before-and-after comparison the move exists to support would be comparing
+    two different populations.
+    """
+
+    def test_the_raw_band_does_not_move_when_the_bar_does(self) -> None:
+        assert score_band(37.5) == "score 35-40"
+        assert score_band(42.0) == "score 40-45"
+
+    def test_the_relative_band_does_move_and_that_is_the_problem(self) -> None:
+        """Same setup, two thresholds, two different labels — which is exactly
+        why the absolute slice had to be added rather than reusing this one."""
+        assert conviction_band(37.5, 35.0) == "0-5 over the bar"
+        assert conviction_band(42.0, 40.0) == "0-5 over the bar"
+
+    def test_an_unscored_trade_is_named_rather_than_bucketed_at_zero(self) -> None:
+        """A missing score put in the lowest band would invent evidence that
+        low scores lose, on rows that never carried a score at all."""
+        assert score_band(None) == "unrecorded"

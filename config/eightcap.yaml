@@ -223,7 +223,38 @@ analysis:
     # filters, the sizer, the margin check and Claude's veto all still run, and
     # this threshold was never the only thing standing between a signal and an
     # order.
-    score_threshold: 40.0
+    # 35, op instructie van de eigenaar, en met bewijs dat het geen lat
+    # verlagen is maar er een weghalen die niets bewaakte.
+    #
+    # De aanname achter 40 was dat een hogere score een betere trade betekent.
+    # Twee onafhankelijke metingen op deze rekening zeggen van niet:
+    #
+    #   Scorecard, 47 gesloten trades. De emmer "20+ boven de lat" was de
+    #   slechtste van allemaal: -4,92R over 23 trades. De setups waar de engine
+    #   het zekerst over was, verloren het meest.
+    #
+    #   `review_value.py`, 84 betaalde reviews. Van de calls met conviction
+    #   20-25 leverde 33% iets bruikbaars op; van die met 40-45 nul procent.
+    #   Het rapport concludeerde letterlijk "the engine's score does not
+    #   separate them".
+    #
+    # Een drempel op een maat die niet met de uitkomst meebeweegt, is geen
+    # kwaliteitsfilter maar een volumeknop. In de nacht van 12 augustus stonden
+    # er 2908 setups binnen vijf punten onder de lat en 913 erboven; die 2908
+    # zijn geweigerd op een getal waarvan we nu weten dat het niets voorspelt.
+    #
+    # Waarom 35 en niet lager: tussen 35 en 40 is gemeten dat de score niet
+    # scheidt. Onder 30 heeft niemand gekeken, dus daar geldt het bewijs niet.
+    #
+    # WAT DIT NIET IS: een gok die vanzelf blijft staan. `scripts/scorecard.py`
+    # heeft nu de sectie "what the raw score was" met absolute banden van vijf
+    # punten. Over twee dagen is de vraag rechtstreeks af te lezen: doen de
+    # trades uit 35-40 het slechter dan die uit 40-45? Zo ja, dan gaat hij
+    # terug naar 40 en is dat een meting in plaats van een mening.
+    #
+    # Alles erachter staat onveranderd: de filters, de entry-timing, de sizer,
+    # de margin-check en Claude's veto draaien alle vijf nog steeds.
+    score_threshold: 35.0
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
