@@ -361,11 +361,16 @@ def main(argv: list[str] | None = None) -> int:
     # doses and means the entry rules are unreachable when it is everything.
     if top == "NO_SIGNAL":
         details = Counter(
-            _summarise(str(row["detail"])) for row in rows if str(row["reason"]) == "NO_SIGNAL"
+            _group(str(row["detail"])) for row in rows if str(row["reason"]) == "NO_SIGNAL"
         )
         print("What the engine actually said:")
-        for detail, count in details.most_common(6):
-            print(f"  {count:>5}x  {detail}")
+        shown = 0
+        for detail, count in details.most_common(8):
+            print(f"  {count:>6}x  {detail}")
+            shown += count
+        rest = sum(details.values()) - shown
+        if rest:
+            print(f"  {rest:>6}x  everything else")
         _print_score_reach(rows)
 
     for reason in counts:
@@ -492,6 +497,26 @@ def _summarise(detail: str) -> str:
     """Collapse a detail string so near-identical reasons group together."""
     text = " ".join(detail.split())
     return text[:110] + ("…" if len(text) > 110 else "")
+
+
+def _group(detail: str) -> str:
+    """`_summarise`, with the measurements taken out of the grouping key.
+
+    The engine writes the number into the sentence: "confluence score 37.5
+    below threshold". Grouped on the raw text, 37.5 and 37.4 are two different
+    causes, so the single biggest reachable gate shatters into several hundred
+    rows of two hundred each and never appears in a top-six list at all. A live
+    night read "17432x no weighted directional evidence" at the top and three
+    rows of ~250 near the bottom, and the ~14,000 decisions refused by the
+    score threshold — the one number in this file an operator can actually
+    move — were nowhere on the screen.
+    """
+    return _NUMBER.sub("N", _summarise(detail))
+
+
+#: Any decimal or percentage inside a detail sentence. Replaced before counting
+#: so one gate reads as one gate.
+_NUMBER = re.compile(r"\d+(?:\.\d+)?%?")
 
 
 if __name__ == "__main__":
