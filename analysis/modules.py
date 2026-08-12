@@ -72,12 +72,44 @@ class TrendMomentum:
                 recent = frame.iloc[-self.config.invalidation_lookback :]
                 invalidation = float(recent["low"].min() if direction > 0 else recent["high"].max())
 
-        if not reads[0] or reads[0] != reads[1]:
+        # Three situations, and two of them used to give the same answer.
+        #
+        #   signal timeframe flat   -> nothing to trade. Silence is correct.
+        #   bias against the signal -> a real conflict. Refusing is correct.
+        #   bias flat, signal trends-> NOT a conflict. It is the absence of a
+        #                              headwind, and it was returning the same
+        #                              hard zero as an outright disagreement.
+        #
+        # That third branch is expensive. Over a live twelve hours "no weighted
+        # directional evidence" was 18,150 of 36,331 no-signals — half of every
+        # refusal the system made — and a bias timeframe with no opinion is the
+        # commonest way to land in it, because H4 spends most of its life
+        # somewhere between a crossover and a slope.
+        #
+        # Conflating "I have no view" with "no" is the same error as reading an
+        # unmapped instrument as a closed market. Discounted rather than waved
+        # through: an unconfirmed trend is genuinely worth less than a
+        # confirmed one, so it takes a fraction of its usual confidence and
+        # still has to clear the confidence floor and the score threshold.
+        bias, signal_read = reads[0], reads[1]
+        unconfirmed = not bias
+        blocked = (
+            not signal_read
+            or (bias and bias != signal_read)
+            or (unconfirmed and self.config.neutral_bias_confidence_scale <= 0)
+        )
+        if blocked:
+            if not signal_read:
+                why = f"{timeframes[1].value} momentum is flat"
+            elif bias:
+                why = f"{timeframes[0].value} momentum opposes {timeframes[1].value}"
+            else:
+                why = f"{timeframes[0].value} momentum is neutral"
             return Signal(
                 module=self.name,
                 score=0.0,
                 confidence=0.0,
-                reasoning="H4/H1 momentum is neutral or disagrees",
+                reasoning=why,
                 details=details,
             )
         signal_frame = ctx.series[timeframes[1]].df
@@ -103,14 +135,27 @@ class TrendMomentum:
             self.config.maximum_confidence,
             self.config.base_confidence + separation * self.config.separation_confidence_scale,
         )
-        direction = reads[0]
+        if unconfirmed:
+            confidence *= self.config.neutral_bias_confidence_scale
+        direction = signal_read
+        side = "bullish" if direction > 0 else "bearish"
         return Signal(
             module=self.name,
             score=self.config.score * direction,
             confidence=confidence,
-            reasoning=f"H4 and H1 EMA/momentum aligned {'bullish' if direction > 0 else 'bearish'}",
+            reasoning=(
+                f"{timeframes[1].value} EMA/momentum {side} with "
+                f"{timeframes[0].value} neutral — unconfirmed by the bias timeframe"
+                if unconfirmed
+                else f"{timeframes[0].value} and {timeframes[1].value} "
+                f"EMA/momentum aligned {side}"
+            ),
             invalidation_price=invalidation,
-            details=details,
+            # Named in the signal itself, not only in the confidence number.
+            # It reaches the journal and the review payload from here, so
+            # "was this trend confirmed by the higher timeframe" becomes a
+            # column that can be grouped by once there are trades to group.
+            details={**details, "bias_confirmed": not unconfirmed},
         )
 
 
