@@ -269,3 +269,110 @@ class TestItSurvivesAnImperfectLedger:
     def test_a_missing_ledger_says_so_rather_than_raising(self, tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
         assert main(["--ledger", str(tmp_path / "nothing.jsonl")]) == 1
         assert "No AI ledger" in capsys.readouterr().out
+
+
+class TestWhatTheRefusalsSay:
+    """ "Claude vetoes everything" is a feeling until the refusals are counted.
+
+    Three shapes, three opposite responses: one objection repeated means the
+    engine produces one kind of bad setup and it is fixable upstream; a
+    different objection each time means the setups are varied and genuinely
+    weak; and confidences all landing on one value is not judgement at all.
+    """
+
+    def refusal(self, handle, *, cycle: str, thesis: str, confidence: float) -> None:  # type: ignore[no-untyped-def]
+        when = NOW.isoformat()
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": when,
+                    "event": "pretrade_request",
+                    "cycle_id": cycle,
+                    "symbol": "EURCAD.i",
+                    "request": {"score": 45.0, "confidence": 0.7},
+                }
+            )
+            + "\n"
+        )
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": when,
+                    "event": "pretrade_response",
+                    "cycle_id": cycle,
+                    "symbol": "EURCAD.i",
+                    "direction": "SHORT",
+                    "decision": {
+                        "approved": False,
+                        "said_yes": False,
+                        "confidence": confidence,
+                        "thesis": thesis,
+                        "entry_timing": "ENTER_NOW",
+                        "model": "claude-sonnet-5",
+                        "usage": USAGE,
+                    },
+                }
+            )
+            + "\n"
+        )
+
+    def test_one_objection_repeated_is_counted_as_one(
+        self, ledger, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The fixable case: the same complaint every time names something
+        upstream to change."""
+        path = ledger(vetoes=0, approvals=0)
+        with path.open("w", encoding="utf-8") as handle:
+            for i in range(6):
+                self.refusal(
+                    handle,
+                    cycle=f"r{i}",
+                    thesis=f"Counter-trend against H4. Price at {1.6 + i / 1000:.4f}.",
+                    confidence=0.30 + i / 100,
+                )
+
+        main(["--ledger", str(path), "--hours", "48"])
+        out = capsys.readouterr().out
+
+        assert "6x  Counter-trend against H4" in out
+
+    def test_a_cluster_of_identical_confidences_is_called_out(
+        self, ledger, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Four reads of four charts landing within a hundredth of each other
+        is not four judgements, and blaming the setups for it wastes days."""
+        path = ledger(vetoes=0, approvals=0)
+        with path.open("w", encoding="utf-8") as handle:
+            for i, confidence in enumerate([0.32, 0.32, 0.32, 0.28]):
+                self.refusal(handle, cycle=f"r{i}", thesis="Weak structure.", confidence=confidence)
+
+        main(["--ledger", str(path), "--hours", "48"])
+        out = capsys.readouterr().out
+
+        assert "distinct bands" in out
+        assert "not\n  the shape of independent judgement" in out
+
+    def test_varied_confidences_are_not_flagged(
+        self, ledger, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        path = ledger(vetoes=0, approvals=0)
+        with path.open("w", encoding="utf-8") as handle:
+            for i, confidence in enumerate([0.10, 0.35, 0.52, 0.71]):
+                self.refusal(handle, cycle=f"r{i}", thesis="Weak structure.", confidence=confidence)
+
+        main(["--ledger", str(path), "--hours", "48"])
+
+        assert "not\n  the shape of independent judgement" not in capsys.readouterr().out
+
+    def test_a_refusal_with_no_reasoning_is_named_rather_than_dropped(
+        self, ledger, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Silently dropping them would report "no refusals" on a run where
+        every single call failed to record its reasoning."""
+        path = ledger(vetoes=0, approvals=0)
+        with path.open("w", encoding="utf-8") as handle:
+            self.refusal(handle, cycle="r0", thesis="", confidence=0.3)
+
+        main(["--ledger", str(path), "--hours", "48"])
+
+        assert "(no reasoning recorded)" in capsys.readouterr().out
