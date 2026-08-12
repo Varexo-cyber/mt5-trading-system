@@ -983,6 +983,21 @@ class TrendMomentumConfig(Base):
     base_confidence: float = Field(default=0.50, ge=0.0, le=1.0)
     separation_confidence_scale: float = Field(default=0.20, ge=0.0, le=5.0)
     maximum_confidence: float = Field(default=0.90, ge=0.0, le=1.0)
+    #: What to do when the bias timeframe has no opinion at all.
+    #:
+    #: The module used to fold two opposite situations into one answer. H4
+    #: trending *against* H1 is a conflict and refusing it is right. H4 flat
+    #: while H1 trends is not a conflict — it is the absence of a headwind —
+    #: and it was returning the same hard zero. On a live twelve hours, "no
+    #: weighted directional evidence" was 18,150 of 36,331 no-signals, half of
+    #: every refusal in the system, and this branch is the largest contributor
+    #: to it.
+    #:
+    #: A discount rather than a pass, because an unconfirmed trend genuinely is
+    #: worth less than a confirmed one: the signal carries this fraction of its
+    #: usual confidence, must still clear `minimum_confidence`, and must still
+    #: carry the score past the threshold. 0.0 restores the old behaviour.
+    neutral_bias_confidence_scale: float = Field(default=0.75, ge=0.0, le=1.0)
 
     @field_validator("bias_timeframe", "signal_timeframe")
     @classmethod
