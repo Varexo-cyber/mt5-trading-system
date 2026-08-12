@@ -134,9 +134,9 @@ def test_every_live_enabled_module_has_a_hypothesis_document() -> None:
         settings = load_settings(overlay=overlay, env_overrides=False)
         for module in settings.analysis.confluence.live_enabled_modules:
             document = Path(root / "docs" / "hypotheses" / f"{module}.md")
-            assert document.exists(), (
-                f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
-            )
+            assert (
+                document.exists()
+            ), f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
 
 
 def test_weighted_modules_are_documented() -> None:
@@ -220,3 +220,92 @@ def _context():  # type: ignore[no-untyped-def]
         series={Timeframe.H1: Series("EURUSD", Timeframe.H1, frame, now)},
         tick=Tick(symbol="EURUSD", time=now, bid=1.1100, ask=1.1101),
     )
+
+
+class TestATrendPremiseContradictedByAMeasuredRange:
+    """`market_regime` sorts every market into trend_up, trend_down, range,
+    transition or extreme. It was computed, sent to the reviewer, cited by the
+    reviewer in refusal after refusal, and never read by the engine — which
+    checks only `volatility_regime`, for "extreme".
+
+    Three live refusals in one session, in the reviewer's own words: "the
+    regime module explicitly flags 'range' with low efficiency (0.08 H1, 0.11
+    H4) — this is chop, not a trend", and "Market_regime independently flags
+    this as a range, not a trend, which undermines the trend-continuation
+    premise the whole idea is built on".
+    """
+
+    def regime(self, reading: str) -> StubModule:
+        return StubModule(Signal("market_regime", 0.0, 1.0, "regime", details={"regime": reading}))
+
+    def engine(self, **overrides) -> ConfluenceEngine:  # type: ignore[no-untyped-def]
+        config = ConfluenceConfig(
+            score_threshold=35.0,
+            minimum_directional_modules=1,
+            weights={"trend_momentum": 1.0, "liquidity_sweep": 0.8, "market_regime": 0.0},
+            **overrides,
+        )
+        return ConfluenceEngine(self.modules, config)  # type: ignore[arg-type]
+
+    def with_modules(self, *modules: StubModule) -> None:
+        self.modules = list(modules)
+
+    def trend(self) -> StubModule:
+        return StubModule(Signal("trend_momentum", 70, 0.8, invalidation_price=1.1050))
+
+    def sweep(self) -> StubModule:
+        return StubModule(Signal("liquidity_sweep", 70, 0.8, invalidation_price=1.1050))
+
+    def test_trend_momentum_alone_is_refused_in_a_measured_range(self) -> None:
+        self.with_modules(self.trend(), self.regime("range"))
+
+        idea = self.engine().evaluate(context(), TradingMode.PAPER)
+
+        assert idea.direction is None
+        assert "measures a range" in idea.reason
+
+    def test_the_same_setup_passes_when_the_regime_is_a_trend(self) -> None:
+        self.with_modules(self.trend(), self.regime("trend_up"))
+
+        assert self.engine().evaluate(context(), TradingMode.PAPER).direction is not None
+
+    def test_a_range_setup_is_welcome_in_a_range(self) -> None:
+        """A liquidity sweep looks for a failed break. Refusing it in a range
+        would be banning the one module whose premise the regime supports.
+
+        Asserted on the reason rather than on a direction: a sweep is an
+        intraday setup and this fixture carries no M15, so it stops later for
+        an unrelated cause. What matters here is that it is not THIS gate.
+        """
+        self.with_modules(self.sweep(), self.regime("range"))
+
+        idea = self.engine().evaluate(context(), TradingMode.PAPER)
+
+        assert "measures a range" not in idea.reason
+
+    def test_a_trend_module_corroborated_by_a_range_module_survives(self) -> None:
+        """The rule is "the ONLY firing modules assert a trend". A sweep firing
+        alongside means something did agree with the range."""
+        self.with_modules(self.trend(), self.sweep(), self.regime("range"))
+
+        assert self.engine().evaluate(context(), TradingMode.PAPER).direction is not None
+
+    def test_an_unclassified_regime_changes_nothing(self) -> None:
+        """transition, or no regime module at all: no measurement, no veto."""
+        self.with_modules(self.trend(), self.regime("transition"))
+
+        assert self.engine().evaluate(context(), TradingMode.PAPER).direction is not None
+
+    def test_a_missing_regime_module_changes_nothing(self) -> None:
+        self.with_modules(self.trend())
+
+        assert self.engine().evaluate(context(), TradingMode.PAPER).direction is not None
+
+    def test_the_switch_turns_it_off(self) -> None:
+        self.with_modules(self.trend(), self.regime("range"))
+
+        idea = self.engine(refuse_trend_continuation_in_range=False).evaluate(
+            context(), TradingMode.PAPER
+        )
+
+        assert idea.direction is not None

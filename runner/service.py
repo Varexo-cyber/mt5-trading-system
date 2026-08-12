@@ -1200,7 +1200,7 @@ class JarvisRunner:
         it was before this existed.
         """
         config = self.settings.analysis.confluence
-        if not config.require_reachable_target or idea.direction is None:
+        if not config.require_target_base_rate or idea.direction is None:
             return None
         risk = abs(idea.entry - idea.stop_loss)
         reward = abs(idea.take_profit - idea.entry)

@@ -1369,7 +1369,38 @@ class ConfluenceConfig(Base):
     #: rate, because a trade cannot win without the market travelling to its
     #: target. Below the break-even hit rate the plan cannot work even before
     #: the stop, the spread and the commission are counted.
-    require_reachable_target: bool = True
+    #:
+    #: Named `base_rate` and not `reachable`, because `filters.runway` already
+    #: has a `require_reachable_target` that asks a completely different
+    #: question — whether there is TIME before the wind-down. Two settings with
+    #: one name in two sections is an operator turning off the wrong one at
+    #: two in the morning.
+    #: Refuse a trend-continuation setup while the regime classifier measures
+    #: a range.
+    #:
+    #: `market_regime` sorts every market into trend_up, trend_down, range,
+    #: transition or extreme. It is computed, sent to the reviewer, cited by
+    #: the reviewer in refusal after refusal, and never read by the engine —
+    #: which checks only `volatility_regime`, for "extreme". Three live
+    #: refusals in one session, in the reviewer's own words:
+    #:
+    #:   "the regime module explicitly flags 'range' with low efficiency
+    #:    (0.08 H1, 0.11 H4) — this is chop, not a trend"
+    #:   "Market_regime independently flags this as a range, not a trend,
+    #:    which undermines the trend-continuation premise the whole idea is
+    #:    built on"
+    #:
+    #: NOT a module count, which the reviewer is explicitly told to ignore and
+    #: correctly does. A zero from a module looking for something else is the
+    #: absence of evidence; "range" is a measurement that contradicts the
+    #: premise. Only continuation setups are caught — a liquidity sweep is a
+    #: range setup and belongs in a range.
+    refuse_trend_continuation_in_range: bool = True
+    #: Which modules assert that a trend is continuing, and therefore have
+    #: their premise contradicted by a measured range. Named rather than
+    #: inferred, so a new module has to be classified deliberately.
+    trend_continuation_modules: tuple[str, ...] = ("trend_momentum",)
+    require_target_base_rate: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
     #: counts up and down moves independently over the same windows, so it is
     #: not the probability of hitting the target before the stop and must not
