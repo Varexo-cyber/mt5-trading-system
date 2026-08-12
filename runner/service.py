@@ -223,6 +223,9 @@ class AnalysedCandidate:
     market_priority_tier: int = 0
     spread_quality: float = 0.0
     cost_priority: float = 0.0
+    #: How much of this setup's own reward survives its own round trip. See
+    #: `JarvisRunner._after_cost_priority`.
+    after_cost_priority: float = 0.0
 
     @property
     def conviction(self) -> float:
@@ -253,8 +256,16 @@ class AnalysedCandidate:
 
     @property
     def selection_score(self) -> float:
-        """Evidence score plus bounded execution-cost preference."""
-        return self.ranking_score + self.cost_priority
+        """Evidence score plus what the trade keeps after paying to exist.
+
+        `cost_priority` prefers a cheap instrument; `after_cost_priority`
+        prefers a setup whose target is far enough away to be worth the toll.
+        Those are different questions, and only the second one looks at the
+        trade actually being proposed: an identical two-pip spread is a
+        rounding error against a forty-pip target and half the winnings
+        against a six-pip one.
+        """
+        return self.ranking_score + self.cost_priority + self.after_cost_priority
 
     @property
     def selection_key(self) -> tuple[int, float]:
@@ -1086,6 +1097,7 @@ class JarvisRunner:
                         cost_priority=(
                             cheap.spread_quality * self.settings.scanner.priority_spread_weight
                         ),
+                        after_cost_priority=self._after_cost_priority(item),
                     )
                 analysed.append(item)
         self._world_state = build_world_state(self._cycle_observations)
@@ -1175,6 +1187,70 @@ class JarvisRunner:
                 },
             )
         return analysed
+
+    def _after_cost_priority(self, item: AnalysedCandidate) -> float:
+        """How much of this setup's reward survives its own round trip.
+
+        The one thing about this account that is measured rather than believed.
+        Conviction was ordering the queue and two independent readings say it
+        predicts nothing here — the highest-conviction bucket lost the most,
+        and the 40-45 band produced no useful review at all. Meanwhile every
+        live trade spent over a quarter of its risk on commission and slippage,
+        and that number entered the ordering only as a spread preference that
+        never looked at the target.
+
+        So this is not a forecast, it is a subtraction. A winner returns its
+        reward minus the toll; a loser returns its risk plus the toll. What is
+        scored is the FRACTION of the setup's reward-to-risk that survives that
+        round trip.
+
+        The fraction rather than the net ratio itself, and the difference
+        matters. Scoring the ratio saturated at a reward-to-risk of about three
+        and stopped discriminating exactly where the real candidates live. It
+        also smuggled in a claim nobody has tested here — that a higher
+        reward-to-risk is better — when a wider target simply trades win rate
+        for size and `RR_BELOW_MINIMUM` already sets the floor. The fraction
+        claims nothing of the sort. It says only that between two setups, the
+        one handing less of its winnings to the broker is preferable, and that
+        is true whatever the win rate turns out to be.
+
+        It is also exactly where this account bleeds. A 1.8-pip stop and a
+        20-pip stop at the same reward-to-risk are not the same trade: the
+        first keeps about half of what it is theoretically worth and the second
+        keeps nearly all of it.
+
+        Ordering only. It cannot approve anything, and it is bounded by the
+        configured weight so it cannot vault a fallback instrument over a core
+        market.
+        """
+        weight = self.settings.scanner.after_cost_priority_weight
+        idea = item.idea
+        if weight <= 0 or not idea.entry or not idea.stop_loss or not idea.take_profit:
+            return 0.0
+        risk = abs(idea.entry - idea.stop_loss)
+        reward = abs(idea.take_profit - idea.entry)
+        if risk <= 0 or reward <= 0:
+            return 0.0
+        try:
+            spec = self.broker.spec(item.symbol)
+        except Exception:  # noqa: BLE001 - ordering must never fail a cycle
+            # Ordering is a preference, never a requirement. A broker hiccup
+            # here must leave the queue in its previous order, not empty it.
+            return 0.0
+        spread = item.context.tick.spread if item.context.tick is not None else 0.0
+        # Borrowed from the sizer rather than recomputed: that file states
+        # plainly that two definitions of this cost would eventually disagree,
+        # and the one that disagrees quietly is the one that decides trades.
+        share = PositionSizer(self.settings).cost_share(spec, risk, spread)
+        cost = risk * max(0.0, share)
+        gross_rr = reward / risk
+        net_rr = (reward - cost) / (risk + cost)
+        retained = net_rr / gross_rr
+        # Clamped at zero rather than allowed to go negative. A setup whose
+        # target does not clear its own toll is already refused by the cost
+        # gate; scoring it negative here would count one rejection twice, on
+        # the rare path where that gate has not run yet.
+        return max(0.0, min(weight, retained * weight))
 
     def _refresh_edge_calibrations(self) -> None:
         """Refresh realised selection evidence on a bounded cadence.

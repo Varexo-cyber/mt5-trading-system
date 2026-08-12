@@ -183,6 +183,33 @@ scanner:
   # trade; this only stops expensive execution from winning a close comparison.
   priority_spread_weight: 10.0
 
+  # Welke setup houdt het meeste over van wat hij wint.
+  #
+  # De volgorde werd bepaald door conviction (score x confidence, 16-76 punten)
+  # en dat getal is op deze rekening twee keer gemeten als niet-voorspellend:
+  # de emmer "20+ boven de lat" was de slechtste met -4,92R over 23 trades, en
+  # van 84 betaalde reviews leverde de band 40-45 nul bruikbare antwoorden op
+  # terwijl 20-25 er 33% gaf. De wachtrij stond dus vrijwel volledig op ruis.
+  #
+  # De tol is geen ruis. Op echte fills gaf elke live trade meer dan een kwart
+  # van zijn risico uit aan commissie en slippage, en dat telde alleen mee als
+  # spread-voorkeur die niet naar het doel keek — dezelfde 2 pips spread scoort
+  # gelijk tegen een doel van 40 pips en een van 6, terwijl het in het eerste
+  # geval een afronding is en in het tweede de helft van de winst.
+  #
+  # Dit scoort welk deel van de reward-to-risk de rondgang overleeft. Geen
+  # voorspelling, een aftreksom. Wat het in de praktijk doet:
+  #
+  #   stop 20 pips, doel 40, krappe spread   11,3 van 12
+  #   stop 10 pips, doel 30, krappe spread   10,8
+  #   stop 10 pips, doel 30, spread 2 pips    8,7
+  #   stop 1,8 pips, doel 3,6 (de live ones)  6,2
+  #
+  # Alleen volgorde, net als al het andere in de selectiescore: het bepaalt wie
+  # als eerste bekeken wordt en wie een schaarse betaalde review krijgt. Het
+  # kan niets goedkeuren wat een poort geweigerd heeft. 0.0 zet het uit.
+  after_cost_priority_weight: 12.0
+
 analysis:
   confluence:
     # Measured, not guessed: fed a textbook uptrend, every symbol came back
