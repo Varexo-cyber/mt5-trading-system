@@ -103,6 +103,12 @@ class Reason(StrEnum):
     #: and still covers everything it always covered.
     HEADLINES_UNAVAILABLE = "HEADLINES_UNAVAILABLE"
     OUTSIDE_TRADABLE_SESSION = "OUTSIDE_TRADABLE_SESSION"
+    #: The clock is inside a session this mode trades, and it is not a session
+    #: that prices THIS instrument. `OUTSIDE_TRADABLE_SESSION` asks one global
+    #: question for the whole catalogue; this asks whether the market that
+    #: actually makes the price is open. NDX100 shorted at 00:51 UTC and
+    #: EURCAD at 03:03 both passed the global check on Asia being active.
+    HOME_SESSION_CLOSED = "HOME_SESSION_CLOSED"
     #: Daily rollover: spreads blow out and liquidity vanishes.
     ROLLOVER_WINDOW = "ROLLOVER_WINDOW"
     #: The evening wind-down before the rollover, when the book thins out and

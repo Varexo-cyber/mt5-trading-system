@@ -435,6 +435,22 @@ filters:
     # markten zijn die erdoor komen, gaat asia er weer af.
     tradable_sessions: [asia, london, newyork]
 
+    # En dat is precies wat er gebeurde. Twee trades in de nacht van 12
+    # augustus: NDX100 short om 00:51 UTC, vijf uur nadat de Nasdaq dichtging,
+    # en EURCAD short om 03:03 met Frankfurt én Toronto gesloten. Allebei door
+    # het filter heen, want Azië liep en Azië staat in de lijst — terwijl Azië
+    # geen van beide instrumenten prijst.
+    #
+    # `asia` gaat er hier niet af, want dat zou de JPY- en AUD-paren treffen
+    # die op dat moment juist hun eigen markt open hebben. In plaats daarvan
+    # stelt het filter de vraag per instrument: is de markt die dít ding prijst
+    # op dit moment open. Een instrument waarvan dat niet te bepalen is gaat er
+    # altijd doorheen — zie `filters/home_session.py`.
+    #
+    # Dit levert mínder trades op, niet meer. Wat het weghaalt zijn de trades
+    # die er nooit hadden moeten zijn.
+    require_home_session: true
+
 risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
   posture_throttle: false

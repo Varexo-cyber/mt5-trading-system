@@ -590,6 +590,21 @@ class SessionFilterConfig(Base):
         }
     )
     tradable_sessions: tuple[str, ...] = ("london", "newyork")
+    #: Also require the instrument's OWN market to be open, not merely some
+    #: session on the allowed list.
+    #:
+    #: `tradable_sessions` gives one global answer for the whole catalogue.
+    #: With all three sessions enabled it is true around twenty-two hours a day
+    #: and says nothing about the symbol in front of it. Two live trades showed
+    #: what that permits: NDX100 short at 00:51 UTC, five hours after the
+    #: Nasdaq closed, and EURCAD short at 03:03 UTC with Frankfurt and Toronto
+    #: both shut. Asia was running, Asia is on the list, and Asia prices
+    #: neither instrument.
+    #:
+    #: Off by default because it removes trades. An instrument whose home
+    #: sessions cannot be determined is always allowed through — see
+    #: `filters.home_session`.
+    require_home_session: bool = False
     #: Rollover window: spreads blow out and liquidity vanishes. No entries.
     rollover_block: tuple[str, str] = ("20:45", "21:15")
     #: Evening wind-down, UTC. From here until the rollover block ends, no new

@@ -19,6 +19,7 @@ from datetime import datetime, time
 
 from config.schema import SessionFilterConfig
 from filters.base import Filter, FilterContext, FilterVerdict
+from filters.home_session import describe, home_session_open, home_sessions
 from infra.logging import get_logger
 from risk.reasons import Reason
 
@@ -334,6 +335,28 @@ class SessionFilter(Filter):
                 asset_class=asset_class,
             )
 
+        # Is the money that actually prices THIS instrument awake?
+        #
+        # Everything above is one global answer for the whole catalogue. With
+        # all three sessions allowed it is true around twenty-two hours a day,
+        # which is how NDX100 came to be shorted at 00:51 UTC — five hours
+        # after the Nasdaq closed — and EURCAD at 03:03 with Frankfurt and
+        # Toronto both shut. Asia was running and Asia is on the list; Asia
+        # prices neither of them.
+        #
+        # None means unmapped, or an instrument that never closes, and is
+        # always allowed: refusing on ignorance would ban a symbol silently.
+        at_home = home_session_open(ctx.spec, active)
+        if at_home is False and self.config.require_home_session:
+            return FilterVerdict.block(
+                self.name,
+                Reason.HOME_SESSION_CLOSED,
+                describe(ctx.spec, active),
+                session=label,
+                asset_class=asset_class,
+                home_sessions=sorted(home_sessions(ctx.spec)),
+            )
+
         overlap = len(tradable) > 1
         return FilterVerdict.allow(
             self.name,
@@ -341,6 +364,13 @@ class SessionFilter(Filter):
             session=label,
             session_overlap=overlap,
             asset_class=asset_class,
+            # Carried on the passing verdict too, and that is why this lives
+            # here rather than in a gate of its own: `filter_data` goes into
+            # the review payload, so the reviewer is told in words that it is
+            # reading an out-of-hours chart instead of having to infer it from
+            # a timestamp. It had no way to see this before.
+            home_session_open=at_home,
+            home_sessions=sorted(home_sessions(ctx.spec)),
         )
 
 
