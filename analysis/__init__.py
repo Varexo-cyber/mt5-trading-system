@@ -1,6 +1,7 @@
 """Replayable analysis modules. No connector, clock, or filesystem access."""
 
 from analysis.confluence import ConfluenceEngine, TradeIdea
+from analysis.drift_continuation import DriftContinuation
 from analysis.entry_quality import (
     EntryTimingAssessment,
     EntryTimingDecision,
@@ -23,6 +24,7 @@ from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, Volat
 
 __all__ = [
     "ConfluenceEngine",
+    "DriftContinuation",
     "EntryTimingAssessment",
     "EntryTimingDecision",
     "LevelReaction",

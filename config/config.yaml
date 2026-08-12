@@ -427,6 +427,10 @@ analysis:
       # carries weight again.
       level_reaction: 0.0
       volatility_regime: 0.0
+      market_regime: 0.0
+      # Below the swing modules. A drift is real evidence and it is the
+      # weakest kind here: it says the move happened, not that it continues.
+      drift_continuation: 0.7
 
   # Direction and entry price are separate decisions. These ATR-normalised
   # limits stop the market-order path from buying the end of an impulse or
