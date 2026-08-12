@@ -34,6 +34,7 @@ from analysis import (
     ConfluenceEngine,
     DriftContinuation,
     EntryTimingDecision,
+    FastEmaCross,
     LevelReaction,
     LiquiditySweep,
     MarketObservation,
@@ -344,6 +345,7 @@ class JarvisRunner:
                 VolatilityRegime(self.settings.analysis.volatility_regime),
                 MarketRegime(self.settings.analysis.market_regime),
                 DriftContinuation(self.settings.analysis.drift_continuation),
+                FastEmaCross(self.settings.analysis.fast_ema_cross),
             ],
             self.settings.analysis.confluence,
         )

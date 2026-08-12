@@ -442,21 +442,28 @@ class ConfluenceEngine:
                 )
         return None
 
-    @staticmethod
     def _classify_horizon(
+        self,
         agreeing: list[tuple[Signal, float]],
     ) -> tuple[str, str]:
         """Name the plan from the evidence that actually created it.
 
-        A standalone M15 sweep is an intraday reversal. Once H1 structure or
+        Evidence off a fast chart is an intraday plan. Once H1 structure or
         H4/H1 momentum also carries the direction, the market has supplied a
         swing thesis and the slower planning authority is appropriate.
+
+        The fast set used to be the single literal "liquidity_sweep", and
+        adding a module without extending it is a silent and expensive
+        mistake: `drift_continuation` measures eight M15 bars and was handed a
+        swing plan — H1 planning authority, a target twenty-four hours out —
+        for a signal whose mechanism expires in about two hours. The list now
+        lives in config beside the modules it names.
         """
         modules = {signal.module for signal, _weight in agreeing}
-        if modules == {"liquidity_sweep"}:
-            signal = agreeing[0][0]
+        if modules and modules <= set(self.config.intraday_modules):
+            signal = max(agreeing, key=lambda pair: abs(pair[0].score) * pair[1])[0]
             timeframe = str(signal.details.get("timeframe", "M15"))
-            return "intraday", f"liquidity_sweep_{timeframe.lower()}"
+            return "intraday", f"{signal.module}_{timeframe.lower()}"
         if "market_structure" in modules:
             return "swing", "market_structure_swing"
         if "trend_momentum" in modules:
