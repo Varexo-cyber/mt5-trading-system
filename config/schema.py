@@ -1110,6 +1110,53 @@ class VolatilityRegimeConfig(Base):
         return self
 
 
+class FastEmaCrossConfig(Base):
+    """A 9/20 EMA cross on the fast chart, for entries measured in minutes.
+
+    Every other directional module reads slow charts: 20/50 EMAs on H4 and H1,
+    a break of structure, or at the fastest a specific wick on M15. Nothing
+    looked at the timeframe a day trade is actually taken on.
+
+    A 9/20 cross on five minutes is the classic quick entry and the classic way
+    to be sawn apart — two averages brushing all day in a quiet market, each
+    brush a trade paying the spread. The three floors below are what separate a
+    cross from a touch, and none of them is optional.
+    """
+
+    enabled: bool = True
+    timeframe: str = "M5"
+    fast_ema: int = Field(default=9, ge=2, le=200)
+    slow_ema: int = Field(default=20, ge=3, le=400)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    invalidation_lookback: int = Field(default=12, ge=2, le=500)
+    #: How stale a cross may be and still count as an entry. Beyond this it is
+    #: a state, and the state is what `trend_momentum` already reports.
+    max_bars_since_cross: int = Field(default=3, ge=0, le=100)
+    #: How far apart the averages must be, in ATR. Two EMAs sitting on top of
+    #: each other crossing back and forth is one market making no decision, and
+    #: treating each touch as a signal is reading noise at high frequency.
+    minimum_separation_atr: float = Field(default=0.15, ge=0.0, le=10.0)
+    #: 50, the lowest score here. It is the fastest and least corroborated
+    #: evidence in the engine and it should need help to clear the threshold.
+    score: float = Field(default=50.0, gt=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    separation_confidence_scale: float = Field(default=0.50, ge=0.0, le=5.0)
+    maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+    @field_validator("timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _coherent(self) -> FastEmaCrossConfig:
+        if self.fast_ema >= self.slow_ema:
+            raise ValueError("fast EMA must be below slow EMA")
+        if self.base_confidence > self.maximum_confidence:
+            raise ValueError("fast EMA base confidence exceeds maximum")
+        return self
+
+
 class DriftContinuationConfig(Base):
     """Join a move that is already happening, in the direction it is going.
 
@@ -1476,6 +1523,20 @@ class ConfluenceConfig(Base):
     trend_continuation_modules: tuple[str, ...] = (
         "trend_momentum",
         "drift_continuation",
+        "fast_ema_cross",
+    )
+    #: Modules whose evidence lives on a fast chart. When nothing but these
+    #: fired, the plan is an intraday one.
+    #:
+    #: This was hardcoded to `liquidity_sweep` alone, and adding a module
+    #: without adding it here is a silent and expensive mistake:
+    #: `drift_continuation` measures eight M15 bars and was handed a swing
+    #: plan — H1 planning authority and a target twenty-four hours out — for a
+    #: signal whose whole mechanism expires in about two hours.
+    intraday_modules: tuple[str, ...] = (
+        "liquidity_sweep",
+        "drift_continuation",
+        "fast_ema_cross",
     )
     require_target_base_rate: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
@@ -1646,6 +1707,7 @@ class AnalysisConfig(Base):
     volatility_regime: VolatilityRegimeConfig = VolatilityRegimeConfig()
     market_regime: MarketRegimeConfig = MarketRegimeConfig()
     drift_continuation: DriftContinuationConfig = DriftContinuationConfig()
+    fast_ema_cross: FastEmaCrossConfig = FastEmaCrossConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

@@ -311,7 +311,20 @@ analysis:
     # zodra de regime-meter "range" zegt. Daarboven weigert `entry_quality`
     # nog steeds een instap aan het uiteinde van de range — dat is wat hem
     # belet de bodem te verkopen van de beweging die hij net opmerkte.
-    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, drift_continuation]
+    # `fast_ema_cross` erbij, op uitdrukkelijk verzoek van de eigenaar: de
+    # engine keek nergens naar de snelle grafiek. Elke richtingsmodule leest
+    # trage charts — 20/50 EMA's op H4 en H1, een structuurbreuk, en op zijn
+    # snelst een wick op M15 — terwijl een daytrade of scalp op M5 wordt
+    # ingestapt. Dit is de 9/20 kruising op vijf minuten.
+    #
+    # Drie vloeren houden hem uit de ruis, en geen ervan is optioneel: de
+    # kruising moet vers zijn (max 3 bars), de EMA's moeten echt uit elkaar
+    # liggen (0,15 ATR — twee lijnen die tegen elkaar aan schuren zijn een
+    # markt die niks besluit), en de prijs moet aan de goede kant van de trage
+    # EMA sluiten. Daarboven: geregistreerd als continuation-module dus de
+    # range-poort weigert hem in chop, en geclassificeerd als intraday zodat
+    # hij een M15-plan krijgt en geen swing-doel van 24 uur.
+    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, drift_continuation, fast_ema_cross]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #
