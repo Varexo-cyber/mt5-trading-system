@@ -84,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hours", type=float, default=24.0, help="how far back to look")
     parser.add_argument("--ledger", default="runtime/ai_reviews.jsonl", help="audit ledger path")
+    parser.add_argument(
+        "--reasons", type=int, default=0, help="print this many refusals in full, newest first"
+    )
     args = parser.parse_args(argv)
 
     path = ROOT / args.ledger
@@ -101,6 +104,8 @@ def main(argv: list[str] | None = None) -> int:
     _report_separation(reviews)
     _report_floor(reviews)
     _report_refusals(reviews)
+    if args.reasons:
+        _print_reasons(reviews, args.reasons)
     _report_repeats(reviews)
     return 0
 
@@ -269,7 +274,15 @@ def _report_refusals(reviews: Sequence[Review]) -> None:
 
 
 def _theme(thesis: str) -> str:
-    """Collapse a refusal to its first clause, so repeats group together."""
+    """Collapse a refusal to its opening clause, so repeats group together.
+
+    The clause names the setup, not the objection: every refusal begins
+    "Proposed SHORT on EURGBP resting on a single trend_momentum module, BUT
+    ..." and the reason lives after the but. Grouping is all this is for, and
+    it cannot be read as the reason — see `--reasons`, which exists because the
+    first version of this section truncated at ninety-six characters and cut
+    every refusal off exactly where its argument started.
+    """
     text = " ".join(thesis.split())
     if not text:
         return "(no reasoning recorded)"
@@ -277,7 +290,43 @@ def _theme(thesis: str) -> str:
         if stop in text:
             text = text.split(stop)[0]
             break
-    return text[:96] + ("…" if len(text) > 96 else "")
+    return text[:120] + ("…" if len(text) > 120 else "")
+
+
+def _print_reasons(reviews: Sequence[Review], limit: int) -> None:
+    """The refusals in full, newest first.
+
+    Nothing here is summarised. "Why does it keep saying no" is not answerable
+    from a grouped opening clause, and a report that implies otherwise sends
+    the operator off to fix the wrong thing.
+    """
+    refused = [review for review in reviews if not review.useful and review.thesis]
+    if not refused:
+        return
+    print(f"\nTHE LAST {min(limit, len(refused))} REFUSALS, IN FULL\n")
+    for review in sorted(refused, key=lambda item: item.when, reverse=True)[:limit]:
+        head = (
+            f"  {review.when:%H:%M}  {review.symbol} {review.direction}  "
+            f"conviction {review.conviction:.1f}  confidence {review.verdict_confidence:.2f}"
+        )
+        print(head)
+        for line in _wrap(" ".join(review.thesis.split())):
+            print(f"      {line}")
+        print()
+
+
+def _wrap(text: str, width: int = 84) -> list[str]:
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        if len(current) + len(word) + 1 > width:
+            lines.append(current)
+            current = word
+        else:
+            current = f"{current} {word}".strip()
+    if current:
+        lines.append(current)
+    return lines
 
 
 def _report_repeats(reviews: Sequence[Review]) -> None:
