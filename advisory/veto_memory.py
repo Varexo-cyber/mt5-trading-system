@@ -84,6 +84,16 @@ class VetoRecord:
     def expires_at(self) -> datetime:
         return _parse(self.suppress_until)
 
+    @property
+    def last_seen_at(self) -> datetime:
+        """When this refusal was most recently earned.
+
+        Distinct from `expires_at`, which carries the escalating suppression.
+        A caller wanting "how long since we last paid for this" must not read
+        the expiry: after three repeats those are twelve hours apart.
+        """
+        return _parse(self.last_seen)
+
     def matches(self, entry: float, stop: float, tolerance_atr: float) -> bool:
         """Whether a new proposal is the same shape as the one refused.
 

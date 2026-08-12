@@ -42,6 +42,12 @@ class Reason(StrEnum):
     #: It comes back next cycle, and if the better ideas have cleared out by
     #: then, it gets the budget.
     AI_BUDGET_SPENT = "AI_REVIEW_BUDGET_SPENT"
+    #: This market and side were paid for and refused a few minutes ago. Unlike
+    #: AI_VETO_PATTERN this needs no repeated reason and no matching shape --
+    #: only that the question was recently bought. Live case: EURCAD SHORT
+    #: reviewed twice in three minutes, both refused, because three minutes of
+    #: price drift moved the proposal past the shape memory's tolerance.
+    AI_VETO_COOLDOWN = "AI_VETO_COOLDOWN"
     LIVE_NOT_ARMED = "LIVE_NOT_ARMED"
 
     # -- sizing: the account cannot express this trade --------------------

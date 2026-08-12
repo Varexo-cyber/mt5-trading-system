@@ -56,6 +56,12 @@ class Review:
     confidence: float
     conviction: float
     setup_family: str
+    thesis: str
+    #: The ENGINE's confidence rides in `confidence`; this is the reviewer's own
+    #: number. Reading the first where the second is meant reports the same
+    #: value for every call in a cycle and hides exactly the clustering this is
+    #: here to expose.
+    verdict_confidence: float
     approved: bool
     said_yes: bool
     waiting: bool
@@ -94,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     _report_spend(reviews, args.hours)
     _report_separation(reviews)
     _report_floor(reviews)
+    _report_refusals(reviews)
     _report_repeats(reviews)
     return 0
 
@@ -221,6 +228,58 @@ def _report_floor(reviews: Sequence[Review]) -> None:
         )
 
 
+def _report_refusals(reviews: Sequence[Review]) -> None:
+    """What the reviewer actually keeps saying, grouped.
+
+    "Claude vetoes everything" is a feeling until the refusals are counted by
+    what they object to. Three possibilities and they call for opposite
+    responses: it is repeating one objection, in which case the engine is
+    producing one kind of bad setup and that is fixable upstream; it is
+    objecting to something different every time, in which case the setups are
+    genuinely varied and genuinely weak; or the confidences are all clustered
+    at one value, which is not judgement at all but a prompt or a threshold
+    doing the deciding.
+    """
+    refused = [review for review in reviews if not review.useful]
+    if not refused:
+        return
+
+    print("\nWHAT THE REFUSALS ACTUALLY SAY\n")
+    themes: dict[str, int] = defaultdict(int)
+    for review in refused:
+        themes[_theme(review.thesis)] += 1
+    for theme, count in sorted(themes.items(), key=lambda item: -item[1])[:8]:
+        print(f"  {count:>5}x  {theme}")
+
+    # A cluster is the tell. Four independent reads of four different charts
+    # landing within a few hundredths of each other is not four judgements.
+    spread = {round(review.verdict_confidence, 1) for review in refused}
+    lowest = min(review.verdict_confidence for review in refused)
+    highest = max(review.verdict_confidence for review in refused)
+    print(
+        f"\n  the reviewer's own confidence on refusals: {lowest:.2f} to "
+        f"{highest:.2f}, {len(spread)} distinct bands"
+    )
+    if len(spread) <= 2:
+        print(
+            "  Almost every refusal came back at the same confidence. That is not\n"
+            "  the shape of independent judgement on different charts — look at the\n"
+            "  prompt and at `ai.minimum_confidence` before blaming the setups."
+        )
+
+
+def _theme(thesis: str) -> str:
+    """Collapse a refusal to its first clause, so repeats group together."""
+    text = " ".join(thesis.split())
+    if not text:
+        return "(no reasoning recorded)"
+    for stop in (". ", "; "):
+        if stop in text:
+            text = text.split(stop)[0]
+            break
+    return text[:96] + ("…" if len(text) > 96 else "")
+
+
 def _report_repeats(reviews: Sequence[Review]) -> None:
     """How often the same market and side was bought twice within the hour.
 
@@ -322,6 +381,8 @@ def _join(
         # is most of them, and exactly the period worth measuring.
         conviction=score * confidence,
         setup_family=family,
+        thesis=str(decision.get("thesis", "") or ""),
+        verdict_confidence=_number(decision.get("confidence")),
         approved=bool(decision.get("approved")),
         said_yes=bool(decision.get("said_yes") or decision.get("approved")),
         waiting=str(decision.get("entry_timing", "")) == "WAIT_RETEST",

@@ -2151,6 +2151,22 @@ class AIConfig(Base):
     #: a deterministic gate. A budget cannot do that: whatever reaches the
     #: reviewer first is by construction the best thing still standing.
     max_reviews_per_cycle: int = Field(default=3, ge=0, le=50)
+    #: Minutes before the same market and side may be paid for again.
+    #:
+    #: The shape memory next to this one matches on entry AND stop within a
+    #: quarter of an ATR, which is right for "is this literally the same
+    #: proposal" and misses the case that costs money. Live: EURCAD SHORT
+    #: reviewed at 10:15:36 and again at 10:18:38, both paid, both refused,
+    #: with confidence 0.28 and 0.32. Three minutes of drift moved the entry
+    #: past the tolerance so the memory called it a new question. It was not a
+    #: new question — nothing about a market changes in three minutes that a
+    #: reviewer looking at H4 and H1 bars would notice.
+    #:
+    #: Keyed on symbol and direction alone, deliberately, and short enough that
+    #: a genuine intraday turn is not missed: twenty minutes is a third of an
+    #: H1 bar. An approval clears it immediately, as every other memory here
+    #: does. 0 switches it off.
+    veto_cooldown_minutes: float = Field(default=20.0, ge=0.0, le=240.0)
 
 
 # -------------------------------------------------------------- settings ---

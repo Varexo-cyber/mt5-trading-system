@@ -2015,6 +2015,37 @@ class JarvisRunner:
             )
             return False
 
+        # Was this exact market and side paid for a few minutes ago?
+        #
+        # The shape memory above matches entry AND stop within a quarter of an
+        # ATR, which is right for "is this literally the same proposal" and
+        # misses the case that actually costs money. Live: EURCAD SHORT
+        # reviewed at 10:15:36 and again at 10:18:38, both paid, both refused,
+        # confidence 0.28 then 0.32. Three minutes of drift moved the entry
+        # past the tolerance, so the memory read it as a new question. It was
+        # not one — nothing changes in three minutes that a reviewer reading H4
+        # and H1 bars would see.
+        #
+        # Keyed on symbol and direction alone and deliberately short, so a real
+        # intraday turn is not missed. An approval clears it, like every other
+        # memory here. A replayed verdict costs nothing and is not rationed.
+        cooling = self._veto_cooldown(idea)
+        if cooling is not None and self._cached_review(idea, context) is None:
+            waited, remaining = cooling
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.AI_VETO_COOLDOWN,
+                f"{symbol} {idea.direction.name} was reviewed and refused "
+                f"{waited:.0f} min ago; not buying the same question again for "
+                f"another {remaining:.0f} min. An approval on this pair clears it.",
+                signals=list(idea.signals),
+                extra={**filter_data, "veto_cooldown_minutes_left": round(remaining, 1)},
+                total_score=idea.score,
+            )
+            return False
+
         # Has this cycle already spent its review budget on better ideas?
         #
         # Asked here, before the payload is built and before anything is
@@ -3618,6 +3649,30 @@ class JarvisRunner:
         return not settings.mode.is_live or bool(
             getattr(self.playbook_config, "live_execution_enabled", False)
         )
+
+    def _veto_cooldown(self, idea: TradeIdea) -> tuple[float, float] | None:
+        """Minutes since this market and side were refused, and minutes left.
+
+        `_remembered_veto` asks whether the same *proposal* is on file and is
+        strict about it on purpose — silencing a setup that genuinely moved
+        would be discarding new evidence. This asks the cheaper question the
+        strict one cannot: was this market and side bought recently at all.
+
+        Deliberately blind to price. That is the whole point: the case it
+        exists for is the one where the price moved a little and the answer did
+        not.
+        """
+        minutes = self.settings.ai.veto_cooldown_minutes
+        if minutes <= 0 or idea.direction is None or self.operation is OperationMode.MONITOR:
+            return None
+        now = self.clock.now()
+        record = self.veto_memory.standing(idea.symbol, idea.direction.name, now)
+        if record is None:
+            return None
+        waited = (now - record.last_seen_at).total_seconds() / 60.0
+        if waited < 0 or waited >= minutes:
+            return None
+        return waited, minutes - waited
 
     def _remembered_veto(self, idea: TradeIdea):  # type: ignore[no-untyped-def]
         """The standing refusal covering this proposal, if there is one.
