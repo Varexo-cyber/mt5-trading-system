@@ -2083,6 +2083,25 @@ class ScannerConfig(Base):
     #: Low transaction cost may reorder candidates inside one lane, but can
     #: never promote a fallback instrument ahead of a preferred market.
     priority_spread_weight: float = Field(default=0.0, ge=0.0, le=25.0)
+    #: How strongly to prefer the setup that keeps more of what it wins.
+    #:
+    #: The ranking was dominated by conviction — score times confidence, worth
+    #: 16 to 76 points — with cost entering only as `priority_spread_weight`,
+    #: capped at 10 and blind to the target. Two measurements on this account
+    #: say conviction does not predict the outcome at all: the "20+ over the
+    #: bar" bucket was the worst at -4.92R over 23 trades, and among 84 paid
+    #: reviews the 40-45 conviction band produced nothing useful while 20-25
+    #: produced 33%. So the order was being set, almost entirely, by noise.
+    #:
+    #: What is NOT noise is the toll. Measured on real fills, every one of the
+    #: live trades spent over a quarter of its risk on commission and slippage.
+    #: This scores the arithmetic the toll implies — how much reward-to-risk
+    #: survives a round trip — which is not a forecast but a subtraction.
+    #:
+    #: Ordering only, like everything else in the selection score: it decides
+    #: who is examined first and who gets a scarce paid review. It cannot
+    #: approve a setup any gate refused. 0.0 switches it off.
+    after_cost_priority_weight: float = Field(default=12.0, ge=0.0, le=50.0)
 
     @field_validator("priority_symbols")
     @classmethod

@@ -349,6 +349,20 @@ class PositionSizer:
 
     # -- helpers -----------------------------------------------------------
 
+    def cost_share(
+        self, spec: InstrumentSpec, sl_distance: float, spread_price: float = 0.0
+    ) -> float:
+        """`_cost_share` for callers outside sizing, commission looked up here.
+
+        Exists so the scanner can ask what a setup costs *before* deciding
+        which setups are worth looking at first, without growing a second
+        definition of the same number. The comment below is emphatic about that
+        and it is right: two cost models eventually disagree, and the one that
+        disagrees quietly is the one that decides trades.
+        """
+        commission = self.settings.risk.commission_per_lot(spec.asset_class.value)
+        return self._cost_share(spec, sl_distance, commission, spread_price)
+
     def _cost_share(
         self,
         spec: InstrumentSpec,
