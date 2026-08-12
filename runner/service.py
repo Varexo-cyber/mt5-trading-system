@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import time
 import uuid
@@ -66,6 +67,7 @@ from analysis.playbooks import (
     ScalpConfig,
     TrendPullback,
 )
+from analysis.target_reach import measure as measure_target_reach
 from brain import EdgeCalibration, build_brain
 from config.schema import Settings
 from core.broker import Broker
@@ -1188,6 +1190,49 @@ class JarvisRunner:
             )
         return analysed
 
+    def _target_reach(self, context: MarketContext, idea: TradeIdea):  # type: ignore[no-untyped-def]
+        """How often this market has covered the target distance, or None.
+
+        None whenever the question cannot be answered — the gate is off, the
+        planning timeframe is missing, there is too little history, or the plan
+        has no usable geometry. Never a refusal on ignorance: an instrument the
+        measurement cannot reach must be judged on everything else, exactly as
+        it was before this existed.
+        """
+        config = self.settings.analysis.confluence
+        if not config.require_reachable_target or idea.direction is None:
+            return None
+        risk = abs(idea.entry - idea.stop_loss)
+        reward = abs(idea.take_profit - idea.entry)
+        if risk <= 0 or reward <= 0:
+            return None
+        try:
+            planning = Timeframe.parse(idea.planning_timeframe)
+        except ValueError:
+            return None
+        series = context.series.get(planning)
+        if series is None or series.df is None or series.df.empty:
+            return None
+        minutes = max(1, int(planning.duration.total_seconds() / 60))
+        bars_ahead = max(1, math.ceil(idea.expected_horizon_minutes / minutes))
+        verdict = measure_target_reach(
+            series.df.tail(400),
+            distance=reward,
+            bars_ahead=bars_ahead,
+            long=idea.direction is Direction.LONG,
+            reward_risk=reward / risk,
+        )
+        if not verdict.measured:
+            return None
+        # The configured margin rides on top of break-even rather than being
+        # baked into it, so the arithmetic stays legible: the floor is what the
+        # plan needs to return zero, and the margin is the operator's opinion
+        # about how much daylight to demand above that.
+        return replace(
+            verdict,
+            required_pct=min(100.0, verdict.required_pct + config.target_reach_margin_pct),
+        )
+
     def _after_cost_priority(self, item: AnalysedCandidate) -> float:
         """How much of this setup's reward survives its own round trip.
 
@@ -1840,6 +1885,47 @@ class JarvisRunner:
                 f"the position would be closed on the clock, not on the idea",
                 signals=list(idea.signals),
                 extra={**filter_data, "minutes_to_target": round(needed, 1)},
+            )
+            return False
+
+        # Does this market ever actually go where the target is?
+        #
+        # Asked here, after the stop has been widened for costs so the
+        # reward-to-risk is the real one, and before a cent is spent. The
+        # measurement has always been computed — for the review payload, where
+        # the reviewer read it and refused the trade. Six consecutive live
+        # refusals cited exactly this number: UK100 at 30.2%, CADCHF at 30.1%,
+        # AUDUSD at "37.0% up against 37.5% down, essentially a coin flip", and
+        # AUDSGD proposed LONG at 38.1% up against 46.8% DOWN.
+        reach = self._target_reach(context, idea)
+        if reach is not None and not reach.clears_break_even:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.TARGET_RARELY_REACHED,
+                reach.describe(),
+                signals=list(idea.signals),
+                extra={**filter_data, "target_reach_pct": reach.forward_pct},
+                total_score=idea.score,
+            )
+            return False
+        if (
+            reach is not None
+            and self.settings.analysis.confluence.require_direction_advantage
+            and not reach.beats_the_other_side
+        ):
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.TARGET_RARELY_REACHED,
+                f"{idea.direction.name} target reached {reach.forward_pct:.1f}% of the time "
+                f"against {reach.opposite_pct:.1f}% the other way; this market covers that "
+                f"distance more readily against the proposal than for it",
+                signals=list(idea.signals),
+                extra={**filter_data, "target_reach_pct": reach.forward_pct},
+                total_score=idea.score,
             )
             return False
 
