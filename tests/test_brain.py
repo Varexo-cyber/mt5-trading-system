@@ -16,17 +16,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from brain.store import (
     DSN_ENV,
+    MIN_TRADES_TO_GRADE_A_MODULE,
     MIN_TRADES_TO_SPLIT_SIDES,
     Brain,
     BrainStatus,
     Lesson,
     NullBrain,
     Scoreline,
+    _signal_rows,
     build_brain,
     fingerprint,
     lesson_key,
@@ -741,3 +744,87 @@ class TestWhichSideTheAccountLosesOn:
 
     def test_no_database_answers_the_way_an_empty_one_would(self) -> None:
         assert NullBrain().side_records() == []
+
+
+class TestWhichDetectorActuallyEarnsItsKeep:
+    """The largest hole in the record, and the one that decides whether this
+    system can improve at all.
+
+    `conviction` stored the blended score and nothing stored what produced it.
+    Sixty-four closed trades were therefore sixty-four undifferentiated data
+    points, and the only lesson available from them was "we are down" -- which
+    names nothing to stop doing. With attribution the same trades become votes
+    on each detector.
+    """
+
+    def brain_answering(self, rows) -> Brain:  # type: ignore[no-untyped-def]
+        made = Brain("postgresql://u:p@host/db", account="test")
+        made._run = lambda *_args, **_kwargs: rows  # type: ignore[assignment]
+        return made
+
+    def test_a_losing_detector_is_named_with_its_per_trade_cost(self) -> None:
+        brain = self.brain_answering([("trend_momentum", 31, -4.20, 9)])
+
+        record = brain.module_records()[0]
+
+        assert record.mean_r == pytest.approx(-0.135, abs=0.001)
+        assert "trend_momentum: 31 trades found" in record.summary()
+        assert "-0.14R each" in record.summary()
+
+    def test_a_detector_with_too_few_trades_is_not_graded(self) -> None:
+        """Shown at four trades it reads as a verdict on the detector, and it
+        is a verdict on four trades. Switching off the wrong one removes setups
+        permanently, so the floor is higher than for the side split."""
+        seen: list[object] = []
+        brain = Brain("postgresql://u:p@host/db", account="test")
+
+        def run(_sql: str, params=(), **_kwargs):  # type: ignore[no-untyped-def]
+            seen.append(params)
+            return []
+
+        brain._run = run  # type: ignore[assignment]
+
+        assert brain.module_records() == []
+        assert seen[0][-1] == MIN_TRADES_TO_GRADE_A_MODULE
+        assert MIN_TRADES_TO_GRADE_A_MODULE > MIN_TRADES_TO_SPLIT_SIDES
+
+    def test_no_database_answers_the_way_an_empty_one_would(self) -> None:
+        assert NullBrain().module_records() == []
+
+
+class TestOnlyModulesThatSpokeAreRecorded:
+    """A neutral module is the absence of evidence. Storing forty thousand rows
+    of "trend_momentum saw nothing" would turn every per-module average into a
+    measure of how often the detector is quiet rather than whether it is right.
+    """
+
+    def signal(self, module: str, score: float, confidence: float = 0.7):  # type: ignore[no-untyped-def]
+        return SimpleNamespace(
+            module=module, score=score, confidence=confidence, details={"bias_confirmed": False}
+        )
+
+    def test_a_neutral_module_is_dropped(self) -> None:
+        rows = _signal_rows(
+            [self.signal("trend_momentum", 65.0), self.signal("level_reaction", 0.0)]
+        )
+
+        assert [row["module"] for row in rows] == ["trend_momentum"]
+
+    def test_the_side_the_module_argued_for_is_kept(self) -> None:
+        """Grouping a detector's wins without its direction would average a
+        module that is right on shorts and wrong on longs into "neutral"."""
+        rows = _signal_rows([self.signal("liquidity_sweep", -75.0)])
+
+        assert rows[0]["direction"] == "SHORT"
+
+    def test_whatever_the_module_recorded_about_itself_survives(self) -> None:
+        """`bias_confirmed` rides here. It is the whole point of storing the
+        details rather than only the score."""
+        rows = _signal_rows([self.signal("trend_momentum", 65.0)])
+
+        assert rows[0]["details"]["bias_confirmed"] is False
+
+    def test_a_signal_object_missing_fields_does_not_break_the_write(self) -> None:
+        """This runs inside the trade-recording path. A malformed signal must
+        cost a row of analytics, never the record of the trade."""
+        assert _signal_rows([SimpleNamespace()]) == []

@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from brain import DSN_ENV, Brain, NullBrain, build_brain
-from brain.store import MIN_TRADES_TO_LEARN
+from brain.store import MIN_TRADES_TO_GRADE_A_MODULE, MIN_TRADES_TO_LEARN
 from config.loader import load_credentials, load_settings
 
 
@@ -255,6 +255,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  banking     {learned:.2f}R      its own history says take profit here")
             print(f"                         configured {configured:.2f}R, so it now banks at ")
             print(f"                         {effective:.2f}R -- earlier, never later")
+
+        # Which detector is paying for itself. The one reading here that names
+        # something to stop doing, rather than a number to nudge: a module
+        # losing money over twenty trades is an argument for switching it off.
+        detectors = reader.module_records()
+        if not detectors:
+            attributed = reader._run(
+                "SELECT COUNT(*) FROM trades t JOIN decisions d ON d.id = t.decision_id "
+                "WHERE t.account = %s AND t.pnl_r IS NOT NULL "
+                "AND jsonb_array_length(d.signals) > 0",
+                (real_account,),
+                fetch="one",
+            )
+            have = int(attributed[0]) if attributed else 0
+            print(
+                f"  detectors   not yet    {have} closed trades carry module attribution; "
+                f"needs {MIN_TRADES_TO_GRADE_A_MODULE} per module"
+            )
+            if have == 0:
+                print("                         (recorded from this build onward, not backfilled)")
+        else:
+            print("  detectors   ok         realised R per module, worst first")
+            for record in detectors[:6]:
+                print(
+                    f"               {record.module:<26}{record.trades:>4} trades  "
+                    f"{record.mean_r:+.2f}R each  {record.total_r:+.2f}R total"
+                )
 
         learning = settings.learning
         estimates = reader.edge_calibrations(

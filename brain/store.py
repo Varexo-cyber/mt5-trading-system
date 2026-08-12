@@ -67,6 +67,13 @@ MIN_TRADES_TO_LEARN = 40
 #: four trades could have produced.
 MIN_TRADES_TO_SPLIT_SIDES = 15
 
+#: Trades a single detector must have found before it is graded by name.
+#: Higher than the side split because the consequence is heavier: a side that
+#: has lost is a sentence in a prompt, while a detector shown to lose money is
+#: an argument for switching it off, and switching off the wrong one removes
+#: setups permanently.
+MIN_TRADES_TO_GRADE_A_MODULE = 20
+
 #: Floor on the learned threshold, in R. Below this the profit does not clear
 #: the spread and commission it costs to collect, so banking there converts a
 #: small win into a small loss. `_cost_of_leaving` measures the real figure per
@@ -105,6 +112,33 @@ def fingerprint(*parts: object) -> str:
     """
     joined = "\x1f".join("" if part is None else str(part) for part in parts)
     return hashlib.blake2b(joined.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _signal_rows(signals: Sequence[Any]) -> list[dict[str, Any]]:
+    """Flatten the module verdicts into something a query can group by.
+
+    Only the modules that actually said something are kept. A neutral module is
+    the absence of evidence, and storing forty thousand rows of "trend_momentum
+    saw nothing" would make every per-module average a measure of how often the
+    detector is quiet rather than of whether it is right.
+    """
+    rows: list[dict[str, Any]] = []
+    for signal in signals or ():
+        name = str(getattr(signal, "module", "") or "")
+        score = float(getattr(signal, "score", 0.0) or 0.0)
+        if not name or not score:
+            continue
+        details = getattr(signal, "details", None)
+        rows.append(
+            {
+                "module": name,
+                "score": score,
+                "confidence": float(getattr(signal, "confidence", 0.0) or 0.0),
+                "direction": "LONG" if score > 0 else "SHORT",
+                "details": dict(details) if isinstance(details, Mapping) else {},
+            }
+        )
+    return rows
 
 
 @dataclass
@@ -197,6 +231,37 @@ class SideRecord:
         return (
             f"{self.direction}: {self.trades} trades, {self.win_rate:.0%} won, "
             f"{self.total_r:+.2f}R total, {self.mean_r:+.2f}R per trade"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleRecord:
+    """What one detector has actually earned, across every trade it found.
+
+    The question this exists to answer had no answer anywhere: `conviction`
+    stored the blended score and nothing stored what produced it, so sixty-four
+    closed trades were sixty-four undifferentiated data points. The only lesson
+    available from them was "we are down", which names nothing to stop doing.
+
+    Attributed to every module that scored on the decision, not only to the
+    strongest. A setup is the sum of what agreed on it, and crediting one
+    detector for a trade three of them found would flatter whichever happened
+    to score highest.
+    """
+
+    module: str
+    trades: int
+    total_r: float
+    wins: int
+
+    @property
+    def mean_r(self) -> float:
+        return self.total_r / self.trades if self.trades else 0.0
+
+    def summary(self) -> str:
+        return (
+            f"{self.module}: {self.trades} trades found, {self.wins} won, "
+            f"{self.total_r:+.2f}R total, {self.mean_r:+.2f}R each"
         )
 
 
@@ -401,6 +466,7 @@ class Brain:
         filters: Mapping[str, Any] | None = None,
         ai: Mapping[str, Any] | None = None,
         headlines: Sequence[Mapping[str, Any]] = (),
+        signals: Sequence[Any] = (),
     ) -> int | None:
         """One row for every decision, taken or refused. Returns its id.
 
@@ -429,10 +495,11 @@ class Brain:
                 detail, taken, equity, conviction, playbook, asset_class, regime,
                 session, horizon, planning_timeframe, entry, stop_loss,
                 take_profit, filters, ai_verdict, ai_confidence, ai_reasoning,
-                ai_tokens, headlines
+                ai_tokens, headlines, signals
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb
+                %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb,
+                %s::jsonb
             )
             ON CONFLICT (fingerprint) DO UPDATE SET detail = EXCLUDED.detail
             RETURNING id
@@ -464,6 +531,7 @@ class Brain:
                 verdict.get("reasoning"),
                 verdict.get("tokens"),
                 json.dumps(list(headlines), default=str),
+                json.dumps(_signal_rows(signals), default=str),
             ),
             fetch="one",
         )
@@ -949,6 +1017,49 @@ class Brain:
             for row in rows
         ]
 
+    def module_records(
+        self, *, minimum_trades: int = MIN_TRADES_TO_GRADE_A_MODULE
+    ) -> list[ModuleRecord]:
+        """Realised R per detector, or nothing.
+
+        The join that makes the system improvable rather than merely busy:
+        every closed trade, back to the decision that opened it, back to the
+        modules that scored on it. Ask it after a few hundred trades and it
+        says which detector to switch off.
+
+        Withheld below `minimum_trades` per module for the same reason the side
+        split is: a detector shown at four trades will be read as a verdict on
+        the detector, and it is a verdict on four trades.
+        """
+        rows = self._run(
+            """
+            SELECT s->>'module' AS module,
+                   COUNT(*)     AS trades,
+                   SUM(t.pnl_r) AS total_r,
+                   COUNT(*) FILTER (WHERE t.pnl_r > 0) AS wins
+            FROM trades t
+            JOIN decisions d ON d.id = t.decision_id
+            CROSS JOIN LATERAL jsonb_array_elements(d.signals) AS s
+            WHERE t.account = %s AND t.pnl_r IS NOT NULL
+            GROUP BY s->>'module'
+            HAVING COUNT(*) >= %s
+            ORDER BY SUM(t.pnl_r)
+            """,
+            (self.account, minimum_trades),
+            fetch="all",
+        )
+        if not rows:
+            return []
+        return [
+            ModuleRecord(
+                module=str(row[0]),
+                trades=int(row[1]),
+                total_r=float(row[2] or 0.0),
+                wins=int(row[3]),
+            )
+            for row in rows
+        ]
+
     def edge_calibrations(
         self,
         *,
@@ -1146,6 +1257,7 @@ class Brain:
         overall = [line.summary() for line in self.scoreboard()] if not symbol else []
         gates = [line.summary() for line in self.gate_scoreboard()]
         sides = self.side_records()
+        detectors = self.module_records()
         brief: dict[str, Any] = {}
         if lessons:
             brief["lessons_from_past_trades"] = lessons
@@ -1161,6 +1273,16 @@ class Brain:
                     "side as a reason to require more from the setup in front of you — "
                     "a clearer structure, a better location — and not as a standing "
                     "veto on that direction."
+                ),
+            }
+        if detectors:
+            brief["what_each_detector_has_earned"] = {
+                "records": [record.summary() for record in detectors],
+                "weight": (
+                    "Realised R attributed to every module that scored on the trade. "
+                    "The engine that produced the proposal in front of you is named in "
+                    "`modules`; if it is one of the losing detectors here, that is a "
+                    "reason to want more from the chart than usual."
                 ),
             }
         if here:
@@ -1239,6 +1361,9 @@ class NullBrain:
         return []
 
     def side_records(self, **_: Any) -> list[SideRecord]:
+        return []
+
+    def module_records(self, **_: Any) -> list[ModuleRecord]:
         return []
 
     def edge_calibrations(self, **_: Any) -> list[EdgeCalibration]:

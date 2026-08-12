@@ -2285,6 +2285,11 @@ class JarvisRunner:
             taken=True,
             equity=account.equity,
             conviction=idea.score,
+            # WHICH detector found this, not only how high the blend scored.
+            # Without it a closed trade is one undifferentiated data point and
+            # "should we still be running trend_momentum" has no answer in any
+            # table.
+            signals=list(idea.signals),
             playbook=idea.setup_family,
             entry=result.filled_price,
             stop_loss=sizing.sl,
@@ -2402,6 +2407,7 @@ class JarvisRunner:
             equity=equity,
             conviction=total_score,
             filters=dict(extra or {}),
+            signals=list(signals or ()),
             headlines=self._headlines_for(symbol),
         )
         return cycle_pk

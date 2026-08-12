@@ -75,6 +75,24 @@ ALTER TABLE decisions ADD COLUMN IF NOT EXISTS regime TEXT;
 ALTER TABLE decisions ADD COLUMN IF NOT EXISTS session TEXT;
 ALTER TABLE decisions ADD COLUMN IF NOT EXISTS horizon TEXT;
 ALTER TABLE decisions ADD COLUMN IF NOT EXISTS planning_timeframe TEXT;
+-- WHICH detector actually found this setup, and how sure it was.
+--
+-- The largest hole in the whole record. `conviction` stored the blended score
+-- and nothing stored what produced it, so the question that decides whether
+-- this system can ever get better -- does `liquidity_sweep` make money while
+-- `trend_momentum` loses it -- was not answerable from any table here.
+--
+-- Attribution is the difference between learning and merely accumulating.
+-- Without it every trade is one undifferentiated data point and the only
+-- lesson available is "we are down", which is not a lesson: it names nothing
+-- to stop doing. With it, sixty-four trades become sixty-four votes on each
+-- detector, and the ones that lose money can be found and switched off.
+--
+-- One row per decision holding every module that scored: name, signed score,
+-- confidence, and whatever the module recorded about itself. JSONB for the
+-- same reason `filters` is -- the set of modules changes, and a migration per
+-- detector means the ones added in a hurry never get recorded at all.
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS signals JSONB NOT NULL DEFAULT '[]'::JSONB;
 
 CREATE INDEX IF NOT EXISTS decisions_symbol_time  ON decisions (symbol, decided_at DESC);
 CREATE INDEX IF NOT EXISTS decisions_reason_time  ON decisions (reason, decided_at DESC);
