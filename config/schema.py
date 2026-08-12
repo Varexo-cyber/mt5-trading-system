@@ -998,6 +998,27 @@ class TrendMomentumConfig(Base):
     #: usual confidence, must still clear `minimum_confidence`, and must still
     #: carry the score past the threshold. 0.0 restores the old behaviour.
     neutral_bias_confidence_scale: float = Field(default=0.75, ge=0.0, le=1.0)
+    #: Bars of raw price drift on the signal timeframe that must not oppose the
+    #: EMA reading. 0 switches the check off.
+    #:
+    #: THE FAILURE THIS EXISTS FOR. GBPUSD, 12 August. The engine wanted to buy
+    #: it all day while it fell: 233 M15 and 111 M5 refusals, every one reading
+    #: "price is moving against the long". Two got through, both lost, and the
+    #: entry that lost most was taken on this module alone saying "H4 and H1
+    #: EMA/momentum aligned bullish".
+    #:
+    #: An EMA is a position, not a direction. When a market tops out the fast
+    #: EMA stays above the slow one for hours and its five-bar slope stays
+    #: positive for a while after price has turned, so the module goes on
+    #: proposing longs into a falling market. Its own exit note named the cause:
+    #: "confirming the H1 fast-drift-down risk the entry review itself flagged
+    #: as the weakest part of the thesis".
+    #:
+    #: This compares the EMA reading against what price has actually done over
+    #: the last few bars of the same timeframe. It cannot create a short — a
+    #: refused long is not evidence for one — it only stops the module from
+    #: insisting on a direction the recent tape contradicts.
+    drift_agreement_bars: int = Field(default=3, ge=0, le=50)
 
     @field_validator("bias_timeframe", "signal_timeframe")
     @classmethod
