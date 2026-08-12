@@ -191,3 +191,67 @@ class TestTheWarningFlagMeansSomething:
         main(["--db", str(journal), "--hours", "4"])
 
         assert "! NEWS_CALENDAR_UNAVAILABLE" in capsys.readouterr().out
+
+
+class TestTheBiggestReachableGateIsVisible:
+    """The engine writes the measurement into the sentence, so grouping on raw
+    text shatters one gate into hundreds of rows.
+
+    A live night read "17432x no weighted directional evidence" at the top and
+    three rows of ~250 near the bottom. The ~14,000 decisions refused by the
+    score threshold -- the one number in the config an operator can actually
+    move -- were nowhere on the screen.
+    """
+
+    def test_the_same_gate_at_different_scores_is_one_row(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        now = datetime.now(UTC)
+        for i in range(300):
+            db.execute(
+                "INSERT INTO analysis_cycles (ts, symbol, decision, reason, detail, context_json) "
+                "VALUES (?,?,?,?,?,?)",
+                (
+                    (now - timedelta(seconds=i)).isoformat(),
+                    "EURUSD.i",
+                    "SKIP",
+                    "NO_SIGNAL",
+                    f"confluence score {30 + i * 0.03:.1f} below threshold",
+                    BEFORE,
+                ),
+            )
+        db.commit()
+        db.close()
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "300x  confluence score N below threshold" in out
+
+    def test_distinct_causes_are_still_distinct(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Collapsing numbers must not collapse the sentences around them."""
+        add(journal, "NO_SIGNAL", BEFORE, count=5)
+        db = sqlite3.connect(journal)
+        db.execute(
+            "INSERT INTO analysis_cycles (ts, symbol, decision, reason, detail, context_json) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                datetime.now(UTC).isoformat(),
+                "EURUSD.i",
+                "SKIP",
+                "NO_SIGNAL",
+                "extreme volatility regime",
+                BEFORE,
+            ),
+        )
+        db.commit()
+        db.close()
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "extreme volatility regime" in out
+        assert "1x  extreme volatility regime" in out
