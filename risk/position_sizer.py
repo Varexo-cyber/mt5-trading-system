@@ -109,6 +109,7 @@ class PositionSizer:
         tp: float = 0.0,
         risk_multiplier: float = 1.0,
         spread_price: float = 0.0,
+        risk_pct: float | None = None,
     ) -> SizingResult:
         """Compute the lot size for one setup.
 
@@ -116,6 +117,15 @@ class PositionSizer:
             risk_multiplier: anti-martingale scaling from `RiskManager`. Must be
                 <= 1.0 — increasing risk after a loss is a forbidden practice
                 and is rejected here rather than trusted to the caller.
+            risk_pct: the base stake for THIS setup, before the multiplier.
+                Separate from `risk_multiplier` on purpose: the multiplier is
+                anti-martingale and may only reduce, while this is a property
+                of the setup decided before any loss history is consulted.
+                Folding conviction into the multiplier would have meant
+                relaxing the `> 1.0` guard below, and that guard is the one
+                thing standing between this sizer and scaling up after losses.
+                Still capped by the mode ceiling, so a config cannot quietly
+                out-bid the active contract.
             spread_price: the live bid-ask gap, in price. Part of the cost of
                 being wrong and the largest part of it on this account, so the
                 cost gate is blind without it. Zero means "not supplied" and
@@ -160,7 +170,9 @@ class PositionSizer:
                 raw_volume=raw,
             )
 
-        intended_pct = self.settings.effective_risk_pct() * risk_multiplier
+        base_pct = self.settings.effective_risk_pct() if risk_pct is None else risk_pct
+        base_pct = min(base_pct, self.settings.effective_max_risk_pct())
+        intended_pct = base_pct * risk_multiplier
         intended_money = equity * intended_pct / 100.0
 
         # -- 1. the stop has to be a real stop ----------------------------

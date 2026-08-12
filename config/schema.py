@@ -307,10 +307,86 @@ NO_LOSS_LIMIT = 0.0
 NO_DRAWDOWN_BREAKER = 0.0
 
 
+class ConvictionRiskConfig(Base):
+    """Stake more when the reviewer is very sure, and only then.
+
+    Authorised by the owner in these words: minimum 2%, up to 6-8% on a highly
+    convincing setup, less as the conviction falls.
+
+    WHAT DRIVES IT, and the choice matters more than the numbers. Not the
+    engine's own conviction — that is measured on this account NOT to predict
+    the outcome, twice: the "20+ over the bar" bucket was the worst of them all
+    at -4.92R over 23 trades, and across 84 paid reviews the 40-45 conviction
+    band produced nothing useful while 20-25 produced 33%. Scaling the stake by
+    that number would put the most money on the trades the record says are the
+    worst.
+
+    So it rides on the REVIEWER's confidence: the last, most independent
+    judgement in the chain, and the one number here that has not been disproven.
+
+    IT HAS ALSO NOT BEEN PROVEN. Two approvals on the day this was written came
+    back at 0.59 and 0.64 and both lost. There is no evidence yet that this
+    number predicts a winner either, and until `module_records` and the
+    scorecard say otherwise, staking on it is a decision rather than a finding.
+    The ramp starts high for that reason: everything below `confidence_floor`
+    stakes the ordinary amount, so an unremarkable approval is sized exactly as
+    it was before this existed.
+    """
+
+    enabled: bool = False
+    #: The stake below the ramp. What every trade used to get.
+    floor_pct: Pct = 2.0
+    #: The stake at maximum conviction.
+    ceiling_pct: Pct = 6.0
+    #: Reviewer confidence at which the ramp begins. Deliberately well above
+    #: `ai.minimum_confidence` (0.55): an approval that only just cleared the
+    #: bar is not a convincing setup, it is a permitted one.
+    confidence_floor: float = Field(default=0.70, ge=0.0, le=1.0)
+    #: Where the stake saturates.
+    confidence_ceiling: float = Field(default=0.90, ge=0.0, le=1.0)
+
+    def stake_for(self, confidence: float) -> float:
+        """The risk percentage this confidence earns."""
+        if not self.enabled:
+            return self.floor_pct
+        span = self.confidence_ceiling - self.confidence_floor
+        if span <= 0:
+            return self.ceiling_pct if confidence >= self.confidence_ceiling else self.floor_pct
+        reach = (confidence - self.confidence_floor) / span
+        reach = min(1.0, max(0.0, reach))
+        return self.floor_pct + reach * (self.ceiling_pct - self.floor_pct)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> ConvictionRiskConfig:
+        if self.ceiling_pct < self.floor_pct:
+            raise ValueError("conviction risk ceiling is below its floor")
+        if self.confidence_ceiling < self.confidence_floor:
+            raise ValueError("conviction confidence ceiling is below its floor")
+        return self
+
+
 class RiskConfig(Base):
     risk_per_trade_pct: Pct = 1.0
     #: Ceiling the sizer will never exceed regardless of setup quality.
     max_risk_per_trade_pct: Pct = 1.0
+    #: Stake by conviction. See `ConvictionRiskConfig`.
+    conviction_risk: ConvictionRiskConfig = ConvictionRiskConfig()
+    #: Total risk allowed across every open position at once, as a percentage
+    #: of equity. 0 switches the cap off.
+    #:
+    #: THE GRENDEL THAT MAKES THE ONE ABOVE SURVIVABLE. Until now the only
+    #: limit on simultaneous exposure was arithmetic: four slots times a fixed
+    #: 2% is 8%. Let a single trade take 6% and that same arithmetic gives 24%
+    #: — a quarter of the account at risk at once, on an account of a hundred
+    #: and forty euros, with the daily and weekly loss limits switched off.
+    #: Nobody asked for that and it is what raising the per-trade ceiling does
+    #: by itself.
+    #:
+    #: Measured on the CURRENT stop of each open position, not the original, so
+    #: a winner whose stop has moved to break-even stops consuming the budget
+    #: and frees room for the next trade. That is the honest measure of what is
+    #: actually at risk right now.
+    max_total_open_risk_pct: float = Field(default=0.0, ge=0.0, le=100.0)
 
     #: Slippage a stop-out actually suffers, in pips, per asset class. A class
     #: not listed here contributes nothing, and the cost check below then rests

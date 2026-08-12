@@ -433,8 +433,10 @@ ai:
 # exposure on both good and bad days because the daily and weekly pacing limits
 # below are also off; it must not be described as if those limits still bound it.
 #
-# What still bounds an uncapped day: 2% fixed risk per trade, two concurrent
-# positions maximum, every market/filter/order constraint and Claude's veto.
+# What still bounds an uncapped day: 2% risk on an ordinary trade rising to 6%
+# only on a reviewer confidence of 0.90, a 12% ceiling on total open risk across
+# every position at once, four concurrent positions maximum, every
+# market/filter/order constraint and Claude's veto.
 # Daily, weekly and peak-drawdown breakers are explicitly off in this owner-set
 # experiment; the fixed EUR 50 experimental equity floor is the unconditional
 # capital backstop. These comments describe the effective settings below and
@@ -560,6 +562,15 @@ risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
   posture_throttle: false
 
+  # De inzet van een GEWONE trade. Ongewijzigd — dit is nog steeds wat een
+  # goedkeuring krijgt die niets bijzonders is.
+  risk_per_trade_pct: 2.0
+  # Het absolute plafond dat geen enkele modus mag overschrijden. Van 2 naar 6
+  # omdat de conviction-ladder hieronder daar bovenaan uitkomt. Dit VERHOOGT de
+  # gewone inzet niet; het staat alleen toe dat een zeer overtuigende setup
+  # erboven uitkomt, en de sizer klemt elke inzet hier alsnog tegenaan.
+  max_risk_per_trade_pct: 6.0
+
   # Hoeveel eigen vermogen één gelijktijdige positie "koopt".
   #
   # Een vast aantal slots is de verkeerde vorm voor een account dat moet
@@ -573,8 +584,54 @@ risk:
   # Owner-authorised experiment: four live slots at the current account size.
   # Sizing, margin, correlation and per-symbol rules still run for each one;
   # this changes capacity, not the 2% budget of an ordinary entry.
+  #
+  # Four slots is now a ceiling that `max_total_open_risk_pct` below can reach
+  # before the slots do. Two maximum-conviction trades fill 12% of the account
+  # and the third waits, however many slots are free.
   equity_per_position: 0
   min_concurrent_positions: 4
+
+  # The most the whole book may risk at once, as a percentage of equity.
+  #
+  # This exists because conviction-scaled staking exists. Four slots at a
+  # conviction ceiling of 6% is 24% of a 140 EUR account on the table
+  # simultaneously, with the daily and weekly loss limits switched off, and not
+  # one per-trade rule would have noticed — every one of those four trades is
+  # individually within its limit. Six percent is a decision about a trade;
+  # twenty-four percent is a decision about the account.
+  #
+  # Measured against each position's CURRENT stop, so a winner whose stop has
+  # walked to break-even stops consuming the budget and genuinely gives the
+  # room back. A position with no stop at the broker counts its full notional.
+  #
+  # A trade that cannot get the ordinary 2% is refused rather than squeezed
+  # into whatever fraction is left: a 0.4% position on this account cannot be
+  # expressed at the minimum lot anyway.
+  #
+  # Zero disables it. In Experimental Live the armed contract overrides this
+  # value outright — see promotion/experimental.py — so an edit here cannot
+  # widen what the live account is allowed to stake.
+  max_total_open_risk_pct: 12.0
+
+  # De inzet schaalt mee met hoe overtuigd de reviewer is. Zie
+  # config/schema.py ConvictionRiskConfig voor waarom het op ZIJN vertrouwen
+  # rijdt en niet op de conviction-score van de engine.
+  #
+  # 0.70 en lager -> 2,0%   (de gewone inzet, precies wat het hiervoor was)
+  # 0.75          -> 3,0%
+  # 0.80          -> 4,0%
+  # 0.85          -> 5,0%
+  # 0.90 en hoger -> 6,0%
+  #
+  # De drempel ligt bewust ver boven `ai.minimum_confidence` (0,55): een
+  # goedkeuring die net over de lat komt is geen overtuigende setup, het is een
+  # toegestane.
+  conviction_risk:
+    enabled: true
+    floor_pct: 2.0
+    ceiling_pct: 6.0
+    confidence_floor: 0.70
+    confidence_ceiling: 0.90
 
   # Een positie waarvan de beurs dicht is bezet geen slot meer.
   #
@@ -694,23 +751,29 @@ risk:
   # The peak-to-current breaker is also explicitly off in the armed
   # Experimental Live contract. The remaining unconditional capital backstop is
   # the fixed EUR 50 floor in promotion/experimental.py. Re-arming does not move
-  # that floor. Also retained: 2% fixed risk per ordinary trade, four total
-  # position slots, every filter and Claude's veto.
+  # that floor. Also retained: 2% risk on an ordinary trade, a 6% ceiling that
+  # only a reviewer confidence of 0.90 reaches, a 12% cap on total open risk,
+  # four position slots, every filter and Claude's veto.
   daily_loss_limit_pct: 0
   weekly_loss_limit_pct: 0
 
 modes:
   micro_live:
-    max_risk_per_trade_pct: 2.0
+    # The per-trade CEILING, not the ordinary stake. An ordinary approval is
+    # still sized at `risk.risk_per_trade_pct`; this is the most that
+    # conviction scaling may reach, and the sizer clamps to it.
+    max_risk_per_trade_pct: 6.0
     max_sl_pips: 30
     max_trades_per_day: 0
     daily_loss_limit_pct: 0
     # Four is the owner-authorised experimental-live capacity at every equity
     # inside this mode; `risk.equity_per_position: 0` disables slot scaling.
     # Four is also where it stops after the account has grown inside this mode's
-    # EUR 500 range: four positions at 2% is 8% of equity at risk at once, and
-    # with the daily and weekly limits switched off on this account that is as
-    # far as simultaneous exposure should go.
+    # EUR 500 range. What now binds before the slots do is
+    # `risk.max_total_open_risk_pct`: two maximum-conviction trades reach the
+    # 12% aggregate ceiling with two slots still free, and with the daily and
+    # weekly limits switched off on this account that is as far as simultaneous
+    # exposure should go.
     max_concurrent_positions: 4
     max_journal_detail: true
     min_equity: 50

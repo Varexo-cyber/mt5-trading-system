@@ -25,7 +25,10 @@ if str(ROOT) not in sys.path:
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
 from promotion.experimental import (
+    CONTRACT_VERSION,
     EXPERIMENTAL_MAX_DRAWDOWN_PCT,
+    EXPERIMENTAL_MAX_STAKE_PCT,
+    EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT,
     EXPERIMENTAL_RISK_PER_TRADE_PCT,
     ExperimentalLiveContract,
     contract_path,
@@ -63,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  type      {'DEMO' if account.is_demo else 'REAL MONEY'}")
     print()
     print(
-        f"  this build requires  risk {EXPERIMENTAL_RISK_PER_TRADE_PCT:g}%, "
+        f"  this build requires  risk {EXPERIMENTAL_RISK_PER_TRADE_PCT:g}% ordinary up to "
+        f"{EXPERIMENTAL_MAX_STAKE_PCT:g}% on conviction, "
+        f"{EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT:g}% total open, "
         f"drawdown stop {EXPERIMENTAL_MAX_DRAWDOWN_PCT:g}%"
     )
 
@@ -74,11 +79,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(
         f"  currently armed      account {contract.login}, risk "
-        f"{contract.risk_per_trade_pct:g}%, drawdown stop {contract.max_drawdown_pct:g}%"
+        f"{contract.risk_per_trade_pct:g}% up to {contract.max_stake_pct:g}%, "
+        f"{contract.max_total_open_risk_pct:g}% total open, "
+        f"drawdown stop {contract.max_drawdown_pct:g}%"
     )
     mismatched = (
         contract.login != account.login
+        or contract.version != CONTRACT_VERSION
         or abs(contract.risk_per_trade_pct - EXPERIMENTAL_RISK_PER_TRADE_PCT) > 1e-9
+        or abs(contract.max_stake_pct - EXPERIMENTAL_MAX_STAKE_PCT) > 1e-9
+        or abs(contract.max_total_open_risk_pct - EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT) > 1e-9
         or abs(contract.max_drawdown_pct - EXPERIMENTAL_MAX_DRAWDOWN_PCT) > 1e-9
     )
     print()

@@ -1237,6 +1237,47 @@ class JarvisRunner:
             required_pct=min(100.0, verdict.required_pct + config.target_reach_margin_pct),
         )
 
+    def _conviction_stake(self, state, advice: Advice) -> tuple[float, str]:
+        """The risk percentage this approval has earned, and why.
+
+        Two numbers decide it and they do different jobs. The reviewer's
+        confidence sets what the setup is worth; the total-exposure cap decides
+        whether the book can carry it. The second can only reduce the first.
+
+        Deliberately NOT the engine's own conviction. That number is measured
+        on this account twice over not to predict the outcome — the "20+ over
+        the bar" bucket was the worst of them all at -4.92R over 23 trades, and
+        across 84 paid reviews the 40-45 band produced nothing useful while
+        20-25 produced 33%. Staking on it would put the most money on the
+        trades the record says are worst.
+
+        A stake of zero means do not open this at all. The cap trims down to
+        the ordinary stake and no further: a trade squeezed into whatever
+        fraction of a percent happens to be left is not a smaller version of
+        the setup, it is a position too small for this account to express and
+        would be refused as TRADE_SKIPPED_UNDERCAPITALIZED one step later, with
+        a reason naming the account size rather than the full book.
+        """
+        config = self.settings.risk.conviction_risk
+        wanted = config.stake_for(advice.confidence)
+        allowed = self.risk.room_for_more_risk(state, wanted, self.broker.spec)
+        if allowed >= wanted:
+            return wanted, f"conviction {advice.confidence:.2f} stakes {wanted:.1f}%"
+        used = self.risk.open_risk_pct(state, self.broker.spec)
+        if allowed + 1e-9 < config.floor_pct:
+            return 0.0, (
+                f"conviction {advice.confidence:.2f} earned {wanted:.1f}% but the book "
+                f"already carries {used:.1f}% of the "
+                f"{self.settings.risk.max_total_open_risk_pct:.1f}% ceiling, leaving "
+                f"{allowed:.1f}% — under the {config.floor_pct:.1f}% ordinary stake"
+            )
+        return allowed, (
+            f"conviction {advice.confidence:.2f} earned {wanted:.1f}% but the book "
+            f"already carries {used:.1f}% of the "
+            f"{self.settings.risk.max_total_open_risk_pct:.1f}% ceiling, so this "
+            f"takes {allowed:.1f}%"
+        )
+
     def _after_cost_priority(self, item: AnalysedCandidate) -> float:
         """How much of this setup's reward survives its own round trip.
 
@@ -3309,6 +3350,21 @@ class JarvisRunner:
         risk_multiplier = self.risk.risk_multiplier(fresh_state)
         if was_addon:
             risk_multiplier *= self.settings.trade_management.pyramiding.risk_multiplier
+        # The stake is decided HERE and not at the first sizing, because this
+        # is the first point at which the reviewer's confidence exists. The
+        # earlier sizing runs before the question is even asked, so it can only
+        # ever use the ordinary stake — which is also the right thing for it to
+        # do: that pass exists to find out whether the trade is expressible at
+        # all, not to decide how large it should be.
+        stake, why_stake = self._conviction_stake(fresh_state, advice)
+        if stake <= 0:
+            return fail(
+                Reason.MAX_POSITIONS_REACHED,
+                f"the open book already fills the "
+                f"{self.settings.risk.max_total_open_risk_pct:.1f}% total-risk ceiling; "
+                f"no room for another position until one closes or its stop moves up",
+                binding,
+            )
         sizing = PositionSizer(self.settings).size(
             spec=spec,
             equity=fresh_account.equity,
@@ -3318,6 +3374,7 @@ class JarvisRunner:
             tp=spec.normalize_price(fresh_idea.take_profit),
             risk_multiplier=risk_multiplier,
             spread_price=fresh_context.tick.spread,
+            risk_pct=stake,
         )
         if not sizing.approved:
             return fail(sizing.reason, sizing.decision.detail, binding)
@@ -3342,7 +3399,12 @@ class JarvisRunner:
                 fresh_context,
                 fresh_idea,
                 sizing,
-                {**filter_data, "entry_quality": timing.safe_dict()},
+                {
+                    **filter_data,
+                    "entry_quality": timing.safe_dict(),
+                    "stake_pct": round(stake, 2),
+                    "stake_reason": why_stake,
+                },
                 binding,
             ),
             Reason.OK,
