@@ -255,3 +255,75 @@ class TestTheBiggestReachableGateIsVisible:
 
         assert "extreme volatility regime" in out
         assert "1x  extreme volatility regime" in out
+
+
+REMEMBERED = json.dumps({"ai_veto_remembered": True, "ai_veto_repeats": 3})
+
+
+class TestAReplayedRefusalIsNotAPaidOne:
+    """The correction that makes the bottom line mean what it says.
+
+    A refusal replayed from the veto memory is journalled as AI_VETO, identical
+    in the reason column to one the account paid for. Counting those below the
+    line reported 751 paid reviews on a live twelve hours where 84 calls were
+    actually made, and turned a $4.79 daily API bill into a claimed $40 one.
+    """
+
+    def test_a_remembered_veto_is_counted_before_the_line(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        add(journal, "NO_SIGNAL", BEFORE, count=90)
+        add(journal, "AI_VETO", REMEMBERED, count=8)
+        add(journal, "AI_VETO", BEFORE, count=2)
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "2  reached the paid reviewer" in out
+        assert "-2  Claude declined or asked for a retest" in out
+
+    def test_the_free_replays_are_named_so_the_saving_is_visible(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The memory absorbing 89% of the refusals is the system working, and
+        it was invisible in every report."""
+        add(journal, "AI_VETO", REMEMBERED, count=8)
+        add(journal, "AI_VETO", BEFORE, count=2)
+
+        main(["--db", str(journal), "--hours", "4"])
+
+        assert "(8 of the refusals above were replayed free from memory)" in capsys.readouterr().out
+
+
+class TestATimeframeIsNotAMeasurement:
+    def test_m5_and_m15_stay_apart(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """Stripping digits to group "score 37.4" with "score 37.5" must not
+        also fold two different timeframes into one cause."""
+        db = sqlite3.connect(journal)
+        now = datetime.now(UTC)
+        rows = [
+            ("M5 price is moving against the short: 1.05 ATR adverse", 4),
+            ("M15 price is moving against the long: 2.18 ATR adverse", 6),
+        ]
+        for detail, count in rows:
+            for i in range(count):
+                db.execute(
+                    "INSERT INTO analysis_cycles (ts, symbol, decision, reason, detail, "
+                    "context_json) VALUES (?,?,?,?,?,?)",
+                    (
+                        (now - timedelta(seconds=i)).isoformat(),
+                        "EURUSD.i",
+                        "SKIP",
+                        "NO_SIGNAL",
+                        detail,
+                        BEFORE,
+                    ),
+                )
+        db.commit()
+        db.close()
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "6x  M15 price is moving against the long" in out
+        assert "4x  M5 price is moving against the short" in out
