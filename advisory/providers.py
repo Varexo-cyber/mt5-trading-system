@@ -919,9 +919,7 @@ def _reach_reference(
 _RANGE_LOOKBACK_BARS = 40
 
 
-def _range_position(
-    frame: Any, idea: TradeIdea, timeframe: str, atr: float
-) -> dict[str, object]:
+def _range_position(frame: Any, idea: TradeIdea, timeframe: str, atr: float) -> dict[str, object]:
     """Where entry, stop and target sit inside the recent range.
 
     Three questions the reviewer keeps answering by hand off the raw bars, and
@@ -943,6 +941,7 @@ def _range_position(
         return {"status": "no_range"}
 
     long = idea.direction is not None and int(idea.direction) > 0
+
     # 0% at the low, 100% at the high, whatever the direction — a raw location
     # rather than a "how extended am I" reading, so it cannot be misread as an
     # opinion about the trade.
@@ -1231,9 +1230,7 @@ def build_review_payload(
             # answer to the second one at all. It also never checked whether it
             # was aiming through the edge of the range, which is the "target
             # with structure in the way" the prompt asks the reviewer to catch.
-            "range_position": _range_position(
-                signal.df, idea, planning_timeframe.value, atr
-            ),
+            "range_position": _range_position(signal.df, idea, planning_timeframe.value, atr),
             "note": (
                 "history measures every available rolling window on the planning timeframe "
                 "using this proposal's expected horizon. It reports how often price travelled "
@@ -1785,8 +1782,11 @@ horizon on THIS proposal's planning timeframe. `proposed_direction_reach_pct` is
 measurement, not a strategy win rate.
 Judge it against `break_even_reach_pct`, which is the rate this plan's own reward-to-risk needs to
 break even, and NOT against the opposite direction's rate — a 2R plan needs 33%, so 43% clears it
-comfortably even where the other direction sits at 35%. Below the break-even figure the target is
-decorative whatever the other side does. `reach_standard_error_pct` is the noise on these numbers:
+comfortably even where the other direction sits at 35%. On swing plans, a rate below break-even is
+strong evidence that the target is decorative. On a quick M1/M5 plan, the unconditional rate is
+background evidence rather than the conditional win rate of the supplied event; weigh it, but do
+not veto on that number alone unless it is extremely low or nearer bars also contradict the path.
+`reach_standard_error_pct` is the noise on these numbers:
 a gap smaller than it is not a difference, and calling one a coin flip when it leads by several
 times its own error is a misreading, not caution.
 `range_position` states where the entry, stop and target sit inside the planning timeframe's own
@@ -1804,6 +1804,14 @@ when the bars CONTRADICT the claim — a long whose lower timeframes are selling
 structure in the way, a quote too old for the level, a rationale that only restates its own
 indicator. Approve when the bars SUPPORT the direction and the stop and target are sensibly
 placed for it.
+
+TIMEFRAME AUTHORITY FOLLOWS THE TRADE HORIZON. Read `trade_horizon.instruction` literally. For a
+quick plan, M1 is the trigger and M5 is the planning authority; H1/H4 provide nearby context and
+D1/W1 are background only. Never veto a quick long or short solely because D1 or W1 points the
+other way. Demand agreement from the frames capable of resolving inside the stated holding period,
+then use slower frames to identify a nearby level that could actually block that move. For a swing
+plan, H1/H4/D1 legitimately carry much more authority. This is horizon matching, not permission to
+ignore a clear contradiction on the entry frames.
 
 ENTRY DIRECTION IS NOT ENTRY TIMING. Answer whether you would place a MARKET ORDER at the supplied
 entry now, not merely whether the market may eventually move that way. `ENTER_NOW` means both the

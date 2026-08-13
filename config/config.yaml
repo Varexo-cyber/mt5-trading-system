@@ -411,6 +411,15 @@ analysis:
     score_threshold: 55.0
     minimum_confidence: 0.45
     minimum_directional_modules: 2
+    # Quick entries already contain their own closed M1/M5 timing proof. Their
+    # unconditional travel statistics and old symbol-level Claude vetoes are
+    # still shown to the reviewer, but are not allowed to masquerade as facts
+    # about a new breakout event.
+    quick_embedded_confirmation_modules: [ema_pullback_resume, m1_micro_breakout]
+    quick_statistical_gates_are_advisory: true
+    quick_reach_hard_floor_ratio: 0.50
+    quick_direction_disadvantage_hard_gap_pct: 20.0
+    quick_events_bypass_broad_veto_memory: true
     minimum_agreement_ratio: 0.60
     target_r_multiple: 2.0
     atr_stop_multiple: 1.5
@@ -515,6 +524,7 @@ analysis:
     max_last_bar_adverse_atr: 0.20
     max_review_price_drift_atr: 0.25
     max_review_latency_seconds: 45
+    quick_extension_multiplier: 1.25
 
   # Ordering preferences only: never an entry gate, direction change, or risk
   # adjustment. Each market family gets a different microstructure preference.
