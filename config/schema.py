@@ -1207,7 +1207,23 @@ class FastEmaCrossConfig(Base):
     invalidation_lookback: int = Field(default=12, ge=2, le=500)
     #: How stale a cross may be and still count as an entry. Beyond this it is
     #: a state, and the state is what `trend_momentum` already reports.
-    max_bars_since_cross: int = Field(default=3, ge=0, le=100)
+    #:
+    #: 6, up from 3, and this is the honest lever for "more quick entries" —
+    #: the one that admits more OPPORTUNITIES rather than weaker evidence.
+    #:
+    #: Three M5 bars is a fifteen-minute window. A 9/20 cross happens a handful
+    #: of times a day on a given symbol, and the scanner has to be looking at
+    #: that symbol, on that pass, inside those fifteen minutes, with the
+    #: separation floor and the price-side check both satisfied at that exact
+    #: moment. Most crosses were simply never seen. Six bars is thirty minutes:
+    #: double the chance of catching the same cross, with every quality floor
+    #: untouched — the separation is still measured in ATR, price must still be
+    #: on the right side of the slow average, and `entry_quality` still runs.
+    #:
+    #: Deliberately not larger. The module's whole justification is that it
+    #: reports an entry rather than a state, and forty minutes after a cross
+    #: that distinction is gone.
+    max_bars_since_cross: int = Field(default=6, ge=0, le=100)
     #: How far apart the averages must be, in ATR. Two EMAs sitting on top of
     #: each other crossing back and forth is one market making no decision, and
     #: treating each touch as a signal is reading noise at high frequency.
