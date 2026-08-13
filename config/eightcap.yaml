@@ -226,6 +226,18 @@ external_signals:
   fixed_volume: 0.01
   partial_close_fraction: 0.5
   entry_zone_tolerance_bps: 2.0
+  # Rio is the directional authority for Gold only. Jarvis supplies missing
+  # protection from closed M5 structure/ATR, but the broker, calendar, spread,
+  # margin, hard STOP and capital floor remain non-negotiable execution facts.
+  gold_follow_enabled: true
+  gold_follow_aliases: [GOLD, XAUUSD]
+  gold_follow_timeframe: M5
+  gold_follow_structure_bars: 24
+  gold_follow_stop_atr_multiple: 1.5
+  gold_follow_structure_buffer_atr: 0.25
+  gold_follow_target_reward_risk: 1.2
+  gold_follow_max_entry_deviation_atr: 0.75
+  gold_follow_max_entry_deviation_bps: 8.0
   allowed_apps: [Rio Traders]
   symbol_aliases:
     GOLD: XAUUSD

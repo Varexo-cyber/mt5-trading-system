@@ -1,5 +1,6 @@
 """Authenticated mobile-notification bridge for external trade signals."""
 
+from external_signals.gold_follow import GoldFollowPlan, build_gold_follow_plan
 from external_signals.inbox import ExternalSignalInbox
 from external_signals.models import (
     ExternalSignalEvent,
@@ -13,7 +14,9 @@ __all__ = [
     "ExternalSignalEvent",
     "ExternalSignalInbox",
     "ExternalSignalKind",
+    "GoldFollowPlan",
     "NotificationEnvelope",
     "RioSignalParser",
     "SignalReceiver",
+    "build_gold_follow_plan",
 ]
