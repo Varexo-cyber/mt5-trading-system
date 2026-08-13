@@ -33,6 +33,7 @@ from advisory.veto_patterns import readable as veto_readable
 from analysis import (
     ConfluenceEngine,
     DriftContinuation,
+    EmaPullbackResume,
     EntryTimingDecision,
     FastEmaCross,
     ImpulseBreak,
@@ -348,6 +349,7 @@ class JarvisRunner:
                 DriftContinuation(self.settings.analysis.drift_continuation),
                 FastEmaCross(self.settings.analysis.fast_ema_cross),
                 ImpulseBreak(self.settings.analysis.impulse_break),
+                EmaPullbackResume(self.settings.analysis.ema_pullback_resume),
             ],
             self.settings.analysis.confluence,
         )

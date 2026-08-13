@@ -408,6 +408,13 @@ analysis:
         minimum_htf_conflicts: 2
         htf_trend_veto: 1.0
         entry_timing_timeframes: [M5, M1]
+      quick:
+        planning_timeframe: M5
+        target_horizon_bars: 6
+        htf_trend_timeframes: [H1, H4]
+        minimum_htf_conflicts: 2
+        htf_trend_veto: 1.0
+        entry_timing_timeframes: [M1]
     # A trade must be able to pay its own spread. The spread filter asks whether
     # the spread is unusual for this hour; in the evening it is not, and the stop
     # did not widen with it. This is the gate that catches that.
@@ -440,6 +447,9 @@ analysis:
       # which is a fact rather than an indicator relationship — and weaker
       # evidence of continuation than eight bars of consistent travel.
       impulse_break: 0.6
+      # A repeatable M5 entry event after a pullback. Below the impulse module
+      # because it observes a reclaim rather than an outright repricing.
+      ema_pullback_resume: 0.55
 
   # Direction and entry price are separate decisions. These ATR-normalised
   # limits stop the market-order path from buying the end of an impulse or
