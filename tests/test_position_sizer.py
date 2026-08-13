@@ -325,6 +325,22 @@ class TestModeCeilings:
         assert result.reason is Reason.RR_BELOW_MINIMUM
         assert "1:1.00" in result.decision.detail
 
+    def test_authenticated_provider_can_bypass_strategy_rr_only(
+        self, sizer: PositionSizer, eurusd: InstrumentSpec
+    ) -> None:
+        result = sizer.size(
+            spec=eurusd,
+            equity=10_000.0,
+            direction=Direction.LONG,
+            entry=1.08500,
+            sl=1.08300,
+            tp=1.08700,
+            enforce_minimum_rr=False,
+        )
+
+        assert result.approved
+        assert result.reward_risk == 1.0
+
     def test_one_broker_point_of_rr_rounding_does_not_reject_exact_boundary(
         self, sizer: PositionSizer, eurusd: InstrumentSpec
     ) -> None:

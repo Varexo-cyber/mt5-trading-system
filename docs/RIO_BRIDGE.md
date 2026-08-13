@@ -34,12 +34,20 @@ Rio notifications whose symbol is `GOLD` or `XAUUSD`:
 - `Book some profits` banks a broker-valid partial and protects the remainder at
   break-even-plus when possible. Because a 0.01 lot ticket cannot be split on a
   0.01 lot-step account, that smallest profitable ticket is closed in full.
+- General Jarvis pacing limits, position-slot limits, equity whitelists,
+  concentration/correlation opinions, minimum-R:R policy and AI vetoes do not
+  block this Gold route.
 
 This exception applies **only** to Rio Gold/XAUUSD. Other Jarvis markets and
 other external symbols retain their existing rules. Gold still cannot override
 broker rejection, a closed market, missing/unreliable calendar data, dangerous
 news, unacceptable spread/cost, insufficient margin, the hard STOP or the fixed
 capital floor. Those are execution facts, not a strategy veto.
+
+A second live XAUUSD ticket is not opened while the first remains open. That is
+the hard no-averaging/no-grid/no-hedging project rule, not a confidence or slot
+gate. A new Rio instruction can be acted on after the existing Gold campaign is
+closed.
 
 ## One-time VPS setup
 
