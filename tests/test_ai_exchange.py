@@ -1,4 +1,6 @@
-from dashboard.ai_exchange import pair_ai_reviews
+import sqlite3
+
+from dashboard.ai_exchange import execution_outcomes, pair_ai_reviews
 
 
 def test_ai_exchange_pairs_exact_request_and_response() -> None:
@@ -75,3 +77,52 @@ def test_ai_exchange_marks_provider_failure_as_fail_closed() -> None:
     )
 
     assert exchanges[0]["status"] == "ERROR / FAIL CLOSED"
+
+
+def _outcome_database(path) -> sqlite3.Connection:  # type: ignore[no-untyped-def]
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE analysis_cycles (
+            id INTEGER PRIMARY KEY, cycle_id TEXT, mode TEXT, decision TEXT,
+            reason TEXT, detail TEXT
+        );
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY, cycle_pk INTEGER, ticket INTEGER,
+            entry_state TEXT, exit_reason TEXT
+        );
+        """
+    )
+    return connection
+
+
+def test_execution_outcome_explains_a_post_ai_block(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "journal.db"
+    connection = _outcome_database(path)
+    connection.execute(
+        "INSERT INTO analysis_cycles VALUES (1, 'cycle-1', 'live', 'SKIP', ?, ?)",
+        ("ENTRY_MOVED_DURING_REVIEW", "price moved 0.8 ATR during Claude review"),
+    )
+    connection.commit()
+    connection.close()
+
+    outcome = execution_outcomes(path, ["cycle-1"])["cycle-1"]
+
+    assert outcome["status"] == "NA CLAUDE GEBLOKKEERD"
+    assert "ENTRY_MOVED_DURING_REVIEW" in outcome["detail"]
+
+
+def test_execution_outcome_shows_the_confirmed_mt5_ticket(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    path = tmp_path / "journal.db"
+    connection = _outcome_database(path)
+    connection.execute(
+        "INSERT INTO analysis_cycles VALUES (1, 'cycle-1', 'live', 'TRADE', 'OK', '')"
+    )
+    connection.execute("INSERT INTO trades VALUES (1, 1, 5049535, 'OPEN', NULL)")
+    connection.commit()
+    connection.close()
+
+    outcome = execution_outcomes(path, ["cycle-1"])["cycle-1"]
+
+    assert outcome["status"] == "GEOPEND IN MT5"
+    assert outcome["ticket"] == 5049535
