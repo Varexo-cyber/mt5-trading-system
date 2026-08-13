@@ -2641,6 +2641,15 @@ class ExternalSignalsConfig(Base):
     fixed_volume: float = Field(default=0.01, gt=0.0, le=100.0)
     partial_close_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
     entry_zone_tolerance_bps: float = Field(default=2.0, ge=0.0, le=100.0)
+    gold_follow_enabled: bool = False
+    gold_follow_aliases: tuple[str, ...] = ("GOLD", "XAUUSD")
+    gold_follow_timeframe: str = "M5"
+    gold_follow_structure_bars: int = Field(default=24, ge=5, le=200)
+    gold_follow_stop_atr_multiple: float = Field(default=1.5, ge=0.5, le=5.0)
+    gold_follow_structure_buffer_atr: float = Field(default=0.25, ge=0.0, le=2.0)
+    gold_follow_target_reward_risk: float = Field(default=1.2, ge=0.5, le=5.0)
+    gold_follow_max_entry_deviation_atr: float = Field(default=0.75, ge=0.0, le=5.0)
+    gold_follow_max_entry_deviation_bps: float = Field(default=8.0, ge=0.0, le=100.0)
     allowed_apps: tuple[str, ...] = ("Rio Traders",)
     symbol_aliases: dict[str, str] = Field(default_factory=lambda: {"GOLD": "XAUUSD"})
 
@@ -2663,6 +2672,21 @@ class ExternalSignalsConfig(Base):
         if len(aliases) != len(value):
             raise ValueError("external_signals.symbol_aliases contains an empty alias")
         return aliases
+
+    @field_validator("gold_follow_aliases")
+    @classmethod
+    def _normalise_gold_follow_aliases(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        aliases = tuple(dict.fromkeys(alias.strip().upper() for alias in value if alias.strip()))
+        if not aliases:
+            raise ValueError("external_signals.gold_follow_aliases must not be empty")
+        return aliases
+
+    @field_validator("gold_follow_timeframe")
+    @classmethod
+    def _gold_follow_timeframe_is_supported(cls, value: str) -> str:
+        cleaned = value.strip().upper()
+        Timeframe.parse(cleaned)
+        return cleaned
 
 
 class MarketScoutConfig(Base):

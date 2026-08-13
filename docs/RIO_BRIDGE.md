@@ -14,10 +14,32 @@ Recognised messages:
 - `Close now` / `Cancel`: closes the matching position.
 - `TP1 hit`, profit-running messages and daily summaries: recorded, not treated as entries.
 
-An entry without symbol, direction, entry, stop loss or at least one take profit
-is recorded as incomplete and cannot place an order. A notification older than
-three minutes cannot place or change an order. Duplicate content received within
-fifteen minutes is stored once.
+For every instrument except Gold, an entry without symbol, direction, entry,
+stop loss or at least one take profit is recorded as incomplete and cannot place
+an order. Duplicate content received within fifteen minutes is stored once.
+
+## Rio Gold follow mode
+
+The Eightcap overlay enables a deliberately narrow follow mode for authenticated
+Rio notifications whose symbol is `GOLD` or `XAUUSD`:
+
+- Rio supplies the direction. Jarvis' scanner and Claude do not cast a second
+  strategic vote on that direction.
+- A missing or wrong-side SL is rebuilt below/above recent closed M5 structure,
+  buffered by live ATR, spread and the broker's minimum stop distance.
+- A missing or wrong-side TP is rebuilt from that resolved risk distance.
+- A small move away from the provider entry is accepted. A signal that has
+  already run farther than the configured ATR/basis-point freshness envelope is
+  not chased.
+- `Book some profits` banks a broker-valid partial and protects the remainder at
+  break-even-plus when possible. Because a 0.01 lot ticket cannot be split on a
+  0.01 lot-step account, that smallest profitable ticket is closed in full.
+
+This exception applies **only** to Rio Gold/XAUUSD. Other Jarvis markets and
+other external symbols retain their existing rules. Gold still cannot override
+broker rejection, a closed market, missing/unreliable calendar data, dangerous
+news, unacceptable spread/cost, insufficient margin, the hard STOP or the fixed
+capital floor. Those are execution facts, not a strategy veto.
 
 ## One-time VPS setup
 

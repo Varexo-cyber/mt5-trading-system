@@ -6,10 +6,12 @@ import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 
+import pandas as pd
 import pytest
 
 from core.types import Direction
 from external_signals import ExternalSignalInbox, NotificationEnvelope, RioSignalParser
+from external_signals.gold_follow import build_gold_follow_plan
 from external_signals.models import ExternalSignalKind
 from external_signals.server import SignalReceiver
 
@@ -40,12 +42,123 @@ def test_parses_complete_gold_zone_signal() -> None:
     assert event.complete_entry
 
 
-def test_preliminary_signal_without_stop_never_becomes_entry() -> None:
+def test_preliminary_gold_direction_is_a_follow_candidate() -> None:
     event = RioSignalParser().parse(envelope("GOLD\nSELL 4385"))
+
+    assert event.kind is ExternalSignalKind.NEW
+    assert not event.complete_entry
+    assert "stop loss" in event.reason
+
+
+def test_incomplete_non_gold_direction_remains_invalid() -> None:
+    event = RioSignalParser().parse(envelope("EURUSD BUY 1.1000", title="Rio Traders"))
 
     assert event.kind is ExternalSignalKind.INVALID
     assert not event.complete_entry
-    assert "stop loss" in event.reason
+
+
+def gold_bars() -> pd.DataFrame:
+    closes = [4382.0 + index * 0.05 for index in range(40)]
+    return pd.DataFrame(
+        {
+            "open": [value - 0.1 for value in closes],
+            "high": [value + 0.4 for value in closes],
+            "low": [value - 0.4 for value in closes],
+            "close": closes,
+        }
+    )
+
+
+def test_gold_follow_builds_missing_short_protection_from_market_structure() -> None:
+    event = RioSignalParser().parse(envelope("GOLD SELL 4385"))
+
+    plan = build_gold_follow_plan(
+        event,
+        live_entry=4385.5,
+        bars=gold_bars(),
+        spread=0.2,
+        minimum_stop_distance=0.1,
+        atr_period=14,
+        structure_bars=24,
+        stop_atr_multiple=1.5,
+        structure_buffer_atr=0.25,
+        target_reward_risk=1.2,
+        max_entry_deviation_atr=0.75,
+        max_entry_deviation_bps=8.0,
+    )
+
+    assert plan.used_fallback_stop
+    assert plan.used_fallback_target
+    assert plan.stop_loss > 4385.5
+    assert plan.take_profit < 4385.5
+
+
+def test_gold_follow_refuses_a_signal_after_price_has_run_too_far() -> None:
+    event = RioSignalParser().parse(envelope("GOLD SELL 4385"))
+
+    with pytest.raises(ValueError, match="moved"):
+        build_gold_follow_plan(
+            event,
+            live_entry=4400.0,
+            bars=gold_bars(),
+            spread=0.2,
+            minimum_stop_distance=0.1,
+            atr_period=14,
+            structure_bars=24,
+            stop_atr_multiple=1.5,
+            structure_buffer_atr=0.25,
+            target_reward_risk=1.2,
+            max_entry_deviation_atr=0.75,
+            max_entry_deviation_bps=8.0,
+        )
+
+
+def test_gold_follow_keeps_valid_provider_protection() -> None:
+    event = RioSignalParser().parse(envelope("GOLD SELL 4385-4386 SL 4393 TP1 4378"))
+
+    plan = build_gold_follow_plan(
+        event,
+        live_entry=4385.5,
+        bars=gold_bars(),
+        spread=0.2,
+        minimum_stop_distance=0.1,
+        atr_period=14,
+        structure_bars=24,
+        stop_atr_multiple=1.5,
+        structure_buffer_atr=0.25,
+        target_reward_risk=1.2,
+        max_entry_deviation_atr=0.75,
+        max_entry_deviation_bps=8.0,
+    )
+
+    assert not plan.used_fallback_stop
+    assert not plan.used_fallback_target
+    assert plan.stop_loss == 4393.0
+    assert plan.take_profit == 4378.0
+
+
+def test_gold_follow_replaces_wrong_side_provider_protection() -> None:
+    event = RioSignalParser().parse(envelope("GOLD BUY 4385 SL 4390 TP1 4380"))
+
+    plan = build_gold_follow_plan(
+        event,
+        live_entry=4385.0,
+        bars=gold_bars(),
+        spread=0.2,
+        minimum_stop_distance=0.1,
+        atr_period=14,
+        structure_bars=24,
+        stop_atr_multiple=1.5,
+        structure_buffer_atr=0.25,
+        target_reward_risk=1.2,
+        max_entry_deviation_atr=0.75,
+        max_entry_deviation_bps=8.0,
+    )
+
+    assert plan.used_fallback_stop
+    assert plan.used_fallback_target
+    assert plan.stop_loss < 4385.0
+    assert plan.take_profit > 4385.0
 
 
 @pytest.mark.parametrize(

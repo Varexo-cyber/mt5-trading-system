@@ -94,15 +94,12 @@ class RioSignalParser:
         )
         after = text[direction_match.end() :]
         entry_match = re.search(
-            r"\s*[:=@-]?\s*(\d+(?:[.,]\d+)?)"
-            r"(?:\s*(?:-|TO)\s*(\d+(?:[.,]\d+)?))?",
+            r"\s*[:=@-]?\s*(\d+(?:[.,]\d+)?)" r"(?:\s*(?:-|TO)\s*(\d+(?:[.,]\d+)?))?",
             after,
         )
         entry_low = _price(entry_match.group(1)) if entry_match else None
         entry_high = (
-            _price(entry_match.group(2))
-            if entry_match and entry_match.group(2)
-            else entry_low
+            _price(entry_match.group(2)) if entry_match and entry_match.group(2) else entry_low
         )
         stop = self._labelled_price(text, ("SL", "STOP", "STOPLOSS", "STOP LOSS"))
         targets = self._targets(text)
@@ -116,23 +113,29 @@ class RioSignalParser:
             )
             if not present
         ]
+        # Only the authenticated Rio Gold route may turn a bare direction into
+        # an executable candidate. Other instruments keep the original strict
+        # requirement for explicit entry protection.
+        can_follow = bool(symbol in {"GOLD", "XAUUSD"} and direction)
         reason = (
-            f"incomplete signal: missing {', '.join(missing)}"
-            if missing
-            else "complete provider entry signal"
+            f"provider direction requires execution fallback: missing {', '.join(missing)}"
+            if missing and can_follow
+            else (
+                f"incomplete signal: missing {', '.join(missing)}"
+                if missing
+                else "complete provider entry signal"
+            )
         )
         return ExternalSignalEvent(
             envelope,
-            ExternalSignalKind.NEW if not missing else ExternalSignalKind.INVALID,
+            ExternalSignalKind.NEW if not missing or can_follow else ExternalSignalKind.INVALID,
             symbol_alias=symbol,
             direction=direction,
             entry_low=(
                 min(entry_low, entry_high) if entry_low is not None and entry_high else entry_low
             ),
             entry_high=(
-                max(entry_low, entry_high)
-                if entry_low is not None and entry_high
-                else entry_high
+                max(entry_low, entry_high) if entry_low is not None and entry_high else entry_high
             ),
             stop_loss=stop,
             take_profits=targets,
@@ -163,9 +166,7 @@ class RioSignalParser:
     @staticmethod
     def _targets(text: str) -> tuple[float, ...]:
         values: list[float] = []
-        pattern = re.compile(
-            r"\b(?:TP|TAKE\s*PROFIT)\s*\d*\s*[:=@-]?\s*(\d+(?:[.,]\d+)?)"
-        )
+        pattern = re.compile(r"\b(?:TP|TAKE\s*PROFIT)\s*\d*\s*[:=@-]?\s*(\d+(?:[.,]\d+)?)")
         for match in pattern.finditer(text):
             value = _price(match.group(1))
             if value not in values:

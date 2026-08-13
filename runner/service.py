@@ -86,6 +86,7 @@ from core.types import (
     Direction,
     MarketContext,
     OrderRequest,
+    OrderResult,
     Position,
     Signal,
     Timeframe,
@@ -99,8 +100,9 @@ from external_signals import (
     ExternalSignalKind,
     RioSignalParser,
     SignalReceiver,
+    build_gold_follow_plan,
 )
-from filters.base import FilterContext
+from filters.base import FilterContext, FilterVerdict
 from filters.calendar.events import symbol_currencies
 from filters.headline_filter import HeadlineFilter
 from filters.news_filter import NewsFilter
@@ -444,9 +446,7 @@ class JarvisRunner:
         self._last_guard_pulse = time.monotonic()
         # Recomputed every cycle; STEADY until the first one runs.
         self.posture: PostureAssessment = assess(consecutive_losses=0, equity=1.0, equity_peak=1.0)
-        self.external_inbox = ExternalSignalInbox(
-            root / self.settings.external_signals.inbox_path
-        )
+        self.external_inbox = ExternalSignalInbox(root / self.settings.external_signals.inbox_path)
         self.external_parser = RioSignalParser()
         self.external_receiver: SignalReceiver | None = None
 
@@ -583,9 +583,7 @@ class JarvisRunner:
         for path, envelope in self.external_inbox.pending():
             event = self.external_parser.parse(envelope)
             parsed = event.safe_dict()
-            self.external_inbox.record(
-                envelope.event_id, "PARSED", event.reason, parsed=parsed
-            )
+            self.external_inbox.record(envelope.event_id, "PARSED", event.reason, parsed=parsed)
             try:
                 status, detail, extra = self._apply_external_signal(event)
             except Exception as exc:
@@ -605,22 +603,24 @@ class JarvisRunner:
     ) -> tuple[str, str, dict[str, object]]:
         raw_text = event.envelope.combined_text
         if any(token in raw_text for token in ("{not_", "{notification}")):
-            return "INVALID", "MacroDroid sent literal Magic Text instead of notification data", {
-                "parsed": event.safe_dict()
-            }
+            return (
+                "INVALID",
+                "MacroDroid sent literal Magic Text instead of notification data",
+                {"parsed": event.safe_dict()},
+            )
         allowed_apps = tuple(
             name.casefold() for name in self.settings.external_signals.allowed_apps
         )
-        if allowed_apps and not any(
-            name in event.envelope.app.casefold() for name in allowed_apps
-        ):
-            return "WRONG_APP", f"notification app {event.envelope.app!r} is not allowed", {
-                "parsed": event.safe_dict()
-            }
+        if allowed_apps and not any(name in event.envelope.app.casefold() for name in allowed_apps):
+            return (
+                "WRONG_APP",
+                f"notification app {event.envelope.app!r} is not allowed",
+                {"parsed": event.safe_dict()},
+            )
         if event.kind in {ExternalSignalKind.INFO, ExternalSignalKind.INVALID}:
             return event.kind.value, event.reason, {"parsed": event.safe_dict()}
         age = max(0.0, (self.clock.now() - event.envelope.received_at).total_seconds())
-        if age > self.settings.external_signals.max_age_seconds:
+        if age > self.settings.external_signals.max_age_seconds and not self._is_gold_follow(event):
             return (
                 "STALE",
                 f"notification is {age:.0f}s old; no delayed order or management action sent",
@@ -629,6 +629,43 @@ class JarvisRunner:
         if event.kind is ExternalSignalKind.NEW:
             return self._open_external_signal(event)
         return self._manage_external_signal(event)
+
+    def _is_gold_follow(self, event: ExternalSignalEvent) -> bool:
+        config = self.settings.external_signals
+        if not config.gold_follow_enabled or not event.symbol_alias:
+            return False
+        alias = event.symbol_alias.upper()
+        canonical = config.symbol_aliases.get(alias, alias).upper()
+        allowed = set(config.gold_follow_aliases)
+        return alias in allowed or canonical == "XAUUSD"
+
+    def _is_gold_symbol(self, symbol: str) -> bool:
+        config = self.settings.external_signals
+        canonical = self.settings.instruments.canonical_symbol(symbol).upper()
+        aliases = {alias.upper() for alias in config.gold_follow_aliases}
+        mapped = {config.symbol_aliases.get(alias, alias).upper() for alias in aliases}
+        return canonical == "XAUUSD" or canonical in aliases or canonical in mapped
+
+    def _external_filter_check(
+        self, context: FilterContext, *, gold_follow: bool
+    ) -> tuple[FilterVerdict, dict[str, object]]:
+        if not gold_follow:
+            return self.filters.check(context)
+        # Rio owns Gold direction. These are execution/market facts, not a
+        # second strategy opinion: calendar/headline danger, whether Gold is
+        # actually open long enough, whether it is moving, and its live spread.
+        required = {"news", "headlines", "session", "runway", "liveliness", "spread"}
+        data: dict[str, object] = {}
+        checked = 0
+        for filter_ in self.filters.filters:
+            if filter_.name not in required:
+                continue
+            checked += 1
+            verdict = filter_.check(context)
+            data.update(verdict.data)
+            if not verdict.passed:
+                return verdict, data
+        return FilterVerdict.allow("gold_follow", f"{checked} Gold execution filters clear"), data
 
     def _external_symbol(self, alias: str | None) -> str | None:
         if not alias:
@@ -647,50 +684,100 @@ class JarvisRunner:
     def _open_external_signal(
         self, event: ExternalSignalEvent
     ) -> tuple[str, str, dict[str, object]]:
-        if not event.complete_entry or event.direction is None or event.stop_loss is None:
+        gold_follow = self._is_gold_follow(event)
+        if event.direction is None or event.symbol_alias is None:
+            return "INVALID", event.reason, {"parsed": event.safe_dict()}
+        if not gold_follow and not event.complete_entry:
             return "INVALID", event.reason, {"parsed": event.safe_dict()}
         if self.operation is OperationMode.MONITOR:
-            return "MONITOR_ONLY", "monitor mode cannot send a broker order", {
-                "parsed": event.safe_dict()
-            }
+            return (
+                "MONITOR_ONLY",
+                "monitor mode cannot send a broker order",
+                {"parsed": event.safe_dict()},
+            )
         if self.kill_switch.is_engaged() or not self._entry_still_allowed():
-            return "BLOCKED", "hard STOP, account contract or capital floor blocks entry", {
-                "parsed": event.safe_dict()
-            }
+            return (
+                "BLOCKED",
+                "hard STOP, account contract or capital floor blocks entry",
+                {"parsed": event.safe_dict()},
+            )
         symbol = self._external_symbol(event.symbol_alias)
         if symbol is None:
-            return "BLOCKED", f"no Eightcap symbol found for {event.symbol_alias}", {
-                "parsed": event.safe_dict()
-            }
+            return (
+                "BLOCKED",
+                f"no Eightcap symbol found for {event.symbol_alias}",
+                {"parsed": event.safe_dict()},
+            )
         spec = self.broker.spec(symbol, refresh=True)
         context = self.data.get_context(symbol, force_refresh=True)
         tick = context.tick
         if tick is None:
-            return "BLOCKED", f"{symbol} has no executable quote", {
-                "parsed": event.safe_dict()
-            }
+            return "BLOCKED", f"{symbol} has no executable quote", {"parsed": event.safe_dict()}
         entry = tick.ask if event.direction is Direction.LONG else tick.bid
-        low = event.entry_low or entry
-        high = event.entry_high or low
-        tolerance = entry * self.settings.external_signals.entry_zone_tolerance_bps / 10_000
-        if entry < low - tolerance or entry > high + tolerance:
-            return (
-                "OUTSIDE_ENTRY_ZONE",
-                f"live price {entry:g} is outside provider zone {low:g}-{high:g}",
-                {"symbol": symbol, "parsed": event.safe_dict()},
+        resolution: dict[str, object] = {"gold_follow": gold_follow}
+        if gold_follow:
+            config = self.settings.external_signals
+            timeframe = Timeframe.parse(config.gold_follow_timeframe)
+            try:
+                bars = context.bars(timeframe).df
+            except KeyError:
+                bars = self.data.get_series(symbol, timeframe).df
+            try:
+                plan = build_gold_follow_plan(
+                    event,
+                    live_entry=entry,
+                    bars=bars,
+                    spread=tick.spread,
+                    minimum_stop_distance=spec.min_stop_distance_price,
+                    atr_period=self.settings.trade_management.sl_atr_period,
+                    structure_bars=config.gold_follow_structure_bars,
+                    stop_atr_multiple=config.gold_follow_stop_atr_multiple,
+                    structure_buffer_atr=config.gold_follow_structure_buffer_atr,
+                    target_reward_risk=config.gold_follow_target_reward_risk,
+                    max_entry_deviation_atr=config.gold_follow_max_entry_deviation_atr,
+                    max_entry_deviation_bps=config.gold_follow_max_entry_deviation_bps,
+                )
+            except (InsufficientDataError, ValueError) as exc:
+                return "BLOCKED", str(exc), {"symbol": symbol, "parsed": event.safe_dict()}
+            stop_loss = spec.normalize_price(plan.stop_loss)
+            target = spec.normalize_price(plan.take_profit)
+            resolution.update(
+                {
+                    "measured_atr": plan.measured_atr,
+                    "fallback_stop": plan.used_fallback_stop,
+                    "fallback_target": plan.used_fallback_target,
+                    "provider_entry": plan.provider_entry,
+                    "max_entry_deviation": plan.maximum_entry_deviation,
+                    "resolved_sl": stop_loss,
+                    "resolved_tp": target,
+                }
             )
-        # One 0.01-lot ticket cannot be split at two targets on this broker.
-        # Use the provider's explicitly labelled TP1 (the first parsed target),
-        # not the farthest target, so a valid first objective is not given back
-        # while waiting for the marketing headline around TP2.
-        target = event.take_profits[0]
+        else:
+            low = event.entry_low or entry
+            high = event.entry_high or low
+            tolerance = entry * self.settings.external_signals.entry_zone_tolerance_bps / 10_000
+            if entry < low - tolerance or entry > high + tolerance:
+                return (
+                    "OUTSIDE_ENTRY_ZONE",
+                    f"live price {entry:g} is outside provider zone {low:g}-{high:g}",
+                    {"symbol": symbol, "parsed": event.safe_dict()},
+                )
+            assert event.stop_loss is not None and event.take_profits
+            stop_loss = spec.normalize_price(event.stop_loss)
+            # A 0.01 ticket cannot be partially split. TP1 is the first
+            # executable objective; later provider messages manage the rest.
+            target = spec.normalize_price(event.take_profits[0])
         signal = Signal(
             module="external_rio",
             score=100.0 * int(event.direction),
             confidence=1.0,
             reasoning="authenticated provider signal; not a Jarvis-derived market edge",
-            invalidation_price=event.stop_loss,
-            details={"source": event.envelope.source, "event_id": event.envelope.event_id},
+            invalidation_price=stop_loss,
+            details={
+                "source": event.envelope.source,
+                "event_id": event.envelope.event_id,
+                **resolution,
+            },
         )
         cycle_id = f"external:{event.envelope.event_id}"
         account = self.broker.account()
@@ -723,11 +810,15 @@ class JarvisRunner:
                 extra={"source": "external_rio", "event": event.safe_dict()},
                 total_score=100.0,
             )
-            return "BLOCKED", symbol_permission.detail, {
-                "cycle_pk": cycle_pk,
-                "parsed": event.safe_dict(),
-            }
-        filter_verdict, filter_data = self.filters.check(
+            return (
+                "BLOCKED",
+                symbol_permission.detail,
+                {
+                    "cycle_pk": cycle_pk,
+                    "parsed": event.safe_dict(),
+                },
+            )
+        filter_verdict, filter_data = self._external_filter_check(
             FilterContext(
                 symbol=symbol,
                 spec=spec,
@@ -736,7 +827,8 @@ class JarvisRunner:
                 tick=tick,
                 open_positions=positions,
                 extra={"external_source": event.envelope.source},
-            )
+            ),
+            gold_follow=gold_follow,
         )
         if not filter_verdict.passed:
             cycle_pk = self._record_skip(
@@ -749,17 +841,21 @@ class JarvisRunner:
                 extra={**filter_data, "source": "external_rio", "event": event.safe_dict()},
                 total_score=100.0,
             )
-            return "BLOCKED", filter_verdict.detail, {
-                "cycle_pk": cycle_pk,
-                "parsed": event.safe_dict(),
-            }
+            return (
+                "BLOCKED",
+                filter_verdict.detail,
+                {
+                    "cycle_pk": cycle_pk,
+                    "parsed": event.safe_dict(),
+                },
+            )
         sizing = PositionSizer(self.settings).size(
             spec=spec,
             equity=account.equity,
             direction=event.direction,
             entry=entry,
-            sl=spec.normalize_price(event.stop_loss),
-            tp=spec.normalize_price(target),
+            sl=stop_loss,
+            tp=target,
             risk_multiplier=self.risk.risk_multiplier(state),
             spread_price=context.tick.spread,
         )
@@ -771,20 +867,31 @@ class JarvisRunner:
                 sizing.reason,
                 sizing.decision.detail,
                 signals=[signal],
-                extra={**filter_data, "source": "external_rio", "event": event.safe_dict()},
+                extra={
+                    **filter_data,
+                    "source": "external_rio",
+                    "event": event.safe_dict(),
+                    "resolution": resolution,
+                },
                 total_score=100.0,
             )
             self.recorder.record_sizing(cycle_pk, sizing)
-            return "BLOCKED", sizing.decision.detail, {
-                "cycle_pk": cycle_pk,
-                "parsed": event.safe_dict(),
-            }
+            return (
+                "BLOCKED",
+                sizing.decision.detail,
+                {
+                    "cycle_pk": cycle_pk,
+                    "parsed": event.safe_dict(),
+                },
+            )
         requested = self.settings.external_signals.fixed_volume
         volume = spec.round_volume_down(min(requested, sizing.volume))
         if volume < spec.volume_min:
-            return "BLOCKED", f"safe size is below broker minimum {spec.volume_min:g}", {
-                "parsed": event.safe_dict()
-            }
+            return (
+                "BLOCKED",
+                f"safe size is below broker minimum {spec.volume_min:g}",
+                {"parsed": event.safe_dict()},
+            )
         if volume != sizing.volume:
             sizing = replace(
                 sizing,
@@ -801,7 +908,12 @@ class JarvisRunner:
             context=self._journal_cycle_context(
                 symbol,
                 account.equity,
-                {**filter_data, "source": "external_rio", "event": event.safe_dict()},
+                {
+                    **filter_data,
+                    "source": "external_rio",
+                    "event": event.safe_dict(),
+                    "resolution": resolution,
+                },
             ),
             reason=Reason.OK,
             detail="authenticated external provider signal passed all Jarvis execution gates",
@@ -838,10 +950,14 @@ class JarvisRunner:
             self.journal.abandon_pending_entry(
                 trade_id, f"external entry rejected: {result.retcode_name} {result.comment}"
             )
-            return "ORDER_REJECTED", f"{result.retcode_name}: {result.comment}", {
-                "cycle_pk": cycle_pk,
-                "parsed": event.safe_dict(),
-            }
+            return (
+                "ORDER_REJECTED",
+                f"{result.retcode_name}: {result.comment}",
+                {
+                    "cycle_pk": cycle_pk,
+                    "parsed": event.safe_dict(),
+                },
+            )
         self.journal.promote_pending_entry(
             trade_id, ticket=result.position_ticket, entry_price=result.filled_price
         )
@@ -874,17 +990,21 @@ class JarvisRunner:
             alias = self.settings.external_signals.symbol_aliases.get(alias.upper(), alias.upper())
         campaign = self.external_inbox.active_campaign(event.envelope.source, alias)
         if campaign is None:
-            return "NO_CAMPAIGN", "management message did not match exactly one open campaign", {
-                "parsed": event.safe_dict()
-            }
+            return (
+                "NO_CAMPAIGN",
+                "management message did not match exactly one open campaign",
+                {"parsed": event.safe_dict()},
+            )
         key, row = campaign
         ticket = int(row.get("ticket") or 0)
         position = next((item for item in self._managed_positions() if item.ticket == ticket), None)
         if position is None:
             self.external_inbox.close_campaign(key, "POSITION_NOT_FOUND")
-            return "POSITION_NOT_FOUND", f"campaign ticket {ticket} is no longer open", {
-                "parsed": event.safe_dict()
-            }
+            return (
+                "POSITION_NOT_FOUND",
+                f"campaign ticket {ticket} is no longer open",
+                {"parsed": event.safe_dict()},
+            )
         result = None
         if event.kind is ExternalSignalKind.MOVE_STOP:
             if event.move_stop_to is None:
@@ -895,30 +1015,139 @@ class JarvisRunner:
                 )
             new_stop = self.broker.spec(position.symbol).normalize_price(event.move_stop_to)
             tightens = (new_stop - position.sl) * int(position.direction) > 0
-            correct_side = (
-                (new_stop - self.broker.tick(position.symbol).mid) * int(position.direction) < 0
-            )
+            correct_side = (new_stop - self.broker.tick(position.symbol).mid) * int(
+                position.direction
+            ) < 0
             if not tightens or not correct_side:
-                return "BLOCKED", "provider stop change would widen risk or cross live price", {
-                    "parsed": event.safe_dict()
-                }
+                return (
+                    "BLOCKED",
+                    "provider stop change would widen risk or cross live price",
+                    {"parsed": event.safe_dict()},
+                )
             result = self.broker.modify_stops(position, sl=new_stop, tp=position.tp)
         elif event.kind is ExternalSignalKind.BOOK_PROFIT:
-            volume = self.broker.spec(position.symbol).round_volume_down(
+            spec = self.broker.spec(position.symbol)
+            volume = spec.round_volume_down(
                 position.volume * self.settings.external_signals.partial_close_fraction
             )
+            if not self._is_gold_symbol(position.symbol):
+                # Preserve the original external-signal behaviour outside the
+                # explicitly requested Rio Gold follow mode.
+                if volume <= 0 or volume >= position.volume:
+                    return (
+                        "INFO",
+                        "position is too small for a broker-valid partial close",
+                        {"parsed": event.safe_dict()},
+                    )
+                result = self.broker.close_position(position, volume=volume)
+                # The common recorder below handles this ordinary route.
+                return self._finish_external_management(event, position, result, ticket, key)
+            if position.profit + position.swap <= 0:
+                return (
+                    "INFO",
+                    "provider said book profit but the live ticket is not profitable",
+                    {
+                        "ticket": ticket,
+                        "parsed": event.safe_dict(),
+                    },
+                )
             if volume <= 0 or volume >= position.volume:
-                return "INFO", "position is too small for a broker-valid partial close", {
-                    "parsed": event.safe_dict()
-                }
+                # Eightcap's 0.01 lot step cannot split a 0.01 position. The
+                # truthful implementation of "book profit" is therefore to
+                # bank the whole smallest ticket, not pretend a partial exists.
+                result = self.broker.close_position(position)
+                self.recorder.record_order_attempt(
+                    trade_id=None,
+                    kind="EXTERNAL_BOOK_PROFIT_FULL_MIN_LOT",
+                    symbol=position.symbol,
+                    result=result,
+                )
+                if result.ok:
+                    self.external_inbox.close_campaign(key, "BOOK_PROFIT_FULL_MIN_LOT")
+                status = "MANAGED" if result.ok else "ORDER_REJECTED"
+                return (
+                    status,
+                    f"smallest lot banked: {result.retcode_name}: {result.comment}",
+                    {
+                        "ticket": ticket,
+                        "parsed": event.safe_dict(),
+                    },
+                )
             result = self.broker.close_position(position, volume=volume)
+            self.recorder.record_order_attempt(
+                trade_id=None,
+                kind="EXTERNAL_BOOK_PROFIT_PARTIAL",
+                symbol=position.symbol,
+                result=result,
+            )
+            if not result.ok:
+                return (
+                    "ORDER_REJECTED",
+                    f"{result.retcode_name}: {result.comment}",
+                    {
+                        "ticket": ticket,
+                        "parsed": event.safe_dict(),
+                    },
+                )
+            remaining = next(
+                (item for item in self._managed_positions() if item.ticket == ticket), None
+            )
+            if remaining is None:
+                self.external_inbox.close_campaign(key, "BOOK_PROFIT_CLOSED")
+                return (
+                    "MANAGED",
+                    "profit booked; broker reports no remaining ticket",
+                    {
+                        "ticket": ticket,
+                        "parsed": event.safe_dict(),
+                    },
+                )
+            tick = self.broker.tick(remaining.symbol)
+            sign = int(remaining.direction)
+            desired = remaining.price_open + sign * tick.spread
+            correct_side = (desired - tick.mid) * sign < -spec.min_stop_distance_price
+            tightens = remaining.sl <= 0 or (desired - remaining.sl) * sign > 0
+            if correct_side and tightens:
+                protected = self.broker.modify_stops(
+                    remaining,
+                    sl=spec.normalize_price(desired),
+                    tp=remaining.tp,
+                )
+                self.recorder.record_order_attempt(
+                    trade_id=None,
+                    kind="EXTERNAL_BOOK_PROFIT_BREAK_EVEN",
+                    symbol=remaining.symbol,
+                    result=protected,
+                )
+                detail = (
+                    "partial profit booked and remaining ticket protected at break-even-plus"
+                    if protected.ok
+                    else "partial profit booked; broker rejected immediate break-even protection"
+                )
+                return (
+                    "MANAGED" if protected.ok else "PARTIAL_ONLY",
+                    detail,
+                    {
+                        "ticket": ticket,
+                        "parsed": event.safe_dict(),
+                    },
+                )
+            return (
+                "MANAGED",
+                "partial profit booked; live price is too close for broker-valid BE",
+                {"ticket": ticket, "parsed": event.safe_dict()},
+            )
         elif event.kind in {ExternalSignalKind.CLOSE, ExternalSignalKind.CANCEL}:
             result = self.broker.close_position(position)
         elif event.kind is ExternalSignalKind.TP_HIT:
-            return "INFO", "provider target update recorded; broker SL/TP remains authoritative", {
-                "ticket": ticket,
-                "parsed": event.safe_dict(),
-            }
+            return (
+                "INFO",
+                "provider target update recorded; broker SL/TP remains authoritative",
+                {
+                    "ticket": ticket,
+                    "parsed": event.safe_dict(),
+                },
+            )
         if result is None:
             return "INFO", event.reason, {"ticket": ticket, "parsed": event.safe_dict()}
         self.recorder.record_order_attempt(
@@ -930,10 +1159,37 @@ class JarvisRunner:
         if result.ok and event.kind in {ExternalSignalKind.CLOSE, ExternalSignalKind.CANCEL}:
             self.external_inbox.close_campaign(key, event.kind.value)
         status = "MANAGED" if result.ok else "ORDER_REJECTED"
-        return status, f"{result.retcode_name}: {result.comment}", {
-            "ticket": ticket,
-            "parsed": event.safe_dict(),
-        }
+        return (
+            status,
+            f"{result.retcode_name}: {result.comment}",
+            {
+                "ticket": ticket,
+                "parsed": event.safe_dict(),
+            },
+        )
+
+    def _finish_external_management(
+        self,
+        event: ExternalSignalEvent,
+        position: Position,
+        result: OrderResult,
+        ticket: int,
+        campaign_key: str,
+    ) -> tuple[str, str, dict[str, object]]:
+        """Record an ordinary, non-Gold provider management result."""
+        self.recorder.record_order_attempt(
+            trade_id=None,
+            kind=f"EXTERNAL_{event.kind.value}",
+            symbol=position.symbol,
+            result=result,
+        )
+        if result.ok and event.kind in {ExternalSignalKind.CLOSE, ExternalSignalKind.CANCEL}:
+            self.external_inbox.close_campaign(campaign_key, event.kind.value)
+        return (
+            "MANAGED" if result.ok else "ORDER_REJECTED",
+            f"{result.retcode_name}: {result.comment}",
+            {"ticket": ticket, "parsed": event.safe_dict()},
+        )
 
     def run_forever(self) -> None:
         self.connect()
