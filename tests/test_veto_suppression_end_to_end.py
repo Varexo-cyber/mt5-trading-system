@@ -10,6 +10,7 @@ sat downstream of everything that made the call look like a fresh question.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -82,6 +83,27 @@ def test_the_runner_files_and_recalls_a_veto(runner: JarvisRunner, idea: TradeId
     assert remembered is not None
     assert remembered.repeats == 1
     assert "already refused" in remembered.describe(NOW)
+
+
+def test_exact_quick_proposal_is_still_recalled(runner: JarvisRunner, idea: TradeIdea) -> None:
+    """A fresh M1 bar does not justify paying twice for unchanged geometry."""
+    quick = replace(
+        idea,
+        horizon="quick",
+        setup_family="m1_micro_breakout_m1",
+        planning_timeframe="M5",
+        expected_horizon_minutes=30,
+    )
+    context = empty_context(quick.symbol)
+
+    runner._remember_veto(
+        quick,
+        context,
+        Advice(False, 0.32, "same resistance", provider="fake"),
+    )
+
+    assert not runner._broad_veto_memory_applies(quick)
+    assert runner._remembered_veto(quick) is not None
 
 
 def test_monitor_mode_never_suppresses(tmp_path, idea: TradeIdea) -> None:  # type: ignore[no-untyped-def]

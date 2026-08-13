@@ -1806,9 +1806,9 @@ class ConfluenceConfig(Base):
     #: A small unconditional disadvantage can be timing noise for an M1/M5
     #: event; a very large one remains a hard contradiction.
     quick_direction_disadvantage_hard_gap_pct: float = Field(default=20.0, ge=0.0, le=100.0)
-    #: A new closed quick event is a new question. The exact in-process review
-    #: key still reuses the verdict for the same bar and shape, but broad
-    #: symbol/direction veto patterns may not silence a later breakout.
+    #: A new closed quick event may pass broad symbol/direction veto patterns.
+    #: Exact proposal memory remains active: materially unchanged entry/stop
+    #: geometry must never buy the same Claude answer twice.
     quick_events_bypass_broad_veto_memory: bool = True
     require_target_base_rate: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
