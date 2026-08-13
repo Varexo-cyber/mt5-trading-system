@@ -653,6 +653,24 @@ scanner:
   # Top-ranked symbols promoted to full multi-timeframe analysis per cycle.
   deep_candidates: 12
 
+# Phone notifications are accepted only after a long random token is placed in
+# config/.env. The receiver stays on loopback; expose it through authenticated
+# HTTPS (for example a named Cloudflare Tunnel), never by opening this port to
+# the public internet.
+external_signals:
+  enabled: false
+  source: rio
+  listen_host: 127.0.0.1
+  listen_port: 8765
+  token_env: RIO_SIGNAL_TOKEN
+  inbox_path: runtime/external_signals
+  max_age_seconds: 180
+  fixed_volume: 0.01
+  partial_close_fraction: 0.5
+  entry_zone_tolerance_bps: 2.0
+  allowed_apps: [Rio Traders]
+  symbol_aliases: {GOLD: XAUUSD, XAUUSD: XAUUSD}
+
 monitoring:
   healthcheck_interval_seconds: 60
   heartbeat_timeout_seconds: 300

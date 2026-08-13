@@ -87,11 +87,19 @@ from core.types import (
     MarketContext,
     OrderRequest,
     Position,
+    Signal,
     Timeframe,
     TradingMode,
 )
 from execution.manager import ManagementEvent, PositionManager
 from execution.paper_broker import PaperBroker
+from external_signals import (
+    ExternalSignalEvent,
+    ExternalSignalInbox,
+    ExternalSignalKind,
+    RioSignalParser,
+    SignalReceiver,
+)
 from filters.base import FilterContext
 from filters.calendar.events import symbol_currencies
 from filters.headline_filter import HeadlineFilter
@@ -436,6 +444,11 @@ class JarvisRunner:
         self._last_guard_pulse = time.monotonic()
         # Recomputed every cycle; STEADY until the first one runs.
         self.posture: PostureAssessment = assess(consecutive_losses=0, equity=1.0, equity_peak=1.0)
+        self.external_inbox = ExternalSignalInbox(
+            root / self.settings.external_signals.inbox_path
+        )
+        self.external_parser = RioSignalParser()
+        self.external_receiver: SignalReceiver | None = None
 
     def connect(self) -> None:
         account = self.broker.connect()
@@ -514,12 +527,413 @@ class JarvisRunner:
         )
         self.operation_ledger.start(self.operation.value, account.login, self.clock.now())
         self.alerts.send(f"Jarvis started in {self.operation.value.upper()} mode")
+        self._start_external_receiver()
 
     def close(self) -> None:
+        if self.external_receiver is not None:
+            self.external_receiver.stop()
         self._save_cursor()
         self.operation_ledger.finish(self.clock.now())
         self.journal.close()
         self.broker.shutdown()
+
+    def _start_external_receiver(self) -> None:
+        config = self.settings.external_signals
+        if not config.enabled:
+            return
+        token = os.getenv(config.token_env, "").strip()
+        if not token:
+            self.external_inbox.record(
+                "receiver",
+                "BLOCKED",
+                f"{config.token_env} is missing; phone receiver was not started",
+            )
+            log.warning(
+                "external signal receiver disabled: token is missing",
+                extra={"event": "external_receiver_blocked", "token_env": config.token_env},
+            )
+            return
+        receiver = SignalReceiver(
+            self.external_inbox, config.listen_host, config.listen_port, token
+        )
+        try:
+            receiver.start()
+        except OSError as exc:
+            self.external_inbox.record(
+                "receiver", "BLOCKED", f"receiver could not bind: {type(exc).__name__}: {exc}"
+            )
+            log.warning(
+                "external signal receiver failed to start",
+                extra={"event": "external_receiver_failed", "error": type(exc).__name__},
+            )
+            return
+        self.external_receiver = receiver
+        self.external_inbox.record(
+            "receiver",
+            "LISTENING",
+            f"loopback HTTP receiver listening on {config.listen_host}:{config.listen_port}",
+        )
+
+    def _process_external_signals(self) -> None:
+        config = getattr(self.settings, "external_signals", None)
+        if config is None or not config.enabled or not hasattr(self, "risk"):
+            return
+        if not hasattr(self, "external_inbox") or not hasattr(self, "external_parser"):
+            return
+        for path, envelope in self.external_inbox.pending():
+            event = self.external_parser.parse(envelope)
+            parsed = event.safe_dict()
+            self.external_inbox.record(
+                envelope.event_id, "PARSED", event.reason, parsed=parsed
+            )
+            try:
+                status, detail, extra = self._apply_external_signal(event)
+            except Exception as exc:
+                log.exception(
+                    "external signal failed; normal Jarvis loop continues",
+                    extra={"event": "external_signal_error", "event_id": envelope.event_id},
+                )
+                status, detail, extra = (
+                    "ERROR",
+                    f"{type(exc).__name__}: {exc}",
+                    {"parsed": parsed},
+                )
+            self.external_inbox.finish(path, status, detail, **extra)
+
+    def _apply_external_signal(
+        self, event: ExternalSignalEvent
+    ) -> tuple[str, str, dict[str, object]]:
+        raw_text = event.envelope.combined_text
+        if any(token in raw_text for token in ("{not_", "{notification}")):
+            return "INVALID", "MacroDroid sent literal Magic Text instead of notification data", {
+                "parsed": event.safe_dict()
+            }
+        allowed_apps = tuple(
+            name.casefold() for name in self.settings.external_signals.allowed_apps
+        )
+        if allowed_apps and not any(
+            name in event.envelope.app.casefold() for name in allowed_apps
+        ):
+            return "WRONG_APP", f"notification app {event.envelope.app!r} is not allowed", {
+                "parsed": event.safe_dict()
+            }
+        if event.kind in {ExternalSignalKind.INFO, ExternalSignalKind.INVALID}:
+            return event.kind.value, event.reason, {"parsed": event.safe_dict()}
+        age = max(0.0, (self.clock.now() - event.envelope.received_at).total_seconds())
+        if age > self.settings.external_signals.max_age_seconds:
+            return (
+                "STALE",
+                f"notification is {age:.0f}s old; no delayed order or management action sent",
+                {"parsed": event.safe_dict()},
+            )
+        if event.kind is ExternalSignalKind.NEW:
+            return self._open_external_signal(event)
+        return self._manage_external_signal(event)
+
+    def _external_symbol(self, alias: str | None) -> str | None:
+        if not alias:
+            return None
+        config = self.settings.external_signals
+        canonical = config.symbol_aliases.get(alias.upper(), alias.upper())
+        preferred = self.settings.instruments.broker_symbol(canonical)
+        names = {descriptor.name for descriptor in self.broker.symbols()}
+        if preferred in names:
+            return preferred
+        if canonical in names:
+            return canonical
+        folded = canonical.casefold()
+        return next((name for name in names if name.casefold() == folded), None)
+
+    def _open_external_signal(
+        self, event: ExternalSignalEvent
+    ) -> tuple[str, str, dict[str, object]]:
+        if not event.complete_entry or event.direction is None or event.stop_loss is None:
+            return "INVALID", event.reason, {"parsed": event.safe_dict()}
+        if self.operation is OperationMode.MONITOR:
+            return "MONITOR_ONLY", "monitor mode cannot send a broker order", {
+                "parsed": event.safe_dict()
+            }
+        if self.kill_switch.is_engaged() or not self._entry_still_allowed():
+            return "BLOCKED", "hard STOP, account contract or capital floor blocks entry", {
+                "parsed": event.safe_dict()
+            }
+        symbol = self._external_symbol(event.symbol_alias)
+        if symbol is None:
+            return "BLOCKED", f"no Eightcap symbol found for {event.symbol_alias}", {
+                "parsed": event.safe_dict()
+            }
+        spec = self.broker.spec(symbol, refresh=True)
+        context = self.data.get_context(symbol, force_refresh=True)
+        tick = context.tick
+        if tick is None:
+            return "BLOCKED", f"{symbol} has no executable quote", {
+                "parsed": event.safe_dict()
+            }
+        entry = tick.ask if event.direction is Direction.LONG else tick.bid
+        low = event.entry_low or entry
+        high = event.entry_high or low
+        tolerance = entry * self.settings.external_signals.entry_zone_tolerance_bps / 10_000
+        if entry < low - tolerance or entry > high + tolerance:
+            return (
+                "OUTSIDE_ENTRY_ZONE",
+                f"live price {entry:g} is outside provider zone {low:g}-{high:g}",
+                {"symbol": symbol, "parsed": event.safe_dict()},
+            )
+        # One 0.01-lot ticket cannot be split at two targets on this broker.
+        # Use the provider's explicitly labelled TP1 (the first parsed target),
+        # not the farthest target, so a valid first objective is not given back
+        # while waiting for the marketing headline around TP2.
+        target = event.take_profits[0]
+        signal = Signal(
+            module="external_rio",
+            score=100.0 * int(event.direction),
+            confidence=1.0,
+            reasoning="authenticated provider signal; not a Jarvis-derived market edge",
+            invalidation_price=event.stop_loss,
+            details={"source": event.envelope.source, "event_id": event.envelope.event_id},
+        )
+        cycle_id = f"external:{event.envelope.event_id}"
+        account = self.broker.account()
+        positions = tuple(self._managed_positions())
+        state = self.risk.build_state(account, positions)
+        permission = self.risk.check_can_trade(state)
+        if not permission.approved:
+            cycle_pk = self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                permission.reason,
+                permission.detail,
+                signals=[signal],
+                extra={"source": "external_rio", "event": event.safe_dict()},
+                total_score=100.0,
+            )
+            return "BLOCKED", permission.detail, {"cycle_pk": cycle_pk, "parsed": event.safe_dict()}
+        symbol_permission = self.risk.check_symbol(
+            symbol, state, spec, direction=event.direction, entry=entry
+        )
+        if not symbol_permission.approved:
+            cycle_pk = self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                symbol_permission.reason,
+                symbol_permission.detail,
+                signals=[signal],
+                extra={"source": "external_rio", "event": event.safe_dict()},
+                total_score=100.0,
+            )
+            return "BLOCKED", symbol_permission.detail, {
+                "cycle_pk": cycle_pk,
+                "parsed": event.safe_dict(),
+            }
+        filter_verdict, filter_data = self.filters.check(
+            FilterContext(
+                symbol=symbol,
+                spec=spec,
+                now=self.clock.now(),
+                direction=event.direction,
+                tick=tick,
+                open_positions=positions,
+                extra={"external_source": event.envelope.source},
+            )
+        )
+        if not filter_verdict.passed:
+            cycle_pk = self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                filter_verdict.reason,
+                filter_verdict.detail,
+                signals=[signal],
+                extra={**filter_data, "source": "external_rio", "event": event.safe_dict()},
+                total_score=100.0,
+            )
+            return "BLOCKED", filter_verdict.detail, {
+                "cycle_pk": cycle_pk,
+                "parsed": event.safe_dict(),
+            }
+        sizing = PositionSizer(self.settings).size(
+            spec=spec,
+            equity=account.equity,
+            direction=event.direction,
+            entry=entry,
+            sl=spec.normalize_price(event.stop_loss),
+            tp=spec.normalize_price(target),
+            risk_multiplier=self.risk.risk_multiplier(state),
+            spread_price=context.tick.spread,
+        )
+        if not sizing.approved:
+            cycle_pk = self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                sizing.reason,
+                sizing.decision.detail,
+                signals=[signal],
+                extra={**filter_data, "source": "external_rio", "event": event.safe_dict()},
+                total_score=100.0,
+            )
+            self.recorder.record_sizing(cycle_pk, sizing)
+            return "BLOCKED", sizing.decision.detail, {
+                "cycle_pk": cycle_pk,
+                "parsed": event.safe_dict(),
+            }
+        requested = self.settings.external_signals.fixed_volume
+        volume = spec.round_volume_down(min(requested, sizing.volume))
+        if volume < spec.volume_min:
+            return "BLOCKED", f"safe size is below broker minimum {spec.volume_min:g}", {
+                "parsed": event.safe_dict()
+            }
+        if volume != sizing.volume:
+            sizing = replace(
+                sizing,
+                volume=volume,
+                actual_risk_money=sizing.actual_risk_money * volume / sizing.volume,
+                actual_risk_pct=sizing.actual_risk_pct * volume / sizing.volume,
+            )
+        margin = self.risk.check_margin(state, symbol, event.direction, volume, entry)
+        if not margin.approved:
+            return "BLOCKED", margin.detail, {"parsed": event.safe_dict()}
+        self.risk.assert_not_forbidden(sizing, state)
+        cycle_pk = self.recorder.record_cycle(
+            cycle_id=cycle_id,
+            context=self._journal_cycle_context(
+                symbol,
+                account.equity,
+                {**filter_data, "source": "external_rio", "event": event.safe_dict()},
+            ),
+            reason=Reason.OK,
+            detail="authenticated external provider signal passed all Jarvis execution gates",
+            traded=True,
+            direction=event.direction,
+            total_score=100.0,
+            score_threshold=self.settings.analysis.confluence.score_threshold,
+            signals=[signal],
+            weights={"external_rio": 1.0},
+        )
+        self.recorder.record_sizing(cycle_pk, sizing)
+        trade_id = self.recorder.record_entry_intent(
+            cycle_pk=cycle_pk, sizing=sizing, equity_before=account.equity
+        )
+        request = OrderRequest(
+            symbol=symbol,
+            direction=event.direction,
+            volume=volume,
+            sl=sizing.sl,
+            tp=sizing.tp,
+            reference_price=entry,
+            deviation_points=self.settings.mt5.deviation_points,
+            magic=self.settings.system.magic_number,
+            comment="jarvis-rio",
+        )
+        result = self.broker.order_send(request, spec)
+        self.recorder.record_order_attempt(
+            trade_id=trade_id if result.ok else None,
+            kind="EXTERNAL_ENTRY",
+            symbol=symbol,
+            result=result,
+        )
+        if not result.ok:
+            self.journal.abandon_pending_entry(
+                trade_id, f"external entry rejected: {result.retcode_name} {result.comment}"
+            )
+            return "ORDER_REJECTED", f"{result.retcode_name}: {result.comment}", {
+                "cycle_pk": cycle_pk,
+                "parsed": event.safe_dict(),
+            }
+        self.journal.promote_pending_entry(
+            trade_id, ticket=result.position_ticket, entry_price=result.filled_price
+        )
+        self.external_inbox.open_campaign(
+            source=event.envelope.source,
+            symbol_alias=self.settings.external_signals.symbol_aliases.get(
+                (event.symbol_alias or symbol).upper(), (event.symbol_alias or symbol).upper()
+            ),
+            broker_symbol=symbol,
+            ticket=int(result.position_ticket or 0),
+            direction=event.direction.name,
+            event_id=event.envelope.event_id,
+        )
+        return (
+            "TRADE_OPENED",
+            f"ticket {result.position_ticket} opened at {result.filled_price:g}",
+            {
+                "cycle_pk": cycle_pk,
+                "ticket": result.position_ticket,
+                "symbol": symbol,
+                "parsed": event.safe_dict(),
+            },
+        )
+
+    def _manage_external_signal(
+        self, event: ExternalSignalEvent
+    ) -> tuple[str, str, dict[str, object]]:
+        alias = event.symbol_alias
+        if alias:
+            alias = self.settings.external_signals.symbol_aliases.get(alias.upper(), alias.upper())
+        campaign = self.external_inbox.active_campaign(event.envelope.source, alias)
+        if campaign is None:
+            return "NO_CAMPAIGN", "management message did not match exactly one open campaign", {
+                "parsed": event.safe_dict()
+            }
+        key, row = campaign
+        ticket = int(row.get("ticket") or 0)
+        position = next((item for item in self._managed_positions() if item.ticket == ticket), None)
+        if position is None:
+            self.external_inbox.close_campaign(key, "POSITION_NOT_FOUND")
+            return "POSITION_NOT_FOUND", f"campaign ticket {ticket} is no longer open", {
+                "parsed": event.safe_dict()
+            }
+        result = None
+        if event.kind is ExternalSignalKind.MOVE_STOP:
+            if event.move_stop_to is None:
+                return (
+                    "INVALID",
+                    "move-stop message contains no price",
+                    {"parsed": event.safe_dict()},
+                )
+            new_stop = self.broker.spec(position.symbol).normalize_price(event.move_stop_to)
+            tightens = (new_stop - position.sl) * int(position.direction) > 0
+            correct_side = (
+                (new_stop - self.broker.tick(position.symbol).mid) * int(position.direction) < 0
+            )
+            if not tightens or not correct_side:
+                return "BLOCKED", "provider stop change would widen risk or cross live price", {
+                    "parsed": event.safe_dict()
+                }
+            result = self.broker.modify_stops(position, sl=new_stop, tp=position.tp)
+        elif event.kind is ExternalSignalKind.BOOK_PROFIT:
+            volume = self.broker.spec(position.symbol).round_volume_down(
+                position.volume * self.settings.external_signals.partial_close_fraction
+            )
+            if volume <= 0 or volume >= position.volume:
+                return "INFO", "position is too small for a broker-valid partial close", {
+                    "parsed": event.safe_dict()
+                }
+            result = self.broker.close_position(position, volume=volume)
+        elif event.kind in {ExternalSignalKind.CLOSE, ExternalSignalKind.CANCEL}:
+            result = self.broker.close_position(position)
+        elif event.kind is ExternalSignalKind.TP_HIT:
+            return "INFO", "provider target update recorded; broker SL/TP remains authoritative", {
+                "ticket": ticket,
+                "parsed": event.safe_dict(),
+            }
+        if result is None:
+            return "INFO", event.reason, {"ticket": ticket, "parsed": event.safe_dict()}
+        self.recorder.record_order_attempt(
+            trade_id=None,
+            kind=f"EXTERNAL_{event.kind.value}",
+            symbol=position.symbol,
+            result=result,
+        )
+        if result.ok and event.kind in {ExternalSignalKind.CLOSE, ExternalSignalKind.CANCEL}:
+            self.external_inbox.close_campaign(key, event.kind.value)
+        status = "MANAGED" if result.ok else "ORDER_REJECTED"
+        return status, f"{result.retcode_name}: {result.comment}", {
+            "ticket": ticket,
+            "parsed": event.safe_dict(),
+        }
 
     def run_forever(self) -> None:
         self.connect()
@@ -592,6 +1006,7 @@ class JarvisRunner:
                 # us there now rather than after the rest of the interval.
                 return
             self.guard_tick()
+            self._process_external_signals()
 
     def _pulse_guard(self) -> bool:
         """Run due position protection inside a long single-threaded scan."""
@@ -603,6 +1018,7 @@ class JarvisRunner:
         if now - self._last_guard_pulse < interval:
             return False
         self.guard_tick()
+        self._process_external_signals()
         self._last_guard_pulse = time.monotonic()
         return True
 
@@ -961,6 +1377,11 @@ class JarvisRunner:
                 self.broker.close_position(position)
             self.alerts.send(self.risk.trip_circuit_breaker(state))
             return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
+
+        self._process_external_signals()
+        account = self.broker.account()
+        positions = self._managed_positions()
+        state = self.risk.build_state(account, positions)
 
         batch = self.scanner.scan(
             cursor=self.cursor,
