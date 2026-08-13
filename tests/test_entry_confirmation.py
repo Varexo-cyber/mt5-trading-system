@@ -117,10 +117,25 @@ class TestItIsNotAWall:
         assert runner()._entry_is_confirmed(context(0.0), idea(Direction.SHORT))[0]
 
     def test_the_boundary_is_where_the_setting_puts_it(self) -> None:
-        """0.5 ATR over three bars: 0.16 per bar passes, 0.20 does not."""
+        """1.0 ATR over three bars: 0.33 per bar passes, 0.36 does not.
+
+        The limit moved from 0.5 to 1.0 because `scorecard.py` put a price on
+        the old one: AWAITING_CONFIRMATION blocked 11 setups, 6 of which won,
+        and cost 5.20R — the most expensive gate in that table by nearly a
+        factor of two. Half an ATR is about the ordinary wobble around an entry
+        on this account, so the gate was reading noise as a failing level.
+        """
         service = runner()
-        assert service._entry_is_confirmed(context(STEP * 0.16), idea(Direction.SHORT))[0]
-        assert not service._entry_is_confirmed(context(STEP * 0.20), idea(Direction.SHORT))[0]
+        assert service._entry_is_confirmed(context(STEP * 0.33), idea(Direction.SHORT))[0]
+        assert not service._entry_is_confirmed(context(STEP * 0.36), idea(Direction.SHORT))[0]
+
+    def test_the_move_that_motivated_the_gate_is_still_caught(self) -> None:
+        """The loosening has a floor under it. GBPJPY breaking resistance was
+        1.2 ATR of adverse travel, and that is still refused — which is why the
+        limit stops at 1.0 instead of the gate being switched off."""
+        assert not runner()._entry_is_confirmed(
+            context(drift_per_bar=STEP * 0.4), idea(Direction.SHORT)
+        )[0]
 
     def test_a_looser_limit_lets_more_through(self) -> None:
         rising = context(drift_per_bar=STEP * 0.4)
