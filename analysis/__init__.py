@@ -2,6 +2,7 @@
 
 from analysis.confluence import ConfluenceEngine, TradeIdea
 from analysis.drift_continuation import DriftContinuation
+from analysis.ema_pullback_resume import EmaPullbackResume
 from analysis.entry_quality import (
     EntryTimingAssessment,
     EntryTimingDecision,
@@ -27,6 +28,7 @@ from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, Volat
 __all__ = [
     "ConfluenceEngine",
     "DriftContinuation",
+    "EmaPullbackResume",
     "EntryTimingAssessment",
     "EntryTimingDecision",
     "FastEmaCross",

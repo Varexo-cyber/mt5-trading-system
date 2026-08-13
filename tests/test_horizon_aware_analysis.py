@@ -49,6 +49,21 @@ class SweepOnly:
         )
 
 
+class PullbackOnly:
+    name = "ema_pullback_resume"
+
+    def analyze(self, ctx: MarketContext) -> Signal:
+        entry = ctx.tick.ask if ctx.tick else 100.0
+        return Signal(
+            module=self.name,
+            score=58.0,
+            confidence=0.8,
+            reasoning="M5 EMA pullback reclaimed",
+            invalidation_price=entry - 0.8,
+            details={"timeframe": "M5"},
+        )
+
+
 def context(*, h4_drift: float = 0.0, d1_drift: float = 0.0) -> MarketContext:
     def drift_for(timeframe: Timeframe) -> float:
         if timeframe is Timeframe.H4:
@@ -94,6 +109,21 @@ def engine() -> ConfluenceEngine:
     return ConfluenceEngine([SweepOnly()], config)
 
 
+def quick_engine() -> ConfluenceEngine:
+    base = load_settings(env_overrides=False).analysis.confluence
+    config = base.model_copy(
+        update={
+            "weights": {"ema_pullback_resume": 1.0},
+            "minimum_directional_modules": 1,
+            "minimum_agreement_ratio": 0.5,
+            "minimum_confidence": 0.1,
+            "score_threshold": 1.0,
+            "minimum_r_multiple": 0.5,
+        }
+    )
+    return ConfluenceEngine([PullbackOnly()], config)
+
+
 def test_standalone_m15_sweep_gets_an_intraday_plan() -> None:
     idea = engine().evaluate(context(), TradingMode.PAPER)
 
@@ -102,6 +132,16 @@ def test_standalone_m15_sweep_gets_an_intraday_plan() -> None:
     assert idea.setup_family == "liquidity_sweep_m15"
     assert idea.planning_timeframe == "M15"
     assert idea.expected_horizon_minutes == 180
+
+
+def test_m5_pullback_gets_a_genuinely_quick_plan() -> None:
+    idea = quick_engine().evaluate(context(), TradingMode.PAPER)
+
+    assert idea.approved, idea.reason
+    assert idea.horizon == "quick"
+    assert idea.setup_family == "ema_pullback_resume_m5"
+    assert idea.planning_timeframe == "M5"
+    assert idea.expected_horizon_minutes == 30
 
 
 def test_one_slow_countertrend_warns_but_does_not_veto_intraday() -> None:

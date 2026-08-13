@@ -37,9 +37,9 @@ class ConfluenceEngine:
         self.config = config
         #: symbol -> (bar fingerprint, signals). One entry per symbol, so a
         #: whole broker catalogue costs a few hundred small tuples.
-        self._signal_cache: dict[str, tuple[tuple[tuple[str, object], ...], tuple[Signal, ...]]] = (
-            {}
-        )
+        self._signal_cache: dict[
+            str, tuple[tuple[tuple[str, object], ...], tuple[Signal, ...]]
+        ] = {}
 
     def _bar_fingerprint(self, ctx: MarketContext) -> tuple[tuple[str, object], ...] | None:
         """Identity of the closed bars this evaluation would read.
@@ -550,6 +550,10 @@ class ConfluenceEngine:
         lives in config beside the modules it names.
         """
         modules = {signal.module for signal, _weight in agreeing}
+        if modules and modules <= set(self.config.quick_modules):
+            signal = max(agreeing, key=lambda pair: abs(pair[0].score) * pair[1])[0]
+            timeframe = str(signal.details.get("timeframe", "M5"))
+            return "quick", f"{signal.module}_{timeframe.lower()}"
         if modules and modules <= set(self.config.intraday_modules):
             signal = max(agreeing, key=lambda pair: abs(pair[0].score) * pair[1])[0]
             timeframe = str(signal.details.get("timeframe", "M15"))

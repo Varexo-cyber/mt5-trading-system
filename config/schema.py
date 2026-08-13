@@ -1293,6 +1293,42 @@ class ImpulseBreakConfig(Base):
     maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
 
 
+class EmaPullbackResumeConfig(Base):
+    """A discrete M5 trend re-entry after a shallow EMA-band pullback."""
+
+    enabled: bool = True
+    timeframe: str = "M5"
+    fast_ema: int = Field(default=9, ge=2, le=200)
+    slow_ema: int = Field(default=20, ge=3, le=400)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    pullback_bars: int = Field(default=4, ge=2, le=20)
+    slope_bars: int = Field(default=3, ge=1, le=20)
+    minimum_separation_atr: float = Field(default=0.12, ge=0.0, le=5.0)
+    minimum_slope_atr: float = Field(default=0.04, ge=0.0, le=5.0)
+    maximum_slow_ema_breach_atr: float = Field(default=0.25, ge=0.0, le=3.0)
+    m1_confirmation_bars: int = Field(default=3, ge=1, le=20)
+    maximum_m1_adverse_atr: float = Field(default=0.50, ge=0.0, le=5.0)
+    stop_buffer_atr: float = Field(default=0.20, ge=0.0, le=2.0)
+    score: float = Field(default=58.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    separation_confidence_scale: float = Field(default=0.35, ge=0.0, le=5.0)
+    reclaim_confidence_scale: float = Field(default=0.15, ge=0.0, le=2.0)
+    maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+    @field_validator("timeframe")
+    @classmethod
+    def _supported_timeframe(cls, value: str) -> str:
+        return Timeframe.parse(value).value
+
+    @model_validator(mode="after")
+    def _coherent(self) -> EmaPullbackResumeConfig:
+        if self.fast_ema >= self.slow_ema:
+            raise ValueError("EMA pullback fast EMA must be below slow EMA")
+        if self.base_confidence > self.maximum_confidence:
+            raise ValueError("EMA pullback base confidence exceeds maximum")
+        return self
+
+
 class DriftContinuationConfig(Base):
     """Join a move that is already happening, in the direction it is going.
 
@@ -1708,7 +1744,11 @@ class ConfluenceConfig(Base):
         "drift_continuation",
         "fast_ema_cross",
         "impulse_break",
+        "ema_pullback_resume",
     )
+    #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
+    #: instead of being stretched into the three-hour intraday profile.
+    quick_modules: tuple[str, ...] = ("ema_pullback_resume",)
     require_target_base_rate: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
     #: counts up and down moves independently over the same windows, so it is
@@ -1828,6 +1868,14 @@ class ConfluenceConfig(Base):
                 htf_trend_veto=1.0,
                 entry_timing_timeframes=("M5", "M1"),
             ),
+            "quick": HorizonProfileConfig(
+                planning_timeframe="M5",
+                target_horizon_bars=6,
+                htf_trend_timeframes=("H1", "H4"),
+                minimum_htf_conflicts=2,
+                htf_trend_veto=1.0,
+                entry_timing_timeframes=("M1",),
+            ),
         }
     )
 
@@ -1836,7 +1884,7 @@ class ConfluenceConfig(Base):
     def _required_horizons_exist(
         cls, value: dict[str, HorizonProfileConfig]
     ) -> dict[str, HorizonProfileConfig]:
-        missing = {"swing", "intraday"} - set(value)
+        missing = {"swing", "intraday", "quick"} - set(value)
         if missing:
             raise ValueError(f"analysis.confluence.horizon_profiles missing {sorted(missing)}")
         return value
@@ -1890,6 +1938,7 @@ class ConfluenceConfig(Base):
             "liquidity_sweep": 0.8,
             "level_reaction": 0.7,
             "volatility_regime": 0.0,
+            "ema_pullback_resume": 0.55,
         }
     )
 
@@ -1915,6 +1964,7 @@ class AnalysisConfig(Base):
     drift_continuation: DriftContinuationConfig = DriftContinuationConfig()
     fast_ema_cross: FastEmaCrossConfig = FastEmaCrossConfig()
     impulse_break: ImpulseBreakConfig = ImpulseBreakConfig()
+    ema_pullback_resume: EmaPullbackResumeConfig = EmaPullbackResumeConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
