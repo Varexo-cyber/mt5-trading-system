@@ -49,6 +49,19 @@ the hard no-averaging/no-grid/no-hedging project rule, not a confidence or slot
 gate. A new Rio instruction can be acted on after the existing Gold campaign is
 closed.
 
+### Position ownership after entry
+
+Positions opened with the `jarvis-rio` comment remain in Jarvis' journal and
+dashboard, but are excluded from ordinary mechanical management, news exits and
+Claude position supervision. Jarvis therefore does not independently trail or
+tighten their stops, change targets, take partial profit or close them early.
+Only authenticated Rio management messages (`Move SL`, `Book some profits`,
+`Close`/`Cancel`) alter the normal provider plan.
+
+Two emergency protections still apply: a position found without any broker SL
+is closed rather than left unbounded, and the operator hard STOP/fixed capital
+floor can flatten it with the rest of the owned account.
+
 ## One-time VPS setup
 
 1. Run `setup_rio_bridge.cmd`. It writes a random `RIO_SIGNAL_TOKEN` to
