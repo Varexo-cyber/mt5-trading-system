@@ -35,6 +35,7 @@ from analysis import (
     DriftContinuation,
     EntryTimingDecision,
     FastEmaCross,
+    ImpulseBreak,
     LevelReaction,
     LiquiditySweep,
     MarketObservation,
@@ -346,6 +347,7 @@ class JarvisRunner:
                 MarketRegime(self.settings.analysis.market_regime),
                 DriftContinuation(self.settings.analysis.drift_continuation),
                 FastEmaCross(self.settings.analysis.fast_ema_cross),
+                ImpulseBreak(self.settings.analysis.impulse_break),
             ],
             self.settings.analysis.confluence,
         )

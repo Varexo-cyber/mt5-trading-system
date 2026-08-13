@@ -10,6 +10,7 @@ from analysis.entry_quality import (
     assess_review_drift,
 )
 from analysis.fast_ema_cross import FastEmaCross
+from analysis.impulse_break import ImpulseBreak
 from analysis.market_intelligence import (
     MarketObservation,
     OpportunityIntelligence,
@@ -29,6 +30,7 @@ __all__ = [
     "EntryTimingAssessment",
     "EntryTimingDecision",
     "FastEmaCross",
+    "ImpulseBreak",
     "LevelReaction",
     "LiquiditySweep",
     "MarketObservation",
