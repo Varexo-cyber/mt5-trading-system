@@ -8,7 +8,15 @@ import pandas as pd
 
 from analysis.confluence import ConfluenceEngine
 from config.schema import ConfluenceConfig
-from core.types import MarketContext, Series, Signal, Tick, Timeframe, TradingMode
+from core.types import (
+    Direction,
+    MarketContext,
+    Series,
+    Signal,
+    Tick,
+    Timeframe,
+    TradingMode,
+)
 
 
 class StubModule:
@@ -309,3 +317,155 @@ class TestATrendPremiseContradictedByAMeasuredRange:
         )
 
         assert idea.direction is not None
+
+
+class TestHorizonsDoNotOutvoteEachOther:
+    """The 3,894-refusals-a-day bug, and the direct cause of "why no shorts".
+
+    The vote used to be one weight sum across every firing module, regardless
+    of what clock it read. A market trending up on H4/H1 while selling hard for
+    the last two hours produced trend_momentum LONG at weight 1.0 against
+    drift_continuation SHORT at 0.7: direction LONG, agreement 58.8%, below the
+    60% floor, whole setup discarded. Neither trade was taken.
+    """
+
+    @staticmethod
+    def _split_context(*, falling: bool = True) -> MarketContext:
+        """M15 as well as H1, so an intraday plan has a chart to be built on.
+
+        `falling` has to match what the modules are being made to say. The
+        entry-timing gate reads the fast charts directly, so a fixture whose
+        M15 plummets while the stub modules both claim LONG is refused for
+        contradicting itself — correctly, and for a reason that has nothing to
+        do with the vote this class is about.
+        """
+        base = context()
+        index = pd.date_range("2026-01-01", periods=200, freq="15min", tz=UTC)
+        # Fast enough that a twelve-bar target clears the stop, otherwise the
+        # setup dies on target reachability instead of on the thing under test.
+        step = 0.0003 if falling else -0.0003
+        close = pd.Series([1.1100 + (199 - i) * step for i in range(200)], index=index)
+        frame = pd.DataFrame(
+            {
+                "open": close + 0.00005,
+                "high": close + 0.0003,
+                "low": close - 0.0003,
+                "close": close,
+                "tick_volume": 100,
+                "spread": 10,
+                "real_volume": 0,
+            }
+        )
+        return MarketContext(
+            symbol=base.symbol,
+            now=base.now,
+            series={**base.series, Timeframe.M15: Series("EURUSD", Timeframe.M15, frame, base.now)},
+            tick=base.tick,
+        )
+
+    @staticmethod
+    def _disagreeing() -> list[StubModule]:
+        return [
+            StubModule(Signal("trend_momentum", 65, 0.8, invalidation_price=1.1050)),
+            StubModule(
+                Signal("drift_continuation", -55, 0.8, invalidation_price=1.1115)
+            ),
+            StubModule(Signal.neutral("volatility_regime")),
+        ]
+
+    @staticmethod
+    def _config(**overrides: object) -> ConfluenceConfig:
+        values: dict[str, object] = {
+            "score_threshold": 26,
+            "minimum_directional_modules": 1,
+            "minimum_agreement_ratio": 0.6,
+            "weights": {
+                "trend_momentum": 1.0,
+                "drift_continuation": 0.7,
+                "volatility_regime": 0.0,
+            },
+        }
+        values.update(overrides)
+        return ConfluenceConfig(**values)
+
+    def test_a_fast_short_survives_a_slow_long(self) -> None:
+        """The whole point. 1.0 against 0.7 used to bin the setup at 58.8%
+        agreement; the fast group is now coherent on its own at 100%."""
+        idea = ConfluenceEngine(self._disagreeing(), self._config()).evaluate(
+            self._split_context(), TradingMode.PAPER
+        )
+
+        assert idea.approved
+        assert idea.direction is Direction.SHORT
+
+    def test_it_is_planned_as_the_intraday_trade_it_is(self) -> None:
+        """A two-hour thesis must not be handed H1 planning authority and a
+        target a day out — that is not the trade the module found."""
+        idea = ConfluenceEngine(self._disagreeing(), self._config()).evaluate(
+            self._split_context(), TradingMode.PAPER
+        )
+
+        assert idea.horizon == "intraday"
+        assert idea.planning_timeframe == "M15"
+
+    def test_the_slower_reading_travels_with_it_instead_of_killing_it(self) -> None:
+        """The reviewer is the right place to weigh "the hourly chart
+        disagrees" — it has the whole payload and this engine does not."""
+        idea = ConfluenceEngine(self._disagreeing(), self._config()).evaluate(
+            self._split_context(), TradingMode.PAPER
+        )
+
+        assert "trend_momentum" in idea.reason
+        assert "different horizons" in idea.reason
+
+    def test_agreement_between_the_groups_is_unchanged(self) -> None:
+        """When both clocks point the same way nothing about this is new: the
+        whole set carries the trade and the plan is the slower one."""
+        agreeing = [
+            StubModule(Signal("trend_momentum", 65, 0.8, invalidation_price=1.1050)),
+            StubModule(Signal("drift_continuation", 55, 0.8, invalidation_price=1.1060)),
+            StubModule(Signal.neutral("volatility_regime")),
+        ]
+
+        idea = ConfluenceEngine(agreeing, self._config()).evaluate(
+            self._split_context(falling=False), TradingMode.PAPER
+        )
+
+        assert idea.approved
+        assert idea.direction is Direction.LONG
+        assert idea.horizon == "swing"
+        assert "different horizons" not in idea.reason
+
+    def test_a_lone_group_behaves_exactly_as_before(self) -> None:
+        """No swing module firing at all is the common case, and it must not
+        have been disturbed by any of this."""
+        only_fast = [
+            StubModule(Signal("drift_continuation", -55, 0.8, invalidation_price=1.1115)),
+            StubModule(Signal.neutral("volatility_regime")),
+        ]
+
+        idea = ConfluenceEngine(only_fast, self._config()).evaluate(
+            self._split_context(), TradingMode.PAPER
+        )
+
+        assert idea.approved
+        assert idea.direction is Direction.SHORT
+        assert "different horizons" not in idea.reason
+
+    def test_the_higher_timeframe_veto_still_stands(self) -> None:
+        """The fast side winning a disagreement is not the fast side winning
+        everything. An intraday trade fighting both H4 and D1 is still refused,
+        and that guard is what makes the rest of this survivable."""
+        from config.schema import HorizonProfileConfig
+
+        profiles = dict(ConfluenceConfig().horizon_profiles)
+        profiles["intraday"] = profiles["intraday"].model_copy(
+            update={"htf_trend_timeframes": ("H1",), "minimum_htf_conflicts": 1}
+        )
+        assert isinstance(profiles["intraday"], HorizonProfileConfig)
+
+        idea = ConfluenceEngine(
+            self._disagreeing(), self._config(horizon_profiles=profiles)
+        ).evaluate(self._split_context(), TradingMode.PAPER)
+
+        assert not idea.approved
