@@ -53,7 +53,8 @@ class TestShippedConfig:
         assert settings.instruments.asset_classes == ("forex", "metal", "index", "crypto")
         assert "stock" not in settings.instruments.asset_classes
         assert settings.instruments.symbols_only == ()
-        assert settings.scanner.batch_size is None
+        assert settings.scanner.batch_size == 120
+        assert settings.scanner.priority_every_cycle
         assert settings.scanner.deep_candidates >= 847
         assert settings.scanner.priority_asset_classes == ("forex", "crypto")
         assert {"EURUSD", "BTCUSD", "XAUUSD"} <= set(settings.scanner.priority_symbols)

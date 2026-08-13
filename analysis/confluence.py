@@ -444,9 +444,21 @@ class ConfluenceEngine:
 
     @staticmethod
     def _vote(pool: list[tuple[Signal, float]]) -> tuple[Direction, list[tuple[Signal, float]]]:
-        """Which way this set of modules points, and which of them say so."""
-        positive = sum(weight for signal, weight in pool if signal.score > 0)
-        negative = sum(weight for signal, weight in pool if signal.score < 0)
+        """Which way the measured evidence points, and which modules agree.
+
+        A module weight says how much its method is trusted; it is not the
+        evidence itself. The old vote counted a barely firing 0.50-confidence
+        read exactly like the same module at 0.90 and ignored the magnitude of
+        its score. That made weak slow states outvote strong fresh events. The
+        same strength used by the score now chooses direction symmetrically.
+        """
+
+        def strength(pair: tuple[Signal, float]) -> float:
+            signal, weight = pair
+            return abs(signal.score) * signal.confidence * weight
+
+        positive = sum(strength(pair) for pair in pool if pair[0].score > 0)
+        negative = sum(strength(pair) for pair in pool if pair[0].score < 0)
         direction = Direction.LONG if positive > negative else Direction.SHORT
         return direction, [
             (signal, weight) for signal, weight in pool if signal.score * int(direction) > 0
@@ -501,14 +513,47 @@ class ConfluenceEngine:
         the score threshold, entry timing on M5/M1, the target base rate, every
         filter, the sizer, and Claude.
         """
-        intraday_names = set(self.config.intraday_modules)
+        quick_names = set(self.config.quick_modules)
+        intraday_names = set(self.config.intraday_modules) - quick_names
+        quick = [pair for pair in weighted if pair[0].module in quick_names]
         intraday = [pair for pair in weighted if pair[0].module in intraday_names]
-        swing = [pair for pair in weighted if pair[0].module not in intraday_names]
+        swing = [
+            pair
+            for pair in weighted
+            if pair[0].module not in quick_names and pair[0].module not in intraday_names
+        ]
 
         def scored(pool: list[tuple[Signal, float]]) -> tuple[Direction, list, float]:
             direction, agreeing = self._vote(pool)
-            total = sum(weight for _, weight in pool)
-            return direction, agreeing, (sum(w for _, w in agreeing) / total if total else 0.0)
+
+            def evidence(pair: tuple[Signal, float]) -> float:
+                return abs(pair[0].score) * pair[0].confidence * pair[1]
+
+            total = sum(evidence(pair) for pair in pool)
+            agreed = sum(evidence(pair) for pair in agreeing)
+            return direction, agreeing, (agreed / total if total else 0.0)
+
+        # A closed M1/M5 trigger is a complete entry event. Mixing it with an
+        # M15 or H1 state used to change its stop and expiry, or erase a quick
+        # short under a heavier slow long. Give quick evidence its own vote;
+        # the quick horizon profile still checks H1/H4 conflict afterwards.
+        if quick:
+            direction, agreeing, agreement = scored(quick)
+            slower = [*intraday, *swing]
+            if not slower:
+                return direction, agreeing, agreement, ""
+            slower_directions = {self._vote([pair])[0].name for pair in slower}
+            slower_modules = ", ".join(sorted(signal.module for signal, _ in slower))
+            return (
+                direction,
+                agreeing,
+                agreement,
+                (
+                    f"quick {direction.name} owns the executable plan; slower "
+                    f"{','.join(sorted(slower_directions))} context from {slower_modules} is "
+                    "reported separately; different horizons are not averaged into one trade"
+                ),
+            )
 
         if not intraday or not swing:
             direction, agreeing, agreement = scored(weighted)

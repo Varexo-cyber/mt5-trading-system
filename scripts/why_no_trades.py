@@ -327,6 +327,30 @@ def main(argv: list[str] | None = None) -> int:
             f"context_json FROM analysis_cycles WHERE {where} ORDER BY id DESC",
             params,
         ).fetchall()
+        tables = {
+            str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        directional_modules: list[sqlite3.Row] = []
+        if "module_scores" in tables:
+            module_where = "c.ts >= ?"
+            module_params: list[object] = [since]
+            if args.symbol:
+                module_where += " AND c.symbol = ?"
+                module_params.append(args.symbol)
+            directional_modules = conn.execute(
+                f"""
+                SELECT m.module,
+                       SUM(CASE WHEN m.score > 0 AND m.weight > 0 THEN 1 ELSE 0 END) AS longs,
+                       SUM(CASE WHEN m.score < 0 AND m.weight > 0 THEN 1 ELSE 0 END) AS shorts
+                FROM module_scores m
+                JOIN analysis_cycles c ON c.id = m.cycle_pk
+                WHERE {module_where}
+                GROUP BY m.module
+                HAVING longs > 0 OR shorts > 0
+                ORDER BY (longs + shorts) DESC
+                """,
+                module_params,
+            ).fetchall()
 
     if not rows:
         print(f"No decisions recorded in the last {args.hours:g}h.")
@@ -348,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         and "ai_veto_remembered" in str(row["context_json"] or "")
     )
     _print_funnel(counts, len(rows), traded, remembered, hours=args.hours)
+    _print_directional_detection(directional_modules)
 
     # Refused before the review, or after paying for it?
     #
@@ -413,6 +438,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {row['symbol']:<12} {row['reason']:<28} {_summarise(str(row['detail']))}")
     print()
     return 0
+
+
+def _print_directional_detection(rows: Sequence[sqlite3.Row]) -> None:
+    """Show whether detection itself leans one way before later gates."""
+    if not rows:
+        return
+    longs = sum(int(row["longs"] or 0) for row in rows)
+    shorts = sum(int(row["shorts"] or 0) for row in rows)
+    total = longs + shorts
+    print("DIRECTIONAL DETECTION BEFORE LATER GATES")
+    print(f"  module firings: {longs} LONG / {shorts} SHORT")
+    if total:
+        print(f"  split:          {longs / total:.1%} LONG / {shorts / total:.1%} SHORT")
+    for row in rows:
+        print(
+            f"  {row['module']!s:<24}{int(row['longs'] or 0):>7} L  {int(row['shorts'] or 0):>7} S"
+        )
+    print("  One decision can contain multiple firings; this is detection, not trade count.\n")
 
 
 #: "confluence score 37.5 below threshold", as the engine writes it on the skip.

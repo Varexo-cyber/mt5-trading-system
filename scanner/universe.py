@@ -122,7 +122,19 @@ class UniverseScanner:
             return ScanBatch((), (), 0, 0, 0, 0)
         cursor %= len(universe)
         inspection_count = len(universe) if batch_size is None else min(batch_size, len(universe))
-        indices = [(cursor + offset) % len(universe) for offset in range(inspection_count)]
+        rotating = [(cursor + offset) % len(universe) for offset in range(inspection_count)]
+        recurring = (
+            [
+                index
+                for index, item in enumerate(universe)
+                if self._priority_tier(item.name, self._path_class(item.path)) > 0
+            ]
+            if batch_size is not None and self.settings.scanner.priority_every_cycle
+            else []
+        )
+        # dict preserves order: liquid markets are inspected first, then the
+        # rotating catalogue slice. A symbol in both is still inspected once.
+        indices = list(dict.fromkeys([*recurring, *rotating]))
         candidates: list[ScanCandidate] = []
         inspections: list[ScanInspection] = []
         rejected = 0
@@ -154,7 +166,9 @@ class UniverseScanner:
             )
             for row in inspections
         ]
-        next_cursor = (cursor + len(indices)) % len(universe)
+        # Recurring priority rows are additions to the rotating budget. They
+        # must not advance the catalogue cursor or fallback symbols get skipped.
+        next_cursor = (cursor + inspection_count) % len(universe)
         return ScanBatch(
             tuple(candidates[:keep]),
             tuple(inspections),

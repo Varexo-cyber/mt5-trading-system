@@ -135,7 +135,13 @@ data:
   max_gap_fraction: 0.05
 
 scanner:
-  batch_size: null        # rank the entire catalogue every cycle
+  # A complete 845-symbol pass measured 180-191 seconds on the VPS. That is
+  # incompatible with a one-candle M1 trigger: the event can be born and die
+  # twice while the scanner is still elsewhere. Inspect a rotating slice of
+  # the catalogue, plus every preferred FX/crypto/core symbol on every cycle.
+  # Complete coverage remains; fallback markets simply rotate across cycles.
+  batch_size: 120
+  priority_every_cycle: true
 
   # Every market that survives the cheap scan gets the full multi-timeframe
   # analysis, not a top-20 slice of it. The cheap scan already threw out
@@ -516,6 +522,13 @@ analysis:
     # range-poort weigert hem in chop, en geclassificeerd als intraday zodat
     # hij een M15-plan krijgt en geen swing-doel van 24 uur.
     live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout]
+
+    # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
+    # documented as a quick entry but classified as intraday, so a fresh M5
+    # short could inherit an M15 plan or be blended with slower evidence. The
+    # label now matches the detector and gives it M5 planning authority.
+    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
+    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #

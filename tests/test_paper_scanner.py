@@ -292,6 +292,46 @@ def test_scanner_queues_core_then_preferred_then_catalogue_fallback() -> None:
     market.shutdown()
 
 
+def test_bounded_scan_revisits_liquid_lanes_without_skipping_the_rotation() -> None:
+    moment = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    names = ["DB1", "DTE", "BMW", "EURUSD.i", "BTCUSD"]
+    paths = {
+        "DB1": "Shares\\Germany\\DB1",
+        "DTE": "Shares\\Germany\\DTE",
+        "BMW": "Shares\\Germany\\BMW",
+        "EURUSD.i": "RAW\\Raw Majors\\EURUSD.i",
+        "BTCUSD": "Cryptos\\BTCUSD",
+    }
+    fake = FakeMT5(
+        now=moment,
+        specs={name: eurusd_spec(name=name, path=paths[name]) for name in names},
+        quotes=dict.fromkeys(names, (1.08500, 1.08512)),
+    )
+    market = connector(fake)
+    market.connect()
+    settings = load_settings(env_overrides=False)
+    scanner_config = settings.scanner.model_copy(
+        update={
+            "priority_asset_classes": ("forex", "crypto"),
+            "priority_symbols": ("EURUSD",),
+            "priority_every_cycle": True,
+        }
+    )
+    settings = settings.model_copy(update={"scanner": scanner_config})
+    scanner = UniverseScanner(market, settings, SimulatedClock(moment))
+
+    first = scanner.scan(cursor=0, batch_size=1, keep=10)
+    second = scanner.scan(cursor=first.next_cursor, batch_size=1, keep=10)
+
+    assert {row.symbol for row in first.inspections} >= {"EURUSD.i", "BTCUSD"}
+    assert {row.symbol for row in second.inspections} >= {"EURUSD.i", "BTCUSD"}
+    assert first.next_cursor == 1
+    assert second.next_cursor == 2
+    assert "DB1" in {row.symbol for row in first.inspections}
+    assert "DTE" in {row.symbol for row in second.inspections}
+    market.shutdown()
+
+
 def test_empty_asset_filter_keeps_future_broker_catalogue_folders_visible() -> None:
     """A new Eightcap product folder must be inspected, not silently disappear.
 
