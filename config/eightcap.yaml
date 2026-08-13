@@ -332,9 +332,27 @@ analysis:
     # DIT IS DE GEVAARLIJKSTE KNOP OP HET BORD. Onder 30 heeft niemand ooit
     # gemeten of de score iets scheidt. `scorecard.py` heeft de sectie "what
     # the raw score was" met banden van vijf punten; over twee dagen is af te
-    # lezen of de band 28-35 slechter presteert dan 35-40. Zo ja, dan gaat hij
+    # lezen of de band 26-35 slechter presteert dan 35-40. Zo ja, dan gaat hij
     # terug en is dat een meting.
-    score_threshold: 28.0
+    #
+    # EN DAARNA 28 -> 26, wat het EINDE van deze knop is. Onder 26,25 verandert
+    # er geen enkele trade meer, en dat is rekenkunde en geen mening:
+    #
+    #   fast_ema_cross op zijn eigen ondergrens van 0,15 ATR separatie heeft
+    #   confidence 0,525 en dus score 50 x 0,525 = 26,25. Zwakker bestaat niet;
+    #   dan vuurt de module helemaal niet.
+    #   drift_continuation op zijn eigen vloeren (1,0 ATR drift, 65%
+    #   consistentie) heeft confidence 0,580 en dus score 55 x 0,580 = 31,90.
+    #
+    # Een drempel van 25, 22 of 20 laat daarom EXACT dezelfde setups door als
+    # 26. Nul extra trades. Meer volume moet ergens anders vandaan komen.
+    #
+    # 26 en niet 28, omdat twee verschillende vloeren voor dezelfde vraag
+    # rommelig is: de module zegt "0,15 ATR is een cross" en de drempel zei er
+    # stilzwijgend "nee, 0,22" overheen. Een van de twee is overbodig, en het
+    # hoort de module te zijn die de vraag begrijpt. Op 26 is zijn eigen vloer
+    # weer het enige antwoord.
+    score_threshold: 26.0
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`

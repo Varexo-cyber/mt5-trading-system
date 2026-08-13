@@ -19,11 +19,28 @@ hold on the current bar:
 ## Interface
 
 - Score: ±50, the lowest in the engine. Fastest and least corroborated
-  evidence, so it should need help to clear the threshold.
+  evidence.
 - Confidence: 0.45 + separation in ATR × 0.50, capped at 0.80.
-- invalidation_price: the extreme of the last 12 M5 bars against the direction.
-- details: timeframe, bars since the cross, separation in ATR, both EMA values,
-  ATR.
+- invalidation_price: the further of (a) the extreme printed since the cross,
+  over at least `minimum_invalidation_bars`, and (b) the slow EMA plus
+  `invalidation_buffer_atr`. The thesis dies when price closes back through
+  that average — the module's own third floor — so that is where the stop
+  belongs; the buffer keeps a single wick through it from counting as a close,
+  and taking the further of the two keeps the stop out of a wick that has
+  already printed.
+- details: timeframe, bars since the cross, separation in ATR, the invalidation
+  window and its distance in ATR, both EMA values, ATR.
+
+### A note on the weight, which was documented wrongly
+
+The 0.5 weight was described here and in config as making the module "need help
+to clear the threshold". It does not. A lone module's confluence score is
+`|raw score| × confidence`: the weight appears in both the numerator and the
+denominator of the weighted average and cancels. The weight only matters when
+several modules fire together. What actually gates a lone cross is the
+threshold against `50 × confidence`, which is why `score_threshold` had to come
+down to 26 before a cross at this module's own 0.15 ATR floor could trade at
+all.
 
 ## Why it exists
 

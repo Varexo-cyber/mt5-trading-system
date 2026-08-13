@@ -1204,7 +1204,17 @@ class FastEmaCrossConfig(Base):
     fast_ema: int = Field(default=9, ge=2, le=200)
     slow_ema: int = Field(default=20, ge=3, le=400)
     atr_period: int = Field(default=14, ge=2, le=200)
+    #: Retained for the config surface; the invalidation now sizes itself from
+    #: the age of the cross. See `minimum_invalidation_bars` below.
     invalidation_lookback: int = Field(default=12, ge=2, le=500)
+    #: Fewest bars the invalidation window looks back over, so a cross printed
+    #: on the last bar still has a swing to hang a stop on rather than one bar.
+    minimum_invalidation_bars: int = Field(default=3, ge=1, le=50)
+    #: How far beyond the slow average the stop sits, in ATR. The thesis dies
+    #: when price closes back through that average — the module's own third
+    #: floor — so that is where the stop belongs; the buffer is what stops a
+    #: single wick through it from counting as the close.
+    invalidation_buffer_atr: float = Field(default=0.25, ge=0.0, le=2.0)
     #: How stale a cross may be and still count as an entry. Beyond this it is
     #: a state, and the state is what `trend_momentum` already reports.
     #:
