@@ -2628,6 +2628,43 @@ class ScannerConfig(Base):
         return cleaned
 
 
+class ExternalSignalsConfig(Base):
+    """Authenticated phone notifications entering the ordinary order pipeline."""
+
+    enabled: bool = False
+    source: str = "rio"
+    listen_host: str = "127.0.0.1"
+    listen_port: int = Field(default=8765, ge=1024, le=65_535)
+    token_env: str = "RIO_SIGNAL_TOKEN"
+    inbox_path: str = "runtime/external_signals"
+    max_age_seconds: int = Field(default=180, ge=15, le=3600)
+    fixed_volume: float = Field(default=0.01, gt=0.0, le=100.0)
+    partial_close_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
+    entry_zone_tolerance_bps: float = Field(default=2.0, ge=0.0, le=100.0)
+    allowed_apps: tuple[str, ...] = ("Rio Traders",)
+    symbol_aliases: dict[str, str] = Field(default_factory=lambda: {"GOLD": "XAUUSD"})
+
+    @field_validator("source", "token_env", "inbox_path")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("external signal text values must not be empty")
+        return cleaned
+
+    @field_validator("symbol_aliases")
+    @classmethod
+    def _normalise_aliases(cls, value: dict[str, str]) -> dict[str, str]:
+        aliases = {
+            str(alias).strip().upper(): str(symbol).strip()
+            for alias, symbol in value.items()
+            if str(alias).strip() and str(symbol).strip()
+        }
+        if len(aliases) != len(value):
+            raise ValueError("external_signals.symbol_aliases contains an empty alias")
+        return aliases
+
+
 class MarketScoutConfig(Base):
     """Bounded independent Claude scan over compact cross-market evidence."""
 
@@ -2705,6 +2742,7 @@ class Settings(Base):
     journal: JournalConfig = JournalConfig()
     monitoring: MonitoringConfig = MonitoringConfig()
     scanner: ScannerConfig = ScannerConfig()
+    external_signals: ExternalSignalsConfig = ExternalSignalsConfig()
     ai: AIConfig = AIConfig()
 
     @field_validator("modes")

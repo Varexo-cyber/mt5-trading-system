@@ -51,6 +51,7 @@ packages = [
     "core",
     "dashboard",
     "execution",
+    "external_signals",
     "filters",
     "filters.calendar",
     "infra",

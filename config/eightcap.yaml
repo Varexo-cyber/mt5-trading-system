@@ -210,6 +210,27 @@ scanner:
   # kan niets goedkeuren wat een poort geweigerd heeft. 0.0 zet het uit.
   after_cost_priority_weight: 12.0
 
+# Rio Traders phone bridge. A missing RIO_SIGNAL_TOKEN leaves this receiver
+# visibly unavailable without stopping the normal Jarvis scanner. Run
+# setup_rio_bridge.cmd once on the VPS, then publish 127.0.0.1:8765 through an
+# authenticated HTTPS tunnel. Every received entry still passes the account,
+# symbol, session, calendar, spread, sizing, margin and hard-stop gates.
+external_signals:
+  enabled: true
+  source: rio
+  listen_host: 127.0.0.1
+  listen_port: 8765
+  token_env: RIO_SIGNAL_TOKEN
+  inbox_path: runtime/external_signals
+  max_age_seconds: 180
+  fixed_volume: 0.01
+  partial_close_fraction: 0.5
+  entry_zone_tolerance_bps: 2.0
+  allowed_apps: [Rio Traders]
+  symbol_aliases:
+    GOLD: XAUUSD
+    XAUUSD: XAUUSD
+
 analysis:
   # HET DOEL VAN 2R NAAR 1.5R, en dit is de grootste enkele oorzaak dat er
   # niets handelt. Gemeten, niet beredeneerd.

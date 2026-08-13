@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import os
@@ -60,6 +61,7 @@ from dashboard.service import (
     load_market_intelligence,
     load_paper_snapshot,
 )
+from external_signals import ExternalSignalInbox
 from infra.killswitch import KillSwitch
 from learning.memory import TradingMemory
 from monitoring.scan_activity import read_scan_activity
@@ -92,6 +94,59 @@ ai_ready = (
     and bool(settings.ai.anthropic_model)
     and bool(os.getenv("ANTHROPIC_API_KEY"))
 )
+
+
+@st.fragment(run_every="3s")
+def render_external_signals() -> None:
+    """Show the phone payload and every decision made from it."""
+
+    inbox = ExternalSignalInbox(ROOT / settings.external_signals.inbox_path)
+    rows = inbox.recent(limit=300)
+    pending_count = sum(1 for _ in inbox.pending_dir.glob("*.json"))
+    status = {}
+    with contextlib.suppress(OSError, json.JSONDecodeError):
+        status = json.loads(inbox.status_path.read_text(encoding="utf-8"))
+    a, b, c, d = st.columns(4)
+    a.metric("Bridge", "AAN" if settings.external_signals.enabled else "UIT")
+    b.metric("Inbox wachtend", pending_count)
+    c.metric("Laatste status", str(status.get("status", "nog niets")))
+    d.metric("Vaste signaal-lot", f"{settings.external_signals.fixed_volume:g}")
+    st.info(
+        "Een pushmelding is geen order. Eerst wordt de originele tekst bewaard. Daarna "
+        "herkent Jarvis entry, SL, TP en latere beheerberichten. Een incomplete, oude, "
+        "dubbele of verkeerde-appmelding kan geen trade plaatsen."
+    )
+    if not rows:
+        st.warning(
+            "Nog geen telefoonmelding ontvangen. Run setup_rio_bridge.cmd, start Jarvis "
+            "opnieuw en stuur daarna één echte Rio-push via de HTTPS-tunnel."
+        )
+        return
+    display: list[dict[str, object]] = []
+    for row in reversed(rows):
+        parsed = row.get("parsed") if isinstance(row.get("parsed"), dict) else {}
+        display.append(
+            {
+                "Tijd (UTC)": row.get("timestamp"),
+                "Event": row.get("event_id"),
+                "Status": row.get("status"),
+                "Soort": parsed.get("kind"),
+                "Markt": parsed.get("symbol_alias") or row.get("symbol"),
+                "Richting": parsed.get("direction"),
+                "MT5-ticket": row.get("ticket"),
+                "Uitleg": row.get("detail"),
+            }
+        )
+    st.dataframe(pd.DataFrame(display), hide_index=True, width="stretch")
+    with st.expander("Ruwe telefoondata en parserresultaat"):
+        st.json(rows[-30:], expanded=False)
+    campaigns = inbox.campaigns()
+    active = [row for row in campaigns.values() if row.get("status") == "OPEN"]
+    st.subheader("Actieve externe campagnes")
+    if active:
+        st.dataframe(pd.DataFrame(active), hide_index=True, width="stretch")
+    else:
+        st.caption("Geen actieve Rio-campagne.")
 
 
 @st.fragment(run_every="10s")
@@ -1283,10 +1338,20 @@ try:
             "verandert niet."
         )
 
-    overview_tab, scanner_tab, ai_tab, charts_tab, positions_tab, report_tab, control_tab = st.tabs(
+    (
+        overview_tab,
+        scanner_tab,
+        external_tab,
+        ai_tab,
+        charts_tab,
+        positions_tab,
+        report_tab,
+        control_tab,
+    ) = st.tabs(
         [
             "Overview",
             "Live scanner",
+            "External signals",
             "AI exchange",
             "Charts",
             "Positions",
@@ -1358,6 +1423,10 @@ try:
         st.divider()
         st.subheader("Marktbrein: vergelijking van de beste kansen")
         render_market_brain()
+
+    with external_tab:
+        st.subheader("Rio Traders via MacroDroid")
+        render_external_signals()
 
     with ai_tab:
         entry_view, manage_view, learn_view = st.tabs(
