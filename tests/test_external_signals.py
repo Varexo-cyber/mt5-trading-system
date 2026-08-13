@@ -9,11 +9,12 @@ from datetime import UTC, datetime, timedelta
 import pandas as pd
 import pytest
 
-from core.types import Direction
+from core.types import Direction, Position
 from external_signals import ExternalSignalInbox, NotificationEnvelope, RioSignalParser
 from external_signals.gold_follow import build_gold_follow_plan
 from external_signals.models import ExternalSignalKind
 from external_signals.server import SignalReceiver
+from runner.service import RIO_POSITION_COMMENT, JarvisRunner, _is_rio_position
 
 
 def envelope(text: str, *, title: str = "Gold Intraday Signals") -> NotificationEnvelope:
@@ -25,6 +26,31 @@ def envelope(text: str, *, title: str = "Gold Intraday Signals") -> Notification
         text=text,
         source="rio",
     )
+
+
+def open_position(*, comment: str) -> Position:
+    return Position(
+        ticket=123,
+        symbol="XAUUSD",
+        direction=Direction.LONG,
+        volume=0.01,
+        price_open=4385.0,
+        sl=4375.0,
+        tp=4400.0,
+        profit=0.0,
+        swap=0.0,
+        opened_at=datetime.now(UTC),
+        comment=comment,
+    )
+
+
+def test_rio_position_is_excluded_only_from_unsolicited_management() -> None:
+    rio = open_position(comment=RIO_POSITION_COMMENT)
+    ordinary = open_position(comment="jarvis")
+
+    assert _is_rio_position(rio)
+    assert not _is_rio_position(ordinary)
+    assert JarvisRunner._autonomously_managed_positions([rio, ordinary]) == [ordinary]
 
 
 def test_parses_complete_gold_zone_signal() -> None:

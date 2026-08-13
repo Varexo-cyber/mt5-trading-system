@@ -148,6 +148,14 @@ _UNKNOWN_HEALTH: dict[str, object] = {
     "signals": [],
 }
 
+RIO_POSITION_COMMENT = "jarvis-rio"
+
+
+def _is_rio_position(position: Position) -> bool:
+    """True only for positions opened by the authenticated Rio route."""
+    return str(getattr(position, "comment", "")).casefold() == RIO_POSITION_COMMENT
+
+
 #: How far inside the cost limit a widened stop is placed, as a multiplier on
 #: the limit itself. Solving for exactly the limit and stopping there loses to
 #: the float: the widened stop is normalised to the instrument's tick and comes
@@ -979,7 +987,7 @@ class JarvisRunner:
             reference_price=entry,
             deviation_points=self.settings.mt5.deviation_points,
             magic=self.settings.system.magic_number,
-            comment="jarvis-rio",
+            comment=RIO_POSITION_COMMENT,
         )
         result = self.broker.order_send(request, spec)
         self.recorder.record_order_attempt(
@@ -1381,6 +1389,17 @@ class JarvisRunner:
             if getattr(position, "magic", self.settings.system.magic_number) in allowed
         ]
 
+    @staticmethod
+    def _autonomously_managed_positions(positions: list[Position]) -> list[Position]:
+        """Exclude provider-owned Rio plans from Jarvis/Claude management.
+
+        They remain owned for reconciliation, reporting, capital-floor and
+        emergency-stop purposes. Normal management messages reach them through
+        `_manage_external_signal`; this only removes unsolicited mechanical,
+        news and AI changes to the provider's SL/TP/exit plan.
+        """
+        return [position for position in positions if not _is_rio_position(position)]
+
     def _manual_adoption_enabled(self) -> bool:
         manual = getattr(getattr(self.settings, "trade_management", None), "manual_positions", None)
         return bool(
@@ -1574,8 +1593,9 @@ class JarvisRunner:
             if not positions:
                 self._publish_health(positions)
                 return []
+            autonomous = self._autonomously_managed_positions(positions)
             events = self.manager.manage(
-                positions, self.clock.now(), self.posture.patience_multiplier
+                autonomous, self.clock.now(), self.posture.patience_multiplier
             )
             self._record_management(events)
             return events
@@ -1629,7 +1649,8 @@ class JarvisRunner:
             (item for item in self.filters.filters if isinstance(item, NewsFilter)), None
         )
         if news_filter is not None:
-            self._record_management(self.manager.manage_news(positions, news_filter))
+            autonomous = self._autonomously_managed_positions(positions)
+            self._record_management(self.manager.manage_news(autonomous, news_filter))
             positions = self._managed_positions()
         # How the account should be carrying itself, given the last few trades.
         # Only ever tightens: less patience with a stalled trade, a higher bar
@@ -1658,8 +1679,9 @@ class JarvisRunner:
         # the nearest euro and a broker round trip every second to watch a
         # number that moves in cents is a poor trade.
         self.manager.equity = account.equity
+        autonomous = self._autonomously_managed_positions(positions)
         self._record_management(
-            self.manager.manage(positions, self.clock.now(), self.posture.patience_multiplier)
+            self.manager.manage(autonomous, self.clock.now(), self.posture.patience_multiplier)
         )
         positions = self._managed_positions()
         # The mechanical rules have had their say; now the judgement layer. It
@@ -1667,7 +1689,7 @@ class JarvisRunner:
         # cheap, deterministic and always correct to apply, so they should not
         # wait on an API call, and the supervisor sees the position in the state
         # those rules left it.
-        self._supervise_positions(positions)
+        self._supervise_positions(self._autonomously_managed_positions(positions))
         positions = self._managed_positions()
         state = self.risk.build_state(account, positions)
         if self.risk.circuit_breaker_tripped(state):
