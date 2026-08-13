@@ -435,6 +435,11 @@ analysis:
       # least corroborated evidence here, so it should need help to clear the
       # threshold rather than carrying a trade on its own.
       fast_ema_cross: 0.5
+      # Between the drift module and the cross. An impulse is a stronger
+      # single observation than a cross — one bar actually moved a long way,
+      # which is a fact rather than an indicator relationship — and weaker
+      # evidence of continuation than eight bars of consistent travel.
+      impulse_break: 0.6
 
   # Direction and entry price are separate decisions. These ATR-normalised
   # limits stop the market-order path from buying the end of an impulse or

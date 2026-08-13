@@ -439,7 +439,7 @@ analysis:
     # EMA sluiten. Daarboven: geregistreerd als continuation-module dus de
     # range-poort weigert hem in chop, en geclassificeerd als intraday zodat
     # hij een M15-plan krijgt en geen swing-doel van 24 uur.
-    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, drift_continuation, fast_ema_cross]
+    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #

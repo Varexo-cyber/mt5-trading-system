@@ -912,6 +912,65 @@ def _reach_reference(
     return reference
 
 
+#: Bars of the planning timeframe the range is measured over. Forty, because
+#: that is the window the reviewer reaches for unprompted — "the last 42-bar H4
+#: range" — and because it is long enough to contain a swing and short enough
+#: to still be the market price is trading in.
+_RANGE_LOOKBACK_BARS = 40
+
+
+def _range_position(
+    frame: Any, idea: TradeIdea, timeframe: str, atr: float
+) -> dict[str, object]:
+    """Where entry, stop and target sit inside the recent range.
+
+    Three questions the reviewer keeps answering by hand off the raw bars, and
+    then vetoing on: is this entry at the extreme of the range rather than
+    breaking out of it, is the target beyond the range's own edge, and is the
+    stop somewhere price has already been.
+
+    Reported, never judged. This block states positions; whether being at the
+    11th percentile of a range is a reason to refuse depends on whether the
+    thesis is continuation or reversal, and that is the reviewer's call.
+    """
+    if len(frame) < 5 or not idea.entry:
+        return {"status": "not_enough_history"}
+    window = frame.tail(_RANGE_LOOKBACK_BARS)
+    high = float(window["high"].max())
+    low = float(window["low"].min())
+    span = high - low
+    if span <= 0:
+        return {"status": "no_range"}
+
+    long = idea.direction is not None and int(idea.direction) > 0
+    # 0% at the low, 100% at the high, whatever the direction — a raw location
+    # rather than a "how extended am I" reading, so it cannot be misread as an
+    # opinion about the trade.
+    def location(price: float) -> float:
+        return round(100.0 * (price - low) / span, 1)
+
+    beyond = 0.0
+    if idea.take_profit:
+        beyond = (idea.take_profit - high) if long else (low - idea.take_profit)
+    return {
+        "timeframe": timeframe,
+        "bars": len(window),
+        "range_high": round(high, 6),
+        "range_low": round(low, 6),
+        "entry_location_pct": location(idea.entry),
+        "stop_location_pct": location(idea.stop_loss) if idea.stop_loss else None,
+        "target_location_pct": location(idea.take_profit) if idea.take_profit else None,
+        "target_beyond_range": bool(beyond > 0),
+        "target_beyond_range_atr": round(beyond / atr, 2) if atr > 0 and beyond > 0 else 0.0,
+        "note": (
+            "0% is the low of this window and 100% the high. A target beyond the range needs "
+            "the range to break; a target inside it does not. An entry at the extreme in the "
+            "trade's own direction is a continuation bet on a level, not a fresh breakout, "
+            "unless the bars show the edge already given way."
+        ),
+    }
+
+
 def _direction_vote(value: float, threshold: float) -> int:
     """Return -1/0/+1 only when a measured move clears its noise floor."""
     if value > threshold:
@@ -1156,6 +1215,25 @@ def build_review_payload(
             # nothing to compare it to, which is not a judgement anyone can
             # make, and the engine had both numbers in hand before it asked.
             **_reach_reference(history, direction_key, stop_distance, target_distance),
+            # Where the entry, the stop and the target sit inside the range the
+            # planning timeframe has actually been trading.
+            #
+            # The reviewer works this out by hand and vetoes on it. Verbatim,
+            # from a live GBPCAD SHORT: "entering near the very bottom of the
+            # last 42-bar H4 range (11th percentile close location) and
+            # targeting a level below that range's own low without any
+            # break-of-structure evidence that the floor has actually given
+            # way." Both facts are arithmetic on bars the engine already holds.
+            #
+            # `entry_quality` asks a version of the first question but only over
+            # twelve M5 bars — the last hour. That is a different question from
+            # where price sits in its last two days, and the engine had no
+            # answer to the second one at all. It also never checked whether it
+            # was aiming through the edge of the range, which is the "target
+            # with structure in the way" the prompt asks the reviewer to catch.
+            "range_position": _range_position(
+                signal.df, idea, planning_timeframe.value, atr
+            ),
             "note": (
                 "history measures every available rolling window on the planning timeframe "
                 "using this proposal's expected horizon. It reports how often price travelled "
@@ -1711,6 +1789,12 @@ comfortably even where the other direction sits at 35%. Below the break-even fig
 decorative whatever the other side does. `reach_standard_error_pct` is the noise on these numbers:
 a gap smaller than it is not a difference, and calling one a coin flip when it leads by several
 times its own error is a misreading, not caution.
+`range_position` states where the entry, stop and target sit inside the planning timeframe's own
+recent range, so you do not have to derive it from the bars. `target_beyond_range: true` means the
+plan needs that range to break — say so if nothing in the bars supports the break. An entry at the
+extreme in the trade's own direction is a continuation bet on a level rather than a fresh breakout.
+None of these is automatically a veto: at the bottom of a range is where a long belongs and where a
+continuation short is most exposed, and which one you are looking at is your judgement to make.
 Veto a stop sitting inside ordinary noise, a stop or target on the wrong side of an obvious level
 in the bars you were given, and a spread eating a large share of the stop.
 

@@ -1259,6 +1259,40 @@ class FastEmaCrossConfig(Base):
         return self
 
 
+class ImpulseBreakConfig(Base):
+    """One violent bar with follow-through. See analysis/impulse_break.py.
+
+    Fills a hole found live: a GBPCAD M15 body of -1.34 ATR with a -2.3 ATR
+    three-bar M5 drift fired no directional module at all, because
+    `drift_continuation` needs 65% of eight bars to agree (an impulse gives
+    about 25%) and `fast_ema_cross` needs a cross that a vertical move has
+    already left behind.
+    """
+
+    enabled: bool = True
+    timeframe: str = "M15"
+    atr_period: int = Field(default=14, ge=2, le=200)
+    #: The body, not the range: a wide bar with a small body is indecision.
+    minimum_body_atr: float = Field(default=1.00, ge=0.1, le=10.0)
+    #: How far into its own range the bar must close. Below this it is a
+    #: rejection wearing a big candle, and joining a rejection is joining the
+    #: reversal of the move you meant to join.
+    minimum_close_location: float = Field(default=0.66, ge=0.5, le=1.0)
+    #: The mechanism is about the minutes after the repricing.
+    max_bars_since: int = Field(default=2, ge=0, le=20)
+    #: How much of the move may already have been handed back. Half of it means
+    #: the market rejected the break and the spike is the whole story.
+    maximum_retracement: float = Field(default=0.50, ge=0.0, le=1.0)
+    #: 60, chosen so the weakest signal this module can emit still clears the
+    #: live threshold on its own: 60 x 0.45 = 27 against 26. That arithmetic is
+    #: not optional — `fast_ema_cross` shipped at 50 against a 35 threshold and
+    #: could never trade alone, which took a day and a live funnel to notice.
+    score: float = Field(default=60.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    body_confidence_scale: float = Field(default=0.25, ge=0.0, le=2.0)
+    maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+
 class DriftContinuationConfig(Base):
     """Join a move that is already happening, in the direction it is going.
 
@@ -1673,6 +1707,7 @@ class ConfluenceConfig(Base):
         "liquidity_sweep",
         "drift_continuation",
         "fast_ema_cross",
+        "impulse_break",
     )
     require_target_base_rate: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
@@ -1745,7 +1780,22 @@ class ConfluenceConfig(Base):
     entry_timing_lookback: int = Field(default=6, ge=2, le=50)
     #: Adverse movement, in ATR, that blocks the entry. A flat lower timeframe
     #: is never an objection; only a move materially against the direction is.
-    entry_timing_max_adverse_atr: float = Field(default=0.50, gt=0.0, le=5.0)
+    #: 1.0, up from 0.50, and mostly to stop this system holding two different
+    #: opinions about one question. `confirmation_max_adverse_atr` asks exactly
+    #: the same thing one stage later — has price already started proving this
+    #: trade wrong — and was moved to 1.0 this morning on measured evidence
+    #: (AWAITING_CONFIRMATION blocked 11 setups, 6 of them winners, cost 5.20R).
+    #: Leaving its twin at half that meant the looser gate never got a say.
+    #:
+    #: The cost of the tighter number, one live hour: 195 refusals on M1 against
+    #: a long, 175 on M5 against a long, 131 and 112 the same for shorts. 613 an
+    #: hour, second only to "no module fired at all", and half an ATR over six
+    #: bars is ordinary breathing on a fast chart.
+    #:
+    #: What it still catches is what it was built for: the GBPJPY short sent
+    #: into a resistance break was 1.2 ATR of adverse travel and is still
+    #: refused, on both gates.
+    entry_timing_max_adverse_atr: float = Field(default=1.00, gt=0.0, le=5.0)
 
     #: Higher timeframes checked for an established trend the trade would be
     #: taken straight into. There was a timing gate below the bias and nothing
@@ -1864,6 +1914,7 @@ class AnalysisConfig(Base):
     market_regime: MarketRegimeConfig = MarketRegimeConfig()
     drift_continuation: DriftContinuationConfig = DriftContinuationConfig()
     fast_ema_cross: FastEmaCrossConfig = FastEmaCrossConfig()
+    impulse_break: ImpulseBreakConfig = ImpulseBreakConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
