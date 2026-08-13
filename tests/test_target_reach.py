@@ -229,3 +229,49 @@ class TestNoiseIsNotADisadvantage:
         whatever the config says."""
         assert self._verdict(47.4, 49.0).beats_the_other_side(0.0)
         assert not self._verdict(38.1, 46.8).beats_the_other_side(0.0)
+
+
+class TestTheReviewerGetsTheBarAndNotJustTheNumber:
+    """A percentage with nothing to compare it to is not a judgement.
+
+    Live GBPCAD SHORT, 13 August: the payload sent 43.1% and no reference. The
+    reviewer wrote "only 43.1%, barely above the 34.6% up-rate, so the 2R
+    target is closer to a coin flip" and vetoed. Against the bar that actually
+    applies — 33.3% for a 2R plan — it cleared by 9.8 points, and its lead over
+    the other direction was 3.4 standard errors. Both numbers were already
+    computed for the engine's own gate and neither was ever sent.
+    """
+
+    @staticmethod
+    def _reference(**kwargs):  # type: ignore[no-untyped-def]
+        from advisory.providers import _reach_reference
+
+        history = {
+            "windows_examined": kwargs.get("windows", 388),
+            "moved_down_that_far_pct": kwargs.get("forward", 43.1),
+            "moved_up_that_far_pct": kwargs.get("opposite", 34.6),
+        }
+        return _reach_reference(
+            history,
+            "moved_down_that_far_pct",
+            stop_distance=kwargs.get("stop", 1.0),
+            target_distance=kwargs.get("target", 2.0),
+        )
+
+    def test_the_gbpcad_payload_now_carries_the_break_even_bar(self) -> None:
+        assert self._reference()["break_even_reach_pct"] == pytest.approx(33.3, abs=0.1)
+
+    def test_it_carries_the_noise_on_the_measurement(self) -> None:
+        assert self._reference()["reach_standard_error_pct"] == pytest.approx(2.5, abs=0.1)
+
+    def test_the_bar_follows_the_plans_own_geometry(self) -> None:
+        """A 3R plan needs a rarer move than a 1R plan, so a single hardcoded
+        threshold would be wrong for every trade but one."""
+        assert self._reference(target=1.0)["break_even_reach_pct"] == pytest.approx(50.0, abs=0.1)
+        assert self._reference(target=3.0)["break_even_reach_pct"] == pytest.approx(25.0, abs=0.1)
+
+    def test_it_says_nothing_rather_than_guessing(self) -> None:
+        """No windows and no stop distance mean the question was not answerable.
+        Sending a fabricated bar would be worse than sending none."""
+        assert self._reference(windows=0) == {}
+        assert self._reference(stop=0.0) == {}

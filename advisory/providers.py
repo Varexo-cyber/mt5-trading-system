@@ -12,6 +12,7 @@ from typing import Any, Protocol
 import pandas as pd
 
 from analysis.confluence import TradeIdea
+from analysis.target_reach import break_even_rate
 from config.schema import AIConfig
 from core.types import MarketContext, Timeframe
 from infra.logging import get_logger
@@ -885,6 +886,32 @@ def _reachability(frame: Any, distance: float, bars_ahead: int) -> dict[str, obj
     }
 
 
+def _reach_reference(
+    history: dict[str, object],
+    direction_key: str,
+    stop_distance: float,
+    target_distance: float,
+) -> dict[str, object]:
+    """The bar a reach rate has to clear, and the noise on the measurement.
+
+    Both numbers already existed — `analysis.target_reach` computes them for
+    the engine's own gate — and neither was ever put in front of the reviewer,
+    which left it comparing a percentage to nothing. See the call site for the
+    live GBPCAD veto that cost.
+    """
+    windows = int(history.get("windows_examined") or 0)
+    forward = history.get(direction_key)
+    if windows <= 0 or not isinstance(forward, int | float) or stop_distance <= 0:
+        return {}
+    reference: dict[str, object] = {
+        "break_even_reach_pct": round(break_even_rate(target_distance / stop_distance), 1),
+        "reach_standard_error_pct": round(
+            100.0 * math.sqrt(max(0.0, (forward / 100.0) * (1 - forward / 100.0)) / windows), 1
+        ),
+    }
+    return reference
+
+
 def _direction_vote(value: float, threshold: float) -> int:
     """Return -1/0/+1 only when a measured move clears its noise floor."""
     if value > threshold:
@@ -1117,10 +1144,26 @@ def build_review_payload(
             ),
             "history": history,
             "proposed_direction_reach_pct": history.get(direction_key),
+            # The bar that percentage has to clear, and the noise on it.
+            #
+            # Both were computed and neither was ever sent. On a live GBPCAD
+            # SHORT the reviewer read 43.1% with no reference point, called it
+            # "only 43.1%, barely above the 34.6% up-rate ... closer to a coin
+            # flip", and vetoed. Against the actual bar — 33.3% for a 2R plan —
+            # it cleared by 9.8 points, and its 8.5-point lead over the other
+            # direction is 3.4 standard errors. It was not close to a coin flip
+            # in either sense. The reviewer was eyeballing a percentage with
+            # nothing to compare it to, which is not a judgement anyone can
+            # make, and the engine had both numbers in hand before it asked.
+            **_reach_reference(history, direction_key, stop_distance, target_distance),
             "note": (
                 "history measures every available rolling window on the planning timeframe "
                 "using this proposal's expected horizon. It reports how often price travelled "
-                "at least the target distance, not how often this strategy would have won."
+                "at least the target distance, not how often this strategy would have won. "
+                "Compare proposed_direction_reach_pct against break_even_reach_pct, not "
+                "against the opposite direction: below the break-even figure the plan cannot "
+                "pay for itself whatever the other side does. reach_standard_error_pct is the "
+                "noise on these percentages — a gap smaller than it is not a difference."
             ),
         }
     elif signal is None:
@@ -1661,7 +1704,13 @@ JUDGE THE STOP AND THE TARGET AS PLACEMENTS. `target_realism` gives you the stop
 ATR, the spread as a percentage of the stop, and — measured from this instrument's own recent
 history — how often it has actually travelled the target distance within THIS proposal's stated
 horizon on THIS proposal's planning timeframe. `proposed_direction_reach_pct` is a base-rate travel
-measurement, not a strategy win rate. If that percentage is low the target may be decorative.
+measurement, not a strategy win rate.
+Judge it against `break_even_reach_pct`, which is the rate this plan's own reward-to-risk needs to
+break even, and NOT against the opposite direction's rate — a 2R plan needs 33%, so 43% clears it
+comfortably even where the other direction sits at 35%. Below the break-even figure the target is
+decorative whatever the other side does. `reach_standard_error_pct` is the noise on these numbers:
+a gap smaller than it is not a difference, and calling one a coin flip when it leads by several
+times its own error is a misreading, not caution.
 Veto a stop sitting inside ordinary noise, a stop or target on the wrong side of an obvious level
 in the bars you were given, and a spread eating a large share of the stop.
 
