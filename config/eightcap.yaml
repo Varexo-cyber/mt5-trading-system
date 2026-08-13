@@ -211,6 +211,39 @@ scanner:
   after_cost_priority_weight: 12.0
 
 analysis:
+  # HET DOEL VAN 2R NAAR 1.5R, en dit is de grootste enkele oorzaak dat er
+  # niets handelt. Gemeten, niet beredeneerd.
+  #
+  # Van alles wat de entry-poorten overleeft sterft 95,8% op de kostenstap, en
+  # 313 van die 391 zijn TARGET_RARELY_REACHED. Wat het rapport letterlijk zei:
+  #
+  #   AUDCHF  30,4% bereikt   GBPCAD 30,7%   GBPCHF 30,2%   CADJPY 30,2%
+  #
+  # Break-even voor een 2R-plan is 33,3%. Die markten leggen de doelafstand dus
+  # simpelweg niet vaak genoeg af. Dat is geen strenge poort, dat is rekenkunde.
+  #
+  # WAAROM EEN KORTER DOEL DIT OPLOST, en waarom het niet vanzelf spreekt: de
+  # bereikkans stijgt sneller dan de break-even eis als het doel krimpt. Op
+  # dezelfde instrumenten, geijkt op die 30,4%:
+  #
+  #   RR      bereikt   nodig   marge
+  #   2,50     19,9%    28,6%   -8,7
+  #   2,00     30,4%    33,3%   -2,9   <- waar hij nu staat
+  #   1,75     36,8%    36,4%   +0,4
+  #   1,50     44,1%    40,0%   +4,1   <- hierheen
+  #   1,20     53,7%    45,5%   +8,2
+  #
+  # WAT DIT KOST EN WAT ER GEWED WORDT. Na kosten (25% van 1R) heeft een
+  # 1,5R-plan een winstpercentage van 50% nodig in plaats van 41,7%. De kale
+  # bereikkans is 44,1%. Dat gat van zes punten moet uit de modules komen —
+  # uit het feit dat een setup géén willekeurig startpunt is. Of die edge
+  # bestaat is op dit account niet aangetoond, en dit is expliciet de aanname
+  # waarop de eigenaar heeft besloten te handelen.
+  #
+  # `scorecard.py --days 3` leest het terug: als de trades met een 1,5R-doel
+  # onder 44% winnen, klopte de aanname niet en gaat dit terug naar 2,0.
+  # De waarde zelf staat in het confluence-blok verderop.
+
   # De poort die de eigenaar bij naam noemde: "XAUUSD flipte omhoog als een
   # rocket en hij greep niet in".
   #
@@ -397,6 +430,16 @@ analysis:
     # hoort de module te zijn die de vraag begrijpt. Op 26 is zijn eigen vloer
     # weer het enige antwoord.
     score_threshold: 26.0
+
+    # 1.5, van 2.0. Zie de lange toelichting bovenaan dit `analysis`-blok: dit
+    # is de grootste enkele oorzaak dat er niets handelt, en de bereikkans
+    # stijgt sneller dan de break-even eis als het doel krimpt.
+    target_r_multiple: 1.5
+    # De vloer waaronder het doel niet verder mag krimpen. Van 1.0 naar 0.9,
+    # zodat het bijsnijden ook nog ruimte heeft als 1.5 net niet haalbaar is
+    # op een traag instrument. Onder 0.9 wordt de setup geweigerd in plaats van
+    # verkleind tot iets dat zijn eigen spread niet meer kan betalen.
+    minimum_r_multiple: 0.9
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
@@ -866,7 +909,12 @@ risk:
   # dezelfde trade scoort nu mechanisch lager op reward/risk. In de laatste
   # cyclus vielen er acht af op RR_BELOW_MINIMUM die daarvoor door zouden zijn
   # gekomen. Het getal verlagen houdt de strengheid gelijk aan wat hij was.
-  min_risk_reward: 1.5
+  # En van 1.5 naar 1.1, want anders is dit de nieuwe muur. Met
+  # `target_r_multiple` op 1.5 zou een vloer van 1.5 betekenen dat elk doel dat
+  # ook maar een fractie moet worden bijgesneden alsnog wordt geweigerd —
+  # RR_BELOW_MINIMUM in plaats van TARGET_RARELY_REACHED, dezelfde trade en een
+  # andere naam. 1.1 laat het bijsnijden zijn werk doen.
+  min_risk_reward: 1.1
   max_trades_per_day: 0
   max_trades_per_week: 0
 
