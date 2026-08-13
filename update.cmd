@@ -122,5 +122,49 @@ echo.
 echo  If the section above says re-arming is required, run:
 echo    rearm_experimental_live.cmd
 echo.
+
+REM Whether a Jarvis is still running the code this update just replaced.
+REM
+REM This script pulls, reinstalls and checks the config. It has never
+REM restarted anything, and it never said so. A running Jarvis holds its
+REM settings and its module list in memory from the moment it started, so
+REM every change pulled here is invisible to it until it is closed and
+REM relaunched.
+REM
+REM That silence cost a full day of confusing reports on 13 August. Fixes were
+REM pulled, the operator saw "Update complete", and the live funnel kept
+REM showing the exact refusals those fixes removed. Worse, half a report would
+REM reflect the new build and half the old one, because the hour happened to
+REM span a restart made for unrelated reasons — which made the numbers look
+REM like the fixes had partly worked.
+REM
+REM Detected and warned about rather than acted on: this process may be
+REM holding open positions or be mid-order, and a batch file is not the thing
+REM that should decide to kill it.
+set "JARVIS_RUNNING="
+for /f "tokens=*" %%P in ('wmic process where "name='python.exe'" get commandline /value 2^>nul ^| find /i "jarvis.py"') do set "JARVIS_RUNNING=1"
+
+if defined JARVIS_RUNNING (
+  echo  ############################################################
+  echo   JARVIS IS STILL RUNNING THE OLD CODE.
+  echo.
+  echo   This update does NOT restart it. A running Jarvis keeps the
+  echo   settings and modules it loaded at startup, so nothing you
+  echo   just pulled is active yet.
+  echo.
+  echo   Close the Jarvis window, then start it again with:
+  echo     launch_jarvis_experimental_live.cmd
+  echo.
+  echo   Check open positions first - closing the window does not close
+  echo   trades, and they are unmanaged until it is back up.
+  echo  ############################################################
+) else (
+  echo  No running Jarvis detected. Start it with:
+  echo    launch_jarvis_experimental_live.cmd
+  echo.
+  echo  NOTE: this script never restarts Jarvis. If one is running in another
+  echo  window it keeps the code it started with until you close and relaunch.
+)
+echo.
 pause
 endlocal
