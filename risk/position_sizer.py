@@ -110,6 +110,7 @@ class PositionSizer:
         risk_multiplier: float = 1.0,
         spread_price: float = 0.0,
         risk_pct: float | None = None,
+        enforce_minimum_rr: bool = True,
     ) -> SizingResult:
         """Compute the lot size for one setup.
 
@@ -131,6 +132,10 @@ class PositionSizer:
                 cost gate is blind without it. Zero means "not supplied" and
                 understates the true cost — the live path passes the tick's own
                 spread and `test_cost_share_gate` holds it to that.
+            enforce_minimum_rr: Whether the system's strategy-level minimum
+                reward:risk applies. Authenticated provider-follow routes may
+                set this false because the provider owns the target; broker,
+                stop, cost, lot-size and risk-ceiling validation still applies.
         """
         if risk_multiplier > 1.0:
             raise ValueError(
@@ -264,7 +269,7 @@ class PositionSizer:
             rel_tol=1e-9,
             abs_tol=spec.point * 1e-9,
         )
-        if tp and exceeds_point_tolerance:
+        if enforce_minimum_rr and tp and exceeds_point_tolerance:
             return result(
                 RiskDecision.block(
                     Reason.RR_BELOW_MINIMUM,

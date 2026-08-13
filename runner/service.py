@@ -654,7 +654,7 @@ class JarvisRunner:
         # Rio owns Gold direction. These are execution/market facts, not a
         # second strategy opinion: calendar/headline danger, whether Gold is
         # actually open long enough, whether it is moving, and its live spread.
-        required = {"news", "headlines", "session", "runway", "liveliness", "spread"}
+        required = {"news", "headlines", "session", "runway", "spread"}
         data: dict[str, object] = {}
         checked = 0
         for filter_ in self.filters.filters:
@@ -783,41 +783,82 @@ class JarvisRunner:
         account = self.broker.account()
         positions = tuple(self._managed_positions())
         state = self.risk.build_state(account, positions)
-        permission = self.risk.check_can_trade(state)
-        if not permission.approved:
-            cycle_pk = self._record_skip(
-                cycle_id,
-                symbol,
-                account.equity,
-                permission.reason,
-                permission.detail,
-                signals=[signal],
-                extra={"source": "external_rio", "event": event.safe_dict()},
-                total_score=100.0,
+        if gold_follow:
+            # Explicit Gold-only bypass: provider directions are not subject to
+            # Jarvis pacing, slot, whitelist, concentration or same-strategy
+            # preference gates. A second live XAUUSD ticket is the sole
+            # exception because it would be averaging/grid/hedging, which is a
+            # hard project prohibition rather than a trade opinion.
+            if state.has_position_in(symbol):
+                existing = state.position_in(symbol)
+                assert existing is not None
+                detail = (
+                    f"{symbol}: Rio Gold ticket #{existing.ticket} is already open; "
+                    "a second same-symbol ticket would average, grid or hedge"
+                )
+                cycle_pk = self._record_skip(
+                    cycle_id,
+                    symbol,
+                    account.equity,
+                    Reason.POSITION_ALREADY_OPEN,
+                    detail,
+                    signals=[signal],
+                    extra={"source": "external_rio", "event": event.safe_dict()},
+                    total_score=100.0,
+                )
+                return (
+                    "BLOCKED",
+                    detail,
+                    {"cycle_pk": cycle_pk, "parsed": event.safe_dict()},
+                )
+            resolution["bypassed_strategy_gates"] = [
+                "daily_weekly_trade_pacing",
+                "position_slot_limit",
+                "equity_symbol_whitelist",
+                "concentration_correlation",
+                "minimum_reward_risk",
+                "ai_strategy_veto",
+            ]
+        else:
+            permission = self.risk.check_can_trade(state)
+            if not permission.approved:
+                cycle_pk = self._record_skip(
+                    cycle_id,
+                    symbol,
+                    account.equity,
+                    permission.reason,
+                    permission.detail,
+                    signals=[signal],
+                    extra={"source": "external_rio", "event": event.safe_dict()},
+                    total_score=100.0,
+                )
+                return (
+                    "BLOCKED",
+                    permission.detail,
+                    {"cycle_pk": cycle_pk, "parsed": event.safe_dict()},
+                )
+            symbol_permission = self.risk.check_symbol(
+                symbol, state, spec, direction=event.direction, entry=entry
             )
-            return "BLOCKED", permission.detail, {"cycle_pk": cycle_pk, "parsed": event.safe_dict()}
-        symbol_permission = self.risk.check_symbol(
-            symbol, state, spec, direction=event.direction, entry=entry
-        )
-        if not symbol_permission.approved:
-            cycle_pk = self._record_skip(
-                cycle_id,
-                symbol,
-                account.equity,
-                symbol_permission.reason,
-                symbol_permission.detail,
-                signals=[signal],
-                extra={"source": "external_rio", "event": event.safe_dict()},
-                total_score=100.0,
-            )
-            return (
-                "BLOCKED",
-                symbol_permission.detail,
-                {
-                    "cycle_pk": cycle_pk,
-                    "parsed": event.safe_dict(),
-                },
-            )
+            if not symbol_permission.approved:
+                cycle_pk = self._record_skip(
+                    cycle_id,
+                    symbol,
+                    account.equity,
+                    symbol_permission.reason,
+                    symbol_permission.detail,
+                    signals=[signal],
+                    extra={"source": "external_rio", "event": event.safe_dict()},
+                    total_score=100.0,
+                )
+                return (
+                    "BLOCKED",
+                    symbol_permission.detail,
+                    {
+                        "cycle_pk": cycle_pk,
+                        "parsed": event.safe_dict(),
+                    },
+                )
         filter_verdict, filter_data = self._external_filter_check(
             FilterContext(
                 symbol=symbol,
@@ -858,6 +899,7 @@ class JarvisRunner:
             tp=target,
             risk_multiplier=self.risk.risk_multiplier(state),
             spread_price=context.tick.spread,
+            enforce_minimum_rr=not gold_follow,
         )
         if not sizing.approved:
             cycle_pk = self._record_skip(
