@@ -109,13 +109,7 @@ class ConfluenceEngine:
             suffix = "; no modules validated for live" if mode.is_live and not allowed_live else ""
             return self._reject(ctx, signals, f"no weighted directional evidence{suffix}")
 
-        positive = sum(weight for signal, weight in weighted if signal.score > 0)
-        negative = sum(weight for signal, weight in weighted if signal.score < 0)
-        direction = Direction.LONG if positive > negative else Direction.SHORT
-        agreeing = [
-            (signal, weight) for signal, weight in weighted if signal.score * int(direction) > 0
-        ]
-        agreement = sum(weight for _, weight in agreeing) / sum(weight for _, weight in weighted)
+        direction, agreeing, agreement, conflict = self._resolve_direction(weighted)
         if len(agreeing) < self.config.minimum_directional_modules:
             return self._reject(ctx, signals, "too few independent directional modules")
         if agreement < self.config.minimum_agreement_ratio:
@@ -256,6 +250,12 @@ class ConfluenceEngine:
             reason=(
                 f"{len(agreeing)} modules agree ({agreement:.0%}); "
                 f"{horizon} plan on {planning_timeframe.value}; target {target_note}"
+                # The dissent travels with the trade rather than killing it.
+                # The reviewer is the right place to weigh "the hourly chart
+                # disagrees" — it has the whole payload and this engine does
+                # not — and hiding it would be asking for an opinion on half
+                # the evidence.
+                + (f"; {conflict}" if conflict else "")
             ),
             signals=signals,
             setup_family=setup_family,
@@ -441,6 +441,96 @@ class ConfluenceEngine:
                     f"limit {self.config.entry_timing_max_adverse_atr:.2f}"
                 )
         return None
+
+    @staticmethod
+    def _vote(pool: list[tuple[Signal, float]]) -> tuple[Direction, list[tuple[Signal, float]]]:
+        """Which way this set of modules points, and which of them say so."""
+        positive = sum(weight for signal, weight in pool if signal.score > 0)
+        negative = sum(weight for signal, weight in pool if signal.score < 0)
+        direction = Direction.LONG if positive > negative else Direction.SHORT
+        return direction, [
+            (signal, weight) for signal, weight in pool if signal.score * int(direction) > 0
+        ]
+
+    def _resolve_direction(
+        self, weighted: list[tuple[Signal, float]]
+    ) -> tuple[Direction, list[tuple[Signal, float]], float, str]:
+        """Pick a direction without making modules on different clocks argue.
+
+        THE BUG THIS REPLACES cost 3,894 refusals in one day and is the direct
+        cause of "why did it never take a short". The vote used to be a single
+        weight sum across every firing module. On a market trending up on H4/H1
+        while selling hard for the last two hours that produced:
+
+            trend_momentum     LONG   weight 1.0
+            drift_continuation SHORT  weight 0.7
+            -> direction LONG, agreement 1.0/1.7 = 58.8%, below the 60% floor
+            -> the whole setup discarded. No long, no short, nothing.
+
+        And had it scraped past 60% it would have taken the LONG, into the
+        selling, and died one gate later on "M15 price is moving against the
+        long" — which is why simply lowering the agreement floor gains nothing
+        and was not done.
+
+        THOSE TWO MODULES ARE NOT CONTRADICTING EACH OTHER. `trend_momentum`
+        reads 20/50 EMAs on H4 and H1 and answers "where is this going over
+        days". `drift_continuation` measures eight M15 bars and answers "where
+        is it going over the next two hours". A multi-day uptrend with an hour
+        of hard selling is not a paradox, it is a pullback — and a pullback is
+        a tradeable short with a two-hour horizon and a target twelve M15 bars
+        out. The engine was treating one question as two votes on another.
+
+        So the vote now runs inside each horizon group. When the groups agree,
+        the whole set carries the trade exactly as before, and the agreement
+        ratio is stronger for having been checked. When they disagree, the
+        intraday group wins and the swing modules are simply not part of that
+        trade — they were answering a different question and their dissent is
+        recorded in the reason rather than used as a veto.
+
+        WHY THE FAST SIDE WINS a disagreement, which is the one genuinely
+        contestable choice here: its evidence is measured rather than inferred
+        (a drift over eight bars, a separation in ATR, against an EMA
+        alignment), its stop is nearer so being wrong is cheaper, and its
+        horizon expires in hours rather than days so the slower thesis is still
+        intact afterwards. What it is NOT is a claim that fast evidence is
+        better. Taking the swing side instead would mean entering against a
+        move currently underway, which the entry-timing gate refuses anyway.
+
+        WHAT STILL STANDS between this and an order: the intraday profile's own
+        higher-timeframe veto still refuses a trade fighting BOTH H4 and D1,
+        the score threshold, entry timing on M5/M1, the target base rate, every
+        filter, the sizer, and Claude.
+        """
+        intraday_names = set(self.config.intraday_modules)
+        intraday = [pair for pair in weighted if pair[0].module in intraday_names]
+        swing = [pair for pair in weighted if pair[0].module not in intraday_names]
+
+        def scored(pool: list[tuple[Signal, float]]) -> tuple[Direction, list, float]:
+            direction, agreeing = self._vote(pool)
+            total = sum(weight for _, weight in pool)
+            return direction, agreeing, (sum(w for _, w in agreeing) / total if total else 0.0)
+
+        if not intraday or not swing:
+            direction, agreeing, agreement = scored(weighted)
+            return direction, agreeing, agreement, ""
+
+        fast_direction, _ = self._vote(intraday)
+        slow_direction, _ = self._vote(swing)
+        if fast_direction is slow_direction:
+            direction, agreeing, agreement = scored(weighted)
+            return direction, agreeing, agreement, ""
+
+        direction, agreeing, agreement = scored(intraday)
+        dissenting = ", ".join(sorted(signal.module for signal, _ in swing))
+        return (
+            direction,
+            agreeing,
+            agreement,
+            (
+                f"intraday {direction.name} taken over a {slow_direction.name} reading from "
+                f"{dissenting} on the slower charts; different horizons, not a contradiction"
+            ),
+        )
 
     def _classify_horizon(
         self,
