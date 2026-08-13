@@ -12,6 +12,7 @@ from analysis.entry_quality import (
 )
 from analysis.fast_ema_cross import FastEmaCross
 from analysis.impulse_break import ImpulseBreak
+from analysis.m1_micro_breakout import M1MicroBreakout
 from analysis.market_intelligence import (
     MarketObservation,
     OpportunityIntelligence,
@@ -35,6 +36,7 @@ __all__ = [
     "ImpulseBreak",
     "LevelReaction",
     "LiquiditySweep",
+    "M1MicroBreakout",
     "MarketObservation",
     "MarketRegime",
     "MarketStructure",

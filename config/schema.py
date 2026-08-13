@@ -1329,6 +1329,39 @@ class EmaPullbackResumeConfig(Base):
         return self
 
 
+class M1MicroBreakoutConfig(Base):
+    """A discrete closed-M1 range break aligned with M5 structure."""
+
+    enabled: bool = True
+    atr_period: int = Field(default=14, ge=2, le=200)
+    base_bars: int = Field(default=6, ge=3, le=30)
+    volume_lookback: int = Field(default=30, ge=10, le=200)
+    m5_fast_ema: int = Field(default=9, ge=2, le=100)
+    m5_slow_ema: int = Field(default=20, ge=3, le=200)
+    m5_slope_bars: int = Field(default=3, ge=1, le=20)
+    minimum_m5_separation_atr: float = Field(default=0.10, ge=0.0, le=5.0)
+    minimum_m5_slope_atr: float = Field(default=0.03, ge=0.0, le=5.0)
+    maximum_base_width_atr: float = Field(default=2.25, gt=0.0, le=10.0)
+    minimum_break_atr: float = Field(default=0.05, ge=0.0, le=2.0)
+    minimum_body_atr: float = Field(default=0.45, ge=0.0, le=5.0)
+    minimum_close_location: float = Field(default=0.70, ge=0.5, le=1.0)
+    minimum_volume_ratio: float = Field(default=1.20, ge=0.0, le=10.0)
+    stop_buffer_atr: float = Field(default=0.20, ge=0.0, le=2.0)
+    score: float = Field(default=62.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.48, ge=0.0, le=1.0)
+    body_confidence_scale: float = Field(default=0.12, ge=0.0, le=2.0)
+    volume_confidence_scale: float = Field(default=0.08, ge=0.0, le=2.0)
+    maximum_confidence: float = Field(default=0.82, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> M1MicroBreakoutConfig:
+        if self.m5_fast_ema >= self.m5_slow_ema:
+            raise ValueError("M1 breakout fast M5 EMA must be below slow M5 EMA")
+        if self.base_confidence > self.maximum_confidence:
+            raise ValueError("M1 breakout base confidence exceeds maximum")
+        return self
+
+
 class DriftContinuationConfig(Base):
     """Join a move that is already happening, in the direction it is going.
 
@@ -1745,10 +1778,11 @@ class ConfluenceConfig(Base):
         "fast_ema_cross",
         "impulse_break",
         "ema_pullback_resume",
+        "m1_micro_breakout",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
-    quick_modules: tuple[str, ...] = ("ema_pullback_resume",)
+    quick_modules: tuple[str, ...] = ("ema_pullback_resume", "m1_micro_breakout")
     require_target_base_rate: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
     #: counts up and down moves independently over the same windows, so it is
@@ -1939,6 +1973,7 @@ class ConfluenceConfig(Base):
             "level_reaction": 0.7,
             "volatility_regime": 0.0,
             "ema_pullback_resume": 0.55,
+            "m1_micro_breakout": 0.55,
         }
     )
 
@@ -1965,6 +2000,7 @@ class AnalysisConfig(Base):
     fast_ema_cross: FastEmaCrossConfig = FastEmaCrossConfig()
     impulse_break: ImpulseBreakConfig = ImpulseBreakConfig()
     ema_pullback_resume: EmaPullbackResumeConfig = EmaPullbackResumeConfig()
+    m1_micro_breakout: M1MicroBreakoutConfig = M1MicroBreakoutConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

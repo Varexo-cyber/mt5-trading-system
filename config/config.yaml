@@ -313,6 +313,30 @@ filters:
     timeframe: H1
 
 analysis:
+  # Standalone fast thesis: only a newly closed M1 range break, aligned with
+  # measured M5 structure and backed by body/volume quality, may speak. It does
+  # not trade every tick and never sees the forming candle.
+  m1_micro_breakout:
+    enabled: true
+    atr_period: 14
+    base_bars: 6
+    volume_lookback: 30
+    m5_fast_ema: 9
+    m5_slow_ema: 20
+    m5_slope_bars: 3
+    minimum_m5_separation_atr: 0.10
+    minimum_m5_slope_atr: 0.03
+    maximum_base_width_atr: 2.25
+    minimum_break_atr: 0.05
+    minimum_body_atr: 0.45
+    minimum_close_location: 0.70
+    minimum_volume_ratio: 1.20
+    stop_buffer_atr: 0.20
+    score: 62.0
+    base_confidence: 0.48
+    body_confidence_scale: 0.12
+    volume_confidence_scale: 0.08
+    maximum_confidence: 0.82
   # Context only: classifies closed H1/H4 bars for ranking and Claude. It has
   # zero directional weight and cannot create or veto an entry.
   market_regime:
@@ -450,6 +474,7 @@ analysis:
       # A repeatable M5 entry event after a pullback. Below the impulse module
       # because it observes a reclaim rather than an outright repricing.
       ema_pullback_resume: 0.55
+      m1_micro_breakout: 0.55
 
   # Direction and entry price are separate decisions. These ATR-normalised
   # limits stop the market-order path from buying the end of an impulse or

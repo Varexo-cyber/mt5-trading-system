@@ -39,6 +39,7 @@ from analysis import (
     ImpulseBreak,
     LevelReaction,
     LiquiditySweep,
+    M1MicroBreakout,
     MarketObservation,
     MarketRegime,
     MarketStructure,
@@ -350,6 +351,7 @@ class JarvisRunner:
                 FastEmaCross(self.settings.analysis.fast_ema_cross),
                 ImpulseBreak(self.settings.analysis.impulse_break),
                 EmaPullbackResume(self.settings.analysis.ema_pullback_resume),
+                M1MicroBreakout(self.settings.analysis.m1_micro_breakout),
             ],
             self.settings.analysis.confluence,
         )
@@ -428,6 +430,10 @@ class JarvisRunner:
         # Why new risk is refused, if it is. Empty means trading is permitted.
         self.blocked_reason = ""
         self.blocked_detail = ""
+        # Full-catalogue work is deliberately single-threaded because MT5's
+        # Python session is global and not thread-safe. This timestamp lets the
+        # scan yield to the one-second protection layer between broker reads.
+        self._last_guard_pulse = time.monotonic()
         # Recomputed every cycle; STEADY until the first one runs.
         self.posture: PostureAssessment = assess(consecutive_losses=0, equity=1.0, equity_peak=1.0)
 
@@ -586,6 +592,19 @@ class JarvisRunner:
                 # us there now rather than after the rest of the interval.
                 return
             self.guard_tick()
+
+    def _pulse_guard(self) -> bool:
+        """Run due position protection inside a long single-threaded scan."""
+
+        interval = self.settings.system.guard_interval_seconds
+        if interval <= 0:
+            return False
+        now = time.monotonic()
+        if now - self._last_guard_pulse < interval:
+            return False
+        self.guard_tick()
+        self._last_guard_pulse = time.monotonic()
+        return True
 
     def _market_is_manageable(self, symbol: str) -> bool:
         """Can an order or a stop change on this symbol reach the venue right now?
@@ -951,6 +970,7 @@ class JarvisRunner:
                 if deep_candidates is not None
                 else self.settings.scanner.deep_candidates
             ),
+            pulse=self._pulse_guard,
         )
         self.scan_activity.record_batch(batch, started_at, self.operation.value)
         self.cursor = batch.next_cursor
@@ -1027,6 +1047,11 @@ class JarvisRunner:
         # honest count of deep work done — not the number that survived it.
         deep = len(batch.candidates)
         for rank, candidate in enumerate(analysed, start=1):
+            if self._pulse_guard():
+                # The pulse may have banked or stopped a position. Never size
+                # or correlate a new order against the pre-pulse snapshot.
+                account = self.broker.account()
+                positions = self._managed_positions()
             try:
                 traded = self._process_candidate(
                     candidate, account, tuple(positions), rank=rank, of=len(analysed)
@@ -1084,6 +1109,7 @@ class JarvisRunner:
         self._cycle_observations = []
         self._cycle_contexts = {}
         for candidate in batch.candidates:
+            self._pulse_guard()
             try:
                 item = self._analyse_candidate(
                     candidate.symbol,

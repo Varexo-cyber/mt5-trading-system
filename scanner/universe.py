@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -108,7 +109,14 @@ class UniverseScanner:
             and (not names or item.name in names)
         ]
 
-    def scan(self, *, cursor: int = 0, batch_size: int | None = None, keep: int = 5) -> ScanBatch:
+    def scan(
+        self,
+        *,
+        cursor: int = 0,
+        batch_size: int | None = None,
+        keep: int = 5,
+        pulse: Callable[[], object] | None = None,
+    ) -> ScanBatch:
         universe = self.catalogue()
         if not universe:
             return ScanBatch((), (), 0, 0, 0, 0)
@@ -126,6 +134,11 @@ class UniverseScanner:
                 rejected += 1
             else:
                 candidates.append(candidate)
+            # MT5 owns one global, non-thread-safe session. Interleave position
+            # protection between catalogue reads instead of racing a second
+            # thread against the connector while money is open.
+            if pulse is not None:
+                pulse()
         candidates.sort(key=lambda item: (item.priority_tier, item.rank), reverse=True)
         shortlisted = {item.symbol for item in candidates[:keep]}
         inspections = [
