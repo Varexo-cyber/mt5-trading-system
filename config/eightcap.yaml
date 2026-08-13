@@ -228,16 +228,60 @@ analysis:
   # in plaats van alleen waar hij zit. Wat onaangeroerd blijft:
   # `max_single_bar_body_atr` (één explosieve bar is nog steeds een chase) en
   # `max_ema_distance_atr` (te ver van de EMA blijft te ver).
+  # TWEEDE RONDE, 13 augustus, op het live-log van een uur na de eerste.
+  # ENTRY_OVEREXTENDED bleef 65 keer per uur vuren — maar op een ANDERE
+  # sub-poort dan degene die ik hierboven had losgedraaid. Wat de weigeringen
+  # letterlijk zeiden:
+  #
+  #   XAUGBP  LONG  EMA distance 1.97 > 1.50 ATR
+  #   XAUJPY  LONG  EMA distance 2.17 > 1.50 ATR
+  #   XAUAUD  LONG  EMA distance 2.41 > 1.50 ATR
+  #   EURCHF  SHORT 3-bar move 2.57 > 1.75 ATR, last body 1.02 > 1.00 ATR
+  #   CADCHF  SHORT 3-bar move 1.87 > 1.75 ATR, last body 1.06 > 1.00 ATR
+  #   EURTRY  LONG  laatste M5-bar loopt 0.64 ATR tegen -> AWAITING_CONFIRMATION
+  #
+  # Die eerste drie zijn precies de klacht van de eigenaar: goud vloog omhoog
+  # en het systeem keek toe. Een markt die hard loopt IS ver van zijn EMA — dat
+  # is wat hard lopen betekent — dus een poort op 1,50 ATR weigert per definitie
+  # elke krachtige beweging en houdt alleen de trage over.
+  #
+  # WAT ER OVERBLIJFT als bescherming, en dat is geen niets: de setup heeft nog
+  # steeds een stop nodig die de sizer kan uitdrukken, een target dat deze markt
+  # aantoonbaar haalt, een spread die in de stop past, kosten onder 25% van het
+  # risico, genoeg margin, en Claude's veto. Wat weg is, is de aanname dat "ver
+  # gelopen" hetzelfde is als "te laat".
   entry_quality:
     directional_extreme_location: 0.95
+    # Hoe ver prijs van zijn EMA20 mag staan. Dit was de poort die goud sloeg.
+    max_ema_distance_atr:
+      forex: 2.25
+      crypto: 2.75
+      stock: 2.50
+      index: 2.50
+      metal: 2.75
+      commodity: 2.50
+      unknown: 2.00
+    # Eén explosieve bar blijft een chase, maar 1,00 ATR is de body van een
+    # volle candle zonder lont — dat is een normale krachtige bar, geen spike.
+    max_single_bar_body_atr:
+      forex: 1.50
+      crypto: 1.80
+      stock: 1.70
+      index: 1.70
+      metal: 1.70
+      commodity: 1.70
+      unknown: 1.40
+    # Een terugloop die nog beweegt is nog geen retest — maar 0,20 ATR is
+    # gewone ruis op een M5-bar, niet "de pullback loopt nog".
+    max_last_bar_adverse_atr: 0.70
     max_favourable_extension_atr:
-      forex: 1.75
-      crypto: 2.00
-      stock: 1.75
-      index: 1.85
-      metal: 1.85
-      commodity: 1.85
-      unknown: 1.50
+      forex: 2.75
+      crypto: 3.00
+      stock: 2.75
+      index: 2.85
+      metal: 3.00
+      commodity: 2.85
+      unknown: 2.25
 
   confluence:
     # Measured, not guessed: fed a textbook uptrend, every symbol came back

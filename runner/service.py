@@ -1958,7 +1958,9 @@ class JarvisRunner:
         if (
             reach is not None
             and self.settings.analysis.confluence.require_direction_advantage
-            and not reach.beats_the_other_side
+            and not reach.beats_the_other_side(
+                self.settings.analysis.confluence.direction_advantage_tolerance_pct
+            )
         ):
             self._record_skip(
                 cycle_id,

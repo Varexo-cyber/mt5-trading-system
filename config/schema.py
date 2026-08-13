@@ -1685,6 +1685,14 @@ class ConfluenceConfig(Base):
     #: down over the same horizon. The direction came from an EMA and the
     #: target from a multiplier, and nothing ever compared the two.
     require_direction_advantage: bool = True
+    #: Percentage points the other side must be better by before that counts as
+    #: a disadvantage. Zero — a bare `forward >= opposite` — refused ASX200 at
+    #: 47.4% against 49.0% and EURAUD at 35.3% against 35.8%, gaps of 0.63 and
+    #: 0.21 standard errors on the measurement itself. 127 refusals an hour on
+    #: live data, all of them reading an error bar and calling its sign
+    #: evidence. The measured standard error is used when it is larger than
+    #: this, so a thin sample cannot slip past on a fixed number.
+    direction_advantage_tolerance_pct: float = Field(default=5.0, ge=0.0, le=40.0)
     target_r_multiple: float = Field(default=2.0, ge=1.0, le=10.0)
     #: The target is also bounded by how far this instrument actually travels.
     #: `entry + 2R` is arithmetic and never asks whether the market goes there;

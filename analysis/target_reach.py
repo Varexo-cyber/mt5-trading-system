@@ -62,8 +62,37 @@ class ReachVerdict:
         return self.forward_pct >= self.required_pct
 
     @property
-    def beats_the_other_side(self) -> bool:
-        return self.forward_pct >= self.opposite_pct
+    def standard_error_pct(self) -> float:
+        """The noise on `forward_pct`, in percentage points.
+
+        A share measured over `windows` samples is not an exact number, and
+        this gate was being asked to resolve differences far smaller than its
+        own error bar. At 388 windows around 40% the standard error is about
+        2.5 points, so two readings less than that apart are the same reading.
+        """
+        if self.windows <= 0:
+            return 0.0
+        share = max(0.0, min(1.0, self.forward_pct / 100.0))
+        return 100.0 * float(np.sqrt(share * (1.0 - share) / self.windows))
+
+    def beats_the_other_side(self, tolerance_pct: float = 0.0) -> bool:
+        """Is the other direction better by more than measurement noise?
+
+        THE BUG THIS FIXES cost 127 refusals an hour on live data. The test was
+        a bare `forward >= opposite`, so it refused ASX200 at 47.4% against
+        49.0% and EURAUD at 35.3% against 35.8%. Those gaps are 0.63 and 0.21
+        standard errors — a fifth of the noise on the number itself. The gate
+        was not measuring a disadvantage, it was reading its own error bar and
+        calling the sign of it evidence.
+
+        What it exists for is real and survives: AUDSGD proposed LONG at 38.1%
+        up against 46.8% down is 8.7 points, well over three standard errors,
+        and is still refused. `tolerance_pct` is the floor under what counts as
+        a difference; the measured error bar is used when it is larger, so a
+        thin sample cannot sneak past on a fixed number.
+        """
+        margin = max(tolerance_pct, self.standard_error_pct)
+        return self.forward_pct >= self.opposite_pct - margin
 
     def describe(self) -> str:
         return (

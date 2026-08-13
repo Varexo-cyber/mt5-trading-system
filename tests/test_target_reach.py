@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analysis.target_reach import break_even_rate, measure
+from analysis.target_reach import ReachVerdict, break_even_rate, measure
 
 
 def frame(
@@ -74,6 +74,13 @@ class TestBreakEvenIsArithmeticNotOpinion:
         assert not verdict.clears_break_even
 
 
+#: The live tolerance, in percentage points. Every assertion below passes it
+#: rather than zero, because the bare `forward >= opposite` it replaced refused
+#: on gaps smaller than the error bar on its own measurement — see
+#: `TestNoiseIsNotADisadvantage`.
+TOLERANCE = 5.0
+
+
 class TestTheDirectionWasNeverComparedToTheOtherSide:
     """AUDSGD was proposed LONG on an instrument that falls that far more often
     than it rises that far. The direction came from an EMA and the target from
@@ -85,14 +92,14 @@ class TestTheDirectionWasNeverComparedToTheOtherSide:
         )
 
         assert verdict.opposite_pct > verdict.forward_pct
-        assert not verdict.beats_the_other_side
+        assert not verdict.beats_the_other_side(TOLERANCE)
 
     def test_the_same_market_shorted_keeps_it(self) -> None:
         verdict = measure(
             frame(drift=-0.00012), distance=0.0020, bars_ahead=24, long=False, reward_risk=2.0
         )
 
-        assert verdict.beats_the_other_side
+        assert verdict.beats_the_other_side(TOLERANCE)
 
     def test_the_two_tests_are_independent(self) -> None:
         """A target can clear break-even and still be the wrong way round,
@@ -102,7 +109,7 @@ class TestTheDirectionWasNeverComparedToTheOtherSide:
         verdict = measure(frame(seed=0), distance=0.0010, bars_ahead=24, long=True, reward_risk=2.0)
 
         assert verdict.clears_break_even
-        assert not verdict.beats_the_other_side
+        assert not verdict.beats_the_other_side(TOLERANCE)
 
 
 class TestItNeverRefusesOnIgnorance:
@@ -166,3 +173,59 @@ class TestItAgreesWithTheSlowVersionItReplaces:
         assert "% of the time" in text
         assert "the other way" in text
         assert "break even" in text
+
+
+class TestNoiseIsNotADisadvantage:
+    """The gate was reading its own error bar and calling the sign evidence.
+
+    Live, one hour, on the real account: ASX200 refused LONG at 47.4% against
+    49.0%, EURAUD at 35.3% against 35.8%. Over ~388 windows those gaps are 0.63
+    and 0.21 standard errors. TARGET_RARELY_REACHED fired 127 times in that
+    hour and a large share of it was this — differences a fifth the size of the
+    noise on the number being compared.
+    """
+
+    @staticmethod
+    def _verdict(forward: float, opposite: float, windows: int = 388) -> ReachVerdict:
+        return ReachVerdict(
+            windows=windows, forward_pct=forward, opposite_pct=opposite, required_pct=33.3
+        )
+
+    def test_the_asx200_refusal_would_no_longer_happen(self) -> None:
+        assert self._verdict(47.4, 49.0).beats_the_other_side(TOLERANCE)
+
+    def test_the_euraud_refusal_would_no_longer_happen(self) -> None:
+        assert self._verdict(35.3, 35.8).beats_the_other_side(TOLERANCE)
+
+    def test_a_real_disadvantage_is_still_refused(self) -> None:
+        """AUDSGD: 38.1% up against 46.8% down. 8.7 points, over three standard
+        errors, and exactly what this gate was built for."""
+        assert not self._verdict(38.1, 46.8).beats_the_other_side(TOLERANCE)
+
+    def test_the_error_bar_wins_when_it_is_larger(self) -> None:
+        """A fixed tolerance is a floor, not a ceiling. On a thin sample the
+        measured error is bigger than five points and a gap inside it must not
+        slip through on the strength of a hardcoded number."""
+        thin = self._verdict(40.0, 47.0, windows=25)
+
+        # Seven points apart, which the fixed tolerance alone would refuse...
+        assert thin.opposite_pct - thin.forward_pct > TOLERANCE
+        # ...but on 25 windows the error bar is nearly ten, so it is not a gap.
+        assert thin.standard_error_pct > 7.0
+        assert thin.beats_the_other_side(TOLERANCE)
+
+    def test_a_deep_sample_holds_the_line_at_the_tolerance(self) -> None:
+        """And with enough history the error bar shrinks below the tolerance,
+        so the tolerance is what binds — a deliberate 5-point dead zone rather
+        than an accident of sample size."""
+        deep = self._verdict(40.0, 52.0, windows=10_000)
+
+        assert deep.standard_error_pct < 5.0
+        assert not deep.beats_the_other_side(TOLERANCE)
+
+    def test_zero_tolerance_restores_the_old_behaviour_but_for_the_error_bar(self) -> None:
+        """Switching the tolerance off does not switch the statistics off. A
+        gap inside the measurement's own noise is still not a disadvantage,
+        whatever the config says."""
+        assert self._verdict(47.4, 49.0).beats_the_other_side(0.0)
+        assert not self._verdict(38.1, 46.8).beats_the_other_side(0.0)
