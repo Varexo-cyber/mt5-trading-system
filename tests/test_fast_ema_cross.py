@@ -155,12 +155,51 @@ class TestItNeverGuesses:
 
 
 class TestTheEngineTreatsItAsWhatItIs:
-    def test_it_is_registered_as_a_trend_continuation_module(self) -> None:
-        """A fast cross is at its very worst in a range, which is the one
-        condition the confluence engine can refuse outright."""
+    def test_it_is_deliberately_not_a_trend_continuation_module(self) -> None:
+        """The range veto is for premises, and this module has a measurement.
+
+        `trend_momentum` INFERS a trend from EMA alignment on H4 and H1, and a
+        measured range genuinely contradicts that inference. This module
+        measures a separation in ATR on M5 over the last three bars. An H1
+        range says nothing about whether those three bars separated, and a fast
+        cross inside a wider range is the ordinary way an intraday move starts.
+
+        What keeps it out of chop is its own separation floor, tested above.
+        """
         from config.schema import ConfluenceConfig
 
-        assert "fast_ema_cross" in ConfluenceConfig().trend_continuation_modules
+        assert ConfluenceConfig().trend_continuation_modules == ("trend_momentum",)
+
+    def test_a_clean_cross_can_clear_the_threshold_on_its_own(self) -> None:
+        """The arithmetic that kept every quick entry off the book.
+
+        A lone module's confluence score is `raw score x confidence` — the
+        weight cancels out, because the denominator runs over the same firing
+        modules. At 50 points across a 0.45-0.80 confidence band this module
+        produces 22.5 to 40, so a threshold of 35 silently demanded 0.50 ATR of
+        separation while the module's own floor is 0.15. Everything in between
+        fired and was discarded as "confluence score below threshold" — 5,992
+        times in a single day, and not one quick entry ever reached the book.
+
+        The threshold has to sit below what a clean cross actually scores, or
+        this module is decoration.
+        """
+        from pathlib import Path
+
+        from config.loader import load_settings
+
+        # The live overlay, not the schema default: this module only runs on
+        # the Eightcap account and the threshold that governs it lives there.
+        live = load_settings(
+            overlay=Path(__file__).resolve().parent.parent / "config" / "eightcap.yaml",
+            env_overrides=False,
+        ).analysis
+        module = live.fast_ema_cross
+        # A cross separated by 0.40 ATR: well clear of the module's own 0.15
+        # floor, and nothing anyone would call remarkable.
+        clean = module.base_confidence + 0.40 * module.separation_confidence_scale
+
+        assert module.score * clean > live.confluence.score_threshold
 
     def test_it_is_registered_as_an_intraday_module(self) -> None:
         """Without this a five-minute signal is handed a swing plan: H1

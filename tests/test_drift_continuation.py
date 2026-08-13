@@ -149,12 +149,33 @@ class TestItNeverGuesses:
         assert analyse(steady(-0.0006), enabled=False).score == 0
 
 
-class TestTheRangeGateCoversIt:
-    def test_it_is_registered_as_a_trend_continuation_module(self) -> None:
-        """Without this it would fire freely in a measured range, which is
-        exactly the failure the consistency floor only partly covers. The
-        confluence engine refuses continuation modules when the regime
-        classifier says range, and it looks the name up in this tuple."""
+class TestTheRangeGateDoesNotCoverIt:
+    def test_it_is_deliberately_not_a_trend_continuation_module(self) -> None:
+        """It was, for exactly one day, and that day was measured.
+
+        The range veto refused it 3,813 times in 24 hours. Over the same period
+        the engine proposed a long 10,453 times into a falling market and
+        refused every one of them for the reason that price was falling — while
+        this, the only module on the account that can find a short in that
+        market, was being vetoed here.
+
+        The classification was wrong rather than merely expensive.
+        `trend_momentum` INFERS a trend from 20/50 EMA alignment on H4 and H1,
+        and a measured range genuinely contradicts that inference. This module
+        MEASURES the move itself, over its own eight M15 bars, and requires 65%
+        of them to agree. An H1 range does not contradict that — it answers a
+        different question about a longer window, and an hour of one-way travel
+        inside a daily range is the ordinary shape of an intraday move.
+        """
         from config.schema import ConfluenceConfig
 
-        assert "drift_continuation" in ConfluenceConfig().trend_continuation_modules
+        assert ConfluenceConfig().trend_continuation_modules == ("trend_momentum",)
+
+    def test_its_own_floors_are_what_keep_it_out_of_chop(self) -> None:
+        """Which is what makes removing the veto survivable: the consistency
+        floor rejects a market that ended up somewhere else by wandering, and
+        distance alone was never the claim."""
+        from config.schema import DriftContinuationConfig
+
+        assert DriftContinuationConfig().minimum_consistency >= 0.6
+        assert DriftContinuationConfig().minimum_drift_atr >= 1.0

@@ -1445,17 +1445,35 @@ class EntryQualityConfig(Base):
     timeframe: str = "M5"
     extension_bars: int = Field(default=3, ge=1, le=20)
     range_lookback_bars: int = Field(default=12, ge=4, le=100)
-    directional_extreme_location: float = Field(default=0.88, ge=0.5, le=1.0)
+    #: How far up its own recent range a long may be entered. 0.88 refused any
+    #: entry in the top 12% of the last twelve M5 bars.
+    #:
+    #: 0.95, and the owner's complaint names this gate exactly: gold went up
+    #: like a rocket and nothing was taken. A market breaking out IS at the top
+    #: of its recent range — that is what a breakout is — so a gate reading
+    #: "near the high" as "too late" refuses every impulse it is shown and
+    #: keeps only the quiet ones. `scorecard.py` priced it: ENTRY_OVEREXTENDED
+    #: blocked 3 setups, 2 of them winners, and cost 3.00R.
+    #:
+    #: The chase protection that remains is the one measured in ATR rather than
+    #: in percentile — `max_favourable_extension_atr` below — which asks how far
+    #: price has actually run rather than merely where it sits.
+    directional_extreme_location: float = Field(default=0.95, ge=0.5, le=1.0)
     ema_period: int = Field(default=20, ge=3, le=200)
+    #: How far price may have already travelled the right way, in ATR, before
+    #: the entry counts as a chase. Raised alongside the percentile above: with
+    #: that gate loosened this is the one still doing the work, and 1.25 ATR on
+    #: FX was cutting into ordinary impulse moves. The absolute protection —
+    #: a single bar's body, and distance from the EMA — is unchanged below.
     max_favourable_extension_atr: dict[str, float] = Field(
         default_factory=lambda: {
-            "forex": 1.25,
-            "crypto": 1.50,
-            "stock": 1.25,
-            "index": 1.35,
-            "metal": 1.35,
-            "commodity": 1.35,
-            "unknown": 1.00,
+            "forex": 1.75,
+            "crypto": 2.00,
+            "stock": 1.75,
+            "index": 1.85,
+            "metal": 1.85,
+            "commodity": 1.85,
+            "unknown": 1.50,
         }
     )
     max_single_bar_body_atr: dict[str, float] = Field(
@@ -1596,11 +1614,27 @@ class ConfluenceConfig(Base):
     #: Which modules assert that a trend is continuing, and therefore have
     #: their premise contradicted by a measured range. Named rather than
     #: inferred, so a new module has to be classified deliberately.
-    trend_continuation_modules: tuple[str, ...] = (
-        "trend_momentum",
-        "drift_continuation",
-        "fast_ema_cross",
-    )
+    #:
+    #: `drift_continuation` and `fast_ema_cross` were in this list for one day
+    #: and it cost 6,726 refusals in 24 hours — 3,813 of them the drift module,
+    #: which is the only module on this account that can find a short in a
+    #: falling market. Over the same period the engine proposed a long 10,453
+    #: times and refused each one for the reason that price was moving against
+    #: it, while the module that would have said "sell" was being vetoed here.
+    #:
+    #: The classification was wrong. `trend_momentum` INFERS a trend from 20/50
+    #: EMA alignment on H4 and H1 — an inference, and one a measured range
+    #: genuinely contradicts. `drift_continuation` MEASURES the move itself over
+    #: its own eight M15 bars and requires 65% of them to agree;
+    #: `fast_ema_cross` measures a separation in ATR on M5. A range on H1 or H4
+    #: contradicts neither: it is a different question about a longer window,
+    #: and an hour of clean one-way travel inside a daily range is the ordinary
+    #: shape of an intraday move rather than a paradox.
+    #:
+    #: What still keeps them out of chop is their own evidence — the drift
+    #: module's consistency floor, the cross module's separation floor — and
+    #: `entry_quality` downstream.
+    trend_continuation_modules: tuple[str, ...] = ("trend_momentum",)
     #: Modules whose evidence lives on a fast chart. When nothing but these
     #: fired, the plan is an intraday one.
     #:
@@ -1746,12 +1780,24 @@ class ConfluenceConfig(Base):
     #: How far price may travel against the entry over those bars before the
     #: trade waits, in ATR of that timeframe.
     #:
-    #: Measured in ATR so it means the same on gold as on EURGBP, and set at
-    #: half a bar because that is the point where "noise around the level"
-    #: becomes "the level is not holding". Below about 0.3 ordinary wobble
-    #: blocks everything; above 1.0 a full bar can run against the trade and
-    #: still be waved through, which is the situation this exists to catch.
-    confirmation_max_adverse_atr: float = Field(default=0.5, gt=0.0, le=3.0)
+    #: Measured in ATR so it means the same on gold as on EURGBP.
+    #:
+    #: 1.0, up from 0.5, and this is the one loosening on the board with a
+    #: price tag already attached to it. `scorecard.py` measures what each gate
+    #: blocked and what those setups went on to do: AWAITING_CONFIRMATION
+    #: blocked 11 setups, 6 of them winners, and cost 5.20R — the most
+    #: expensive gate in the table by a factor of nearly two.
+    #:
+    #: Half a bar was too tight. On this account the ordinary wobble around an
+    #: entry is most of half an ATR, so the gate was firing on noise and calling
+    #: it a failing level. At 1.0 a full adverse bar still waves through, which
+    #: is exactly the situation this exists to catch — the GBPJPY short sent
+    #: into a resistance break was around 1.4 ATR — so the protection that
+    #: motivated it survives while the false positives do not.
+    #:
+    #: Re-read the same scorecard row in a few days. If the blocked-and-won
+    #: count stops climbing, this was right; if the losers climb instead, 0.75.
+    confirmation_max_adverse_atr: float = Field(default=1.0, gt=0.0, le=3.0)
 
     weights: dict[str, float] = Field(
         default_factory=lambda: {

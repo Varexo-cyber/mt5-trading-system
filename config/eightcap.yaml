@@ -211,6 +211,34 @@ scanner:
   after_cost_priority_weight: 12.0
 
 analysis:
+  # De poort die de eigenaar bij naam noemde: "XAUUSD flipte omhoog als een
+  # rocket en hij greep niet in".
+  #
+  # Dat was deze. `directional_extreme_location: 0.88` weigerde elke entry in de
+  # bovenste 12% van de laatste twaalf M5-bars. Maar een markt die uitbreekt
+  # ZIT bij de top van zijn recente range — dat is wat uitbreken is. Een poort
+  # die "vlakbij de high" leest als "te laat" weigert dus elke impuls die hij
+  # ooit te zien krijgt en houdt alleen de suffe over.
+  #
+  # `scorecard.py` heeft er een prijs op gezet: ENTRY_OVEREXTENDED blokkeerde 3
+  # setups, 2 daarvan wonnen, en het kostte 3,00R.
+  #
+  # Naar 0,95, en `max_favourable_extension_atr` mee omhoog omdat dát nu de
+  # poort is die het werk doet — die vraagt hoe ver prijs werkelijk gelopen is
+  # in plaats van alleen waar hij zit. Wat onaangeroerd blijft:
+  # `max_single_bar_body_atr` (één explosieve bar is nog steeds een chase) en
+  # `max_ema_distance_atr` (te ver van de EMA blijft te ver).
+  entry_quality:
+    directional_extreme_location: 0.95
+    max_favourable_extension_atr:
+      forex: 1.75
+      crypto: 2.00
+      stock: 1.75
+      index: 1.85
+      metal: 1.85
+      commodity: 1.85
+      unknown: 1.50
+
   confluence:
     # Measured, not guessed: fed a textbook uptrend, every symbol came back
     # NO_SIGNAL — "too few independent directional modules". Three modules carry
@@ -281,7 +309,32 @@ analysis:
     #
     # Alles erachter staat onveranderd: de filters, de entry-timing, de sizer,
     # de margin-check en Claude's veto draaien alle vijf nog steeds.
-    score_threshold: 35.0
+    # 13 augustus, van 35 naar 28. Gemeten, niet gegokt.
+    #
+    # `why_no_trades.py --hours 24` over 87.104 beslissingen: 8.339 setups
+    # scoorden boven nul, 2.495 haalden de 35, en 4.474 kwamen binnen vijf
+    # punten en werden geweigerd. Bijna twee keer zoveel setups sneuvelden net
+    # onder de lat als eroverheen kwamen.
+    #
+    # WAT DIT REPAREERT dat de eigenaar letterlijk vroeg: de score van een
+    # module die alleen vuurt is `ruwe score x confidence` — het gewicht valt
+    # weg omdat de noemer over dezelfde vuurdende modules loopt. Voor
+    # `fast_ema_cross` is dat 50 x 0,45..0,80 = 22,5 tot 40. Op 35 moest een
+    # M5-cross dus 0,50 ATR separatie hebben terwijl zijn eigen ondergrens
+    # 0,15 is: alles daartussen vuurde wel en werd geruisloos weggegooid in de
+    # bak "confluence score below threshold" (5.992 keer in 24 uur). De quick
+    # entries die gisteren gebouwd zijn konden op 35 nooit alleen handelen.
+    # Op 28 heeft dezelfde cross 0,22 ATR nodig, net boven zijn eigen vloer.
+    #
+    # `drift_continuation` idem: 55 x confidence, en die haalt de 28 zodra hij
+    # überhaupt vuurt.
+    #
+    # DIT IS DE GEVAARLIJKSTE KNOP OP HET BORD. Onder 30 heeft niemand ooit
+    # gemeten of de score iets scheidt. `scorecard.py` heeft de sectie "what
+    # the raw score was" met banden van vijf punten; over twee dagen is af te
+    # lezen of de band 28-35 slechter presteert dan 35-40. Zo ja, dan gaat hij
+    # terug en is dat een meting.
+    score_threshold: 28.0
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
@@ -401,7 +454,16 @@ ai:
   # a 0.65 bar, so even the setups it judged sound were flipped. 0.55 is the
   # level the prompt now defines as "I would not take this", which is the only
   # number this threshold should mean.
-  minimum_confidence: 0.55
+  #
+  # 13 augustus, 0,55 -> 0,45, en dat is exact hetzelfde probleem als hierboven
+  # een niveau lager. `review_value.py` over 27 reviews: 3 goedgekeurd, 18
+  # geweigerd, en **3 "endorsed but under the confidence threshold"** — Claude
+  # zei ja en het werd weggegooid. Dat is een kwart van alle ja's.
+  #
+  # De gemeten spreiding van deze reviewer op dit account is 0,25 tot 0,72 over
+  # vier banden. Op die schaal is 0,55 geen "ik zou dit niet nemen", het zit in
+  # de bovenste helft van alles wat hij ooit heeft geantwoord.
+  minimum_confidence: 0.45
   timeout_seconds: 60
   fail_closed: true
   # Independent cross-market opinion. It is intentionally not another gate:
@@ -617,21 +679,27 @@ risk:
   # config/schema.py ConvictionRiskConfig voor waarom het op ZIJN vertrouwen
   # rijdt en niet op de conviction-score van de engine.
   #
-  # 0.70 en lager -> 2,0%   (de gewone inzet, precies wat het hiervoor was)
-  # 0.75          -> 3,0%
-  # 0.80          -> 4,0%
-  # 0.85          -> 5,0%
-  # 0.90 en hoger -> 6,0%
+  # 0.50 en lager -> 2,0%   (de gewone inzet, precies wat het hiervoor was)
+  # 0.55          -> 3,0%
+  # 0.60          -> 4,0%
+  # 0.65          -> 5,0%
+  # 0.70 en hoger -> 6,0%
   #
-  # De drempel ligt bewust ver boven `ai.minimum_confidence` (0,55): een
-  # goedkeuring die net over de lat komt is geen overtuigende setup, het is een
-  # toegestane.
+  # HERIJKT OP 13 AUGUSTUS, en dit is een fout van mij die de meting meteen
+  # blootlegde. De ladder liep van 0,70 tot 0,90. `review_value.py` meet dat
+  # deze reviewer op dit account tussen 0,25 en 0,72 antwoordt, over vier
+  # banden. De hele ladder lag dus bóven zijn bereik: elke goedkeuring zou de
+  # vloer van 2% hebben gekregen en de functie had nooit één keer gevuurd.
+  #
+  # 0,70 is nu het plafond omdat dat het hoogste is wat hij ooit geantwoord
+  # heeft, niet omdat het een mooi rond getal is. Herzien zodra er dertig
+  # reviews meer zijn en de spreiding verschoven blijkt.
   conviction_risk:
     enabled: true
     floor_pct: 2.0
     ceiling_pct: 6.0
-    confidence_floor: 0.70
-    confidence_ceiling: 0.90
+    confidence_floor: 0.50
+    confidence_ceiling: 0.70
 
   # Een positie waarvan de beurs dicht is bezet geen slot meer.
   #
