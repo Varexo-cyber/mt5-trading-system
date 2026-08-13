@@ -63,6 +63,13 @@ class TestShippedConfig:
         assert settings.analysis.playbooks.enabled
         assert not settings.analysis.playbooks.live_execution_enabled
 
+    def test_eightcap_overlay_temporarily_disables_the_rio_bridge(self) -> None:
+        overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"
+        settings = load_settings(overlay=overlay, env_overrides=False)
+
+        assert not settings.external_signals.enabled
+        assert not settings.external_signals.gold_follow_enabled
+
     def test_micro_live_whitelist_is_majors_only(self, raw: dict[str, Any]) -> None:
         assert set(raw["instruments"]["whitelist"]["micro_live"]) == {
             "EURUSD",

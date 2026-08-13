@@ -216,13 +216,12 @@ scanner:
   # kan niets goedkeuren wat een poort geweigerd heeft. 0.0 zet het uit.
   after_cost_priority_weight: 12.0
 
-# Rio Traders phone bridge. A missing RIO_SIGNAL_TOKEN leaves this receiver
-# visibly unavailable without stopping the normal Jarvis scanner. Run
-# setup_rio_bridge.cmd once on the VPS, then publish 127.0.0.1:8765 through an
-# authenticated HTTPS tunnel. Every received entry still passes the account,
-# symbol, session, calendar, spread, sizing, margin and hard-stop gates.
+# Rio Traders phone bridge is temporarily disabled while the owner evaluates a
+# separate cloud copy-trader. Keep the settings so this remains a one-line,
+# reversible switch; with `enabled: false` Jarvis neither opens the receiver nor
+# reads, executes or manages any incoming Rio notification.
 external_signals:
-  enabled: true
+  enabled: false
   source: rio
   listen_host: 127.0.0.1
   listen_port: 8765
@@ -235,7 +234,7 @@ external_signals:
   # Rio is the directional authority for Gold only. Jarvis supplies missing
   # protection from closed M5 structure/ATR, but the broker, calendar, spread,
   # margin, hard STOP and capital floor remain non-negotiable execution facts.
-  gold_follow_enabled: true
+  gold_follow_enabled: false
   gold_follow_aliases: [GOLD, XAUUSD]
   gold_follow_timeframe: M5
   gold_follow_structure_bars: 24
