@@ -231,6 +231,20 @@ def test_scanner_scans_and_ranks_full_available_catalogue_by_default() -> None:
     market.shutdown()
 
 
+def test_scanner_yields_to_position_protection_between_symbols() -> None:
+    fake = FakeMT5()
+    market = connector(fake)
+    market.connect()
+    scanner = UniverseScanner(market, load_settings())
+    pulses: list[int] = []
+
+    batch = scanner.scan(cursor=0, keep=2, pulse=lambda: pulses.append(1))
+
+    assert batch.inspected == 2
+    assert len(pulses) == batch.inspected
+    market.shutdown()
+
+
 def test_scanner_queues_core_then_preferred_then_catalogue_fallback() -> None:
     moment = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     fake = FakeMT5(
