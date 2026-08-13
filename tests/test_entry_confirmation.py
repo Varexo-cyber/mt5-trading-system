@@ -68,7 +68,12 @@ def context(drift_per_bar: float, bars: int = 80) -> MarketContext:
     )
 
 
-def idea(direction: Direction) -> TradeIdea:
+def idea(
+    direction: Direction,
+    *,
+    horizon: str = "swing",
+    setup_family: str = "test_swing",
+) -> TradeIdea:
     entry = 1.08500
     sign = int(direction)
     return TradeIdea(
@@ -82,6 +87,8 @@ def idea(direction: Direction) -> TradeIdea:
         take_profit=entry + 0.0024 * sign,
         reason="test",
         signals=(),
+        horizon=horizon,
+        setup_family=setup_family,
     )
 
 
@@ -108,6 +115,21 @@ class TestTheLiveCase:
 
 
 class TestItIsNotAWall:
+    def test_a_closed_quick_trigger_is_not_asked_the_same_m5_question_twice(self) -> None:
+        """The quick module already defines the closed-bar confirmation event."""
+        rising = context(drift_per_bar=STEP * 0.4)
+        quick_short = idea(
+            Direction.SHORT,
+            horizon="quick",
+            setup_family="m1_micro_breakout_m1",
+        )
+
+        assert runner()._entry_is_confirmed(rising, quick_short) == (True, None)
+
+    def test_the_same_move_still_blocks_a_swing_short(self) -> None:
+        rising = context(drift_per_bar=STEP * 0.4)
+        assert not runner()._entry_is_confirmed(rising, idea(Direction.SHORT))[0]
+
     def test_ordinary_wobble_does_not_block(self) -> None:
         """A tenth of a bar per bar is noise, not the level failing."""
         drifting = context(drift_per_bar=STEP * 0.05)

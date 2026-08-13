@@ -1634,6 +1634,11 @@ class EntryQualityConfig(Base):
     #: that review; it never becomes permission to chase the new price.
     max_review_price_drift_atr: float = Field(default=0.25, gt=0.0, le=2.0)
     max_review_latency_seconds: float = Field(default=45.0, gt=1.0, le=300.0)
+    #: A breakout is expected to sit farther from its short EMA than a swing
+    #: entry. This multiplier only relaxes the three chase thresholds for a
+    #: `quick` idea; the adverse-last-bar check and post-review drift binding
+    #: remain unchanged.
+    quick_extension_multiplier: float = Field(default=1.25, ge=1.0, le=3.0)
 
     @field_validator("timeframe")
     @classmethod
@@ -1783,6 +1788,28 @@ class ConfluenceConfig(Base):
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
     quick_modules: tuple[str, ...] = ("ema_pullback_resume", "m1_micro_breakout")
+    #: These quick modules already prove immediate direction inside their own
+    #: closed-bar definition. Repeating the generic M5 adverse-drift gate would
+    #: ask the same question twice. Fresh-price and chase checks still run.
+    quick_embedded_confirmation_modules: tuple[str, ...] = (
+        "ema_pullback_resume",
+        "m1_micro_breakout",
+    )
+    #: Unconditional travel frequency is not the win rate conditional on a
+    #: specific M1/M5 event. For quick plans it is evidence sent to Claude;
+    #: swing and intraday plans keep the hard arithmetic gate.
+    quick_statistical_gates_are_advisory: bool = True
+    #: Even a quick event cannot rescue a decorative target. The unconditional
+    #: reach rate may be treated as context only when it is at least this share
+    #: of the plan's arithmetic break-even requirement.
+    quick_reach_hard_floor_ratio: float = Field(default=0.50, ge=0.0, le=1.0)
+    #: A small unconditional disadvantage can be timing noise for an M1/M5
+    #: event; a very large one remains a hard contradiction.
+    quick_direction_disadvantage_hard_gap_pct: float = Field(default=20.0, ge=0.0, le=100.0)
+    #: A new closed quick event is a new question. The exact in-process review
+    #: key still reuses the verdict for the same bar and shape, but broad
+    #: symbol/direction veto patterns may not silence a later breakout.
+    quick_events_bypass_broad_veto_memory: bool = True
     require_target_base_rate: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
     #: counts up and down moves independently over the same windows, so it is

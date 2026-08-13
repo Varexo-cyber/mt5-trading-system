@@ -1713,7 +1713,7 @@ class JarvisRunner:
         # Claude declined is not going to be talked into by a fresh margin
         # calculation, and re-running it only produces another identical row in
         # the dashboard's AI ledger.
-        remembered = self._remembered_veto(idea)
+        remembered = self._remembered_veto(idea) if self._broad_veto_memory_applies(idea) else None
         if remembered is not None:
             self._record_skip(
                 cycle_id,
@@ -1861,12 +1861,7 @@ class JarvisRunner:
             )
             return False
 
-        entry_quality = assess_entry_quality(
-            context,
-            idea.direction,
-            spec.asset_class,
-            self.settings.analysis.entry_quality,
-        )
+        entry_quality = self._assess_entry_quality(context, idea, spec.asset_class)
         # Recorded on the same row as the refusal, and that is the whole point.
         # `momentum_scalp` asks for a shallow pullback off a fresh impulse;
         # `entry_quality` refuses a price sitting at its range extreme. Those
@@ -1973,18 +1968,31 @@ class JarvisRunner:
         # AUDUSD at "37.0% up against 37.5% down, essentially a coin flip", and
         # AUDSGD proposed LONG at 38.1% up against 46.8% DOWN.
         reach = self._target_reach(context, idea)
+        horizon_advisories: list[dict[str, object]] = []
         if reach is not None and not reach.clears_break_even:
-            self._record_skip(
-                cycle_id,
-                symbol,
-                account.equity,
-                Reason.TARGET_RARELY_REACHED,
-                reach.describe(),
-                signals=list(idea.signals),
-                extra={**filter_data, "target_reach_pct": reach.forward_pct},
-                total_score=idea.score,
-            )
-            return False
+            if self._reach_failure_is_advisory(idea, reach):
+                horizon_advisories.append(
+                    {
+                        "type": "unconditional_target_reach_below_break_even",
+                        "hard_gate": False,
+                        "detail": reach.describe(),
+                        "forward_pct": reach.forward_pct,
+                        "required_pct": reach.required_pct,
+                        "windows": reach.windows,
+                    }
+                )
+            else:
+                self._record_skip(
+                    cycle_id,
+                    symbol,
+                    account.equity,
+                    Reason.TARGET_RARELY_REACHED,
+                    reach.describe(),
+                    signals=list(idea.signals),
+                    extra={**filter_data, "target_reach_pct": reach.forward_pct},
+                    total_score=idea.score,
+                )
+                return False
         if (
             reach is not None
             and self.settings.analysis.confluence.require_direction_advantage
@@ -1992,19 +2000,34 @@ class JarvisRunner:
                 self.settings.analysis.confluence.direction_advantage_tolerance_pct
             )
         ):
-            self._record_skip(
-                cycle_id,
-                symbol,
-                account.equity,
-                Reason.TARGET_RARELY_REACHED,
+            direction_detail = (
                 f"{idea.direction.name} target reached {reach.forward_pct:.1f}% of the time "
                 f"against {reach.opposite_pct:.1f}% the other way; this market covers that "
-                f"distance more readily against the proposal than for it",
-                signals=list(idea.signals),
-                extra={**filter_data, "target_reach_pct": reach.forward_pct},
-                total_score=idea.score,
+                f"distance more readily against the proposal than for it"
             )
-            return False
+            if self._direction_failure_is_advisory(idea, reach):
+                horizon_advisories.append(
+                    {
+                        "type": "unconditional_direction_disadvantage",
+                        "hard_gate": False,
+                        "detail": direction_detail,
+                        "forward_pct": reach.forward_pct,
+                        "opposite_pct": reach.opposite_pct,
+                        "windows": reach.windows,
+                    }
+                )
+            else:
+                self._record_skip(
+                    cycle_id,
+                    symbol,
+                    account.equity,
+                    Reason.TARGET_RARELY_REACHED,
+                    direction_detail,
+                    signals=list(idea.signals),
+                    extra={**filter_data, "target_reach_pct": reach.forward_pct},
+                    total_score=idea.score,
+                )
+                return False
 
         entry_risk_multiplier = self.risk.risk_multiplier(state)
         if is_addon:
@@ -2112,6 +2135,7 @@ class JarvisRunner:
                 candidate.intelligence.safe_dict() if candidate.intelligence is not None else {}
             ),
             "entry_quality": entry_quality.safe_dict(),
+            "horizon_advisories": horizon_advisories,
         }
         # What the reviewer cannot see from one chart: where this setup placed
         # among everything analysed this cycle, and how the account is carrying
@@ -2140,13 +2164,11 @@ class JarvisRunner:
                 "setup_family": idea.setup_family,
                 "planning_timeframe": idea.planning_timeframe,
                 "expected_minutes": idea.expected_horizon_minutes,
-                "instruction": (
-                    "Judge this trade against its stated horizon. A D1/W1 trend is decisive "
-                    "for a swing but context, not an automatic veto, for a short intraday "
-                    "plan unless the nearer structure also opposes it."
-                ),
+                "instruction": self._horizon_review_instruction(idea),
             },
         }
+        if horizon_advisories:
+            briefing["advisory_evidence"] = horizon_advisories
         if candidate.intelligence is not None:
             briefing["market_intelligence"] = candidate.intelligence.safe_dict()
         # Do we already know what the reviewer is going to say, and why?
@@ -2160,7 +2182,7 @@ class JarvisRunner:
         # already run, and an approval on this pair wipes the pattern outright.
         pattern = (
             self.veto_patterns.established(symbol, idea.direction.name, self.clock.now())
-            if self.operation is not OperationMode.MONITOR
+            if self.operation is not OperationMode.MONITOR and self._broad_veto_memory_applies(idea)
             else None
         )
         if pattern is not None and self._cached_review(idea, context) is None:
@@ -3312,12 +3334,7 @@ class JarvisRunner:
                 f"{original.direction.name} after AI review; re-check next cycle",
                 binding,
             )
-        timing = assess_entry_quality(
-            fresh_context,
-            original.direction,
-            spec.asset_class,
-            self.settings.analysis.entry_quality,
-        )
+        timing = self._assess_entry_quality(fresh_context, fresh_idea, spec.asset_class)
         binding["entry_quality"] = timing.safe_dict()
         if not timing.passed:
             if timing.decision is EntryTimingDecision.DATA_UNAVAILABLE:
@@ -3444,6 +3461,88 @@ class JarvisRunner:
             binding,
         )
 
+    def _idea_has_embedded_confirmation(self, idea: TradeIdea) -> bool:
+        """Whether the quick setup already proved its own closed-bar trigger."""
+        config = self.settings.analysis.confluence
+        return idea.horizon == "quick" and any(
+            idea.setup_family.startswith(module)
+            for module in config.quick_embedded_confirmation_modules
+        )
+
+    def _broad_veto_memory_applies(self, idea: TradeIdea) -> bool:
+        """Broad historical refusals may not erase a genuinely new quick event."""
+        config = self.settings.analysis.confluence
+        return not (idea.horizon == "quick" and config.quick_events_bypass_broad_veto_memory)
+
+    def _entry_quality_config_for(self, idea: TradeIdea):  # type: ignore[no-untyped-def]
+        """Use a quick horizon's own chase tolerance without weakening reversal checks."""
+        config = self.settings.analysis.entry_quality
+        if idea.horizon != "quick" or config.quick_extension_multiplier == 1.0:
+            return config
+        multiplier = config.quick_extension_multiplier
+
+        def scaled(values: dict[str, float]) -> dict[str, float]:
+            return {name: value * multiplier for name, value in values.items()}
+
+        return config.model_copy(
+            update={
+                "max_favourable_extension_atr": scaled(config.max_favourable_extension_atr),
+                "max_single_bar_body_atr": scaled(config.max_single_bar_body_atr),
+                "max_ema_distance_atr": scaled(config.max_ema_distance_atr),
+            }
+        )
+
+    def _assess_entry_quality(self, context: MarketContext, idea: TradeIdea, asset_class):  # type: ignore[no-untyped-def]
+        assert idea.direction is not None
+        return assess_entry_quality(
+            context,
+            idea.direction,
+            asset_class,
+            self._entry_quality_config_for(idea),
+        )
+
+    def _reach_failure_is_advisory(self, idea: TradeIdea, reach) -> bool:  # type: ignore[no-untyped-def]
+        """A conditional quick event may challenge a base rate, but not fantasy arithmetic."""
+        config = self.settings.analysis.confluence
+        floor = reach.required_pct * config.quick_reach_hard_floor_ratio
+        return (
+            idea.horizon == "quick"
+            and config.quick_statistical_gates_are_advisory
+            and reach.forward_pct >= floor
+        )
+
+    def _direction_failure_is_advisory(self, idea: TradeIdea, reach) -> bool:  # type: ignore[no-untyped-def]
+        """Small slow-sample disagreement is context; a large skew stays a blocker."""
+        config = self.settings.analysis.confluence
+        gap = reach.opposite_pct - reach.forward_pct
+        return (
+            idea.horizon == "quick"
+            and config.quick_statistical_gates_are_advisory
+            and gap <= config.quick_direction_disadvantage_hard_gap_pct
+        )
+
+    @staticmethod
+    def _horizon_review_instruction(idea: TradeIdea) -> str:
+        if idea.horizon == "quick":
+            return (
+                "This is a quick trade: the closed M1 trigger and M5 planning structure are "
+                "the decision authority. H1/H4 are context and D1/W1 are background only. "
+                "Do not veto solely because a slow trend disagrees or an unconditional "
+                "travel statistic is modest. Veto when M1/M5 evidence is internally false, "
+                "near H1 structure directly invalidates the path, execution is impossible, "
+                "or the stated stop/target does not fit the quick thesis."
+            )
+        if idea.horizon == "intraday":
+            return (
+                "Judge this intraday trade on its M5/M15/H1 path. H4 is context and D1/W1 "
+                "are background, not an automatic veto unless nearer structure confirms the "
+                "same contradiction."
+            )
+        return (
+            "This is a swing trade. H1/H4/D1 structure is decision evidence and W1 is "
+            "material context; slow-timeframe contradictions may invalidate the plan."
+        )
+
     def _entry_is_confirmed(
         self, context: MarketContext, idea: TradeIdea
     ) -> tuple[bool, float | None]:
@@ -3471,6 +3570,8 @@ class JarvisRunner:
         """
         config = self.settings.analysis.confluence
         if not config.require_entry_confirmation or idea.direction is None:
+            return True, None
+        if self._idea_has_embedded_confirmation(idea):
             return True, None
         try:
             timeframe = Timeframe.parse(config.confirmation_timeframe)
@@ -3846,6 +3947,8 @@ class JarvisRunner:
         exists for is the one where the price moved a little and the answer did
         not.
         """
+        if not self._broad_veto_memory_applies(idea):
+            return None
         minutes = self.settings.ai.veto_cooldown_minutes
         if minutes <= 0 or idea.direction is None or self.operation is OperationMode.MONITOR:
             return None
@@ -4018,6 +4121,17 @@ class JarvisRunner:
             planning = Timeframe.parse(idea.planning_timeframe)
         except ValueError:
             planning = _REVIEW_TIMEFRAME
+        if idea.horizon == "quick":
+            quick_frames: list[Timeframe] = []
+            for signal in idea.signals:
+                if not idea.setup_family.startswith(signal.module):
+                    continue
+                try:
+                    quick_frames.append(Timeframe.parse(str(signal.details.get("timeframe", ""))))
+                except ValueError:
+                    continue
+            if quick_frames:
+                planning = min(quick_frames, key=lambda frame: frame.duration)
         entry_quality_config = getattr(
             getattr(self.settings, "analysis", None), "entry_quality", None
         )
