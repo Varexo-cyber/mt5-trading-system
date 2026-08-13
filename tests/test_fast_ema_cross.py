@@ -88,6 +88,75 @@ class TestItCatchesTheTurn:
         assert signal.invalidation_price is not None
 
 
+class TestTheStopSitsWhereTheThesisDies:
+    """The invalidation was the extreme of the last twelve M5 bars, and on the
+    setup this module exists for that is the wrong hour of the chart."""
+
+    def test_it_does_not_reach_back_past_the_turn(self) -> None:
+        """A cross after a fall used to read its low out of the bars from
+        BEFORE the turn — the stop landed at the bottom of the move the cross
+        had just ended, an hour of range away from a signal whose whole thesis
+        is the last few bars. On a EUR 140 account that is the difference
+        between a trade the sizer can express and one skipped as
+        undercapitalized, and it makes commission a far larger share of risk.
+        """
+        ctx = turned(down_bars=90, up_bars=13)
+        frame = ctx.series[Timeframe.M5].df
+        price = float(frame["close"].iloc[-1])
+        twelve_bar_low = float(frame["low"].iloc[-12:].min())
+
+        stop = analyse(ctx).invalidation_price
+
+        assert stop is not None
+        assert stop > twelve_bar_low
+        assert abs(price - stop) < abs(price - twelve_bar_low) / 2
+
+    def test_it_sits_beyond_the_slow_average(self) -> None:
+        """Because that is the module's own third floor: the thesis dies when
+        price closes back through the slow EMA, so the stop belongs just past
+        it rather than at an arbitrary lookback extreme."""
+        ctx = turned(down_bars=90, up_bars=13)
+        signal = analyse(ctx)
+
+        assert signal.invalidation_price is not None
+        assert signal.invalidation_price < signal.details["ema20"]
+
+    def test_it_never_sits_inside_a_wick_that_already_printed(self) -> None:
+        """The further of the two candidates wins. A stop above a low price has
+        already traded through is a stop already hit."""
+        closes = [1.1000 - i * 0.0004 for i in range(90)]
+        bottom = closes[-1]
+        closes += [bottom + (i + 1) * 0.0004 for i in range(13)]
+        ctx = context_from(closes)
+        frame = ctx.series[Timeframe.M5].df
+
+        signal = analyse(ctx)
+        window = int(signal.details["invalidation_bars"])
+
+        assert signal.invalidation_price is not None
+        assert signal.invalidation_price <= float(frame["low"].iloc[-window:].min())
+
+    def test_a_short_puts_it_the_other_way_up(self) -> None:
+        closes = [1.1000 + i * 0.0004 for i in range(90)]
+        top = closes[-1]
+        closes += [top - (i + 1) * 0.0004 for i in range(13)]
+        signal = analyse(context_from(closes))
+
+        assert signal.invalidation_price is not None
+        assert signal.invalidation_price > signal.details["ema20"]
+        assert signal.invalidation_price > float(closes[-1])
+
+    def test_the_window_grows_with_the_age_of_the_cross(self) -> None:
+        """A cross six bars old has six bars of price action to respect; one
+        printed on the last bar has almost none, which is what the minimum is
+        for — a one-bar stop is a rounding error, not a level."""
+        fresh = analyse(turned(down_bars=90, up_bars=13))
+        older = analyse(turned(down_bars=90, up_bars=17), max_bars_since_cross=10)
+
+        assert fresh.details["invalidation_bars"] == 3
+        assert older.details["invalidation_bars"] > 3
+
+
 class TestTheThreeFloorsThatKeepItOutOfNoise:
     def test_a_stale_cross_is_a_state_and_not_an_entry(self) -> None:
         """Forty minutes after the cross this is just "the EMAs are up", which

@@ -124,8 +124,31 @@ class FastEmaCross:
             self.config.maximum_confidence,
             self.config.base_confidence + separation * self.config.separation_confidence_scale,
         )
-        recent = frame.iloc[-self.config.invalidation_lookback :]
-        invalidation = float(recent["low"].min() if now_side > 0 else recent["high"].max())
+        # Where this trade is actually wrong.
+        #
+        # This used to be the extreme of the last twelve M5 bars, and on the
+        # setup the module is built for that is the wrong hour of the chart:
+        # a cross after a fall reads its low out of the bars from BEFORE the
+        # turn. The stop landed at the bottom of the move the cross had just
+        # ended — an hour of range away from a signal whose whole thesis is
+        # about the last few bars. On a EUR 140 account that is the difference
+        # between a trade the sizer can express and TRADE_SKIPPED_UNDER-
+        # CAPITALIZED, and it makes commission a far larger share of the risk.
+        #
+        # The thesis dies when price closes back through the slow average —
+        # that is the module's own third floor, checked directly above. So the
+        # stop belongs just beyond that average, and beyond any extreme price
+        # has already printed since the cross, whichever is further out. Taking
+        # the further of the two means the stop is never inside a wick that has
+        # already happened.
+        window = max(bars_since + 1, self.config.minimum_invalidation_bars)
+        since_cross = frame.iloc[-window:]
+        buffer = atr * self.config.invalidation_buffer_atr
+        slow_now = float(slow.iloc[-1])
+        if now_side > 0:
+            invalidation = min(float(since_cross["low"].min()), slow_now - buffer)
+        else:
+            invalidation = max(float(since_cross["high"].max()), slow_now + buffer)
         return Signal(
             module=self.name,
             score=self.config.score * now_side,
@@ -140,6 +163,8 @@ class FastEmaCross:
                 "timeframe": timeframe.value,
                 "bars_since_cross": bars_since,
                 "separation_atr": round(separation, 2),
+                "invalidation_bars": window,
+                "invalidation_atr": round(abs(float(close.iloc[-1]) - invalidation) / atr, 2),
                 f"ema{self.config.fast_ema}": float(fast.iloc[-1]),
                 f"ema{self.config.slow_ema}": float(slow.iloc[-1]),
                 "atr": atr,
