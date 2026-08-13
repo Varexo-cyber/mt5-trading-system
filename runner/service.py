@@ -1713,7 +1713,11 @@ class JarvisRunner:
         # Claude declined is not going to be talked into by a fresh margin
         # calculation, and re-running it only produces another identical row in
         # the dashboard's AI ledger.
-        remembered = self._remembered_veto(idea) if self._broad_veto_memory_applies(idea) else None
+        # Exact shape memory applies to every horizon, including quick. A new
+        # closed M1 event is allowed past the broad symbol/direction cooldown,
+        # but it is not a new paid question when entry and stop are still the
+        # same proposal within the recorded ATR tolerance.
+        remembered = self._remembered_veto(idea)
         if remembered is not None:
             self._record_skip(
                 cycle_id,

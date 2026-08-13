@@ -412,9 +412,10 @@ analysis:
     minimum_confidence: 0.45
     minimum_directional_modules: 2
     # Quick entries already contain their own closed M1/M5 timing proof. Their
-    # unconditional travel statistics and old symbol-level Claude vetoes are
-    # still shown to the reviewer, but are not allowed to masquerade as facts
-    # about a new breakout event.
+    # unconditional travel statistics and old broad symbol-level Claude vetoes
+    # are still shown to the reviewer, but are not allowed to masquerade as
+    # facts about a new breakout event. Exact unchanged trade shapes remain
+    # cached so the same answer is never paid twice.
     quick_embedded_confirmation_modules: [ema_pullback_resume, m1_micro_breakout]
     quick_statistical_gates_are_advisory: true
     quick_reach_hard_floor_ratio: 0.50
