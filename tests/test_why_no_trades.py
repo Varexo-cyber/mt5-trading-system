@@ -113,9 +113,7 @@ class TestWhereTheCandidatesActuallyGo:
     shows which one is doing it.
     """
 
-    def test_it_prints_how_many_got_as_far_as_being_paid_for(
-        self, journal: Path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+    def test_it_prints_how_many_got_as_far_as_being_paid_for(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
         add(journal, "NO_SIGNAL", BEFORE, count=90)
         add(journal, "ENTRY_OVEREXTENDED", BEFORE, count=6)
         add(journal, "AI_VETO", BEFORE, count=4)
@@ -168,10 +166,40 @@ class TestWhereTheCandidatesActuallyGo:
         assert "-2  approved, then the price moved before the order went out" in out
 
 
+def test_directional_module_firings_are_reported_before_later_gates(journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    db = sqlite3.connect(journal)
+    db.execute(
+        "CREATE TABLE module_scores (cycle_pk INTEGER, module TEXT, score REAL, "
+        "confidence REAL, weight REAL)"
+    )
+    now = datetime.now(UTC).isoformat()
+    db.execute(
+        "INSERT INTO analysis_cycles (id, ts, symbol, decision, reason, detail) "
+        "VALUES (1, ?, 'EURUSD.i', 'SKIP', 'NO_SIGNAL', 'later gate')",
+        (now,),
+    )
+    db.executemany(
+        "INSERT INTO module_scores VALUES (?,?,?,?,?)",
+        [
+            (1, "fast_ema_cross", 50.0, 0.6, 0.5),
+            (1, "m1_micro_breakout", -62.0, 0.7, 0.55),
+            (1, "market_regime", -1.0, 1.0, 0.0),
+        ],
+    )
+    db.commit()
+    db.close()
+
+    main(["--db", str(journal), "--hours", "4"])
+    out = capsys.readouterr().out
+
+    assert "DIRECTIONAL DETECTION BEFORE LATER GATES" in out
+    assert "1 LONG / 1 SHORT" in out
+    assert "fast_ema_cross" in out
+    assert "m1_micro_breakout" in out
+
+
 class TestTheWarningFlagMeansSomething:
-    def test_a_designed_gate_is_not_flagged_as_a_fault(
-        self, journal: Path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+    def test_a_designed_gate_is_not_flagged_as_a_fault(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
         """A concentration limit refusing a doubled bet is the system working.
         Flagging it alongside a missing calendar taught the operator to ignore
         the flag, which is worse than not having one."""
@@ -203,9 +231,7 @@ class TestTheBiggestReachableGateIsVisible:
     move -- were nowhere on the screen.
     """
 
-    def test_the_same_gate_at_different_scores_is_one_row(
-        self, journal: Path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+    def test_the_same_gate_at_different_scores_is_one_row(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
         db = sqlite3.connect(journal)
         now = datetime.now(UTC)
         for i in range(300):
@@ -229,9 +255,7 @@ class TestTheBiggestReachableGateIsVisible:
 
         assert "300x  confluence score N below threshold" in out
 
-    def test_distinct_causes_are_still_distinct(
-        self, journal: Path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+    def test_distinct_causes_are_still_distinct(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
         """Collapsing numbers must not collapse the sentences around them."""
         add(journal, "NO_SIGNAL", BEFORE, count=5)
         db = sqlite3.connect(journal)
@@ -269,9 +293,7 @@ class TestAReplayedRefusalIsNotAPaidOne:
     actually made, and turned a $4.79 daily API bill into a claimed $40 one.
     """
 
-    def test_a_remembered_veto_is_counted_before_the_line(
-        self, journal: Path, capsys
-    ) -> None:  # type: ignore[no-untyped-def]
+    def test_a_remembered_veto_is_counted_before_the_line(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
         add(journal, "NO_SIGNAL", BEFORE, count=90)
         add(journal, "AI_VETO", REMEMBERED, count=8)
         add(journal, "AI_VETO", BEFORE, count=2)

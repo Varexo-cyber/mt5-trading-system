@@ -126,6 +126,22 @@ def test_disagreement_blocks() -> None:
     assert not idea.approved
 
 
+def test_direction_vote_uses_measured_strength_not_only_static_weight() -> None:
+    reads = [
+        StubModule(Signal("one", 45, 0.50, invalidation_price=1.1050)),
+        StubModule(Signal("two", -90, 0.90, invalidation_price=1.1140)),
+    ]
+    cfg = config(
+        minimum_directional_modules=1,
+        minimum_agreement_ratio=0.60,
+        weights={"one": 1.0, "two": 0.7},
+    )
+
+    idea = ConfluenceEngine(reads, cfg).evaluate(context(step=-0.0006), TradingMode.PAPER)
+
+    assert idea.direction is Direction.SHORT
+
+
 def test_every_live_enabled_module_has_a_hypothesis_document() -> None:
     """Pre-registration is not optional for anything spending real money.
 
@@ -142,9 +158,9 @@ def test_every_live_enabled_module_has_a_hypothesis_document() -> None:
         settings = load_settings(overlay=overlay, env_overrides=False)
         for module in settings.analysis.confluence.live_enabled_modules:
             document = Path(root / "docs" / "hypotheses" / f"{module}.md")
-            assert (
-                document.exists()
-            ), f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
+            assert document.exists(), (
+                f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
+            )
 
 
 def test_weighted_modules_are_documented() -> None:
@@ -367,9 +383,7 @@ class TestHorizonsDoNotOutvoteEachOther:
     def _disagreeing() -> list[StubModule]:
         return [
             StubModule(Signal("trend_momentum", 65, 0.8, invalidation_price=1.1050)),
-            StubModule(
-                Signal("drift_continuation", -55, 0.8, invalidation_price=1.1115)
-            ),
+            StubModule(Signal("drift_continuation", -55, 0.8, invalidation_price=1.1115)),
             StubModule(Signal.neutral("volatility_regime")),
         ]
 
@@ -418,9 +432,8 @@ class TestHorizonsDoNotOutvoteEachOther:
         assert "trend_momentum" in idea.reason
         assert "different horizons" in idea.reason
 
-    def test_agreement_between_the_groups_is_unchanged(self) -> None:
-        """When both clocks point the same way nothing about this is new: the
-        whole set carries the trade and the plan is the slower one."""
+    def test_agreement_between_intraday_and_swing_is_unchanged(self) -> None:
+        """The new isolation is specific to complete quick entry events."""
         agreeing = [
             StubModule(Signal("trend_momentum", 65, 0.8, invalidation_price=1.1050)),
             StubModule(Signal("drift_continuation", 55, 0.8, invalidation_price=1.1060)),
@@ -435,6 +448,34 @@ class TestHorizonsDoNotOutvoteEachOther:
         assert idea.direction is Direction.LONG
         assert idea.horizon == "swing"
         assert "different horizons" not in idea.reason
+
+    def test_a_quick_short_is_not_blended_with_an_intraday_long(self) -> None:
+        modules = [
+            StubModule(Signal("m1_micro_breakout", -62, 0.8, invalidation_price=1.1115)),
+            StubModule(Signal("drift_continuation", 55, 0.8, invalidation_price=1.1050)),
+            StubModule(Signal("trend_momentum", 65, 0.8, invalidation_price=1.1050)),
+        ]
+        config = self._config(
+            weights={
+                "m1_micro_breakout": 0.55,
+                "drift_continuation": 0.7,
+                "trend_momentum": 1.0,
+            }
+        )
+
+        context = self._split_context()
+        context = MarketContext(
+            symbol=context.symbol,
+            now=context.now,
+            series={**context.series, Timeframe.M5: context.series[Timeframe.M15]},
+            tick=context.tick,
+        )
+        idea = ConfluenceEngine(modules, config).evaluate(context, TradingMode.PAPER)
+
+        assert idea.approved
+        assert idea.direction is Direction.SHORT
+        assert idea.horizon == "quick"
+        assert idea.planning_timeframe == "M5"
 
     def test_a_lone_group_behaves_exactly_as_before(self) -> None:
         """No swing module firing at all is the common case, and it must not

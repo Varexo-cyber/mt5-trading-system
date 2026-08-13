@@ -1787,11 +1787,16 @@ class ConfluenceConfig(Base):
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
-    quick_modules: tuple[str, ...] = ("ema_pullback_resume", "m1_micro_breakout")
+    quick_modules: tuple[str, ...] = (
+        "fast_ema_cross",
+        "ema_pullback_resume",
+        "m1_micro_breakout",
+    )
     #: These quick modules already prove immediate direction inside their own
     #: closed-bar definition. Repeating the generic M5 adverse-drift gate would
     #: ask the same question twice. Fresh-price and chase checks still run.
     quick_embedded_confirmation_modules: tuple[str, ...] = (
+        "fast_ema_cross",
         "ema_pullback_resume",
         "m1_micro_breakout",
     )
@@ -2582,6 +2587,12 @@ class ScannerConfig(Base):
     data_quarantine: DataQuarantineConfig = Field(default_factory=lambda: DataQuarantineConfig())
     #: Symbols cheaply ranked per cycle. None = the whole catalogue.
     batch_size: int | None = Field(default=None, ge=1)
+    #: Keep the liquid lanes on the fast clock while the remainder of a large
+    #: catalogue rotates in bounded batches. Without this, an 850-symbol pass
+    #: can take three minutes and a one-candle M1 event can appear and expire
+    #: before its symbol is inspected again. Priority does not change a gate;
+    #: it only changes how often a configured market is looked at.
+    priority_every_cycle: bool = False
     #: Top-ranked symbols promoted to full analysis each cycle. The ceiling is
     #: the size of a large broker catalogue, so "analyse everything the cheap
     #: scan let through" is expressible. The old limit of 100 made that

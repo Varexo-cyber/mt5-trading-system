@@ -416,7 +416,8 @@ analysis:
     # are still shown to the reviewer, but are not allowed to masquerade as
     # facts about a new breakout event. Exact unchanged trade shapes remain
     # cached so the same answer is never paid twice.
-    quick_embedded_confirmation_modules: [ema_pullback_resume, m1_micro_breakout]
+    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
+    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
     quick_statistical_gates_are_advisory: true
     quick_reach_hard_floor_ratio: 0.50
     quick_direction_disadvantage_hard_gap_pct: 20.0
