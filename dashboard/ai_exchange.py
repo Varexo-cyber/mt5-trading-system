@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 
@@ -64,6 +66,78 @@ def pair_ai_reviews(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]
                 exchange["status"] = "VETO"
         paired.append(exchange)
     return paired
+
+
+def execution_outcomes(path: Path, cycle_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Join AI approvals to what the deterministic/order path did afterwards.
+
+    The AI audit deliberately records the response before post-review price,
+    account, sizing and broker checks run. Calling that response "APPROVED" in
+    isolation made an operator reasonably expect an MT5 position that might
+    never have been sent. This read-only query completes the sentence.
+    """
+    wanted = tuple(dict.fromkeys(str(item).strip() for item in cycle_ids if str(item).strip()))
+    if not wanted or not path.exists():
+        return {}
+    placeholders = ",".join("?" for _ in wanted)
+    try:
+        uri = f"file:{path.resolve().as_posix()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=1.0)
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            f"""
+            SELECT c.id AS cycle_pk, c.cycle_id, c.mode, c.decision, c.reason, c.detail,
+                   t.ticket, t.entry_state, t.exit_reason
+            FROM analysis_cycles c
+            LEFT JOIN trades t ON t.cycle_pk = c.id
+            WHERE c.cycle_id IN ({placeholders})
+            ORDER BY c.id
+            """,
+            wanted,
+        ).fetchall()
+        connection.close()
+    except (OSError, sqlite3.Error):
+        return {}
+
+    outcomes: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        cycle_id = str(row["cycle_id"])
+        reason = str(row["reason"] or "")
+        detail = str(row["detail"] or "")
+        entry_state = str(row["entry_state"] or "")
+        ticket = row["ticket"]
+        if entry_state == "OPEN" and ticket is not None:
+            status = "GEOPEND IN MT5"
+            explanation = f"Broker bevestigde positie #{int(ticket)}."
+        elif entry_state == "ABANDONED":
+            status = "ORDER GEWEIGERD"
+            explanation = str(row["exit_reason"] or detail or "Broker heeft de entry geweigerd.")
+        elif entry_state == "PENDING":
+            status = "ORDER IN VERWERKING"
+            explanation = "De entry-intentie bestaat, maar er is nog geen brokerticket bevestigd."
+        elif reason and reason != "OK":
+            status = "NA CLAUDE GEBLOKKEERD"
+            explanation = f"{reason}: {detail}" if detail else reason
+        elif str(row["mode"] or "") == "monitor":
+            status = "ALLEEN MONITOR"
+            explanation = "Deze modus analyseert, maar mag geen echte order versturen."
+        elif str(row["decision"] or "") == "TRADE":
+            status = "GOEDGEKEURD, NIET VERSTUURD"
+            explanation = (
+                "De analyse werd als trade vastgelegd, maar geen entry-intentie/"
+                "brokerticket volgde; "
+                "controleer STOP, accountcontract en kapitaalbodem."
+            )
+        else:
+            status = "GEEN ORDER"
+            explanation = detail or "De AI-goedkeuring heeft niet tot een brokerorder geleid."
+        outcomes[cycle_id] = {
+            "status": status,
+            "detail": explanation,
+            "ticket": ticket,
+            "reason": reason,
+        }
+    return outcomes
 
 
 def read_posture(path: Any) -> dict[str, Any]:

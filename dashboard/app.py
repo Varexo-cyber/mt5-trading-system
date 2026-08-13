@@ -32,6 +32,7 @@ from core.mt5_connector import MT5Connector
 from core.types import Direction, Timeframe
 from dashboard.ai_exchange import (
     cannot_trade,
+    execution_outcomes,
     pair_ai_reviews,
     read_block_reason,
     read_posture,
@@ -982,6 +983,10 @@ def render_ai_exchange() -> None:
     review_rows = read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl", limit=200)
     exchanges = pair_ai_reviews(review_rows)
     decisions = [item for item in exchanges if item["status"] != "PENDING"]
+    outcomes = execution_outcomes(
+        ROOT / settings.journal.database_path,
+        [str(item.get("cycle_id", "")) for item in exchanges],
+    )
     approvals = sum(item["status"] == "APPROVED" for item in decisions)
     vetoes = sum(item["status"] == "VETO" for item in decisions)
     retests = sum(item["status"] == "WAITING FOR RETEST" for item in decisions)
@@ -1031,20 +1036,31 @@ def render_ai_exchange() -> None:
 
     st.caption(
         "Automatische update iedere 3 seconden. Alleen voorstellen die analyse, risico, "
-        "filters, sizing en marge al hebben gehaald, worden betaald naar Claude gestuurd."
+        "filters, sizing en marge al hebben gehaald, worden betaald naar Claude gestuurd. "
+        "**AI APPROVED is nog geen MT5-order:** daarna worden prijs, posities, sizing en "
+        "brokerstatus opnieuw gecontroleerd. De kolom 'Na Claude' toont het echte eindresultaat."
     )
 
     if exchanges:
         summary_rows = []
         for item in exchanges:
             decision = item["decision"] if isinstance(item["decision"], dict) else {}
+            outcome = outcomes.get(str(item.get("cycle_id", "")), {})
+            shown_status = (
+                "AI APPROVED — CONTROLE VOLGT" if item["status"] == "APPROVED" else item["status"]
+            )
             summary_rows.append(
                 {
                     "Verzoek (UTC)": item["requested_at"],
                     "Antwoord (UTC)": item["responded_at"],
                     "Markt": item["symbol"],
                     "Richting": item["direction"],
-                    "Status": item["status"],
+                    "AI-status": shown_status,
+                    "Na Claude": outcome.get("status", "NOG NIET GEREGISTREERD"),
+                    "Uitvoeringsuitleg": outcome.get(
+                        "detail", "Wacht op de journal-/orderregistratie van Jarvis."
+                    ),
+                    "MT5-ticket": outcome.get("ticket"),
                     # Vier identieke regels achter elkaar zien er uit als vier
                     # betaalde calls. Drie ervan waren herhalingen van hetzelfde
                     # oordeel over een ongewijzigde setup, en dat is precies wat
