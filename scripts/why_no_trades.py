@@ -45,6 +45,14 @@ sys.path.insert(0, str(ROOT))
 #: above it. Reasons are grouped by *where in the code* they fire, which is why
 #: INSUFFICIENT_RUNWAY sits with the cost gates — the sharper of its two checks
 #: runs after sizing, not with the session filters.
+
+#: The stage that separates "is there a trade here at all" from "can this trade
+#: be executed and afforded". Named rather than inlined so the funnel printer
+#: can call out the survivor count at exactly that boundary — it is the number
+#: every "is it working yet" question is really asking, and the report used to
+#: leave it to be derived by hand from three other lines.
+_SETUP_STAGE: frozenset[str] = frozenset({"NO_SIGNAL", "METHODS_DISAGREE"})
+
 _STAGES: tuple[tuple[str, frozenset[str]], ...] = (
     (
         "usable market data",
@@ -60,7 +68,7 @@ _STAGES: tuple[tuple[str, frozenset[str]], ...] = (
             }
         ),
     ),
-    ("a setup on the chart at all", frozenset({"NO_SIGNAL", "METHODS_DISAGREE"})),
+    ("a setup on the chart at all", _SETUP_STAGE),
     (
         "room in the book",
         frozenset(
@@ -339,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         if str(row["reason"]) == "AI_VETO"
         and "ai_veto_remembered" in str(row["context_json"] or "")
     )
-    _print_funnel(counts, len(rows), traded, remembered)
+    _print_funnel(counts, len(rows), traded, remembered, hours=args.hours)
 
     # Refused before the review, or after paying for it?
     #
@@ -465,7 +473,13 @@ def _print_score_reach(rows: Sequence[sqlite3.Row]) -> None:
         )
 
 
-def _print_funnel(counts: Counter[str], total: int, traded: int, remembered: int = 0) -> None:
+def _print_funnel(
+    counts: Counter[str],
+    total: int,
+    traded: int,
+    remembered: int = 0,
+    hours: float = 0.0,
+) -> None:
     """Where the candidates went, in the order the gates run.
 
     Reads top to bottom: everything scanned, then what each stage took out of
@@ -489,6 +503,20 @@ def _print_funnel(counts: Counter[str], total: int, traded: int, remembered: int
         if lost:
             print(f"  {-lost:>6}  {label}")
         remaining -= lost
+        # The one number every "is it working yet" question is really asking,
+        # and the only stage boundary this report never named. It had to be
+        # derived by hand from three other lines every single time, which is
+        # exactly the arithmetic a report exists to have already done.
+        #
+        # Above this line the engine is deciding whether there is a trade here
+        # at all. Below it, every refusal is about whether THIS trade can be
+        # executed and afforded — a different question, and the one that has
+        # been the wall since the analysis gates were opened.
+        if reasons is _SETUP_STAGE:
+            rate = f"   ({remaining / hours:,.0f} per hour)" if hours > 0 else ""
+            print(f"  {'':>6}  {'=' * 46}")
+            print(f"  {remaining:>6}  SETUPS FORMED{rate}")
+            print(f"  {'':>6}  {'=' * 46}")
 
     # Anything the stage table does not know about. Printed rather than folded
     # into a bucket: a reason added to the enum and not added here would
