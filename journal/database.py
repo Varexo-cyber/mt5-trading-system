@@ -37,7 +37,7 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
@@ -317,6 +317,46 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "CREATE INDEX idx_ai_events_cycle ON ai_events(cycle_id)",
         "CREATE INDEX idx_ai_events_symbol_ts ON ai_events(symbol, ts)",
         "CREATE INDEX idx_ai_events_event ON ai_events(event)",
+    ),
+    7: (
+        # One durable observation per open position per guard pass. Management
+        # actions alone only say when Jarvis intervened; they lose the path it
+        # watched between entry and exit. These rows preserve that path at the
+        # configured guard cadence (normally one second), locally and without
+        # an API call. They are intentionally append-only: later research can
+        # reconstruct MFE/MAE, give-back, health transitions and the exact
+        # market state that preceded an action instead of trusting hindsight.
+        """
+        CREATE TABLE position_state_snapshots (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_id        INTEGER NOT NULL REFERENCES trades(id) ON DELETE CASCADE,
+            ticket          INTEGER NOT NULL,
+            ts              TEXT NOT NULL,
+            symbol          TEXT NOT NULL,
+            direction       TEXT NOT NULL,
+            volume          REAL NOT NULL,
+            price_open      REAL NOT NULL,
+            bid             REAL,
+            ask             REAL,
+            current_price   REAL,
+            sl              REAL NOT NULL,
+            tp              REAL NOT NULL,
+            profit          REAL NOT NULL,
+            swap            REAL NOT NULL,
+            r_now           REAL,
+            peak_r          REAL,
+            health_verdict  TEXT NOT NULL,
+            health_severity REAL,
+            health_action   TEXT NOT NULL,
+            health_reason   TEXT NOT NULL,
+            state_json      TEXT NOT NULL DEFAULT '{}'
+        )
+        """,
+        "CREATE INDEX idx_position_snapshots_trade_ts "
+        "ON position_state_snapshots(trade_id, ts)",
+        "CREATE INDEX idx_position_snapshots_ticket_ts "
+        "ON position_state_snapshots(ticket, ts)",
+        "CREATE INDEX idx_position_snapshots_ts ON position_state_snapshots(ts)",
     ),
 }
 

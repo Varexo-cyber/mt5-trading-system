@@ -1610,6 +1610,7 @@ class JarvisRunner:
                 autonomous, self.clock.now(), self.posture.patience_multiplier
             )
             self._record_management(events)
+            self._record_position_states(autonomous)
             # The local outcome model costs no API call. Give it the same
             # event-driven opportunity on every guard pass as the mechanical
             # health reader. `_supervision_trigger` still suppresses unchanged
@@ -3714,6 +3715,46 @@ class JarvisRunner:
                     f"Position #{event.ticket} closed ({event.action}): "
                     f"{event.pnl_money:+.2f} {self.broker.account().currency}"
                 )
+
+    def _record_position_states(self, positions) -> None:  # type: ignore[no-untyped-def]
+        """Store the state Jarvis actually evaluated on this guard pass.
+
+        The dashboard health file is a latest-value view and is overwritten.
+        This is the append-only counterpart used for replay and learning. A
+        position without a journal trade is intentionally skipped: there is no
+        trustworthy entry risk against which its R path can be interpreted.
+        """
+        recorder = getattr(self, "recorder", None)
+        journal = getattr(self, "journal", None)
+        if recorder is None or journal is None:
+            return
+        observations = getattr(self.manager, "last_observation", {})
+        observed_at = self.clock.now()
+        for position in positions:
+            row = journal.open_trade_by_ticket(position.ticket)
+            if row is None:
+                continue
+            market = observations.get(position.ticket, {})
+            health = (
+                self._health_brief(position.ticket)
+                if market.get("health_observed", False)
+                else {
+                    "verdict": "unknown",
+                    "severity": None,
+                    "action": "hold",
+                    "reason": (
+                        "health was not reached on this pass; an earlier management gate acted"
+                    ),
+                    "signals": [],
+                }
+            )
+            recorder.record_position_state(
+                trade_id=int(row["id"]),
+                position=position,
+                observed_at=observed_at,
+                market=market,
+                health=health,
+            )
 
     def _report_promotion_evidence(self) -> None:
         """Run the evidence audit for experimental live and report, without blocking.

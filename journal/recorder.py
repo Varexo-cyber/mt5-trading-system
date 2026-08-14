@@ -25,7 +25,7 @@ from typing import Any
 
 from config.schema import Settings
 from core.clock import Clock
-from core.types import Direction, OrderResult, Signal
+from core.types import Direction, OrderResult, Position, Signal
 from infra.logging import get_logger
 from journal.database import Journal, dumps, iso
 from risk.position_sizer import SizingResult
@@ -433,6 +433,69 @@ class Recorder:
                 volume_closed,
                 r_at_action,
                 note,
+            ),
+        )
+
+    def record_position_state(
+        self,
+        *,
+        trade_id: int,
+        position: Position,
+        observed_at: datetime,
+        market: dict[str, object] | None = None,
+        health: dict[str, object] | None = None,
+    ) -> None:
+        """Persist one complete open-position observation.
+
+        This is deliberately local SQLite telemetry. Sending one row per
+        second to the long-term brain would turn ordinary position management
+        into a network dependency and an avoidable database bill. Meaningful
+        actions and final outcomes still flow to the brain through their
+        existing event path.
+        """
+        market = dict(market or {})
+        health = dict(health or {})
+        self.journal.conn.execute(
+            """
+            INSERT INTO position_state_snapshots (
+                trade_id, ticket, ts, symbol, direction, volume, price_open,
+                bid, ask, current_price, sl, tp, profit, swap, r_now, peak_r,
+                health_verdict, health_severity, health_action, health_reason,
+                state_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                trade_id,
+                position.ticket,
+                iso(observed_at),
+                position.symbol,
+                position.direction.name,
+                position.volume,
+                position.price_open,
+                market.get("bid"),
+                market.get("ask"),
+                market.get("current_price"),
+                position.sl,
+                position.tp,
+                position.profit,
+                position.swap,
+                market.get("r_now"),
+                market.get("peak_r"),
+                str(health.get("verdict", "unknown")),
+                health.get("severity"),
+                str(health.get("action", "hold")),
+                str(health.get("reason", "")),
+                dumps(
+                    {
+                        # Values not already represented by typed columns.
+                        # Avoid duplicating the full state in JSON: at one row
+                        # per second that needless copy becomes gigabytes.
+                        "spread": market.get("spread"),
+                        "risk_price": market.get("risk_price"),
+                        "health_observed": market.get("health_observed", False),
+                        "signals": health.get("signals", []),
+                    }
+                ),
             ),
         )
 

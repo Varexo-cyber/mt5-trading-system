@@ -117,6 +117,11 @@ class PositionManager:
         #: Claude sees what the fast layer has been watching rather than only a
         #: snapshot of the moment it happened to be asked, and by the deck.
         self.last_health: dict[int, PositionHealth] = {}
+        #: Exact tick/R state used by the latest management pass. The runner
+        #: durably journals this beside ``last_health`` once per guard tick.
+        #: Keeping it here avoids a second broker tick merely for telemetry and
+        #: guarantees the audit row describes the price the rules actually saw.
+        self.last_observation: dict[int, dict[str, object]] = {}
         self._session_filter: object = _UNSET
         #: Account equity, refreshed by the runner once a cycle. Zero switches
         #: the banking rule off, which is the safe default: a threshold that is
@@ -280,6 +285,16 @@ class PositionManager:
             price = tick.bid if position.direction is Direction.LONG else tick.ask
             r_now = (price - position.price_open) * int(position.direction) / risk
             peak_r = self._record_excursion(int(row["id"]), r_now, float(row["mfe_r"] or 0.0))
+            self.last_observation[position.ticket] = {
+                "bid": float(tick.bid),
+                "ask": float(tick.ask),
+                "current_price": float(price),
+                "spread": float(tick.spread),
+                "risk_price": float(risk),
+                "r_now": float(r_now),
+                "peak_r": float(peak_r),
+                "health_observed": False,
+            }
             # Before anything else, because everything else assumes we intend to
             # still be in the trade. Nothing that happens after 20:15 UTC is
             # worth the spread it costs to be there.
@@ -318,6 +333,7 @@ class PositionManager:
             # alone — see `_giveback_exit`.
             health = self._read_health(position, r_now, age_hours * 60.0, risk, tick)
             self.last_health[position.ticket] = health
+            self.last_observation[position.ticket]["health_observed"] = True
             # Asked first, because it is the only exit here that can act while
             # the money is still on the table. The two rules cannot both apply:
             # this one needs price near the peak, the give-back needs it far

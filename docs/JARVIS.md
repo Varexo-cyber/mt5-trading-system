@@ -180,3 +180,11 @@ capped at +/-15%, need 100 trades spanning 30 days, and then run as a no-order
 shadow configuration for another 30 days. Use `scripts/config_control.py` for
 snapshots, starting a shadow, explicit promotion and rollback. Every approved
 change must also be recorded in `learning/changelog.md`.
+
+The one-second guard now preserves every completed open-position observation
+in the local journal's `position_state_snapshots` table. That path is evidence
+for replaying management and comparing alternative exits; it does not itself
+authorize a parameter change. Jarvis may automatically *evaluate* a challenger
+in shadow, but it may not rewrite arbitrary code or promote a challenger
+without breadth, sample-size and positive-lift gates. This distinction prevents
+one recent winner or loser from teaching the live system the wrong lesson.
