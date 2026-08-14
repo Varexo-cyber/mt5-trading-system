@@ -1365,6 +1365,22 @@ def build_supervision_payload(
         "unrealised_pct_of_account": (round(money / equity * 100, 2) if equity else None),
         "money_still_to_win_if_target_hit": to_target,
         "money_if_the_current_stop_is_hit": at_stop,
+        # Is any of this profit actually safe? Stated as a fact rather than
+        # left to be inferred from the sign of the number above.
+        #
+        # The live CADCHF long: EUR 2.82 up, 2.2% of the account, and the stop
+        # still twelve pips BELOW the entry — the whole gain could round-trip
+        # into a loss and nothing at the broker would stop it. The operator saw
+        # that in one glance at the terminal. The payload carried the numbers
+        # to work it out and never said it, and the reviewer answered HOLD.
+        "profit_is_protected": (
+            bool((position.sl - position.price_open) * sign > 0) if position.sl else False
+        ),
+        "stop_distance_from_entry_in_r": (
+            round((position.sl - position.price_open) * sign / risk, 2)
+            if position.sl and risk
+            else None
+        ),
         "unrealised_r": round(r_now, 2) if r_now is not None else None,
         "initial_risk_distance": round(risk, 6),
         "original_stop": original_stop,
@@ -2055,6 +2071,21 @@ So the question on a profitable position is never "is 0.76 a lot of money". It i
     what is already in hand      (unrealised_pct_of_account)
     against what is still to win (money_still_to_win_if_target_hit)
     against how likely that is   (the bars in front of you)
+    against whether any of it is safe (profit_is_protected)
+
+CHECK `profit_is_protected` BEFORE ANYTHING ELSE ON A WINNER. False means the broker stop is still
+on the losing side of the entry, so every cent showing can round-trip into a loss while nobody is
+watching — including overnight, and including if this process dies. It is not the same situation
+as the same profit sitting behind a stop above entry, and it is the difference between "let it
+run" being patient and being negligent. `stop_distance_from_entry_in_r` says how far past entry
+the stop actually sits, negative when it is still behind.
+
+When real money is in hand and `profit_is_protected` is false, HOLD is only the right answer if
+you also say what should move the stop and where. A live CADCHF long is the case this is written
+against: EUR 2.82 on a EUR 130 account — over two percent of everything — with the stop twelve
+pips below entry, and the answer came back HOLD with no mention of the exposure. The owner saw it
+in one glance at the terminal. Note the R was only 0.44 because the stop was wide, which is
+exactly why R is the wrong unit for this judgement and the money is the right one.
 
 When what is in hand is around half a percent of the account or more, and the remaining reach is
 not clearly coming, take it. Safe beats greedy. A live USDCHF long is the case this is written
