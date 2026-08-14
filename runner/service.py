@@ -210,6 +210,14 @@ class _EntryRevalidation:
         return self.plan is not None
 
 
+#: How often the buffered position path is handed to the long memory, and
+#: how many samples may queue before it goes early. Sixty seconds because
+#: the guard samples about once a second and one round trip a minute is
+#: invisible next to a network hop inside every pass; the row cap is what
+#: stops four busy positions waiting a full minute.
+_POSITION_PATH_FLUSH_SECONDS = 60.0
+_POSITION_PATH_MAX_BUFFER = 240
+
 #: AI verdicts retained. One per symbol and direction per bar of the fastest
 #: timeframe, so a few hundred covers a full catalogue for several bars.
 _REVIEW_CACHE_ENTRIES = 500
@@ -452,6 +460,10 @@ class JarvisRunner:
         self.health_file = root / "runtime" / "position_health.json"
         # ticket -> when the supervisor last looked at it, so an open position
         # is reconsidered on a sane cadence rather than every thirty seconds.
+        #: Guard-pass samples of every open position, waiting for the
+        #: batched flush into Neon. See `_flush_position_path`.
+        self._position_path: list[dict[str, object]] = []
+        self._position_path_flushed_at: datetime | None = None
         self._supervised_at: dict[int, datetime] = {}
         self._supervision_due_at: dict[int, datetime] = {}
         self._supervision_snapshots: dict[int, _SupervisionSnapshot] = {}
@@ -3762,6 +3774,83 @@ class JarvisRunner:
                 market=market,
                 health=health,
             )
+            self._buffer_position_path(int(row["id"]), position, row, market, observed_at)
+        self._flush_position_path(observed_at)
+
+    def _buffer_position_path(  # type: ignore[no-untyped-def]
+        self, trade_id: int, position, row, market, observed_at
+    ) -> None:
+        """Queue one guard-pass sample of this position for the long memory.
+
+        The same state `record_position_state` writes to local SQLite, held for
+        the batched flush below. SQLite lives on a rented VPS and is queried by
+        nobody across months; Neon is where "how did positions like this one
+        actually behave" becomes answerable.
+
+        `stop_r` and `protected` are what make this a management record rather
+        than a price series: they say how much of the money on the table was
+        actually safe at each instant. Without them the CADCHF question — was
+        holding EUR 2.82 behind a stop below entry right — has no data behind
+        it at all.
+        """
+        try:
+            entry = float(position.price_open)
+            risk = abs(entry - float(row["sl"]))
+            price = float(market.get("price") or 0.0)
+            if risk <= 0 or not price:
+                return
+            sign = int(position.direction)
+            r_now = (price - entry) * sign / risk
+            stop = float(position.sl or 0.0)
+            health = self.manager.last_health.get(position.ticket)
+            self._position_path.append(
+                {
+                    "trade_id": trade_id,
+                    "sampled_at": observed_at,
+                    "price": price,
+                    "r_now": r_now,
+                    "peak_r": max(float(row["mfe_r"] or 0.0), r_now),
+                    "money": float(position.profit) + float(position.swap),
+                    "stop_price": stop or None,
+                    "stop_r": ((stop - entry) * sign / risk) if stop else None,
+                    "protected": bool(stop and (stop - entry) * sign > 0),
+                    "health": getattr(health, "verdict", "") if health else "",
+                }
+            )
+        except (AttributeError, KeyError, IndexError, TypeError, ValueError):
+            # A sample is telemetry. Losing one must never disturb the loop
+            # watching real money.
+            return
+
+    def _flush_position_path(self, now: datetime) -> None:
+        """Hand the buffer to the brain, at most once per flush interval.
+
+        Buffered rather than written per pass because the guard runs about once
+        a second on one vCPU: a network round trip inside that loop would make
+        the thing watching the money the slowest part of the system. A minute
+        of samples across a handful of positions is a few hundred narrow rows
+        in a single statement.
+
+        Dropped rather than grown without bound when the brain is unreachable.
+        The alternative is a buffer that swells for the life of the process
+        while Neon is down, trading a telemetry gap for a memory leak inside
+        the position guard.
+        """
+        if not self._position_path:
+            return
+        due = (
+            self._position_path_flushed_at is None
+            or (now - self._position_path_flushed_at).total_seconds()
+            >= _POSITION_PATH_FLUSH_SECONDS
+        )
+        if not due and len(self._position_path) < _POSITION_PATH_MAX_BUFFER:
+            return
+        batch, self._position_path = self._position_path, []
+        self._position_path_flushed_at = now
+        try:
+            self.memory.record_position_path(batch)
+        except Exception:  # noqa: BLE001 - the guard must survive a sick memory
+            log.debug("position path flush failed", extra={"event": "position_path_flush_failed"})
 
     def _report_promotion_evidence(self) -> None:
         """Run the evidence audit for experimental live and report, without blocking.
