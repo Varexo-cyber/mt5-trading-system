@@ -1610,6 +1610,19 @@ class JarvisRunner:
                 autonomous, self.clock.now(), self.posture.patience_multiplier
             )
             self._record_management(events)
+            # The local outcome model costs no API call. Give it the same
+            # event-driven opportunity on every guard pass as the mechanical
+            # health reader. `_supervision_trigger` still suppresses unchanged
+            # repeats, so "once a second" means attentive, not a fresh random
+            # answer sixty times a minute. Paid advisers remain cycle-bound.
+            advisor = getattr(self, "advisor", None)
+            if (
+                advisor is not None
+                and not getattr(advisor, "uses_paid_api", True)
+                and getattr(advisor, "supports_dynamic_management", False)
+            ):
+                fresh = self._autonomously_managed_positions(self._managed_positions())
+                self._supervise_positions(fresh)
             return events
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning(

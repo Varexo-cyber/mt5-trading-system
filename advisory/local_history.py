@@ -68,6 +68,19 @@ class _SupervisionShape:
     features: dict[str, float]
 
 
+@dataclass(frozen=True, slots=True)
+class _OutcomeRecord:
+    symbol: str
+    direction: str
+    trades: int
+    wins: int
+    total_r: float
+
+    @property
+    def mean_r(self) -> float:
+        return self.total_r / self.trades if self.trades else 0.0
+
+
 class LocalHistoryAdvisor:
     """Replay broad Claude judgement without making an external API call.
 
@@ -91,12 +104,14 @@ class LocalHistoryAdvisor:
         self.examples = _load_examples(ledger_path)
         self.supervision_examples = _load_supervision_examples(ledger_path)
         self._supervision_signature = _supervision_sources_signature(ledger_path)
+        self.outcomes = _load_outcome_records(ledger_path)
+        self._entry_signature = self._supervision_signature
 
     def scout(self, _market_state: Mapping[str, object]) -> ScoutDecision:
         return ScoutDecision(
             thesis="Paid market scouting is disabled in local-history mode",
             provider="local_history",
-            model="claude_archive",
+            model="jarvis_outcome_memory",
         )
 
     def review(
@@ -106,9 +121,11 @@ class LocalHistoryAdvisor:
         proposal: Mapping[str, object] | None = None,
         memory: Mapping[str, object] | None = None,
     ) -> Advice:
+        self._refresh_entry_evidence()
         payload = build_review_payload(idea, context, proposal, memory)
         current = _shape(payload)
         direction = idea.direction.name if idea.direction is not None else ""
+        engine_basis = _engine_basis(idea, self.outcomes.get((idea.symbol.upper(), direction)))
         ranked = sorted(
             (
                 (_distance(current, example), example)
@@ -122,11 +139,11 @@ class LocalHistoryAdvisor:
             return Advice(
                 True,
                 max(self.minimum, min(1.0, idea.confidence)),
-                f"Local history found {len(neighbors)} sufficiently similar Claude reviews; "
-                f"{self.min_neighbors} are required for a learned veto. Deterministic Jarvis "
-                "analysis remains authoritative.",
+                f"{engine_basis} The secondary reviewer archive found {len(neighbors)} "
+                f"sufficiently similar opinions; {self.min_neighbors} are required before "
+                "that archive may veto Jarvis.",
                 provider="local_history",
-                model="claude_archive",
+                model="jarvis_outcome_memory",
                 said_yes=True,
                 threshold=self.minimum,
             )
@@ -141,12 +158,12 @@ class LocalHistoryAdvisor:
             return Advice(
                 False,
                 min(1.0, learned_veto_rate),
-                f"Local Claude history veto: {len(neighbors)} comparable reviews produced "
-                f"a weighted {learned_veto_rate:.0%} refusal rate. Closest recorded reason: "
-                f"{closest.thesis or 'no thesis recorded'}",
+                f"{engine_basis} Secondary archive veto: {len(neighbors)} comparable reviewer "
+                f"opinions produced a weighted {learned_veto_rate:.0%} refusal rate. Closest "
+                f"recorded reason: {closest.thesis or 'no thesis recorded'}",
                 risks=closest.risks,
                 provider="local_history",
-                model="claude_archive",
+                model="jarvis_outcome_memory",
                 said_yes=False,
                 threshold=self.minimum,
             )
@@ -155,11 +172,11 @@ class LocalHistoryAdvisor:
         return Advice(
             True,
             max(self.minimum, min(1.0, useful_rate)),
-            f"Local Claude history permits this setup: {len(neighbors)} comparable reviews "
-            f"did not reach the {self.veto_rate:.0%} learned-veto threshold. Deterministic "
-            "price, spread, sizing and broker checks still run.",
+            f"{engine_basis} The secondary archive contains {len(neighbors)} comparable "
+            f"reviewer opinions and did not reach its {self.veto_rate:.0%} veto threshold. "
+            "Price, spread, sizing and broker checks still run.",
             provider="local_history",
-            model="claude_archive",
+            model="jarvis_outcome_memory",
             said_yes=True,
             threshold=self.minimum,
         )
@@ -168,7 +185,7 @@ class LocalHistoryAdvisor:
         return Reflection(
             "Paid post-trade reflection is disabled; realised outcome remains in Jarvis memory",
             provider="local_history",
-            model="claude_archive",
+            model="jarvis_outcome_memory",
         )
 
     def supervise(self, position_state: Mapping[str, object]) -> Supervision:
@@ -190,7 +207,7 @@ class LocalHistoryAdvisor:
                 f"{self.min_neighbors} are required before it may intervene.",
                 confidence=0.0,
                 provider="local_history",
-                model="claude_archive",
+                model="jarvis_outcome_memory",
                 review_after_minutes=2.0,
             )
 
@@ -215,7 +232,7 @@ class LocalHistoryAdvisor:
                 "Local position AI has no outcome-graded action with enough comparable states.",
                 confidence=0.0,
                 provider="local_history",
-                model="claude_archive",
+                model="jarvis_outcome_memory",
                 review_after_minutes=2.0,
             )
 
@@ -238,7 +255,7 @@ class LocalHistoryAdvisor:
                 f"{action} class is not decisive ({confidence:.0%}; {comparison}).",
                 confidence=confidence,
                 provider="local_history",
-                model="claude_archive",
+                model="jarvis_outcome_memory",
                 review_after_minutes=2.0,
             )
 
@@ -249,7 +266,7 @@ class LocalHistoryAdvisor:
             f"{closest.reason or 'no reason recorded'}",
             confidence=max(self.minimum, confidence),
             provider="local_history",
-            model="claude_archive",
+            model="jarvis_outcome_memory",
             thesis_state="broken" if action == "close" else "intact",
             urgency="soon" if action == "close" else "routine",
             review_after_minutes=2.0,
@@ -262,6 +279,35 @@ class LocalHistoryAdvisor:
             return
         self.supervision_examples = _load_supervision_examples(self.ledger_path)
         self._supervision_signature = signature
+
+    def _refresh_entry_evidence(self) -> None:
+        """Pick up new reviews and realised trades without a Jarvis restart."""
+        signature = _supervision_sources_signature(self.ledger_path)
+        if signature == self._entry_signature:
+            return
+        self.examples = _load_examples(self.ledger_path)
+        self.outcomes = _load_outcome_records(self.ledger_path)
+        self._entry_signature = signature
+
+
+def _engine_basis(idea: TradeIdea, outcome: _OutcomeRecord | None) -> str:
+    modules = [signal.module for signal in idea.signals if signal.score > 0]
+    module_text = ", ".join(modules) if modules else "the active price model"
+    direction = idea.direction.name if idea.direction is not None else "unknown"
+    basis = (
+        f"Jarvis independently formed this {direction} setup from {module_text}, "
+        f"scoring {idea.score:.1f} with {idea.confidence:.0%} engine confidence."
+    )
+    if outcome is None or outcome.trades == 0:
+        return basis + " Its own realised record has no matching symbol/direction trade yet."
+    evidence = "anecdotal" if outcome.trades < 30 else "developing"
+    if outcome.trades >= 100:
+        evidence = "minimum sample reached"
+    return (
+        basis + f" Its own {idea.symbol} {outcome.direction} record is {outcome.trades} trades, "
+        f"{outcome.wins / outcome.trades:.0%} wins and {outcome.total_r:+.2f}R total "
+        f"({outcome.mean_r:+.2f}R/trade; {evidence})."
+    )
 
 
 def _load_examples(path: Path) -> tuple[_Example, ...]:
@@ -410,6 +456,29 @@ def _closed_trade_outcomes(ledger_path: Path) -> dict[int, float]:
     return {int(ticket): float(pnl_r) for ticket, pnl_r in rows}
 
 
+def _load_outcome_records(ledger_path: Path) -> dict[tuple[str, str], _OutcomeRecord]:
+    """Jarvis' own realised scoreboard, independent of reviewer wording."""
+    database = _outcome_database(ledger_path)
+    if database is None:
+        return {}
+    try:
+        with sqlite3.connect(database) as connection:
+            rows = connection.execute(
+                "SELECT UPPER(symbol), UPPER(direction), COUNT(*), "
+                "SUM(CASE WHEN pnl_r > 0 THEN 1 ELSE 0 END), SUM(pnl_r) "
+                "FROM trades WHERE closed_at IS NOT NULL AND pnl_r IS NOT NULL "
+                "GROUP BY UPPER(symbol), UPPER(direction)"
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return {}
+    return {
+        (str(symbol), str(direction)): _OutcomeRecord(
+            str(symbol), str(direction), int(trades), int(wins or 0), float(total_r or 0.0)
+        )
+        for symbol, direction, trades, wins, total_r in rows
+    }
+
+
 def _outcome_database(ledger_path: Path) -> Path | None:
     candidates = (
         ledger_path.parent.parent / "journal" / "trading.db",
@@ -418,12 +487,12 @@ def _outcome_database(ledger_path: Path) -> Path | None:
     return next((candidate for candidate in candidates if candidate.exists()), None)
 
 
-def _supervision_sources_signature(ledger_path: Path) -> tuple[tuple[int, int], ...]:
+def _supervision_sources_signature(ledger_path: Path) -> tuple[tuple[object, ...], ...]:
     sources = [ledger_path]
     database = _outcome_database(ledger_path)
     if database is not None:
         sources.append(database)
-    signature: list[tuple[int, int]] = []
+    signature: list[tuple[object, ...]] = []
     for source in sources:
         try:
             stat = source.stat()
@@ -431,6 +500,22 @@ def _supervision_sources_signature(ledger_path: Path) -> tuple[tuple[int, int], 
             signature.append((0, 0))
         else:
             signature.append((stat.st_mtime_ns, stat.st_size))
+    # SQLite may update values without changing file size, and on some Windows
+    # volumes two writes inside one clock tick share an mtime. Include a cheap
+    # outcome aggregate so a just-closed trade becomes learning evidence on
+    # the very next review instead of waiting for a restart or another write.
+    if database is not None:
+        try:
+            with sqlite3.connect(database) as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(pnl_r), 0.0), "
+                    "COALESCE(MAX(closed_at), '') FROM trades "
+                    "WHERE closed_at IS NOT NULL AND pnl_r IS NOT NULL"
+                ).fetchone()
+        except (OSError, sqlite3.Error):
+            signature.append(("outcomes", "unavailable"))
+        else:
+            signature.append(("outcomes", int(row[0]), float(row[1]), str(row[2])))
     return tuple(signature)
 
 
@@ -538,17 +623,11 @@ def _supervision_shape(payload: Mapping[str, object]) -> _SupervisionShape:
         "peak_r": _clip(_number(payload.get("peak_unrealised_r")), 0.0, 3.0) / 3.0,
         "giveback": _clip(_number(payload.get("profit_given_back_fraction")), 0.0, 1.0),
         "age": _clip(_number(payload.get("age_hours")), 0.0, 24.0) / 24.0,
-        "spread": _clip(
-            _number(payload.get("spread_as_fraction_of_initial_risk")), 0.0, 0.25
-        )
+        "spread": _clip(_number(payload.get("spread_as_fraction_of_initial_risk")), 0.0, 0.25)
         / 0.25,
         "stop_atr": _clip(_number(payload.get("distance_to_stop_in_atr")), 0.0, 5.0) / 5.0,
-        "target_atr": _clip(_number(payload.get("distance_to_target_in_atr")), 0.0, 8.0)
-        / 8.0,
-        "account_profit": _clip(
-            _number(payload.get("unrealised_pct_of_account")), -2.0, 2.0
-        )
-        / 2.0,
+        "target_atr": _clip(_number(payload.get("distance_to_target_in_atr")), 0.0, 8.0) / 8.0,
+        "account_profit": _clip(_number(payload.get("unrealised_pct_of_account")), -2.0, 2.0) / 2.0,
         "health": _clip(_number(health.get("severity")), 0.0, 1.0),
         "health_exit": 1.0 if health_action == "exit" else 0.0,
         "health_tighten": 1.0 if health_action == "tighten" else 0.0,
@@ -562,9 +641,7 @@ def _supervision_shape(payload: Mapping[str, object]) -> _SupervisionShape:
     return _SupervisionShape(str(payload.get("direction") or "").upper(), features)
 
 
-def _supervision_distance(
-    current: _SupervisionShape, example: _SupervisionExample
-) -> float:
+def _supervision_distance(current: _SupervisionShape, example: _SupervisionExample) -> float:
     keys = current.features.keys() & example.features.keys()
     if not keys:
         return 1.0

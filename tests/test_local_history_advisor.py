@@ -114,9 +114,7 @@ def _supervision_ledger(
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
     with sqlite3.connect(path.parent / "trading.db") as connection:
-        connection.execute(
-            "CREATE TABLE trades (ticket INTEGER, closed_at TEXT, pnl_r REAL)"
-        )
+        connection.execute("CREATE TABLE trades (ticket INTEGER, closed_at TEXT, pnl_r REAL)")
         connection.executemany(
             "INSERT INTO trades (ticket, closed_at, pnl_r) VALUES (?, ?, ?)",
             [
@@ -152,8 +150,9 @@ def test_local_history_repeats_only_a_supported_historical_veto(tmp_path: Path) 
 
     assert not advice.approved
     assert advice.provider == "local_history"
-    assert advice.model == "claude_archive"
-    assert "5 comparable reviews" in advice.thesis
+    assert advice.model == "jarvis_outcome_memory"
+    assert "5 comparable reviewer opinions" in advice.thesis
+    assert "Jarvis independently formed" in advice.thesis
     assert not advice.usage
 
 
@@ -167,6 +166,32 @@ def test_unknown_setup_passes_to_deterministic_jarvis(tmp_path: Path) -> None:
     assert advice.approved
     assert advice.said_yes
     assert "5 are required" in advice.thesis
+    assert "Jarvis independently formed" in advice.thesis
+
+
+def test_entry_explanation_hot_loads_jarvis_own_realised_record(tmp_path: Path) -> None:
+    history = tmp_path / "reviews.jsonl"
+    _ledger(history, 5, approved=True)
+    adviser = LocalHistoryAdvisor(_config(), history)
+    assert "no matching symbol/direction trade" in adviser.review(_idea(), _context()).thesis
+
+    with sqlite3.connect(tmp_path / "trading.db") as connection:
+        connection.execute(
+            "CREATE TABLE trades (symbol TEXT, direction TEXT, closed_at TEXT, pnl_r REAL)"
+        )
+        connection.executemany(
+            "INSERT INTO trades VALUES (?, ?, ?, ?)",
+            [
+                ("EURUSD.i", "SHORT", "2026-08-14T12:00:00+00:00", result)
+                for result in (0.5, 0.3, -0.2)
+            ],
+        )
+
+    advice = adviser.review(_idea(), _context())
+
+    assert "Its own EURUSD.i SHORT record is 3 trades" in advice.thesis
+    assert "67% wins" in advice.thesis
+    assert "+0.60R total" in advice.thesis
 
 
 def test_factory_builds_local_adviser_without_api_credentials(tmp_path: Path) -> None:
