@@ -377,7 +377,10 @@ class JarvisRunner:
         self.shadow_engine = self._shadow_engine()
         self.playbook_config = self.settings.analysis.playbooks
         self.playbooks = self._build_playbooks()
-        self.advisor = advisor or build_advisor(self.settings.ai)
+        self.advisor = advisor or build_advisor(
+            self.settings.ai,
+            history_path=root / "runtime" / "ai_reviews.jsonl",
+        )
         self.ai_ledger = AIReviewLedger(
             root / "runtime" / "ai_reviews.jsonl",
             database=self.journal,
@@ -3738,7 +3741,11 @@ class JarvisRunner:
         models an attentive human without asking a stochastic model the same
         question sixty times a minute until it eventually changes its mind.
         """
-        if isinstance(self.advisor, DisabledAdvisor) or self.operation is OperationMode.MONITOR:
+        if (
+            isinstance(self.advisor, DisabledAdvisor)
+            or not getattr(self.advisor, "supports_dynamic_management", True)
+            or self.operation is OperationMode.MONITOR
+        ):
             return
         interval = self.settings.trade_management.supervision_interval_minutes
         if interval <= 0:
@@ -4837,6 +4844,8 @@ class JarvisRunner:
 
     def _review_budget_left(self) -> int | None:
         """Paid reviews still allowed this cycle. None means no budget is set."""
+        if not getattr(self.advisor, "uses_paid_api", True):
+            return None
         budget = self.settings.ai.max_reviews_per_cycle
         if budget <= 0:
             return None
@@ -5012,7 +5021,11 @@ class JarvisRunner:
                 mfe_r=float(row["mfe_r"]) if row["mfe_r"] is not None else None,
                 mae_r=float(row["mae_r"]) if row["mae_r"] is not None else None,
             )
-        if isinstance(self.advisor, DisabledAdvisor) or self.memory.has_reflection(trade_id):
+        if (
+            isinstance(self.advisor, DisabledAdvisor)
+            or not getattr(self.advisor, "supports_dynamic_management", True)
+            or self.memory.has_reflection(trade_id)
+        ):
             return
         outcome = {
             "trade_id": int(row["id"]),

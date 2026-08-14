@@ -88,12 +88,15 @@ connector = MT5Connector(
 )
 service = DashboardService(connector, settings)
 kill_switch = KillSwitch.in_dir(PACKAGE_ROOT, settings.system.kill_switch_file)
-ai_ready = (
+local_history_mode = settings.ai.enabled and settings.ai.provider == "local_history"
+paid_ai_ready = (
     settings.ai.enabled
     and settings.ai.provider == "anthropic"
     and bool(settings.ai.anthropic_model)
     and bool(os.getenv("ANTHROPIC_API_KEY"))
 )
+ai_ready = local_history_mode or paid_ai_ready
+decision_layer_name = "Lokale Claude-historie" if local_history_mode else "Claude"
 
 
 @st.fragment(run_every="3s")
@@ -995,6 +998,13 @@ def render_learning() -> None:
 @st.fragment(run_every="3s")
 def render_supervision() -> None:
     """Claude's decisions about positions that are already open."""
+    if local_history_mode:
+        st.info(
+            "Betaalde AI-positiebeoordeling staat tijdelijk uit. Het vaste Jarvis-beheer "
+            "blijft actief: SL/TP, break-even, trailing, winstbewaking en invalidatie worden "
+            "nog steeds door de normale regels uitgevoerd."
+        )
+        return
     rows = supervision_rows(read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl", limit=400))
     if not rows:
         st.info(
@@ -1051,12 +1061,25 @@ def render_ai_exchange() -> None:
 
     spend = spend_summary(exchanges)
     replays = int(spend["replayed_calls"])
+    local_decisions = sum(
+        str((item.get("decision") or {}).get("provider", "")) == "local_history"
+        for item in decisions
+        if isinstance(item.get("decision"), dict)
+    )
+    paid_calls = sum(
+        str((item.get("decision") or {}).get("provider", ""))
+        in {"anthropic", "openai", "consensus"}
+        and not bool((item.get("decision") or {}).get("replayed"))
+        for item in decisions
+        if isinstance(item.get("decision"), dict)
+    )
     with st.container(horizontal=True):
         # Betaalde calls, niet het aantal regels. Een herhaald oordeel staat
         # in de tabel omdat het een echte beslissing was, maar er ging geen
         # verzoek de deur uit — het deck telde ze mee en rapporteerde daardoor
         # bijna het dubbele van wat er werkelijk werd uitgegeven.
-        st.metric("Betaald naar Claude", len(exchanges) - replays, border=True)
+        st.metric("Betaalde API-calls", paid_calls, border=True)
+        st.metric("Lokaal beoordeeld", local_decisions, border=True)
         st.metric("Uit geheugen (gratis)", replays, border=True)
         st.metric("Goedgekeurd", approvals, border=True)
         st.metric("Wacht op betere prijs", retests, border=True)
@@ -1091,9 +1114,10 @@ def render_ai_exchange() -> None:
 
     st.caption(
         "Automatische update iedere 3 seconden. Alleen voorstellen die analyse, risico, "
-        "filters, sizing en marge al hebben gehaald, worden betaald naar Claude gestuurd. "
+        "filters, sizing en marge al hebben gehaald, bereiken de actieve beslislaag. "
         "**AI APPROVED is nog geen MT5-order:** daarna worden prijs, posities, sizing en "
-        "brokerstatus opnieuw gecontroleerd. De kolom 'Na Claude' toont het echte eindresultaat."
+        "brokerstatus opnieuw gecontroleerd. De kolom 'Na beslislaag' toont het echte "
+        "eindresultaat."
     )
 
     if exchanges:
@@ -1111,7 +1135,7 @@ def render_ai_exchange() -> None:
                     "Markt": item["symbol"],
                     "Richting": item["direction"],
                     "AI-status": shown_status,
-                    "Na Claude": outcome.get("status", "NOG NIET GEREGISTREERD"),
+                    "Na beslislaag": outcome.get("status", "NOG NIET GEREGISTREERD"),
                     "Uitvoeringsuitleg": outcome.get(
                         "detail", "Wacht op de journal-/orderregistratie van Jarvis."
                     ),
@@ -1120,13 +1144,19 @@ def render_ai_exchange() -> None:
                     # betaalde calls. Drie ervan waren herhalingen van hetzelfde
                     # oordeel over een ongewijzigde setup, en dat is precies wat
                     # de cache hoort te doen — maar dat moet je kunnen zien.
-                    "Betaald": "nee (geheugen)" if decision.get("replayed") else "ja",
+                    "Betaald": (
+                        "nee (lokaal)"
+                        if decision.get("provider") == "local_history"
+                        else "nee (geheugen)"
+                        if decision.get("replayed")
+                        else "ja"
+                    ),
                     "Duur (ms)": item["latency_ms"],
                     "Confidence": decision.get("confidence"),
                     "Instapmoment": decision.get("entry_timing"),
                     "Grens": decision.get("entry_boundary"),
                     "Chase-risico": decision.get("chase_risk"),
-                    "Claude zegt": decision.get("thesis") or decision.get("error"),
+                    "Beslislaag zegt": decision.get("thesis") or decision.get("error"),
                     "Risico's": ", ".join(str(risk) for risk in decision.get("risks", []) or []),
                 }
             )
@@ -1149,18 +1179,18 @@ def render_ai_exchange() -> None:
             with st.expander(label):
                 request_column, response_column = st.columns(2)
                 with request_column:
-                    st.markdown("**Signaalsysteem → Claude**")
+                    st.markdown(f"**Signaalsysteem → {decision_layer_name}**")
                     st.json(item["request"], expanded=False)
                 with response_column:
-                    st.markdown("**Claude → Jarvis**")
+                    st.markdown(f"**{decision_layer_name} → Jarvis**")
                     if item["decision"]:
                         st.json(item["decision"], expanded=False)
                     else:
-                        st.warning("Claude heeft nog geen antwoord teruggegeven.")
+                        st.warning("De beslislaag heeft nog geen antwoord teruggegeven.")
     else:
         st.info(
-            "Nog niets naar Claude gestuurd. Dat betekent niet dat Jarvis stilstaat: "
-            "tot nu toe heeft geen kandidaat alle vaste poorten vóór Claude gehaald."
+            "Nog niets naar de beslislaag gestuurd. Dat betekent niet dat Jarvis stilstaat: "
+            "tot nu toe heeft geen kandidaat alle vaste poorten ervoor gehaald."
         )
 
     scan_state = read_scan_activity(ROOT / "runtime" / "scan_activity.json")
@@ -1433,22 +1463,29 @@ try:
             ["Instapbeoordeling", "Beheer van open posities", "Wat het systeem heeft geleerd"]
         )
         with entry_view:
-            st.subheader("Wat Jarvis aan Claude geeft en wat Claude antwoordt")
-            st.warning(
-                "Dit is een transparante veto-laag, geen chat die iedere marktcheck betaalt. "
-                "Claude kan een voorstel alleen goedkeuren of blokkeren. Een setup die één "
-                "keer is geweigerd wordt niet opnieuw gestuurd zolang hij niet wezenlijk "
-                "verandert — zie het derde tabblad."
-            )
+            st.subheader(f"Wat Jarvis aan {decision_layer_name} geeft en terugkrijgt")
+            if local_history_mode:
+                st.info(
+                    "API-kosten staan uit. Jarvis vergelijkt een voorstel lokaal met het "
+                    "opgeslagen Claude-archief. Alleen een herhaald, sterk vergelijkbaar "
+                    "veto-patroon kan blokkeren; onbekende setups blijven bij Jarvis' vaste "
+                    "analyse."
+                )
+            else:
+                st.warning(
+                    "Dit is een transparante veto-laag, geen chat die iedere marktcheck "
+                    "betaalt. Claude kan een voorstel alleen goedkeuren of blokkeren."
+                )
             render_ai_exchange()
         with manage_view:
-            st.subheader("Claude beheert de open posities")
-            st.info(
-                "Bij een openstaande positie mag Claude vijf dingen: vasthouden, de stop "
-                "strakker zetten, het target dichterbij halen, deels sluiten of helemaal "
-                "sluiten. Een stop ruimer zetten, het target verder weg leggen, bijkopen of "
-                "omdraaien wordt geweigerd voordat het de broker bereikt."
-            )
+            st.subheader("Beheer van open posities")
+            if not local_history_mode:
+                st.info(
+                    "Bij een openstaande positie mag Claude vijf dingen: vasthouden, de stop "
+                    "strakker zetten, het target dichterbij halen, deels sluiten of helemaal "
+                    "sluiten. Een stop ruimer zetten, het target verder weg leggen, bijkopen "
+                    "of omdraaien wordt geweigerd voordat het de broker bereikt."
+                )
             render_supervision()
         with learn_view:
             st.subheader("Wat dit account zichzelf heeft geleerd")
@@ -1536,12 +1573,18 @@ try:
             st.error(control_error, icon=":material/error:")
         st.metric("Jarvis service", f"RUNNING (PID {running_pid})" if running else "OFF")
         with st.container(border=True):
-            st.subheader("Claude trade gate")
-            ai_state = "READY — FAIL CLOSED" if ai_ready else "BLOCKED"
+            st.subheader("Trade decision gate")
+            ai_state = (
+                "READY — LOKAAL, GEEN API-KOSTEN"
+                if local_history_mode
+                else "READY — FAIL CLOSED"
+                if ai_ready
+                else "BLOCKED"
+            )
             st.metric("Status", ai_state)
+            active_model = "claude_archive" if local_history_mode else settings.ai.anthropic_model
             st.caption(
-                f"Provider: {settings.ai.provider} · model: "
-                f"{settings.ai.anthropic_model or 'not configured'}"
+                f"Provider: {settings.ai.provider} · model: {active_model or 'not configured'}"
             )
             latest_reviews = read_recent_reviews(ROOT / "runtime" / "ai_reviews.jsonl")
             if latest_reviews:
@@ -1556,7 +1599,7 @@ try:
                     }
                 )
             else:
-                st.info("No Claude trade review has been recorded yet.")
+                st.info("Er is nog geen beoordeling door de actieve beslislaag opgeslagen.")
         if heartbeat_path.exists():
             st.json(heartbeat_path.read_text(encoding="utf-8"), expanded=False)
         stopped = kill_switch.is_engaged()
@@ -1654,7 +1697,7 @@ try:
             "Start EXPERIMENTAL LIVE",
             help=(
                 (
-                    "Claude gate is not ready; live starts fail closed."
+                    "Trade decision gate is not ready; live starts fail closed."
                     if not ai_ready
                     else experimental_error
                 )
@@ -1672,7 +1715,7 @@ try:
                     experimental_error or "experimental contract is unavailable"
                 )
             if not ai_ready:
-                experimental_blockers.append("Claude API gate is not ready")
+                experimental_blockers.append("trade decision gate is not ready")
             attempt_start("experimental_live", experimental_blockers)
         with st.form("stop_reset_and_start", border=True):
             st.subheader("STOP resetten of Jarvis opnieuw starten")
@@ -1723,7 +1766,7 @@ try:
             if experimental_contract is None or experimental_error:
                 blockers.append(experimental_error or "experimental contract is unavailable")
             if not ai_ready:
-                blockers.append("Claude API gate is not ready")
+                blockers.append("trade decision gate is not ready")
             if blockers:
                 st.session_state["control_error"] = "Cannot start: " + "; ".join(blockers)
             else:

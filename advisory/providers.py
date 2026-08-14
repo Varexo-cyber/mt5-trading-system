@@ -7,6 +7,7 @@ import math
 import os
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 import pandas as pd
@@ -740,10 +741,17 @@ class ConsensusAdvisor:
         )
 
 
-def build_advisor(config: AIConfig) -> Advisor:
+def build_advisor(config: AIConfig, history_path: Path | None = None) -> Advisor:
     if not config.enabled:
         return DisabledAdvisor()
     try:
+        if config.provider == "local_history":
+            from .local_history import LocalHistoryAdvisor
+
+            return LocalHistoryAdvisor(
+                config,
+                history_path or Path("runtime") / "ai_reviews.jsonl",
+            )
         if config.provider == "openai":
             return OpenAIAdvisor(config)
         if config.provider == "anthropic":

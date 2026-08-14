@@ -134,6 +134,13 @@ class TestBudget:
             service._reviews_this_cycle += 1
         assert service._review_budget_left() is None
 
+    def test_cost_free_local_history_is_never_rationed_as_a_paid_call(self) -> None:
+        service = runner(3)
+        service.advisor.uses_paid_api = False
+        service._reviews_this_cycle = 99
+
+        assert service._review_budget_left() is None
+
     def test_each_paid_review_spends_one(self) -> None:
         """Three *different* candidates, as a cycle actually presents them."""
         service = runner(3)
