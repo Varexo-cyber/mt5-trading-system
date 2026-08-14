@@ -396,3 +396,14 @@ ALTER TABLE supervisions
 
 CREATE INDEX IF NOT EXISTS supervisions_account_direction
     ON supervisions (account, direction);
+
+-- Where a `tighten_stop` actually put the stop, as a fraction of the distance
+-- from entry to the price at that moment. 0.0 is the entry, 1.0 is the price.
+--
+-- Scale-free deliberately, so a placement learned on a twelve-pip stop
+-- transfers to a ninety-pip one. Without it the local model can decide to
+-- protect a position and has no level to name — and `Supervision.
+-- is_risk_reducing` refuses a stop move carrying no level, so the decision was
+-- built, logged and thrown away every time.
+ALTER TABLE supervisions
+    ADD COLUMN IF NOT EXISTS stop_fraction NUMERIC(10, 6);
