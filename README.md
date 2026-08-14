@@ -172,6 +172,15 @@ exact closed candles shown to Claude are also stored in `bar_snapshots` for
 every candidate that reaches the final gate. Learning memory is rebuilt from
 closed journal trades at startup and labels thin samples as anecdotal.
 
+While a Jarvis-managed position is open, every completed guard pass (normally
+once a second) also appends a `position_state_snapshots` row. It stores the
+exact bid/ask and R-state used by management, the broker P/L, SL/TP/volume and
+the health verdict. This makes the complete path between entry and exit
+replayable instead of retaining only the moments at which an action fired. It
+is local SQLite telemetry: no Claude call and no Neon write is made per tick.
+The journal therefore grows with open-position time and must be included in
+VPS disk monitoring and backups.
+
 SQLite at `journal/trading.db` remains the local execution record. When
 `NEON_DATABASE_URL` is present in the gitignored `config/.env`, the optional
 Postgres brain also stores typed decisions, real trades, management events,

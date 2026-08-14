@@ -72,6 +72,7 @@ class TestSchema:
             "trades",
             "order_attempts",
             "management_actions",
+            "position_state_snapshots",
             "management_baselines",
             "shadow_trades",
             "bar_snapshots",
@@ -420,6 +421,50 @@ class TestExecutionTelemetry:
         row = journal.query("SELECT * FROM management_actions")[0]
         assert row["action"] == "BREAK_EVEN"
         assert row["new_sl"] == pytest.approx(1.08512)
+
+    def test_position_state_snapshots_are_append_only(
+        self, recorder: Recorder, journal: Journal, settings: Settings, spec: InstrumentSpec
+    ) -> None:
+        from core.types import Position
+
+        trade_id = recorder.record_trade_open(
+            cycle_pk=None,
+            sizing=make_sizing(settings, spec),
+            ticket=77,
+            entry_price=1.085,
+            equity_before=10_000.0,
+        )
+        position = Position(
+            ticket=77,
+            symbol="EURUSD",
+            direction=Direction.LONG,
+            volume=0.1,
+            price_open=1.085,
+            sl=1.083,
+            tp=1.091,
+            profit=12.5,
+            swap=-0.1,
+            opened_at=NOW,
+        )
+        recorder.record_position_state(
+            trade_id=trade_id,
+            position=position,
+            observed_at=NOW,
+            market={"bid": 1.086, "ask": 1.0861, "current_price": 1.086, "r_now": 0.5},
+            health={"verdict": "healthy", "severity": 0.1, "action": "hold"},
+        )
+        recorder.record_position_state(
+            trade_id=trade_id,
+            position=position,
+            observed_at=NOW + timedelta(seconds=1),
+            market={"bid": 1.0861, "ask": 1.0862, "current_price": 1.0861, "r_now": 0.55},
+            health={"verdict": "watch", "severity": 0.2, "action": "hold"},
+        )
+
+        rows = journal.query("SELECT * FROM position_state_snapshots ORDER BY id")
+        assert len(rows) == 2
+        assert rows[0]["r_now"] == pytest.approx(0.5)
+        assert rows[1]["health_verdict"] == "watch"
 
 
 class TestShadowTrades:

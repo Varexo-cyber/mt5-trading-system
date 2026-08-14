@@ -125,6 +125,16 @@ def test_events_are_recorded() -> None:
     assert recorded == [[ManagementEvent(1, "BREAK_EVEN", "protected")]]
 
 
+def test_each_guard_pass_hands_open_positions_to_the_history_writer() -> None:
+    jarvis, _, _, _ = runner(positions=[open_position(9001)])
+    snapshots: list[list[object]] = []
+    jarvis._record_position_states = lambda positions: snapshots.append(list(positions))  # type: ignore[method-assign]
+
+    jarvis.guard_tick()
+
+    assert [[position.ticket for position in item] for item in snapshots] == [[9001]]
+
+
 def test_cost_free_local_position_ai_is_event_driven_from_the_guard() -> None:
     jarvis, _, _, _ = runner(positions=[open_position()])
     jarvis.advisor = SimpleNamespace(  # type: ignore[assignment]
