@@ -50,8 +50,22 @@ class TestShippedConfig:
         """
         overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"
         settings = load_settings(overlay=overlay, env_overrides=False)
-        assert settings.instruments.asset_classes == ("forex", "metal", "index", "crypto")
-        assert "stock" not in settings.instruments.asset_classes
+        assert settings.instruments.asset_classes == (
+            "forex",
+            "metal",
+            "index",
+            "commodity",
+            "stock",
+            "crypto",
+        )
+        assert set(settings.instruments.asset_classes) == {
+            "forex",
+            "metal",
+            "index",
+            "commodity",
+            "stock",
+            "crypto",
+        }
         assert settings.instruments.symbols_only == ()
         assert settings.scanner.batch_size == 120
         assert settings.scanner.priority_every_cycle
@@ -437,9 +451,16 @@ class TestTradeFrequency:
         )
         assert settings.instruments.symbol_suffix == ".i"
         assert settings.instruments.universe_mode == "affordable"
-        # Narrowed back to four families that move independently of one another.
-        # See the coverage test above for the night of measurement behind it.
-        assert settings.instruments.asset_classes == ("forex", "metal", "index", "crypto")
+        # Every broker asset family participates. The liquid priority lane is
+        # scanned every cycle; the remaining catalogue rotates behind it.
+        assert settings.instruments.asset_classes == (
+            "forex",
+            "metal",
+            "index",
+            "commodity",
+            "stock",
+            "crypto",
+        )
         assert settings.instruments.symbols_only == ()
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
         assert settings.ai.provider == "local_history"
@@ -455,6 +476,10 @@ class TestTradeFrequency:
         # position sizer decides what EUR 100 can express; a hand-written floor
         # refused them before anyone measured the actual setup.
         assert settings.instruments.min_equity_for_symbol == {}
+        assert settings.risk.release_slots_when_unmanageable
+        assert settings.trade_management.bank_enabled
+        assert settings.trade_management.bank_at_equity_pct == pytest.approx(0.6)
+        assert settings.trade_management.bank_hard_at_equity_pct == pytest.approx(0.65)
         for symbol in ("XAUUSD", "US30", "BTCUSD"):
             allowed, reason = settings.symbol_allowed_at_equity(symbol, 100.0)
             assert allowed, f"{symbol} blocked: {reason}"

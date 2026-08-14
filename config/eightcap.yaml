@@ -63,20 +63,15 @@ instruments:
   # RR, MB, ENR en AAL naast een open UK100 zijn niet vier trades maar één
   # trade met vier lots erop, en de poort weigerde dat correct.
   #
-  # DIT IS EEN VERSMALLING, GEEN VERSOEPELING. Er gaat geen enkele poort open.
-  # Wat verdwijnt is de ruis waar de poorten op stukliepen, en wat overblijft
-  # zijn markten die echt van elkaar verschillen: EURUSD, XAUUSD, BTCUSD en
-  # US500 zijn vier weddenschappen, geen vier keer dezelfde.
+  # Analyseer iedere assetklasse die de Eightcap-terminal aanbiedt. De scanner
+  # houdt de liquide kern (FX/crypto en de expliciete priority-symbolen) iedere
+  # cyclus vooraan en roteert daarna door de rest. Zo verdwijnen aandelen en
+  # commodities niet uit beeld, zonder dat één volledige cataloguspass van
+  # ongeveer drie minuten een verse M1/M5-entry oud maakt.
   #
-  # Wat dit NIET raakt: een reeds open aandelenpositie. De guard leest zijn
-  # posities rechtstreeks bij de broker, niet uit dit universum, dus stops,
-  # bankregels, health en de avonduitfasering blijven er onverkort op draaien.
-  # Alleen het zóéken naar nieuwe aandelen stopt.
-  #
-  # `commodity` staat er bewust niet bij maar is de eerste kandidaat om toe te
-  # voegen: olie is een genuinely andere weddenschap dan FX, goud of een index,
-  # en meer echte spreiding is precies wat de correlatiepoort ademruimte geeft.
-  asset_classes: [forex, metal, index, crypto]
+  # Dit opent geen risicopoort: spread, brokerstatus, betaalbaarheid, margin,
+  # correlatie, sizing en de AI/local-history review blijven per order gelden.
+  asset_classes: [forex, metal, index, commodity, stock, crypto]
 
   # Or watch a single instrument. Leave empty for the list above; set e.g.
   # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded
@@ -1009,6 +1004,15 @@ modes:
     max_equity: 500
 
 trade_management:
+  # Bank een bruikbare winst adaptief vanaf 0,60% van equity of 0,30R. Een
+  # duidelijke retrace mag die eerste bankpoging nog even uitstellen, maar
+  # nooit voorbij 0,65% van equity. Bij EUR 153 is dat circa EUR 0,92 voor de
+  # eerste poging en EUR 0,99 als harde bovengrens (voor kosten en slippage).
+  bank_enabled: true
+  bank_at_equity_pct: 0.6
+  bank_at_r: 0.3
+  bank_hard_at_equity_pct: 0.65
+
   # Het leren van de bankdrempel staat UIT, en dat is op bewijs.
   #
   # `management_baselines` speelde tien gebankte trades na tegen hun eigen
