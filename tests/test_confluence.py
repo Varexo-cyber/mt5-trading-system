@@ -477,6 +477,44 @@ class TestHorizonsDoNotOutvoteEachOther:
         assert idea.horizon == "quick"
         assert idea.planning_timeframe == "M5"
 
+    def test_a_weak_quick_flash_does_not_hide_a_qualified_swing(self) -> None:
+        """Firing is detection, not automatic ownership of the symbol.
+
+        The quick read is real enough to report but cannot clear the same
+        confidence-discounted score required of every other setup. The old
+        fastest-wins rule selected it anyway and rejected the whole symbol,
+        hiding the independently qualified swing underneath.
+        """
+        modules = [
+            StubModule(Signal("m1_micro_breakout", -30, 0.5, invalidation_price=1.1115)),
+            StubModule(Signal("trend_momentum", 65, 0.8, invalidation_price=1.1050)),
+        ]
+        config = self._config(weights={"m1_micro_breakout": 0.55, "trend_momentum": 1.0})
+
+        idea = ConfluenceEngine(modules, config).evaluate(
+            self._split_context(falling=False), TradingMode.PAPER
+        )
+
+        assert idea.approved, idea.reason
+        assert idea.direction is Direction.LONG
+        assert idea.horizon == "swing"
+        assert "did not hide a qualified slower setup" in idea.reason
+
+    def test_a_weak_intraday_read_does_not_hide_a_qualified_opposite_swing(self) -> None:
+        modules = [
+            StubModule(Signal("drift_continuation", -30, 0.5, invalidation_price=1.1115)),
+            StubModule(Signal("trend_momentum", 65, 0.8, invalidation_price=1.1050)),
+        ]
+
+        idea = ConfluenceEngine(modules, self._config()).evaluate(
+            self._split_context(falling=False), TradingMode.PAPER
+        )
+
+        assert idea.approved, idea.reason
+        assert idea.direction is Direction.LONG
+        assert idea.horizon == "swing"
+        assert "qualified while the opposing intraday read" in idea.reason
+
     def test_a_lone_group_behaves_exactly_as_before(self) -> None:
         """No swing module firing at all is the common case, and it must not
         have been disturbed by any of this."""
