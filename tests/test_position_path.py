@@ -17,6 +17,8 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 
+import pytest
+
 from brain.store import Brain, BrainStatus, NullBrain
 
 NOW = datetime(2026, 8, 14, 19, 40, tzinfo=UTC)
@@ -58,6 +60,7 @@ def brain(fail_times: int = 0) -> tuple[Brain, dict]:
     instance._connection = _Connection(sink, fail_times)
     instance.enabled = True
     instance.status = BrainStatus(connected=True, dsn_configured=True)
+    instance.account = "5049535"
     return instance, sink
 
 
@@ -140,3 +143,68 @@ class TestItNeverDisturbsTheGuard:
 
     def test_without_a_database_it_is_a_no_op(self) -> None:
         assert NullBrain().record_position_path([sample()]) == 0
+
+
+class TestWhatSteppingInEarned:
+    """The comparison existed, had its answer, and nobody who needed it could read it.
+
+    Every closed trade is replayed against its own untouched stop and target,
+    and the difference says whether the rule that closed it beat leaving the
+    trade alone. That ran for weeks and wrote to local SQLite on a rented VPS —
+    while the layer deciding hold-versus-close about once a second had no
+    record of what its own interventions had earned.
+    """
+
+    def test_it_groups_by_the_rule_that_closed_the_trade(self) -> None:
+        """"Our exits cost us" names nothing to stop doing. AI_CLOSE and
+        PEAK_STALL are different decisions and on this account they have
+        pointed in opposite directions."""
+        from brain.store import ManagementRecord
+
+        ai = ManagementRecord(action="AI_CLOSE", trades=3, total_lift_r=1.92, better=3)
+        stall = ManagementRecord(action="PEAK_STALL", trades=10, total_lift_r=-14.9, better=1)
+
+        assert ai.mean_lift_r == pytest.approx(0.64, abs=0.01)
+        assert "beat holding" in ai.summary()
+        assert stall.mean_lift_r == pytest.approx(-1.49, abs=0.01)
+        assert "cost us against holding" in stall.summary()
+
+    def test_the_briefing_says_which_way_to_read_it(self) -> None:
+        """A number handed to an adviser is used however much hedging surrounds
+        it, so the weight line has to state the direction explicitly."""
+        store, _ = brain()
+        store.management_records = lambda *_, **__: [  # type: ignore[method-assign]
+            ManagementRecordStub("AI_CLOSE", 3, 1.92, 3)
+        ]
+        store.lessons = lambda *_, **__: []  # type: ignore[method-assign]
+        store.scoreboard = lambda *_, **__: []  # type: ignore[method-assign]
+        store.gate_scoreboard = lambda *_, **__: []  # type: ignore[method-assign]
+        store.side_records = lambda *_, **__: []  # type: ignore[method-assign]
+        store.module_records = lambda *_, **__: []  # type: ignore[method-assign]
+
+        brief = store.briefing()
+
+        assert "what_stepping_in_has_earned" in brief
+        weight = brief["what_stepping_in_has_earned"]["weight"]
+        assert "MANAGEMENT rather than" in weight
+        assert "negative record is a reason to hold" in weight
+
+    def test_a_thin_sample_is_withheld_rather_than_hedged(self) -> None:
+        """One trade is not a weaker version of the finding, it is a false one."""
+        store, sink = brain()
+        sink["rows"] = []
+        store._run = lambda *_, **__: []  # type: ignore[method-assign]
+
+        assert store.management_records(minimum_trades=3) == []
+
+    def test_without_a_database_there_is_no_record(self) -> None:
+        assert NullBrain().management_records() == []
+        assert NullBrain().record_management_outcome(local_trade_id=1) is None
+
+
+class ManagementRecordStub:
+    def __init__(self, action: str, trades: int, lift: float, better: int) -> None:
+        self.action, self.trades, self.total_lift_r, self.better = action, trades, lift, better
+
+    def summary(self) -> str:
+        return f"{self.action}: {self.trades} trades, {self.total_lift_r:+.2f}R"

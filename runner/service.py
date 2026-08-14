@@ -3560,8 +3560,36 @@ class JarvisRunner:
             now,
             on_resolved=self._persist_counterfactual,
         )
-        resolve_management_baselines(self.recorder, self.broker, now)
+        resolve_management_baselines(
+            self.recorder,
+            self.broker,
+            now,
+            on_resolved=self._persist_management_outcome,
+        )
         self.shadow.resolve(self.broker, now)
+
+    def _persist_management_outcome(self, row: dict[str, object]) -> None:
+        """Copy one resolved hold-versus-close comparison into the Neon brain.
+
+        The comparison already ran for every closed trade and already had its
+        answer; it lived only in local SQLite, where the layer deciding
+        hold-versus-close every second cannot read it. `Brain.management_records`
+        reads it back into the briefing, which is what closes the loop.
+        """
+        try:
+            self.brain.record_management_outcome(
+                local_trade_id=int(row["trade_id"]),  # type: ignore[arg-type]
+                resolved_at=self.clock.now(),
+                symbol=str(row.get("symbol", "") or ""),
+                direction=str(row.get("direction", "") or ""),
+                exit_action=str(row.get("exit_action", "") or ""),
+                baseline_pnl_r=float(row["baseline_pnl_r"]),  # type: ignore[arg-type]
+                actual_pnl_r=float(row["actual_pnl_r"]),  # type: ignore[arg-type]
+            )
+        except (KeyError, TypeError, ValueError):
+            # Learning is not a risk control. A malformed row costs one
+            # observation, never the resolver loop.
+            return
 
     def _persist_counterfactual(self, row: dict[str, object]) -> None:
         """Copy one resolved local shadow plan to the durable Neon brain."""
@@ -3848,7 +3876,7 @@ class JarvisRunner:
         batch, self._position_path = self._position_path, []
         self._position_path_flushed_at = now
         try:
-            self.memory.record_position_path(batch)
+            self.brain.record_position_path(batch)
         except Exception:  # noqa: BLE001 - the guard must survive a sick memory
             log.debug("position path flush failed", extra={"event": "position_path_flush_failed"})
 

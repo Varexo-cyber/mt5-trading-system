@@ -338,3 +338,40 @@ CREATE TABLE IF NOT EXISTS position_path (
 );
 
 CREATE INDEX IF NOT EXISTS position_path_trade ON position_path (trade_id, sampled_at);
+
+-- What stepping in was worth, one row per closed trade.
+--
+-- Every closed trade is replayed against its own untouched stop and target
+-- until one of them is reached, and the difference is the whole question:
+-- did the rule that closed this trade beat leaving it alone?
+--
+-- The comparison already existed and lived only in local SQLite, where the
+-- part of the system that decides hold-versus-close every second could not
+-- read it. So the judgement layer has been making that call on this account
+-- for weeks with no idea what its own interventions have earned — while the
+-- answer sat in a file on the VPS. `Brain.management_records` reads it back
+-- into the briefing.
+--
+-- `exit_action` is the rule that actually closed it: AI_CLOSE, PEAK_STALL,
+-- PROFIT_BANKED, BROKER_TP, BROKER_SL. Grouped by that, `lift_r` says which
+-- interventions pay and which are expensive habits.
+CREATE TABLE IF NOT EXISTS management_outcomes (
+    id              BIGSERIAL PRIMARY KEY,
+    account         TEXT        NOT NULL,
+    trade_id        BIGINT      REFERENCES trades (id) ON DELETE SET NULL,
+    local_trade_id  BIGINT      NOT NULL,
+    resolved_at     TIMESTAMPTZ NOT NULL,
+    symbol          TEXT        NOT NULL DEFAULT '',
+    direction       TEXT        NOT NULL DEFAULT '',
+    exit_action     TEXT        NOT NULL DEFAULT '',
+    -- What the untouched original plan would have paid.
+    baseline_pnl_r  NUMERIC(10, 4) NOT NULL,
+    -- What the trade actually took home.
+    actual_pnl_r    NUMERIC(10, 4) NOT NULL,
+    -- Positive means intervening beat holding. This is the number.
+    lift_r          NUMERIC(10, 4) NOT NULL,
+    UNIQUE (account, local_trade_id)
+);
+
+CREATE INDEX IF NOT EXISTS management_outcomes_action
+    ON management_outcomes (account, exit_action);

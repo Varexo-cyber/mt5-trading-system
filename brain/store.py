@@ -235,6 +235,37 @@ class SideRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ManagementRecord:
+    """What one exit rule earned against simply leaving the trade alone.
+
+    Every closed trade is replayed against its own untouched stop and target,
+    and `lift_r` is the difference. Positive means intervening beat holding;
+    negative means the rule is an expensive habit.
+
+    Grouped by the rule that actually closed the position, because "our exits
+    are costing us" names nothing to stop doing. AI_CLOSE and PEAK_STALL are
+    different decisions with different records, and on this account they have
+    pointed in opposite directions.
+    """
+
+    action: str
+    trades: int
+    total_lift_r: float
+    better: int
+
+    @property
+    def mean_lift_r(self) -> float:
+        return self.total_lift_r / self.trades if self.trades else 0.0
+
+    def summary(self) -> str:
+        verdict = "beat holding" if self.mean_lift_r > 0 else "cost us against holding"
+        return (
+            f"{self.action}: {self.trades} trades, {self.better} better than leaving it "
+            f"alone, {self.mean_lift_r:+.2f}R per trade — {verdict}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ModuleRecord:
     """What one detector has actually earned, across every trade it found.
 
@@ -583,6 +614,84 @@ class Brain:
             return None
         self.status.writes += 1
         return int(row[0])
+
+    def record_management_outcome(
+        self,
+        *,
+        local_trade_id: int,
+        resolved_at: datetime,
+        symbol: str,
+        direction: str,
+        exit_action: str,
+        baseline_pnl_r: float,
+        actual_pnl_r: float,
+    ) -> None:
+        """What stepping in was worth on one closed trade.
+
+        The replay against the untouched original stop and target already ran
+        for every closed trade and already wrote its answer — to local SQLite,
+        where the layer that decides hold-versus-close every second cannot read
+        it. So that judgement has been made on this account for weeks with no
+        idea what its own interventions have earned, while the answer sat in a
+        file on the VPS.
+        """
+        self._run(
+            """
+            INSERT INTO management_outcomes (
+                account, local_trade_id, resolved_at, symbol, direction,
+                exit_action, baseline_pnl_r, actual_pnl_r, lift_r
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (account, local_trade_id) DO NOTHING
+            """,
+            (
+                self.account,
+                local_trade_id,
+                resolved_at,
+                symbol,
+                direction,
+                exit_action,
+                baseline_pnl_r,
+                actual_pnl_r,
+                actual_pnl_r - baseline_pnl_r,
+            ),
+        )
+        self.status.writes += 1
+
+    def management_records(self, minimum_trades: int = 3) -> list[ManagementRecord]:
+        """Per exit rule: what it took, what holding would have paid, the gap.
+
+        The one thing the judgement layer needs and has never been given. It is
+        asked "hold or close" about once a second and has no record of whether
+        closing has helped — on THIS account, with THESE stops.
+
+        Withheld below `minimum_trades` per rule rather than reported with a
+        caveat. "AI_CLOSE: 1 trade, +0.64R better" is not a weaker version of
+        the finding, it is a different and false one, and an adviser handed a
+        number will use it however much hedging surrounds it.
+        """
+        rows = self._run(
+            """
+            SELECT exit_action, COUNT(*), SUM(lift_r), COUNT(*) FILTER (WHERE lift_r > 0)
+            FROM management_outcomes
+            WHERE account = %s AND exit_action <> ''
+            GROUP BY exit_action
+            HAVING COUNT(*) >= %s
+            ORDER BY COUNT(*) DESC
+            """,
+            (self.account, minimum_trades),
+            fetch="all",
+        )
+        if not rows:
+            return []
+        return [
+            ManagementRecord(
+                action=str(row[0]),
+                trades=int(row[1]),
+                total_lift_r=float(row[2] or 0.0),
+                better=int(row[3]),
+            )
+            for row in rows
+        ]
 
     def record_position_path(self, rows: Sequence[Mapping[str, Any]]) -> int:
         """The second-by-second life of open positions, in one round trip.
@@ -1343,6 +1452,7 @@ class Brain:
         gates = [line.summary() for line in self.gate_scoreboard()]
         sides = self.side_records()
         detectors = self.module_records()
+        management = self.management_records()
         brief: dict[str, Any] = {}
         if lessons:
             brief["lessons_from_past_trades"] = lessons
@@ -1368,6 +1478,20 @@ class Brain:
                     "The engine that produced the proposal in front of you is named in "
                     "`modules`; if it is one of the losing detectors here, that is a "
                     "reason to want more from the chart than usual."
+                ),
+            }
+        if management:
+            brief["what_stepping_in_has_earned"] = {
+                "records": [record.summary() for record in management],
+                "weight": (
+                    "Every closed trade on this account replayed against its own "
+                    "untouched stop and target. Positive means closing early beat "
+                    "leaving it alone; negative means the rule is an expensive habit. "
+                    "This is the only evidence here about MANAGEMENT rather than "
+                    "entries, and it is the question you are being asked: a rule with "
+                    "a negative record is a reason to hold a working trade rather than "
+                    "bank it, and one with a positive record is a reason to act while "
+                    "the money is still there."
                 ),
             }
         if here:
@@ -1417,6 +1541,12 @@ class NullBrain:
 
     def record_position_path(self, _rows: Sequence[Mapping[str, Any]] = ()) -> int:
         return 0
+
+    def record_management_outcome(self, **_: Any) -> None:
+        return None
+
+    def management_records(self, *_: Any, **__: Any) -> list[ManagementRecord]:
+        return []
 
     def record_trade_closed(self, **_: Any) -> None:
         return None
