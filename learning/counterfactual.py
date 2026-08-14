@@ -79,6 +79,7 @@ def resolve_management_baselines(
     *,
     max_age: timedelta = timedelta(hours=72),
     limit: int = 50,
+    on_resolved: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> int:
     """Compare closed managed trades with their untouched original SL/TP.
 
@@ -155,6 +156,25 @@ def resolve_management_baselines(
             actual_pnl_r=actual_r,
             observed_at=now,
         )
+        if on_resolved is not None:
+            # Handed out rather than written here, for the same reason the
+            # shadow resolver does it: this module reads bars and does
+            # arithmetic, and knows nothing about where the answer should
+            # durably live. The caller owns that.
+            on_resolved(
+                {
+                    "trade_id": int(row["id"]),
+                    "symbol": str(row["symbol"] or ""),
+                    "direction": str(row["direction"] or ""),
+                    # The rule that actually closed it. Grouping by this is the
+                    # whole value: "our exits cost us" names nothing to stop
+                    # doing, while AI_CLOSE and PEAK_STALL are different
+                    # decisions with different records.
+                    "exit_action": str(row["exit_reason"] or ""),
+                    "baseline_pnl_r": baseline_r,
+                    "actual_pnl_r": actual_r,
+                }
+            )
         resolved += 1
     return resolved
 
