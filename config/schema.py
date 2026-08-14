@@ -2353,10 +2353,6 @@ class TradeManagementConfig(Base):
     bank_enabled: bool = True
     #: Share of account equity that counts as worth taking.
     bank_at_equity_pct: float = Field(default=0.6, ge=0.0, le=10.0)
-    #: Absolute profit ceiling as a share of equity. Once reached, close even
-    #: when the short-term pace would normally earn the trade more time. Zero
-    #: disables the ceiling; it never changes the initial bank threshold.
-    bank_hard_at_equity_pct: float = Field(default=0.0, ge=0.0, le=10.0)
     #: The same sentence said in R, and the trade banks at whichever is lower.
     #:
     #: Needed because the equity share alone is not stable from trade to trade.

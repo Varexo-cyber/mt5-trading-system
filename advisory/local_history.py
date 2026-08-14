@@ -1,15 +1,17 @@
-"""Cost-free pre-trade vetoes distilled from completed Claude reviews.
+"""Cost-free decisions distilled from completed Claude reviews.
 
 This is deliberately not presented as a replacement language model. Jarvis'
-deterministic analysis still creates the setup. The archive contributes only
-one bounded lesson: when several genuinely similar historical questions were
-all refused by Claude, do not pay to rediscover or blindly ignore that pattern.
-Unknown shapes pass back to the ordinary deterministic gates.
+deterministic analysis still creates the setup. The archive contributes two
+bounded lessons: repeat a well-supported pre-trade refusal, and manage an open
+position like comparable Claude-supervised states only when their realised
+outcomes prove that advice helped. Unknown shapes pass back to the ordinary
+deterministic and broker-native safety layers.
 """
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,10 +51,35 @@ class _Shape:
     features: dict[str, float]
 
 
-class LocalHistoryAdvisor:
-    """Replay broad Claude judgement without making an external API call."""
+@dataclass(frozen=True, slots=True)
+class _SupervisionExample:
+    direction: str
+    features: dict[str, float]
+    action: str
+    confidence: float
+    reason: str
+    r_at_the_time: float
+    result_r: float
 
-    supports_dynamic_management = False
+
+@dataclass(frozen=True, slots=True)
+class _SupervisionShape:
+    direction: str
+    features: dict[str, float]
+
+
+class LocalHistoryAdvisor:
+    """Replay broad Claude judgement without making an external API call.
+
+    This is a small nearest-neighbour model, not a renamed threshold. Entry
+    review compares the complete proposal shape with prior Claude reviews.
+    Position supervision separately compares the live trade state -- R, peak,
+    giveback, age, costs, target/stop distance and mechanical candle health --
+    with prior Claude supervision states. It acts only when several nearby
+    examples strongly agree; unfamiliar states remain a hold.
+    """
+
+    supports_dynamic_management = True
     uses_paid_api = False
 
     def __init__(self, config: AIConfig, ledger_path: Path) -> None:
@@ -62,6 +89,8 @@ class LocalHistoryAdvisor:
         self.veto_rate = config.local_history_veto_rate
         self.ledger_path = ledger_path
         self.examples = _load_examples(ledger_path)
+        self.supervision_examples = _load_supervision_examples(ledger_path)
+        self._supervision_signature = _supervision_sources_signature(ledger_path)
 
     def scout(self, _market_state: Mapping[str, object]) -> ScoutDecision:
         return ScoutDecision(
@@ -142,13 +171,97 @@ class LocalHistoryAdvisor:
             model="claude_archive",
         )
 
-    def supervise(self, _position_state: Mapping[str, object]) -> Supervision:
+    def supervise(self, position_state: Mapping[str, object]) -> Supervision:
+        self._refresh_supervision_examples()
+        current = _supervision_shape(position_state)
+        ranked = sorted(
+            (
+                (_supervision_distance(current, example), example)
+                for example in self.supervision_examples
+                if example.direction == current.direction
+            ),
+            key=lambda item: item[0],
+        )
+        neighbors = [item for item in ranked[:_MAX_NEIGHBORS] if item[0] <= self.max_distance]
+        if len(neighbors) < self.min_neighbors:
+            return Supervision(
+                "hold",
+                f"Local position AI found {len(neighbors)} comparable Claude states; "
+                f"{self.min_neighbors} are required before it may intervene.",
+                confidence=0.0,
+                provider="local_history",
+                model="claude_archive",
+                review_after_minutes=2.0,
+            )
+
+        # Class-balanced nearest neighbours. HOLD naturally outnumbers CLOSE by
+        # a wide margin because a healthy trade is reviewed repeatedly. A raw
+        # majority vote would therefore answer HOLD forever, even when all of
+        # the closest broken-thesis examples are closes. Compare equal-sized
+        # neighbourhoods per action instead; frequency cannot drown proximity.
+        by_action: dict[str, list[tuple[float, _SupervisionExample]]] = {}
+        for distance, example in ranked:
+            if distance <= self.max_distance:
+                by_action.setdefault(example.action, []).append((distance, example))
+        action_distance = {
+            action: sum(distance for distance, _ in items[: self.min_neighbors])
+            / self.min_neighbors
+            for action, items in by_action.items()
+            if len(items) >= self.min_neighbors
+        }
+        if not action_distance:
+            return Supervision(
+                "hold",
+                "Local position AI has no outcome-graded action with enough comparable states.",
+                confidence=0.0,
+                provider="local_history",
+                model="claude_archive",
+                review_after_minutes=2.0,
+            )
+
+        ordered = sorted(action_distance.items(), key=lambda item: item[1])
+        action, distance = ordered[0]
+        runner_up = ordered[1][1] if len(ordered) > 1 else None
+        confidence = max(0.0, min(1.0, 1.0 - distance / self.max_distance))
+        separated = runner_up is None or distance <= runner_up * 0.75
+        closest = by_action[action][0][1]
+
+        if action not in {"hold", "close"} or confidence < self.veto_rate or not separated:
+            comparison = (
+                "no competing action has enough evidence"
+                if runner_up is None
+                else f"nearest competing class is only {runner_up / max(distance, 1e-9):.2f}x away"
+            )
+            return Supervision(
+                "hold",
+                f"Local position AI found {len(neighbors)} nearby states, but the learned "
+                f"{action} class is not decisive ({confidence:.0%}; {comparison}).",
+                confidence=confidence,
+                provider="local_history",
+                model="claude_archive",
+                review_after_minutes=2.0,
+            )
+
         return Supervision(
-            "hold",
-            "Paid AI supervision is disabled; mechanical position management remains active",
+            action,
+            f"Local position AI: the {self.min_neighbors} closest outcome-graded {action} "
+            f"states match at {confidence:.0%} confidence. Closest recorded reasoning: "
+            f"{closest.reason or 'no reason recorded'}",
+            confidence=max(self.minimum, confidence),
             provider="local_history",
             model="claude_archive",
+            thesis_state="broken" if action == "close" else "intact",
+            urgency="soon" if action == "close" else "routine",
+            review_after_minutes=2.0,
         )
+
+    def _refresh_supervision_examples(self) -> None:
+        """Learn newly completed outcomes without requiring a Jarvis restart."""
+        signature = _supervision_sources_signature(self.ledger_path)
+        if signature == self._supervision_signature:
+            return
+        self.supervision_examples = _load_supervision_examples(self.ledger_path)
+        self._supervision_signature = signature
 
 
 def _load_examples(path: Path) -> tuple[_Example, ...]:
@@ -211,6 +324,114 @@ def _load_examples(path: Path) -> tuple[_Example, ...]:
                 )
             )
     return tuple(examples)
+
+
+def _load_supervision_examples(path: Path) -> tuple[_SupervisionExample, ...]:
+    examples: list[_SupervisionExample] = []
+    if not path.exists():
+        return ()
+    outcomes = _closed_trade_outcomes(path)
+    if not outcomes:
+        # Ungraded language-model answers are opinions, not learning data.
+        # Waiting for the trade to close costs coverage; treating every eloquent
+        # answer as truth permanently teaches mistakes.
+        return ()
+    try:
+        lines = path.open(encoding="utf-8")
+    except OSError:
+        return ()
+    with lines:
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(row, Mapping) or row.get("event") != "position_supervision":
+                continue
+            request = row.get("request")
+            decision = row.get("decision")
+            if not isinstance(request, Mapping) or not isinstance(decision, Mapping):
+                continue
+            if decision.get("error") or str(decision.get("provider") or "") not in {
+                "anthropic",
+                "consensus",
+            }:
+                continue
+            action = str(decision.get("action") or "").lower()
+            if action not in {"hold", "close"}:
+                continue
+            try:
+                ticket = int(row.get("ticket") or request.get("ticket") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ticket not in outcomes:
+                continue
+            r_at_the_time = _number(request.get("unrealised_r"))
+            result_r = outcomes[ticket]
+            # A close was useful when waiting did not improve the realised R;
+            # a hold was useful when the eventual result did not deteriorate.
+            # Five hundredths of R absorbs spread and fill noise around equality.
+            useful = (
+                result_r <= r_at_the_time + 0.05
+                if action == "close"
+                else result_r >= r_at_the_time - 0.05
+            )
+            if not useful:
+                continue
+            shape = _supervision_shape(request)
+            if shape.direction not in {"LONG", "SHORT"}:
+                continue
+            examples.append(
+                _SupervisionExample(
+                    direction=shape.direction,
+                    features=shape.features,
+                    action=action,
+                    confidence=_number(decision.get("confidence")),
+                    reason=str(decision.get("reason") or ""),
+                    r_at_the_time=r_at_the_time,
+                    result_r=result_r,
+                )
+            )
+    return tuple(examples)
+
+
+def _closed_trade_outcomes(ledger_path: Path) -> dict[int, float]:
+    database = _outcome_database(ledger_path)
+    if database is None:
+        return {}
+    try:
+        with sqlite3.connect(database) as connection:
+            rows = connection.execute(
+                "SELECT ticket, pnl_r FROM trades "
+                "WHERE closed_at IS NOT NULL AND ticket IS NOT NULL AND pnl_r IS NOT NULL"
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return {}
+    return {int(ticket): float(pnl_r) for ticket, pnl_r in rows}
+
+
+def _outcome_database(ledger_path: Path) -> Path | None:
+    candidates = (
+        ledger_path.parent.parent / "journal" / "trading.db",
+        ledger_path.parent / "trading.db",
+    )
+    return next((candidate for candidate in candidates if candidate.exists()), None)
+
+
+def _supervision_sources_signature(ledger_path: Path) -> tuple[tuple[int, int], ...]:
+    sources = [ledger_path]
+    database = _outcome_database(ledger_path)
+    if database is not None:
+        sources.append(database)
+    signature: list[tuple[int, int]] = []
+    for source in sources:
+        try:
+            stat = source.stat()
+        except OSError:
+            signature.append((0, 0))
+        else:
+            signature.append((stat.st_mtime_ns, stat.st_size))
+    return tuple(signature)
 
 
 def _question(payload: Mapping[str, object]) -> Mapping[str, object]:
@@ -293,6 +514,65 @@ def _distance(current: _Shape, example: _Example) -> float:
     )
     horizon_penalty = 0.0 if not current.horizon or current.horizon == example.horizon else 0.15
     return numerical + family_penalty + horizon_penalty
+
+
+def _supervision_shape(payload: Mapping[str, object]) -> _SupervisionShape:
+    context = payload.get("context")
+    context = context if isinstance(context, Mapping) else {}
+    health = context.get("mechanical_health")
+    health = health if isinstance(health, Mapping) else {}
+    health_action = str(health.get("action") or "").lower()
+    raw_signals = health.get("signals")
+    signals: dict[str, float] = {}
+    if isinstance(raw_signals, list):
+        for item in raw_signals:
+            if isinstance(item, str):
+                signals[item.lower()] = 1.0
+            elif isinstance(item, Mapping):
+                name = str(item.get("name") or "").lower()
+                if name:
+                    signals[name] = _clip(_number(item.get("severity")), 0.0, 1.0)
+    health_verdict = str(health.get("verdict") or "").lower()
+    features = {
+        "unrealised_r": _clip(_number(payload.get("unrealised_r")), -3.0, 3.0) / 3.0,
+        "peak_r": _clip(_number(payload.get("peak_unrealised_r")), 0.0, 3.0) / 3.0,
+        "giveback": _clip(_number(payload.get("profit_given_back_fraction")), 0.0, 1.0),
+        "age": _clip(_number(payload.get("age_hours")), 0.0, 24.0) / 24.0,
+        "spread": _clip(
+            _number(payload.get("spread_as_fraction_of_initial_risk")), 0.0, 0.25
+        )
+        / 0.25,
+        "stop_atr": _clip(_number(payload.get("distance_to_stop_in_atr")), 0.0, 5.0) / 5.0,
+        "target_atr": _clip(_number(payload.get("distance_to_target_in_atr")), 0.0, 8.0)
+        / 8.0,
+        "account_profit": _clip(
+            _number(payload.get("unrealised_pct_of_account")), -2.0, 2.0
+        )
+        / 2.0,
+        "health": _clip(_number(health.get("severity")), 0.0, 1.0),
+        "health_exit": 1.0 if health_action == "exit" else 0.0,
+        "health_tighten": 1.0 if health_action == "tighten" else 0.0,
+        "health_broken": 1.0 if health_verdict == "broken" else 0.0,
+        "health_deteriorating": 1.0 if health_verdict == "deteriorating" else 0.0,
+        "structure_broken": signals.get("structure_broken", 0.0),
+        "momentum_turned": signals.get("momentum_turned", 0.0),
+        "profit_giveback": signals.get("profit_giveback", 0.0),
+        "peak_stall": signals.get("peak_stall", 0.0),
+    }
+    return _SupervisionShape(str(payload.get("direction") or "").upper(), features)
+
+
+def _supervision_distance(
+    current: _SupervisionShape, example: _SupervisionExample
+) -> float:
+    keys = current.features.keys() & example.features.keys()
+    if not keys:
+        return 1.0
+    return sum(abs(current.features[key] - example.features[key]) for key in keys) / len(keys)
+
+
+def _clip(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
 
 
 def _number(value: object) -> float:
