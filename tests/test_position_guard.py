@@ -782,7 +782,15 @@ class TestProfitLock:
     """
 
     @staticmethod
-    def lock(peak_r: float, r_now: float, current_sl: float, *, entry: float = 1.0800):
+    def lock(
+        peak_r: float,
+        r_now: float,
+        current_sl: float,
+        *,
+        entry: float = 1.0800,
+        equity: float = 0.0,
+        risk_money: float = 0.0,
+    ):
         """Return (event, requested_sl) from one profit-lock evaluation."""
         from types import SimpleNamespace
 
@@ -798,6 +806,12 @@ class TestProfitLock:
 
         manager = PositionManager.__new__(PositionManager)
         manager.settings = SimpleNamespace(trade_management=TradeManagementConfig())
+        # Set explicitly because these fixtures bypass __init__. The real
+        # object always has it; the account-relative profit protection reads
+        # it, and zero means "no equity known", which switches that route off
+        # and leaves the R floors as the only gate — the behaviour these
+        # tests were written against.
+        manager.equity = equity
         manager.broker = SimpleNamespace(
             modify_stops=modify_stops,
             spec=lambda symbol: SimpleNamespace(normalize_price=lambda price: round(price, 5)),
@@ -815,7 +829,9 @@ class TestProfitLock:
             opened_at=datetime(2026, 8, 6, 10, 0, tzinfo=UTC),
             magic=1,
         )
-        event = manager._profit_lock(position, r_now, peak_r, risk=0.0010)
+        event = manager._profit_lock(
+            position, r_now, peak_r, risk=0.0010, risk_money=risk_money
+        )
         return event, sent.get("sl")
 
     def test_below_the_arming_peak_nothing_moves(self) -> None:
@@ -959,6 +975,8 @@ class TestPeakStall:
 
         instance = PositionManager.__new__(PositionManager)
         instance.settings = SimpleNamespace(trade_management=TradeManagementConfig())
+        # See the note in TestProfitLock.lock: these fixtures bypass __init__.
+        instance.equity = 0.0
         instance.broker = SimpleNamespace(close_position=close_position)
         instance._peak_seen = {}
         instance.closed = closed
@@ -1884,3 +1902,104 @@ def test_it_is_on_by_default_and_off_for_this_account() -> None:
     assert load_settings(env_overrides=False).trade_management.use_learned_bank_threshold is True
     live = load_settings(overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False)
     assert live.trade_management.use_learned_bank_threshold is False
+
+
+class TestAWideStopMustNotHideRealMoney:
+    """The live CADCHF trade, and the reason this route exists.
+
+    Long at 0.58542, stop 0.58422, price 0.58595. EUR 2.82 of profit on a
+    EUR 130 account — over two percent of everything — and only 0.44R, because
+    the stop was twelve pips wide. Break-even (0.6R), peak-stall (0.6R) and the
+    profit lock (0.7R) were all out of reach, so the whole amount sat behind a
+    stop still BELOW the entry price. The operator saw that in one glance.
+
+    Every rule in the manager is written in R, and R is the width of the stop.
+    A wide structural stop therefore makes real money look like a small number
+    to every rule whose job is to protect money.
+    """
+
+    def test_the_cadchf_shape_now_arms_the_lock(self) -> None:
+        """0.44R with EUR 6 of risk is EUR 2.64 on EUR 130 — over the 1% bar."""
+        event, sl = TestProfitLock.lock(
+            peak_r=0.44,
+            r_now=0.44,
+            current_sl=1.0790,
+            equity=130.0,
+            risk_money=6.0,
+        )
+
+        assert event is not None
+        assert event.action == "PROFIT_LOCK"
+        assert sl is not None and sl > 1.0800, "the stop must end up above the entry"
+
+    def test_it_says_which_number_armed_it(self) -> None:
+        """So the journal shows why a 0.44R trade got a lock that reads 0.7R."""
+        event, _ = TestProfitLock.lock(
+            peak_r=0.44, r_now=0.44, current_sl=1.0790, equity=130.0, risk_money=6.0
+        )
+
+        assert event is not None
+        assert "% of the account" in event.detail
+
+    def test_it_still_secures_the_configured_fraction_and_no_more(self) -> None:
+        """It is the same lock, reached by a different door. Half of a 0.44R
+        peak is 0.22R, which on a 10-pip risk is 2.2 pips above entry — not a
+        stop jammed under the high, which is the expensive habit."""
+        event, sl = TestProfitLock.lock(
+            peak_r=0.44, r_now=0.44, current_sl=1.0790, equity=130.0, risk_money=6.0
+        )
+
+        assert event is not None
+        assert sl == pytest.approx(1.08022, abs=1e-6)
+
+    def test_small_money_still_waits_for_the_r_floor(self) -> None:
+        """The route is account-relative, not a way round the floor. The same
+        0.44R holding EUR 0.60 on EUR 130 is under 1% and changes nothing."""
+        event, sl = TestProfitLock.lock(
+            peak_r=0.44,
+            r_now=0.44,
+            current_sl=1.0790,
+            equity=130.0,
+            risk_money=1.35,
+        )
+
+        assert event is None and sl is None
+
+    def test_an_unknown_equity_cannot_arm_it(self) -> None:
+        """Fails closed. Without equity the share of the account is unknowable,
+        and a rule that moves stops must not act on a number it does not have."""
+        event, _ = TestProfitLock.lock(
+            peak_r=0.44, r_now=0.44, current_sl=1.0790, equity=0.0, risk_money=6.0
+        )
+
+        assert event is None
+
+    def test_it_is_not_the_old_blind_cash_bank(self) -> None:
+        """The rule this resembles and must not become. `bank_enabled` closed a
+        winner the moment a number went green and was measured losing to the
+        plan nine times in ten. This one moves a stop and closes nothing — the
+        position is still open with its take-profit intact.
+
+        Note this route is NOT a replacement for `_bank_worthwhile_profit`,
+        which is separately enabled on this account and closes on the money.
+        The two answer different questions: that one asks whether to take the
+        cash now, this one asks whether the cash may stay exposed behind a stop
+        below entry while the trade runs on. A lock that closed anything would
+        be the banking rule wearing a different name."""
+        event, _ = TestProfitLock.lock(
+            peak_r=0.44, r_now=0.44, current_sl=1.0790, equity=130.0, risk_money=6.0
+        )
+
+        assert event is not None
+        assert event.action == "PROFIT_LOCK"
+        assert event.exit_price is None, "a lock must never close the position"
+        assert event.pnl_money is None
+
+    def test_switching_the_route_off_restores_the_old_behaviour(self) -> None:
+        """Zero disables it, and then the CADCHF shape waits for 0.7R again."""
+        from config.schema import TradeManagementConfig
+
+        assert TradeManagementConfig().capital_protection_at_equity_pct > 0
+        off = TradeManagementConfig(capital_protection_at_equity_pct=0.0)
+
+        assert off.capital_protection_at_equity_pct == 0.0

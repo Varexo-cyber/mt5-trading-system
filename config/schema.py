@@ -2239,6 +2239,30 @@ class TradeManagementConfig(Base):
     #: the single most expensive habit available here.
     profit_lock_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
 
+    #: A wide structural stop makes a material amount of money look small in R,
+    #: and every protective rule here is written in R.
+    #:
+    #: The live case: CADCHF long, entry 0.58542, stop 0.58422, price 0.58595.
+    #: EUR 2.82 of profit on a EUR 130 account — over two percent of everything
+    #: — and only 0.44R, because the stop was twelve pips wide. Break-even
+    #: (0.6R), peak-stall (0.6R) and the profit lock (0.7R) were all out of
+    #: reach, so the whole amount sat exposed behind a stop still below entry.
+    #: The operator saw that in one glance and was right.
+    #:
+    #: When the PEAK is worth at least this share of equity, the existing peak
+    #: lock and peak-stall judgement may arm below their ordinary R floors.
+    #: Nothing else changes: the lock still secures `profit_lock_fraction` of
+    #: the peak at the broker rather than closing anything, and peak-stall
+    #: still needs its full wait with price still near the high.
+    #:
+    #: THIS IS NOT the old blind cash-banking rule, which is off and staying
+    #: off — that closed a winner the instant a number went green and was
+    #: measured losing to the plan nine times in ten. This one never closes a
+    #: moving trade for reaching an amount. It moves a stop.
+    #:
+    #: Zero disables the account-relative route entirely.
+    capital_protection_at_equity_pct: float = Field(default=1.0, ge=0.0, le=10.0)
+
     partial_close_at_r: float = Field(default=1.5, gt=0.0)
     partial_close_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
 
@@ -2445,6 +2469,19 @@ class TradeManagementConfig(Base):
     #: bank it, protect it, or explicitly decide that intact structure deserves
     #: more room.
     supervision_profit_step_r: float = Field(default=0.25, gt=0.0, le=5.0)
+    #: The same ladder in money, as a share of equity, and it exists because R
+    #: is the width of the stop rather than a unit of value.
+    #:
+    #: The live CADCHF long held EUR 2.82 on a EUR 130 account — 2.2% of
+    #: everything — at 0.44R, because its stop was twelve pips wide. The R
+    #: ladder had last spoken at 0.25R and the next rung was 0.50R, so nothing
+    #: asked the supervisor about it while that money stood behind a stop still
+    #: below the entry price. Half a percent of the account is a rung the
+    #: operator can feel; a quarter of an R on a wide stop is not.
+    #:
+    #: This only decides WHEN the reviewer is asked. It closes nothing, moves
+    #: nothing, and every other gate is unchanged. Zero disables it.
+    supervision_profit_step_equity_pct: float = Field(default=0.5, ge=0.0, le=10.0)
     #: Once a profitable position gives this fraction of its recorded peak
     #: back, ask the judgement layer early. The hard mechanical give-back rule
     #: remains in force and does not wait for the API.

@@ -176,6 +176,13 @@ class _SupervisionSnapshot:
     giveback_fraction: float
     health_verdict: str
     health_severity: float
+    #: Unrealised profit as a share of account equity. Carried alongside `r_now`
+    #: because they are not the same question on a small account: a wide
+    #: structural stop makes real money look like a small R, and every trigger
+    #: below used to be written in R alone. The live CADCHF long held 2.2% of
+    #: the account at 0.44R, so the 0.25R milestone ladder had last spoken at
+    #: EUR 1.60 and would not speak again until EUR 3.20.
+    profit_pct_of_equity: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -3966,12 +3973,15 @@ class JarvisRunner:
         peak_r = max(float(row["mfe_r"] or 0.0), r_now, 0.0)
         giveback = ((peak_r - r_now) / peak_r) if peak_r > 0 and r_now < peak_r else 0.0
         health = self.manager.last_health.get(position.ticket)
+        equity = self.manager.equity
+        money = position.profit + position.swap
         snapshot = _SupervisionSnapshot(
             r_now=r_now,
             peak_r=peak_r,
             giveback_fraction=max(0.0, giveback),
             health_verdict=health.verdict if health is not None else "unknown",
             health_severity=health.severity if health is not None else 0.0,
+            profit_pct_of_equity=(100.0 * money / equity) if equity > 0 else 0.0,
         )
 
         previous = self._supervision_snapshots.get(position.ticket)
@@ -4007,6 +4017,20 @@ class JarvisRunner:
         step = config.supervision_profit_step_r
         if int(max(snapshot.r_now, 0.0) / step) > int(max(previous.r_now, 0.0) / step):
             return f"new_profit_milestone:{snapshot.r_now:.2f}R", snapshot
+        # The same ladder measured in money, because R is the width of the stop
+        # and a wide stop puts the rungs far apart in the only unit that pays
+        # for anything. The live CADCHF long sat on 2.2% of the account at
+        # 0.44R: the R ladder had last spoken at 0.25R and the next rung was
+        # 0.50R, so nothing asked the reviewer about it while EUR 2.82 stood
+        # unprotected behind a stop below entry.
+        cash_step = config.supervision_profit_step_equity_pct
+        if cash_step > 0 and int(max(snapshot.profit_pct_of_equity, 0.0) / cash_step) > int(
+            max(previous.profit_pct_of_equity, 0.0) / cash_step
+        ):
+            return (
+                f"new_cash_milestone:{snapshot.profit_pct_of_equity:.2f}%_of_account",
+                snapshot,
+            )
         threshold = config.supervision_giveback_trigger_fraction
         if (
             snapshot.peak_r >= config.giveback_arm_r

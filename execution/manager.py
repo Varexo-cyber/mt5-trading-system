@@ -274,6 +274,9 @@ class PositionManager:
                 continue
             original_sl = float(row["sl"])
             risk = abs(position.price_open - original_sl)
+            # Read once here rather than at each call site: two rules now
+            # need it to convert a peak in R into a peak in money.
+            risk_money = _risk_money(row)
             if risk <= 0:
                 self._unmanaged(
                     position,
@@ -306,7 +309,7 @@ class PositionManager:
             # profit rule, because it is the only one that acts while the money
             # is plainly on the table rather than after something has started to
             # go wrong.
-            banked = self._bank_worthwhile_profit(position, r_now, risk, _risk_money(row))
+            banked = self._bank_worthwhile_profit(position, r_now, risk, risk_money)
             if banked is not None:
                 events.append(banked)
                 continue
@@ -338,7 +341,7 @@ class PositionManager:
             # the money is still on the table. The two rules cannot both apply:
             # this one needs price near the peak, the give-back needs it far
             # from the peak.
-            stalled = self._peak_stall_exit(position, r_now, peak_r, now)
+            stalled = self._peak_stall_exit(position, r_now, peak_r, now, risk_money=risk_money)
             if stalled is not None:
                 events.append(stalled)
                 continue
@@ -425,7 +428,7 @@ class PositionManager:
             # of leaving it parked at break-even all the way to 1.5R. Placed
             # after the partial close deliberately: banking real money outranks
             # adjusting a stop, and the guard comes round again in a second.
-            locked = self._profit_lock(position, r_now, peak_r, risk)
+            locked = self._profit_lock(position, r_now, peak_r, risk, risk_money=risk_money)
             if locked is not None:
                 events.append(locked)
                 continue
@@ -1110,8 +1113,42 @@ class PositionManager:
             },
         )
 
+    def _peak_is_account_meaningful(self, peak_r: float, risk_money: float) -> float:
+        """The peak in money when it is worth protecting on THIS account, else 0.
+
+        Every protective rule in this file is written in R, and R is the width
+        of the stop. A wide structural stop therefore makes a material amount
+        of money look like a small number, and the rules that exist to protect
+        money never see it.
+
+        The live case, and it took one glance to spot: CADCHF long, entry
+        0.58542, stop 0.58422, price 0.58595. EUR 2.82 on a EUR 130 account —
+        over two percent of everything — and only 0.44R, because the stop was
+        twelve pips wide. Break-even at 0.6R, peak-stall at 0.6R and the profit
+        lock at 0.7R were all out of reach, so the entire amount sat behind a
+        stop still below the entry price.
+
+        Returns the peak in account currency once it clears the configured
+        share of equity, and 0.0 otherwise, so callers can both test it and
+        name the number that armed them. Measured on the PEAK rather than the
+        current price, like every other rule here: what is being protected is
+        the best the trade has actually achieved.
+        """
+        config = self.settings.trade_management
+        share = config.capital_protection_at_equity_pct
+        if share <= 0 or self.equity <= 0 or risk_money <= 0 or peak_r <= 0:
+            return 0.0
+        peak_money = peak_r * risk_money
+        return peak_money if peak_money >= self.equity * share / 100.0 else 0.0
+
     def _peak_stall_exit(
-        self, position: Position, r_now: float, peak_r: float, now: datetime
+        self,
+        position: Position,
+        r_now: float,
+        peak_r: float,
+        now: datetime,
+        *,
+        risk_money: float = 0.0,
     ) -> ManagementEvent | None:
         """Bank a profit whose move has stopped advancing, while it is still there.
 
@@ -1145,7 +1182,12 @@ class PositionManager:
         """
         config = self.settings.trade_management
         wait = config.peak_stall_minutes
-        if wait <= 0 or peak_r < config.peak_stall_arm_r:
+        # The R floor, OR enough money that the R floor is the wrong question.
+        # A twelve-pip stop can put two percent of the account on the table at
+        # 0.44R, and this rule exists precisely to leave at the top of a move
+        # rather than after it has drained.
+        meaningful = self._peak_is_account_meaningful(peak_r, risk_money)
+        if wait <= 0 or (peak_r < config.peak_stall_arm_r and not meaningful):
             self._peak_seen.pop(position.ticket, None)
             return None
 
@@ -1166,18 +1208,30 @@ class PositionManager:
         if not result.ok:
             return None
         self._peak_seen.pop(position.ticket, None)
+        because = (
+            f" — {meaningful:.2f} is {meaningful / self.equity * 100:.1f}% of the account, "
+            f"so the {config.peak_stall_arm_r:.2f}R floor was not the right question"
+            if meaningful and peak_r < config.peak_stall_arm_r
+            else ""
+        )
         return ManagementEvent(
             position.ticket,
             "PEAK_STALL",
             f"{peak_r:.2f}R peak has not advanced in {standing_minutes:.0f} min and price "
-            f"is still at {r_now:.2f}R; the move is done, banking it near the high",
+            f"is still at {r_now:.2f}R; the move is done, banking it near the high{because}",
             result.filled_price,
             position.profit + position.swap,
             r_at_action=r_now,
         )
 
     def _profit_lock(
-        self, position: Position, r_now: float, peak_r: float, risk: float
+        self,
+        position: Position,
+        r_now: float,
+        peak_r: float,
+        risk: float,
+        *,
+        risk_money: float = 0.0,
     ) -> ManagementEvent | None:
         """Secure a share of the peak at the broker, once the trade has earned it.
 
@@ -1201,7 +1255,11 @@ class PositionManager:
         most, and this account is meant to be left alone overnight.
         """
         config = self.settings.trade_management
-        if peak_r < config.profit_lock_from_r or risk <= 0:
+        # Either the trade has earned it in R, or it is holding enough of this
+        # account's money that leaving it behind a stop below entry is the
+        # thing that needs justifying. See `_peak_is_account_meaningful`.
+        meaningful = self._peak_is_account_meaningful(peak_r, risk_money)
+        if risk <= 0 or (peak_r < config.profit_lock_from_r and not meaningful):
             return None
 
         sign = int(position.direction)
@@ -1214,10 +1272,18 @@ class PositionManager:
         result = self.broker.modify_stops(position, sl=spec.normalize_price(target), tp=position.tp)
         if not result.ok:
             return None
+        because = (
+            f"; armed on the money rather than the R — the {meaningful:.2f} peak is "
+            f"{meaningful / self.equity * 100:.1f}% of the account, and a wide stop is why "
+            f"that is only {peak_r:.2f}R"
+            if meaningful and peak_r < config.profit_lock_from_r
+            else ""
+        )
         return ManagementEvent(
             position.ticket,
             "PROFIT_LOCK",
-            f"peak {peak_r:.2f}R, now {r_now:.2f}R; stop secures {secured_r:.2f}R at the broker",
+            f"peak {peak_r:.2f}R, now {r_now:.2f}R; stop secures {secured_r:.2f}R at the "
+            f"broker{because}",
             r_at_action=r_now,
         )
 
