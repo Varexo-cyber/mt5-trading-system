@@ -1390,7 +1390,14 @@ class JarvisRunner:
             position
             for position in positions
             if getattr(position, "magic", self.settings.system.magic_number) in allowed
+            and not self._symbol_ignored(position.symbol)
         ]
+
+    def _symbol_ignored(self, symbol: str) -> bool:
+        """Compatibility-safe access to the complete instrument opt-out."""
+        instruments = getattr(self.settings, "instruments", None)
+        predicate = getattr(instruments, "is_ignored", None)
+        return bool(predicate(symbol)) if callable(predicate) else False
 
     @staticmethod
     def _autonomously_managed_positions(positions: list[Position]) -> list[Position]:
@@ -1430,6 +1437,8 @@ class JarvisRunner:
             return []
         events: list[ManagementEvent] = []
         for position in self.broker.positions():
+            if self._symbol_ignored(position.symbol):
+                continue
             if (
                 position.magic == self.settings.system.magic_number
                 or position.magic not in config.magic_numbers

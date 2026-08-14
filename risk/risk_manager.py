@@ -174,6 +174,12 @@ class RiskManager:
         self.journal.set_equity_mark("DAY", day_start, account.equity)
         self.journal.set_equity_mark("WEEK", week_start, account.equity)
         peak = self.journal.record_equity_peak(account.equity)
+        participating = tuple(
+            position
+            for position in positions
+            if not self.settings.instruments.is_ignored(position.symbol)
+        )
+        ignored = tuple(self.settings.instruments.ignored_symbols)
 
         return RiskState(
             now=now,
@@ -186,11 +192,11 @@ class RiskManager:
             week_start_equity=self.journal.equity_mark("WEEK", week_start) or account.equity,
             day_start=day_start,
             week_start=week_start,
-            trades_today=self.journal.trades_since(day_start),
-            trades_this_week=self.journal.trades_since(week_start),
-            consecutive_losses=self.journal.consecutive_losses(),
-            last_trade_risk_pct=self.journal.last_trade_risk_pct(),
-            open_positions=tuple(positions),
+            trades_today=self.journal.trades_since(day_start, excluded_symbols=ignored),
+            trades_this_week=self.journal.trades_since(week_start, excluded_symbols=ignored),
+            consecutive_losses=self.journal.consecutive_losses(excluded_symbols=ignored),
+            last_trade_risk_pct=self.journal.last_trade_risk_pct(excluded_symbols=ignored),
+            open_positions=participating,
             halted=bool(self._halt_reason),
             halt_reason=self._halt_reason,
         )

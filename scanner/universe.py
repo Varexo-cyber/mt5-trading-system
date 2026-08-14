@@ -107,6 +107,7 @@ class UniverseScanner:
             # fail-closed by _inspect if their contract cannot classify them.
             if (not wanted or self._path_class(item.path).value in wanted)
             and (not names or item.name in names)
+            and not self.settings.instruments.is_ignored(item.name)
         ]
 
     def scan(
