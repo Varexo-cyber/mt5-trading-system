@@ -533,47 +533,105 @@ class ConfluenceEngine:
             agreed = sum(evidence(pair) for pair in agreeing)
             return direction, agreeing, (agreed / total if total else 0.0)
 
+        def readiness(result: tuple[Direction, list, float]) -> tuple[bool, float]:
+            """Whether one horizon can stand on its own, and its actual score.
+
+            A firing module is not automatically an executable setup. Previously
+            the fastest firing group owned the entire symbol even when its
+            confidence-discounted score was below the common threshold. That
+            hid a fully qualified slower plan and mislabeled the symbol
+            ``NO_SIGNAL``. Apply the existing gates per horizon before deciding
+            which clock owns the proposal; no threshold is relaxed here.
+            """
+            _direction, agreeing, agreement = result
+            denominator = sum(weight for _signal, weight in agreeing)
+            score = (
+                sum(abs(signal.score) * signal.confidence * weight for signal, weight in agreeing)
+                / denominator
+                if denominator
+                else 0.0
+            )
+            qualified = (
+                len(agreeing) >= self.config.minimum_directional_modules
+                and agreement >= self.config.minimum_agreement_ratio
+                and score >= self.config.score_threshold
+            )
+            return qualified, score
+
+        def join_notes(*notes: str) -> str:
+            return "; ".join(note for note in notes if note)
+
         # A closed M1/M5 trigger is a complete entry event. Mixing it with an
         # M15 or H1 state used to change its stop and expiry, or erase a quick
         # short under a heavier slow long. Give quick evidence its own vote;
         # the quick horizon profile still checks H1/H4 conflict afterwards.
+        weak_quick_note = ""
         if quick:
-            direction, agreeing, agreement = scored(quick)
+            quick_result = scored(quick)
+            direction, agreeing, agreement = quick_result
             slower = [*intraday, *swing]
-            if not slower:
-                return direction, agreeing, agreement, ""
-            slower_directions = {self._vote([pair])[0].name for pair in slower}
-            slower_modules = ", ".join(sorted(signal.module for signal, _ in slower))
+            quick_ready, quick_score = readiness(quick_result)
+            if quick_ready or not slower:
+                if not slower:
+                    return direction, agreeing, agreement, ""
+                slower_directions = {self._vote([pair])[0].name for pair in slower}
+                slower_modules = ", ".join(sorted(signal.module for signal, _ in slower))
+                return (
+                    direction,
+                    agreeing,
+                    agreement,
+                    (
+                        f"quick {direction.name} owns the executable plan; slower "
+                        f"{','.join(sorted(slower_directions))} context from {slower_modules} is "
+                        "reported separately; different horizons are not averaged into one trade"
+                    ),
+                )
+            weak_quick_note = (
+                f"quick evidence scored {quick_score:.1f} below the independent "
+                f"{self.config.score_threshold:.1f} requirement, so it did not hide a "
+                "qualified slower setup"
+            )
+
+        slower = [*intraday, *swing]
+        if not intraday or not swing:
+            direction, agreeing, agreement = scored(slower)
+            return direction, agreeing, agreement, weak_quick_note
+
+        fast_result = scored(intraday)
+        slow_result = scored(swing)
+        fast_direction, _fast_agreeing, _fast_agreement = fast_result
+        slow_direction, _slow_agreeing, _slow_agreement = slow_result
+        if fast_direction is slow_direction:
+            direction, agreeing, agreement = scored(slower)
+            return direction, agreeing, agreement, weak_quick_note
+
+        fast_ready, fast_score = readiness(fast_result)
+        slow_ready, slow_score = readiness(slow_result)
+        if slow_ready and not fast_ready:
+            direction, agreeing, agreement = slow_result
             return (
                 direction,
                 agreeing,
                 agreement,
-                (
-                    f"quick {direction.name} owns the executable plan; slower "
-                    f"{','.join(sorted(slower_directions))} context from {slower_modules} is "
-                    "reported separately; different horizons are not averaged into one trade"
+                join_notes(
+                    weak_quick_note,
+                    f"swing {direction.name} owns the plan because its {slow_score:.1f} score "
+                    f"qualified while the opposing intraday read scored only {fast_score:.1f}",
                 ),
             )
 
-        if not intraday or not swing:
-            direction, agreeing, agreement = scored(weighted)
-            return direction, agreeing, agreement, ""
-
-        fast_direction, _ = self._vote(intraday)
-        slow_direction, _ = self._vote(swing)
-        if fast_direction is slow_direction:
-            direction, agreeing, agreement = scored(weighted)
-            return direction, agreeing, agreement, ""
-
-        direction, agreeing, agreement = scored(intraday)
+        direction, agreeing, agreement = fast_result
         dissenting = ", ".join(sorted(signal.module for signal, _ in swing))
         return (
             direction,
             agreeing,
             agreement,
-            (
-                f"intraday {direction.name} taken over a {slow_direction.name} reading from "
-                f"{dissenting} on the slower charts; different horizons, not a contradiction"
+            join_notes(
+                weak_quick_note,
+                (
+                    f"intraday {direction.name} taken over a {slow_direction.name} reading from "
+                    f"{dissenting} on the slower charts; different horizons, not a contradiction"
+                ),
             ),
         )
 
