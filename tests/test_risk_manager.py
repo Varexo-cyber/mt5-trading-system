@@ -248,6 +248,18 @@ class TestSystemGates:
         assert manager.check_can_trade(state).approved
         assert len(manager.positions_counted_toward_limit(state)) == 1
 
+    def test_ignored_symbol_is_absent_from_the_entire_risk_state(
+        self, manager: RiskManager, settings: Settings
+    ) -> None:
+        instruments = settings.instruments.model_copy(update={"ignored_symbols": ("XAUUSD",)})
+        manager.settings = settings.model_copy(update={"instruments": instruments})
+
+        state = manager.build_state(account(1_000.0), [position("XAUUSD")])
+
+        assert state.open_positions == ()
+        assert manager.positions_counted_toward_limit(state) == ()
+        assert manager.open_risk_pct(state) == 0.0
+
     def test_only_a_proven_pyramid_may_bypass_full_primary_slots(
         self, manager: RiskManager, settings: Settings
     ) -> None:

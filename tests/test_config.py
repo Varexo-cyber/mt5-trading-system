@@ -67,9 +67,11 @@ class TestShippedConfig:
             "crypto",
         }
         assert settings.instruments.symbols_only == ()
-        assert settings.scanner.batch_size == 120
-        assert settings.scanner.priority_every_cycle
+        assert settings.scanner.batch_size is None
+        assert not settings.scanner.priority_every_cycle
         assert settings.scanner.deep_candidates >= 847
+        assert settings.instruments.ignored_symbols == ("XAUUSD",)
+        assert settings.instruments.is_ignored("XAUUSD")
         assert settings.scanner.priority_asset_classes == ("forex", "crypto")
         assert {"EURUSD", "BTCUSD", "XAUUSD"} <= set(settings.scanner.priority_symbols)
         assert settings.scanner.priority_spread_weight > 0
@@ -424,6 +426,23 @@ class TestUniverseMode:
         settings = load_settings(write(tmp_path, data), env_overrides=False)
         assert settings.symbol_allowed_at_equity("GBPJPY.i", 10_000.0)[1] == "SYMBOL_BLOCKLISTED"
 
+    def test_ignored_symbol_is_stronger_than_the_affordable_universe(
+        self, raw: dict[str, Any], tmp_path: Path
+    ) -> None:
+        data = copy.deepcopy(raw)
+        data["instruments"]["universe_mode"] = "affordable"
+        data["instruments"]["symbol_suffix"] = ".i"
+        data["instruments"]["symbol_overrides"] = {"XAUUSD": "XAUUSD"}
+        data["instruments"]["ignored_symbols"] = ["XAUUSD"]
+        settings = load_settings(write(tmp_path, data), env_overrides=False)
+
+        assert settings.instruments.is_ignored("XAUUSD")
+        assert not settings.instruments.is_ignored("EURUSD.i")
+        assert settings.symbol_allowed_at_equity("XAUUSD", 10_000.0) == (
+            False,
+            "SYMBOL_IGNORED",
+        )
+
 
 class TestTradeFrequency:
     def test_the_daily_loss_limit_binds_before_the_trade_count(
@@ -451,8 +470,7 @@ class TestTradeFrequency:
         )
         assert settings.instruments.symbol_suffix == ".i"
         assert settings.instruments.universe_mode == "affordable"
-        # Every broker asset family participates. The liquid priority lane is
-        # scanned every cycle; the remaining catalogue rotates behind it.
+        # Every broker asset family participates in one complete catalogue pass.
         assert settings.instruments.asset_classes == (
             "forex",
             "metal",
@@ -472,13 +490,16 @@ class TestTradeFrequency:
         # One module plus Claude. Two modules cannot agree in practice: the two
         # heaviest look for opposite market states.
         assert settings.analysis.confluence.minimum_directional_modules == 1
-        # Gold, silver and the indices are analysed like everything else. The
-        # position sizer decides what EUR 100 can express; a hand-written floor
-        # refused them before anyone measured the actual setup.
+        # Hand-written equity floors remain absent. Gold is deliberately a
+        # complete Jarvis opt-out; silver and indices still use exact sizing.
         assert settings.instruments.min_equity_for_symbol == {}
         assert settings.risk.release_slots_when_unmanageable
         assert not settings.trade_management.bank_enabled
-        for symbol in ("XAUUSD", "US30", "BTCUSD"):
+        assert settings.symbol_allowed_at_equity("XAUUSD", 100.0) == (
+            False,
+            "SYMBOL_IGNORED",
+        )
+        for symbol in ("US30", "BTCUSD"):
             allowed, reason = settings.symbol_allowed_at_equity(symbol, 100.0)
             assert allowed, f"{symbol} blocked: {reason}"
         # The full ladder, weekly down to one minute.

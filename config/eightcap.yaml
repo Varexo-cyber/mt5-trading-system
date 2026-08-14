@@ -20,6 +20,10 @@ instruments:
   # TRADE_SKIPPED_UNDERCAPITALIZED.
   universe_mode: affordable
   blocklist: []
+  # Gold is deliberately owned outside Jarvis. It is not scanned, opened,
+  # adopted, managed, closed, flattened or counted by Jarvis. This is stronger
+  # than a blocklist entry: even an already-open XAUUSD ticket remains untouched.
+  ignored_symbols: [XAUUSD]
 
   # No hand-written equity floors. They were a guess at what a small account
   # can afford — gold at EUR 500, indices at EUR 2000 — and a guess made before
@@ -130,13 +134,12 @@ data:
   max_gap_fraction: 0.05
 
 scanner:
-  # A complete 845-symbol pass measured 180-191 seconds on the VPS. That is
-  # incompatible with a one-candle M1 trigger: the event can be born and die
-  # twice while the scanner is still elsewhere. Inspect a rotating slice of
-  # the catalogue, plus every preferred FX/crypto/core symbol on every cycle.
-  # Complete coverage remains; fallback markets simply rotate across cycles.
-  batch_size: 120
-  priority_every_cycle: true
+  # Inspect the complete current broker catalogue every cycle. XAUUSD is
+  # removed before this count by instruments.ignored_symbols. A measured full
+  # pass takes roughly three minutes on the VPS; that is the unavoidable cost
+  # of requesting every market rather than a fresh rotating subset.
+  batch_size: null
+  priority_every_cycle: false
 
   # Every market that survives the cheap scan gets the full multi-timeframe
   # analysis, not a top-20 slice of it. The cheap scan already threw out

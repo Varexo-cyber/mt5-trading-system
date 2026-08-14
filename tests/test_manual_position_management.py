@@ -28,10 +28,10 @@ class _Brain:
         return 2
 
 
-def _manual(*, sl: float = 0.0, tp: float = 0.0) -> SimpleNamespace:
+def _manual(*, symbol: str = "EURUSD", sl: float = 0.0, tp: float = 0.0) -> SimpleNamespace:
     return SimpleNamespace(
         ticket=9001,
-        symbol="EURUSD",
+        symbol=symbol,
         type=int(PositionType.BUY),
         volume=0.01,
         price_open=1.08500,
@@ -112,4 +112,23 @@ def test_an_already_protected_manual_trade_is_adopted_without_rewriting_stops(
 
     assert [event.action for event in events] == ["MANUAL_ADOPTED"]
     assert fake.orders_sent == []
+    runner.journal.close()
+
+
+def test_ignored_gold_is_neither_adopted_nor_returned_for_management(tmp_path: Path) -> None:
+    fake = FakeMT5(
+        now=NOW,
+        specs={"XAUUSD": eurusd_spec(name="XAUUSD")},
+        quotes={"XAUUSD": (2400.0, 2400.2)},
+        positions=[_manual(symbol="XAUUSD")],
+    )
+    runner = _runner(tmp_path, fake)
+    instruments = runner.settings.instruments.model_copy(update={"ignored_symbols": ("XAUUSD",)})
+    runner.settings = runner.settings.model_copy(update={"instruments": instruments})
+
+    assert runner._adopt_manual_positions(runner.broker.account()) == []
+    assert runner._managed_positions() == []
+    assert runner._flatten_owned_positions("test hard stop") == ()
+    assert fake.orders_sent == []
+    assert runner.journal.open_trade_by_ticket(9001) is None
     runner.journal.close()

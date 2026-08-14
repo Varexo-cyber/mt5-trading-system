@@ -188,6 +188,11 @@ class InstrumentsConfig(Base):
     #: arithmetic cannot see: no reliable data, exotic settlement, known bad
     #: fills. Matched on the canonical name.
     blocklist: tuple[str, ...] = ()
+    #: Complete Jarvis opt-out. Unlike ``blocklist`` (which only refuses a new
+    #: entry), these symbols are absent from scanning, adoption, position
+    #: management, emergency flattening and Jarvis' risk/trade counters. This
+    #: is for an instrument owned by another system or by the account owner.
+    ignored_symbols: tuple[str, ...] = ()
     #: Asset classes the scanner will look at. Empty means all of them.
     #:
     #: This is a horizon control, not a quality one. The stop is 1.5 ATR and the
@@ -249,6 +254,12 @@ class InstrumentsConfig(Base):
         if suffix and broker_symbol.endswith(suffix):
             return broker_symbol[: -len(suffix)]
         return broker_symbol
+
+    def is_ignored(self, symbol: str) -> bool:
+        """Whether Jarvis must behave as if this broker symbol does not exist."""
+        canonical = self.canonical_symbol(symbol)
+        ignored = {item.upper() for item in self.ignored_symbols}
+        return symbol.upper() in ignored or canonical.upper() in ignored
 
 
 # ------------------------------------------------------------------ risk ---
@@ -2857,8 +2868,9 @@ class Settings(Base):
     @property
     def active_whitelist(self) -> tuple[str, ...]:
         return tuple(
-            self.instruments.broker_symbol(sym)
+            broker_symbol
             for sym in self.instruments.whitelist[self.system.mode.value]
+            if not self.instruments.is_ignored(broker_symbol := self.instruments.broker_symbol(sym))
         )
 
     def effective_max_risk_pct(self) -> float:
@@ -2902,6 +2914,8 @@ class Settings(Base):
         that "why did it not trade gold" is answerable months later.
         """
         bare = self.instruments.canonical_symbol(symbol)
+        if self.instruments.is_ignored(symbol):
+            return False, "SYMBOL_IGNORED"
         if bare in self.instruments.blocklist or symbol in self.instruments.blocklist:
             return False, "SYMBOL_BLOCKLISTED"
         if self.instruments.universe_mode == "whitelist" and symbol not in self.active_whitelist:

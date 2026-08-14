@@ -355,6 +355,29 @@ def test_empty_asset_filter_keeps_future_broker_catalogue_folders_visible() -> N
     market.shutdown()
 
 
+def test_ignored_symbol_never_enters_the_scan_catalogue() -> None:
+    moment = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    fake = FakeMT5(
+        specs={
+            "XAUUSD": eurusd_spec(name="XAUUSD", path="Commodities\\Metals\\XAUUSD"),
+            "EURUSD.i": eurusd_spec(name="EURUSD.i", path="RAW\\Raw Majors\\EURUSD.i"),
+        },
+        quotes={"XAUUSD": (2400.0, 2400.2), "EURUSD.i": (1.08500, 1.08512)},
+    )
+    market = connector(fake)
+    market.connect()
+    base = load_settings(env_overrides=False)
+    instruments = base.instruments.model_copy(update={"ignored_symbols": ("XAUUSD",)})
+    scanner = UniverseScanner(
+        market, base.model_copy(update={"instruments": instruments}), SimulatedClock(moment)
+    )
+
+    assert [item.name for item in scanner.catalogue()] == ["EURUSD.i"]
+    batch = scanner.scan(keep=10)
+    assert {row.symbol for row in batch.inspections} == {"EURUSD.i"}
+    market.shutdown()
+
+
 def test_default_scanner_does_not_stop_after_25_markets() -> None:
     symbols = [f"EURUSD{number:02d}" for number in range(30)]
     fake = FakeMT5(

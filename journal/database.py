@@ -438,14 +438,24 @@ class Journal:
 
     # -- reads used by the risk layer --------------------------------------
 
-    def trades_since(self, since: datetime) -> int:
+    @staticmethod
+    def _excluded_symbols_sql(excluded_symbols: Sequence[str]) -> tuple[str, tuple[str, ...]]:
+        cleaned = tuple(dict.fromkeys(symbol.upper() for symbol in excluded_symbols if symbol))
+        if not cleaned:
+            return "", ()
+        marks = ",".join("?" for _ in cleaned)
+        return f" AND UPPER(symbol) NOT IN ({marks})", cleaned
+
+    def trades_since(self, since: datetime, *, excluded_symbols: Sequence[str] = ()) -> int:
         """Trades opened at or after `since`.
 
         Counted on open, not on close: three trades opened today is three
         trades today, whatever happens to them tomorrow.
         """
+        exclusion, symbols = self._excluded_symbols_sql(excluded_symbols)
         row = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM trades WHERE opened_at >= ?", (iso(since),)
+            "SELECT COUNT(*) AS n FROM trades WHERE opened_at >= ?" + exclusion,
+            (iso(since), *symbols),
         ).fetchone()
         return int(row["n"])
 
@@ -457,16 +467,19 @@ class Journal:
         ).fetchone()
         return float(row["pnl"])
 
-    def consecutive_losses(self) -> int:
+    def consecutive_losses(self, *, excluded_symbols: Sequence[str] = ()) -> int:
         """Length of the current losing streak, most recent closed trade first.
 
         Break-even trades (exactly 0.0) neither extend nor reset the streak;
         they are not losses, and treating them as wins would let a flat trade
         restore full risk after two real losses.
         """
+        exclusion, symbols = self._excluded_symbols_sql(excluded_symbols)
         rows = self.conn.execute(
-            "SELECT pnl_money FROM trades WHERE closed_at IS NOT NULL "
-            "ORDER BY closed_at DESC LIMIT 50"
+            "SELECT pnl_money FROM trades WHERE closed_at IS NOT NULL"
+            + exclusion
+            + " ORDER BY closed_at DESC LIMIT 50",
+            symbols,
         ).fetchall()
         streak = 0
         for row in rows:
@@ -496,13 +509,17 @@ class Journal:
         except ValueError:
             return None
 
-    def last_trade_risk_pct(self) -> float | None:
+    def last_trade_risk_pct(self, *, excluded_symbols: Sequence[str] = ()) -> float | None:
         """Risk percentage of the most recently opened trade.
 
         Used to catch a strategy trying to increase risk after a loss.
         """
+        exclusion, symbols = self._excluded_symbols_sql(excluded_symbols)
         row = self.conn.execute(
-            "SELECT risk_pct FROM trades ORDER BY opened_at DESC, id DESC LIMIT 1"
+            "SELECT risk_pct FROM trades WHERE 1=1"
+            + exclusion
+            + " ORDER BY opened_at DESC, id DESC LIMIT 1",
+            symbols,
         ).fetchone()
         return None if row is None else float(row["risk_pct"])
 
