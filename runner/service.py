@@ -28,6 +28,7 @@ from advisory import (
     build_supervision_payload,
     read_trade_reflections,
 )
+from advisory.local_history import supervision_features
 from advisory.scout import ScoutThrottle
 from advisory.veto_patterns import readable as veto_readable
 from analysis import (
@@ -442,6 +443,14 @@ class JarvisRunner:
         # Scoped by account number, so a demo and a live account writing to the
         # same database never pool their statistics into one misleading total.
         self.brain = build_brain(account=os.getenv("MT5_LOGIN", "") or self.settings.mode.value)
+        # The nearest-neighbour adviser was reading its archive of past
+        # position judgements out of a JSONL file on this machine — one that
+        # starts empty after a fresh clone. It needs five comparable states
+        # before it may act, so an empty file means it holds every position
+        # indefinitely while the account's whole history sits in Postgres.
+        attach = getattr(self.advisor, "attach_brain", None)
+        if callable(attach):
+            attach(self.brain)
         self._edge_calibrations: list[EdgeCalibration] = []
         self._edge_calibrations_at: datetime | None = None
         self._brain_schema_ready = False
@@ -4067,6 +4076,13 @@ class JarvisRunner:
                 applied=event is not None,
                 latency_ms=latency_ms,
                 model=verdict.model,
+                direction=position.direction.name,
+                # The shape of the position at the moment the question was
+                # asked. Without it this row grades the adviser and cannot
+                # feed one: the nearest-neighbour model matches on features,
+                # and a table without them is why it was reading a file on
+                # this machine instead.
+                features=supervision_features(payload),
             )
             if event is not None:
                 self._record_management([event])

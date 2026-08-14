@@ -375,3 +375,24 @@ CREATE TABLE IF NOT EXISTS management_outcomes (
 
 CREATE INDEX IF NOT EXISTS management_outcomes_action
     ON management_outcomes (account, exit_action);
+
+-- The feature vector the position adviser matches on.
+--
+-- `supervisions` recorded what the reviewer SAID and what the trade was worth,
+-- which is enough to grade the adviser and not enough to be one. The local
+-- nearest-neighbour model needs the shape of the position — unrealised R, the
+-- peak, giveback, age, spread, distance to stop and target, share of the
+-- account, the health read — to find comparable past states, and it was
+-- reading those out of a JSONL file on the VPS instead.
+--
+-- Which is why it holds everything: it requires five comparable states before
+-- it may act, and a local file wiped by a fresh clone starts at zero. The
+-- account has months of decisions in Postgres and the part that learns from
+-- them was looking at a file.
+ALTER TABLE supervisions
+    ADD COLUMN IF NOT EXISTS features JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE supervisions
+    ADD COLUMN IF NOT EXISTS direction TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS supervisions_account_direction
+    ON supervisions (account, direction);

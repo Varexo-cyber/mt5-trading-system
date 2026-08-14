@@ -208,3 +208,103 @@ class ManagementRecordStub:
 
     def summary(self) -> str:
         return f"{self.action}: {self.trades} trades, {self.total_lift_r:+.2f}R"
+
+
+class TestTheArchiveLivesInTheBrainNotOnTheVPS:
+    """The nearest-neighbour adviser was learning from a file on a rented box.
+
+    It reads `runtime/ai_reviews.jsonl` and requires five comparable past
+    states before it may act on a position. A fresh clone starts that file at
+    zero, so the model holds every position indefinitely — which is exactly
+    what the CADCHF long showed — while the account's whole history of
+    supervisions sits in Postgres unread.
+    """
+
+    @staticmethod
+    def _advisor(brain: object | None = None):  # type: ignore[no-untyped-def]
+        from pathlib import Path
+
+        from advisory.local_history import LocalHistoryAdvisor
+        from config.loader import load_settings
+
+        root = Path(__file__).resolve().parent.parent
+        config = load_settings(overlay=root / "config" / "eightcap.yaml", env_overrides=False).ai
+        advisor = LocalHistoryAdvisor(config, root / "runtime" / "no-such-ledger.jsonl")
+        if brain is not None:
+            advisor.attach_brain(brain)
+        return advisor
+
+    @staticmethod
+    def _rows(count: int) -> list[dict]:
+        """Distinct states. Identical feature vectors are one observation and
+        are de-duplicated, which is correct and would hide a broken merge."""
+        return [
+            {
+                "symbol": "CADCHF.i",
+                "direction": "LONG",
+                "action": "close",
+                "confidence": 0.7,
+                "r_at_the_time": 0.40 + index * 0.01,
+                "features": {"unrealised_r": 0.14 + index * 0.001, "peak_r": 0.15},
+            }
+            for index in range(count)
+        ]
+
+    def test_without_a_brain_an_empty_file_is_an_empty_archive(self) -> None:
+        assert self._advisor().supervision_examples == ()
+
+    def test_the_brain_fills_it(self) -> None:
+        class Stocked:
+            def supervision_examples(self) -> list[dict]:
+                return TestTheArchiveLivesInTheBrainNotOnTheVPS._rows(8)
+
+        assert len(self._advisor(Stocked()).supervision_examples) == 8
+
+    def test_identical_states_count_once(self) -> None:
+        """Six samples of one unchanged position is one observation. Counting
+        it six times would let a single state satisfy the five-neighbour floor
+        on its own."""
+
+        class Repeating:
+            def supervision_examples(self) -> list[dict]:
+                row = TestTheArchiveLivesInTheBrainNotOnTheVPS._rows(1)[0]
+                return [dict(row) for _ in range(6)]
+
+        assert len(self._advisor(Repeating()).supervision_examples) == 1
+
+    def test_an_unreachable_brain_falls_back_rather_than_raising(self) -> None:
+        """Memory is not a risk control. Neon being down must cost the model
+        its archive, never the guard loop that is watching real money."""
+
+        class Sick:
+            def supervision_examples(self) -> list[dict]:
+                raise RuntimeError("neon unreachable")
+
+        assert self._advisor(Sick()).supervision_examples == ()
+
+    def test_attaching_twice_adds_nothing(self) -> None:
+        """The runner builds the adviser before the brain, so attachment
+        happens after construction and must be idempotent."""
+
+        class Stocked:
+            def supervision_examples(self) -> list[dict]:
+                return TestTheArchiveLivesInTheBrainNotOnTheVPS._rows(8)
+
+        advisor = self._advisor(Stocked())
+        advisor.attach_brain(Stocked())
+
+        assert len(advisor.supervision_examples) == 8
+
+    def test_the_stored_features_use_the_matcher_s_own_definition(self) -> None:
+        """Two extractors that drift apart produce a matcher confidently
+        comparing different things, which is worse than no matcher."""
+        from advisory.local_history import _supervision_shape, supervision_features
+
+        payload = {
+            "unrealised_r": 0.44,
+            "peak_unrealised_r": 0.44,
+            "unrealised_pct_of_account": 2.17,
+            "context": {"mechanical_health": {"verdict": "healthy", "severity": 0.0}},
+        }
+
+        assert supervision_features(payload) == _supervision_shape(payload).features

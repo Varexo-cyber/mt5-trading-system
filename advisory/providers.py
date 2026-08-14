@@ -741,7 +741,11 @@ class ConsensusAdvisor:
         )
 
 
-def build_advisor(config: AIConfig, history_path: Path | None = None) -> Advisor:
+def build_advisor(
+    config: AIConfig,
+    history_path: Path | None = None,
+    brain: object | None = None,
+) -> Advisor:
     if not config.enabled:
         return DisabledAdvisor()
     try:
@@ -751,6 +755,7 @@ def build_advisor(config: AIConfig, history_path: Path | None = None) -> Advisor
             return LocalHistoryAdvisor(
                 config,
                 history_path or Path("runtime") / "ai_reviews.jsonl",
+                brain,
             )
         if config.provider == "openai":
             return OpenAIAdvisor(config)
