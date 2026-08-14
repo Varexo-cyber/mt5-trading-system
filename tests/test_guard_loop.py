@@ -2,9 +2,9 @@
 
 `run_forever` used to spend the gap between cycles asleep. That gap is not idle
 time — it is the time open money spends unwatched, and on a slow cycle it is
-most of a minute. These tests pin the two properties that make filling it safe:
-the guard never opens anything and never calls the adviser, and a failure in it
-cannot take the service down.
+most of a minute. These tests pin the properties that make filling it safe: the
+guard never opens anything or calls a paid adviser. The cost-free outcome model
+may react to a material state change, and a failure cannot take the service down.
 """
 
 from __future__ import annotations
@@ -123,6 +123,35 @@ def test_events_are_recorded() -> None:
     events = jarvis.guard_tick()
     assert [event.action for event in events] == ["BREAK_EVEN"]
     assert recorded == [[ManagementEvent(1, "BREAK_EVEN", "protected")]]
+
+
+def test_cost_free_local_position_ai_is_event_driven_from_the_guard() -> None:
+    jarvis, _, _, _ = runner(positions=[open_position()])
+    jarvis.advisor = SimpleNamespace(  # type: ignore[assignment]
+        uses_paid_api=False,
+        supports_dynamic_management=True,
+    )
+    supervised: list[list[object]] = []
+    jarvis._supervise_positions = lambda positions: supervised.append(list(positions))  # type: ignore[method-assign]
+
+    jarvis.guard_tick()
+
+    assert len(supervised) == 1
+    assert [position.ticket for position in supervised[0]] == [555]
+
+
+def test_paid_position_ai_remains_out_of_the_one_second_guard() -> None:
+    jarvis, _, _, _ = runner(positions=[open_position()])
+    jarvis.advisor = SimpleNamespace(  # type: ignore[assignment]
+        uses_paid_api=True,
+        supports_dynamic_management=True,
+    )
+    supervised: list[list[object]] = []
+    jarvis._supervise_positions = lambda positions: supervised.append(list(positions))  # type: ignore[method-assign]
+
+    jarvis.guard_tick()
+
+    assert supervised == []
 
 
 def test_a_failing_tick_does_not_take_the_service_down() -> None:
