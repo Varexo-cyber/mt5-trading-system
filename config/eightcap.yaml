@@ -478,6 +478,10 @@ analysis:
     # vaste drie procentpunten waren een tweede veiligheidsmarge bovenop spread-
     # en kostengates. Weg ermee; de marktmeting zelf blijft hard actief.
     target_reach_margin_pct: 0.0
+    # Van 20% naar 25% van de stop. Quick/intraday-plannen hebben kleinere
+    # stops en raakten hierdoor eerder de grens, zelfs wanneer de spread binnen
+    # de eigen uur-baseline lag. De totale-kostengrens blijft daarnaast actief.
+    max_spread_share_of_stop: 0.25
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
@@ -660,6 +664,13 @@ ai:
 # capital backstop. These comments describe the effective settings below and
 # must change with them.
 filters:
+  spread:
+    # Van 2.0x naar 2.5x het eigen uur-baseline. De absolute bps-limiet blijft
+    # daarnaast actief, dus een werkelijk buitensporige spread komt nog steeds
+    # niet door. Dit geeft vooral rustige crosses en dunne maar open markten
+    # wat meer ruimte zonder de spreadcontrole uit te schakelen.
+    max_spread_multiple: 2.5
+
   # Ongepland nieuws. De kalender hiernaast weet wat eraan komt; deze laag weet
   # wat er NU gebeurt - de centrale bank die tussen vergaderingen door beweegt,
   # het verhaal dat om 03:00 uitbreekt terwijl de kalender een lege middag laat
@@ -789,6 +800,11 @@ risk:
   # erboven uitkomt, en de sizer klemt elke inzet hier alsnog tegenaan.
   max_risk_per_trade_pct: 6.0
 
+  # Van 2.0x naar 1.5x de door MT5 berekende ordermargin. De echte broker-
+  # margin moet nog steeds volledig beschikbaar zijn; alleen de extra reserve
+  # daalt van 100% naar 50%. Een mislukte marginberekening blijft fail-closed.
+  margin_safety_factor: 1.5
+
   # Hoeveel eigen vermogen één gelijktijdige positie "koopt".
   #
   # Een vast aantal slots is de verkeerde vorm voor een account dat moet
@@ -916,10 +932,11 @@ risk:
   # tegen een plan van -1.00R. Bij die verhouding wordt niet de strategie
   # getest maar de kosten van handelen, en die winnen.
   #
-  # Op 25% kan een volle stop-out nooit slechter uitpakken dan -1.25R, hoe
-  # goed of slecht de entry ook was. Setups met een krappere stop worden
+  # Van 25% naar 35% om betaalbare quick entries niet dubbel te blokkeren nadat
+  # hun spread/stop-verhouding al is goedgekeurd. Een volle stop kan daardoor
+  # rond -1.35R uitkomen in plaats van -1.25R. Boven 35% wordt nog steeds
   # geweigerd met SL_TOO_TIGHT_FOR_COSTS.
-  max_cost_share_of_risk: 0.25
+  max_cost_share_of_risk: 0.35
   # Het absolute plafond. Een modus mag hier lager gaan, nooit hoger — de
   # loader weigert dat bij het inladen, en dat is precies hoe deze regel is
   # opgevallen toen micro_live op 4 werd gezet terwijl dit nog 2 was.
