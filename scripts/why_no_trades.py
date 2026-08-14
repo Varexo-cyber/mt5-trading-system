@@ -499,7 +499,10 @@ def _print_score_reach(rows: Sequence[sqlite3.Row]) -> None:
         0.0,
     )
     best = max(scores)
-    print(f"\n  {len(scores)} setups scored above zero, best {best:.1f} against {threshold:.1f}.")
+    print(
+        f"\n  {len(scores)} decision rows expose a positive confluence score, "
+        f"best {best:.1f} against {threshold:.1f}."
+    )
     if from_column < len(scores):
         print(
             f"  ({from_column} of those come from the score column and the rest were read "
@@ -508,7 +511,12 @@ def _print_score_reach(rows: Sequence[sqlite3.Row]) -> None:
     if threshold > 0:
         near = sum(1 for score in scores if threshold - 5.0 <= score < threshold)
         over = sum(1 for score in scores if score >= threshold)
-        print(f"  {over} cleared it; {near} came within 5 points and did not.")
+        print(f"  {over} cleared the score threshold; {near} came within 5 points and did not.")
+        print(
+            "  This is a score diagnostic, not a survivor count: a row that clears "
+            "the score can\n  still fail target, timing, spread, session, sizing or "
+            "margin later. SETUPS FORMED\n  above is the actual funnel boundary."
+        )
     if best < threshold:
         print(
             "  Nothing cleared it. Either conditions genuinely offer nothing, or the "
@@ -540,11 +548,25 @@ def _print_funnel(
     print(f"  {total:>6}  decisions recorded")
     remaining = total
     for label, reasons in _STAGES:
-        lost = sum(count for reason, count in counts.items() if reason in reasons)
+        stage_counts = Counter(
+            {reason: count for reason, count in counts.items() if reason in reasons and count}
+        )
+        lost = sum(stage_counts.values())
         if "opinion" in label:
             lost += remembered
         if lost:
             print(f"  {-lost:>6}  {label}")
+            # A stage name is useful for orientation but not diagnosis. In the
+            # live report "can the trade pay its own costs" grouped target
+            # base rate, spread, minimum lot and margin into one four-digit
+            # number. The operator understandably read all of it as an account-
+            # size problem even though only seven rows were undercapitalised.
+            # Print the actual reasons directly below the stage so the knob
+            # suggested by the report is the knob that actually fired.
+            for reason, count in stage_counts.most_common():
+                print(f"          {count:>6}  {reason}")
+            if "opinion" in label and remembered:
+                print(f"          {remembered:>6}  AI_VETO_REPLAYED_FREE")
         remaining -= lost
         # The one number every "is it working yet" question is really asking,
         # and the only stage boundary this report never named. It had to be
