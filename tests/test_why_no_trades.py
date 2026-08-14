@@ -134,7 +134,23 @@ class TestWhereTheCandidatesActuallyGo:
         out = capsys.readouterr().out
 
         assert "-50  can the trade pay its own costs" in out
+        assert "50  SPREAD_EATS_THE_STOP" in out
         assert "Nothing was sent to Claude at all" in out
+
+    def test_cost_stage_separates_target_math_from_account_size(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        add(journal, "TARGET_RARELY_REACHED", BEFORE, count=40)
+        add(journal, "SL_TOO_TIGHT_FOR_COSTS", BEFORE, count=9)
+        add(journal, "TRADE_SKIPPED_UNDERCAPITALIZED", BEFORE, count=2)
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "-51  can the trade pay its own costs" in out
+        assert "40  TARGET_RARELY_REACHED" in out
+        assert "9  SL_TOO_TIGHT_FOR_COSTS" in out
+        assert "2  TRADE_SKIPPED_UNDERCAPITALIZED" in out
 
     def test_a_reason_missing_from_the_stage_table_is_shown_not_swallowed(
         self, journal: Path, capsys
@@ -279,6 +295,35 @@ class TestTheBiggestReachableGateIsVisible:
 
         assert "extreme volatility regime" in out
         assert "1x  extreme volatility regime" in out
+
+    def test_positive_scores_are_not_described_as_funnel_survivors(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.execute(
+            "INSERT INTO analysis_cycles "
+            "(ts, symbol, decision, reason, detail, total_score, score_threshold, context_json) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                datetime.now(UTC).isoformat(),
+                "EURUSD.i",
+                "SKIP",
+                "NO_SIGNAL",
+                "reachable target rejected after scoring",
+                42.0,
+                26.0,
+                BEFORE,
+            ),
+        )
+        db.commit()
+        db.close()
+
+        main(["--db", str(journal), "--hours", "4"])
+        out = capsys.readouterr().out
+
+        assert "decision rows expose a positive confluence score" in out
+        assert "cleared the score threshold" in out
+        assert "score diagnostic, not a survivor count" in out
 
 
 REMEMBERED = json.dumps({"ai_veto_remembered": True, "ai_veto_repeats": 3})
