@@ -59,7 +59,7 @@ class TestShippedConfig:
         assert settings.scanner.priority_asset_classes == ("forex", "crypto")
         assert {"EURUSD", "BTCUSD", "XAUUSD"} <= set(settings.scanner.priority_symbols)
         assert settings.scanner.priority_spread_weight > 0
-        assert settings.ai.market_scout.enabled
+        assert not settings.ai.market_scout.enabled
         assert settings.analysis.playbooks.enabled
         assert not settings.analysis.playbooks.live_execution_enabled
 
@@ -442,7 +442,9 @@ class TestTradeFrequency:
         assert settings.instruments.asset_classes == ("forex", "metal", "index", "crypto")
         assert settings.instruments.symbols_only == ()
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
-        assert settings.ai.anthropic_model == "claude-sonnet-5"
+        assert settings.ai.provider == "local_history"
+        assert settings.ai.anthropic_model == ""
+        assert not settings.ai.market_scout.enabled
         # Large enough to cover everything the cheap scan lets through on a full
         # broker catalogue, rather than a top-N slice of it.
         assert settings.scanner.deep_candidates >= 200

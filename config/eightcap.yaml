@@ -576,11 +576,14 @@ analysis:
     # laat zien hoeveel setups eronder sneuvelen.
     min_conviction: 75.0
 
-# Experimental live uses Claude as a mandatory final veto gate. The API key
-# stays in config/.env, is never committed, and is never sent to the dashboard.
+# Cost-free temporary decision mode. Jarvis still performs the full deterministic
+# analysis and every price, spread, sizing, margin and broker check. The local
+# adviser can only repeat a refusal when several genuinely similar, recorded
+# Claude reviews agreed; unseen setup shapes are left to Jarvis instead of being
+# rejected merely because there is no API call.
 ai:
   enabled: true
-  provider: anthropic
+  provider: local_history
   # Sonnet 5, on evidence rather than instinct.
   #
   # Opus was tried here and reverted. The question is not which model is more
@@ -598,7 +601,7 @@ ai:
   # Revisit this if the logs ever show the adviser being the thing that is
   # wrong: approving setups that then fail for reasons visible in the payload
   # it was given. That has not happened yet.
-  anthropic_model: claude-sonnet-5
+  anthropic_model: ""
   # An approval below this is silently converted into a veto, which is how a
   # run of seventy-four vetoes happened: Claude was answering 0.60-0.62 against
   # a 0.65 bar, so even the setups it judged sound were flipped. 0.55 is the
@@ -621,7 +624,7 @@ ai:
   # while WAIT, disagreement or an API failure changes nothing. That gives
   # Claude a genuine detection role without making an outage equal zero trades.
   market_scout:
-    enabled: true
+    enabled: false
     cooldown_minutes: 30
     max_calls_per_day: 24
     max_markets_per_call: 12
@@ -638,6 +641,9 @@ ai:
   # trading entirely on a day the top three keep failing a gate. A budget
   # cannot do that. Set 0 to remove the cap.
   max_reviews_per_cycle: 3
+  local_history_min_neighbors: 5
+  local_history_max_distance: 0.55
+  local_history_veto_rate: 0.80
 
 # No cap on how many trades a good day may produce.
 #

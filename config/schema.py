@@ -2717,13 +2717,19 @@ class AIConfig(Base):
     """Optional second-opinion layer; it can veto but never bypass hard gates."""
 
     enabled: bool = False
-    provider: Literal["openai", "anthropic", "consensus"] = "consensus"
+    provider: Literal["openai", "anthropic", "consensus", "local_history"] = "consensus"
     openai_model: str = "gpt-5.1"
     anthropic_model: str = ""
     minimum_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=120.0)
     fail_closed: Literal[True] = True
     market_scout: MarketScoutConfig = MarketScoutConfig()
+    #: The cost-free adviser only repeats a veto when several sufficiently
+    #: similar, non-replayed Claude reviews agree. Unknown setups fall back to
+    #: the deterministic Jarvis gates instead of pretending the archive knows.
+    local_history_min_neighbors: int = Field(default=5, ge=2, le=100)
+    local_history_max_distance: float = Field(default=0.55, gt=0.0, le=2.0)
+    local_history_veto_rate: float = Field(default=0.80, ge=0.5, le=1.0)
     #: Paid pre-trade reviews allowed per cycle. 0 removes the budget.
     #:
     #: Candidates reach the reviewer in the engine's own order of conviction,
