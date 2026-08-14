@@ -386,7 +386,20 @@ class PositionManager:
             break_even = position.price_open + atr * config.break_even_offset_atr * int(
                 position.direction
             )
-            if r_now >= config.break_even_at_r and self._worth_moving(position, break_even, risk):
+            # The R floor, or enough money that the R floor is the wrong
+            # question. Same fault as the profit lock and peak stall: a wide
+            # structural stop makes real money look like a small R, and the
+            # rule whose whole job is to stop a winner turning into a loser
+            # never sees it. The live CADCHF long sat on 2.2% of the account
+            # at 0.44R with its stop still twelve pips below entry.
+            #
+            # Measured on the LIVE price rather than the peak, unlike the
+            # lock: this rule protects the entry, so what matters is whether
+            # the money is on the table now, not whether it once was.
+            worth_protecting = self._is_account_meaningful(r_now, risk_money)
+            if (
+                r_now >= config.break_even_at_r or worth_protecting
+            ) and self._worth_moving(position, break_even, risk):
                 result = self.broker.modify_stops(
                     position,
                     sl=self.broker.spec(position.symbol).normalize_price(break_even),
@@ -395,7 +408,17 @@ class PositionManager:
                 if result.ok:
                     events.append(
                         ManagementEvent(
-                            position.ticket, "BREAK_EVEN", f"stop protected at {r_now:.2f}R"
+                            position.ticket,
+                            "BREAK_EVEN",
+                            f"stop protected at {r_now:.2f}R"
+                            + (
+                                f" — {worth_protecting:.2f} is "
+                                f"{worth_protecting / self.equity * 100:.1f}% of the account, "
+                                f"so the {config.break_even_at_r:.2f}R floor was not the "
+                                f"right question"
+                                if worth_protecting and r_now < config.break_even_at_r
+                                else ""
+                            ),
                         )
                     )
                     continue
@@ -1113,7 +1136,7 @@ class PositionManager:
             },
         )
 
-    def _peak_is_account_meaningful(self, peak_r: float, risk_money: float) -> float:
+    def _is_account_meaningful(self, r_level: float, risk_money: float) -> float:
         """The peak in money when it is worth protecting on THIS account, else 0.
 
         Every protective rule in this file is written in R, and R is the width
@@ -1136,10 +1159,10 @@ class PositionManager:
         """
         config = self.settings.trade_management
         share = config.capital_protection_at_equity_pct
-        if share <= 0 or self.equity <= 0 or risk_money <= 0 or peak_r <= 0:
+        if share <= 0 or self.equity <= 0 or risk_money <= 0 or r_level <= 0:
             return 0.0
-        peak_money = peak_r * risk_money
-        return peak_money if peak_money >= self.equity * share / 100.0 else 0.0
+        money = r_level * risk_money
+        return money if money >= self.equity * share / 100.0 else 0.0
 
     def _peak_stall_exit(
         self,
@@ -1186,7 +1209,7 @@ class PositionManager:
         # A twelve-pip stop can put two percent of the account on the table at
         # 0.44R, and this rule exists precisely to leave at the top of a move
         # rather than after it has drained.
-        meaningful = self._peak_is_account_meaningful(peak_r, risk_money)
+        meaningful = self._is_account_meaningful(peak_r, risk_money)
         if wait <= 0 or (peak_r < config.peak_stall_arm_r and not meaningful):
             self._peak_seen.pop(position.ticket, None)
             return None
@@ -1257,8 +1280,8 @@ class PositionManager:
         config = self.settings.trade_management
         # Either the trade has earned it in R, or it is holding enough of this
         # account's money that leaving it behind a stop below entry is the
-        # thing that needs justifying. See `_peak_is_account_meaningful`.
-        meaningful = self._peak_is_account_meaningful(peak_r, risk_money)
+        # thing that needs justifying. See `_is_account_meaningful`.
+        meaningful = self._is_account_meaningful(peak_r, risk_money)
         if risk <= 0 or (peak_r < config.profit_lock_from_r and not meaningful):
             return None
 

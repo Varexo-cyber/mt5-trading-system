@@ -302,3 +302,39 @@ SELECT
 FROM supervisions s
 JOIN trades t ON t.id = s.trade_id
 WHERE t.closed_at IS NOT NULL;
+
+-- The whole life of a position, sampled at guard cadence.
+--
+-- Everything else in this file records the moments a decision was taken:
+-- opened, banked, closed, reviewed. None of it records what the trade was
+-- actually DOING in between, so every question about management has been
+-- answered from its endpoints. "Should the stop have gone to entry sooner"
+-- and "how long did it sit at its high before it gave up" are questions about
+-- the path, and the path was never kept.
+--
+-- The live case that forced it: a CADCHF long showing EUR 2.82 on a EUR 130
+-- account — over two percent of everything — with the broker stop still twelve
+-- pips below entry. Whether holding that was right is answerable only against
+-- what the price did next, second by second, and nothing had written it down.
+--
+-- One row per position per guard pass. A trade open three hours produces a few
+-- thousand small rows; that is what Postgres is for, and `path_step` is
+-- deliberately narrow so it stays cheap.
+CREATE TABLE IF NOT EXISTS position_path (
+    id              BIGSERIAL PRIMARY KEY,
+    trade_id        BIGINT      NOT NULL REFERENCES trades (id) ON DELETE CASCADE,
+    sampled_at      TIMESTAMPTZ NOT NULL,
+    price           NUMERIC(18, 8) NOT NULL,
+    r_now           NUMERIC(10, 4) NOT NULL,
+    peak_r          NUMERIC(10, 4) NOT NULL,
+    money           NUMERIC(14, 4) NOT NULL,
+    -- Where the broker stop sat at this instant. The one field that turns the
+    -- path into a management record rather than a price series: it says how
+    -- much of the money on the table was actually safe.
+    stop_price      NUMERIC(18, 8),
+    stop_r          NUMERIC(10, 4),
+    protected       BOOLEAN     NOT NULL DEFAULT FALSE,
+    health          TEXT        NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS position_path_trade ON position_path (trade_id, sampled_at);

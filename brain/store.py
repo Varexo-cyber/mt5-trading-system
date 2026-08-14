@@ -584,6 +584,91 @@ class Brain:
         self.status.writes += 1
         return int(row[0])
 
+    def record_position_path(self, rows: Sequence[Mapping[str, Any]]) -> int:
+        """The second-by-second life of open positions, in one round trip.
+
+        Everything else here records the moments a decision was taken — opened,
+        banked, closed, reviewed — so every question about MANAGEMENT has been
+        answered from a trade's endpoints. "Should the stop have gone to entry
+        sooner" and "how long did it sit at its high before giving up" are
+        questions about the path, and the path only ever existed in local
+        SQLite, on a rented VPS, in a file nobody queries across months.
+
+        The live case that forced it: a CADCHF long showing EUR 2.82 on a
+        EUR 130 account with the broker stop still twelve pips below entry.
+        Whether holding that was right is answerable only against what price
+        did next, second by second.
+
+        BATCHED, AND THAT IS THE DESIGN CONSTRAINT. The guard runs about once a
+        second on one vCPU, and a network round trip to Neon inside that loop
+        would make the thing watching the money the slowest part of the system.
+        Callers buffer and hand over a batch; this writes it in one statement
+        and, like every write here, never raises into the caller.
+        """
+        payload = [
+            (
+                int(row["trade_id"]),
+                row["sampled_at"],
+                float(row["price"]),
+                float(row["r_now"]),
+                float(row["peak_r"]),
+                float(row["money"]),
+                row.get("stop_price"),
+                row.get("stop_r"),
+                bool(row.get("protected", False)),
+                str(row.get("health", "") or ""),
+            )
+            for row in rows
+            if row.get("trade_id")
+        ]
+        if not payload:
+            return 0
+        written = self._run_many(
+            """
+            INSERT INTO position_path (
+                trade_id, sampled_at, price, r_now, peak_r, money,
+                stop_price, stop_r, protected, health
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            payload,
+        )
+        self.status.writes += written
+        return written
+
+    def _run_many(self, sql: str, rows: Sequence[Sequence[Any]]) -> int:
+        """`_run` for a batch, returning how many rows actually landed.
+
+        Separate from `_run` rather than folded into it because the failure
+        mode differs: a batch that fails has written nothing, and the caller
+        needs to know that rather than assume the count it handed over. Same
+        one-retry reconnect, same rule that memory never raises.
+        """
+        if not self.enabled or not rows:
+            return 0
+        with self._lock:
+            for attempt in (1, 2):
+                try:
+                    if self._connection is None or self._connection.closed:
+                        self._connection = self._connect()
+                    with self._connection.cursor() as cursor:
+                        cursor.executemany(sql, rows)
+                    return len(rows)
+                except Exception as exc:  # noqa: BLE001 - memory must not raise
+                    self._connection = None
+                    self.status.connected = False
+                    self.status.last_error = f"{type(exc).__name__}: {exc}"
+                    if attempt == 2:
+                        self.status.failures += 1
+                        log.warning(
+                            "brain batch write failed; continuing without it",
+                            extra={
+                                "event": "brain_unavailable",
+                                "why": self.status.last_error,
+                                "rows": len(rows),
+                            },
+                        )
+        return 0
+
     def record_trade_event(
         self,
         *,
@@ -1329,6 +1414,9 @@ class NullBrain:
 
     def record_trade_event(self, **_: Any) -> None:
         return None
+
+    def record_position_path(self, _rows: Sequence[Mapping[str, Any]] = ()) -> int:
+        return 0
 
     def record_trade_closed(self, **_: Any) -> None:
         return None
