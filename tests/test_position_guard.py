@@ -1366,6 +1366,30 @@ class TestBankingAProfitWorthTaking:
 
         assert not any(event.action == "PROFIT_BANKED" for event in events)
 
+    def test_the_hard_equity_ceiling_banks_even_during_a_retrace(self) -> None:
+        """A retrace can delay the first bank, never hand back the hard cap."""
+        broker, journal = BrokerStub(), JournalStub()
+        self.running(broker, with_us=False)
+        manager = self.manager(broker, journal, bank_hard_at_equity_pct=0.65)
+
+        at(broker, 0.7)
+        # 0.65% of 123.43 is 0.8023, so this is above the hard ceiling.
+        events = manager.manage([replace(position(), profit=0.85)], NOW)
+
+        assert [event.action for event in events] == ["PROFIT_BANKED"]
+        assert "hard bank ceiling" in events[0].detail
+        assert broker.closed == [(555, None)]
+
+    def test_below_the_hard_ceiling_a_retrace_can_still_be_held(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        self.running(broker, with_us=False)
+        manager = self.manager(broker, journal, bank_hard_at_equity_pct=0.65)
+
+        at(broker, 0.5)
+        events = manager.manage([replace(position(), profit=0.80)], NOW)
+
+        assert not any(event.action == "PROFIT_BANKED" for event in events)
+
     def test_a_profit_too_small_to_bother_with_is_left_alone(self) -> None:
         broker, journal = BrokerStub(), JournalStub()
         manager = self.manager(broker, journal)
