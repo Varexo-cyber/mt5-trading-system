@@ -627,15 +627,6 @@ class PositionManager:
         if profit < worth_taking or profit <= 0:
             return None
 
-        # The adaptive rule below may briefly hold a retrace because measured
-        # continuation after a pullback was better than immediately banking.
-        # The operator also wants a clear upper bound: a visible EUR 0.60-1.00
-        # gain on the current small account must not be handed back indefinitely.
-        # Expressing that as equity percentage keeps the same behaviour after a
-        # deposit. Broker latency/spread mean the eventual fill can still differ.
-        hard_threshold = self.equity * config.bank_hard_at_equity_pct / 100.0
-        hard_bank = config.bank_hard_at_equity_pct > 0 and profit >= hard_threshold
-
         # THE SIGN HERE IS MEASURED, AND IT IS THE OPPOSITE OF WHAT IT WAS.
         #
         # This read `running >= threshold: return None` — hold while the move
@@ -662,20 +653,13 @@ class PositionManager:
         # So the condition inverts: bank by default, and hold only while the
         # move is retracing.
         retracing = self._pace(position)
-        if (
-            not hard_bank
-            and retracing is not None
-            and retracing <= -config.bank_while_retracing_drift
-        ):
+        if retracing is not None and retracing <= -config.bank_while_retracing_drift:
             return None
 
         result = self.broker.close_position(position)
         if not result.ok:
             return None
-        if hard_bank:
-            pace = f"the {hard_threshold:.2f} hard bank ceiling has been reached"
-        else:
-            pace = "the move is not retracing" if retracing is not None else "no read on the pace"
+        pace = "the move is not retracing" if retracing is not None else "no read on the pace"
         return ManagementEvent(
             position.ticket,
             "PROFIT_BANKED",

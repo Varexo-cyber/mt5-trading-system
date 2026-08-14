@@ -1004,14 +1004,11 @@ modes:
     max_equity: 500
 
 trade_management:
-  # Bank een bruikbare winst adaptief vanaf 0,60% van equity of 0,30R. Een
-  # duidelijke retrace mag die eerste bankpoging nog even uitstellen, maar
-  # nooit voorbij 0,65% van equity. Bij EUR 153 is dat circa EUR 0,92 voor de
-  # eerste poging en EUR 0,99 als harde bovengrens (voor kosten en slippage).
-  bank_enabled: true
-  bank_at_equity_pct: 0.6
-  bank_at_r: 0.3
-  bank_hard_at_equity_pct: 0.65
+  # Geen vaste geldgrens als primaire exit. De gratis local-history adviser
+  # vergelijkt de volledige actuele positie met eerdere Claude-supervisies en
+  # mag bij sterke overeenkomst sluiten. SL, kapitaalbodem en mechanische
+  # nooduitgangen blijven vangrails; ze zijn geen winstdoel.
+  bank_enabled: false
 
   # Het leren van de bankdrempel staat UIT, en dat is op bewijs.
   #

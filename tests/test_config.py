@@ -477,9 +477,7 @@ class TestTradeFrequency:
         # refused them before anyone measured the actual setup.
         assert settings.instruments.min_equity_for_symbol == {}
         assert settings.risk.release_slots_when_unmanageable
-        assert settings.trade_management.bank_enabled
-        assert settings.trade_management.bank_at_equity_pct == pytest.approx(0.6)
-        assert settings.trade_management.bank_hard_at_equity_pct == pytest.approx(0.65)
+        assert not settings.trade_management.bank_enabled
         for symbol in ("XAUUSD", "US30", "BTCUSD"):
             allowed, reason = settings.symbol_allowed_at_equity(symbol, 100.0)
             assert allowed, f"{symbol} blocked: {reason}"
