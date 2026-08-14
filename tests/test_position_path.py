@@ -407,3 +407,53 @@ class TestTheAdviserMayActuallyMoveTheStop:
 
         assert verdict.action == "hold"
         assert verdict.stop_loss is None
+
+
+class TestTheColdStartDeadlock:
+    """The model needed an example of the thing it could not yet do.
+
+    `_learned_stop` returns a level only when a comparable past state recorded
+    one. `stop_fraction` is written only when a verdict IS a stop move. And the
+    model emits a stop move only when `_learned_stop` returns a level. Three
+    conditions in a circle, so it could never produce its first one.
+
+    Both keys were shut at once: the brain column is new and therefore empty,
+    and the JSONL loader dropped every `tighten_stop` row before it could be
+    read. Claude's historical stop moves are what breaks the circle.
+    """
+
+    @staticmethod
+    def _fraction(action: str, stop: float | None):  # type: ignore[no-untyped-def]
+        from advisory.local_history import _recorded_stop_fraction
+
+        return _recorded_stop_fraction(
+            {"entry_price": 0.58542, "price_now": 0.58595},
+            {"action": action, "stop_loss": stop},
+        )
+
+    def test_a_past_stop_move_yields_a_reusable_placement(self) -> None:
+        """Halfway between entry and price reads as 0.5, whatever the pair."""
+        assert self._fraction("tighten_stop", 0.585685) == pytest.approx(0.5, abs=0.01)
+
+    def test_a_hold_carries_no_placement(self) -> None:
+        assert self._fraction("hold", None) is None
+
+    def test_a_stop_beyond_the_price_is_not_copied(self) -> None:
+        """That is an instant market exit dressed as a stop, not a placement
+        anything should learn from."""
+        assert self._fraction("tighten_stop", 0.58700) is None
+
+    def test_a_stop_behind_the_entry_is_not_copied(self) -> None:
+        """It protects nothing, which is the state this whole change exists to
+        get out of."""
+        assert self._fraction("tighten_stop", 0.58400) is None
+
+    def test_the_loader_no_longer_discards_stop_moves(self) -> None:
+        """The line that kept the circle closed."""
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parent.parent / "advisory" / "local_history.py"
+        ).read_text(encoding="utf-8")
+
+        assert 'if action not in {"hold", "close", "tighten_stop"}:' in source

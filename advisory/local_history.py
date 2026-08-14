@@ -545,7 +545,16 @@ def _load_supervision_examples(path: Path) -> tuple[_SupervisionExample, ...]:
             }:
                 continue
             action = str(decision.get("action") or "").lower()
-            if action not in {"hold", "close"}:
+            # `tighten_stop` was dropped here, which locked the archive shut.
+            #
+            # The model may now return a stop move, but only when a comparable
+            # past state recorded WHERE the stop went — and this loader threw
+            # every such example away before it could. Combined with the brain
+            # column being new and therefore empty, the model could never
+            # produce its first stop move: it needed an example of the thing it
+            # was not yet able to do. Reading Claude's historical ones is what
+            # breaks that circle.
+            if action not in {"hold", "close", "tighten_stop"}:
                 continue
             try:
                 ticket = int(row.get("ticket") or request.get("ticket") or 0)
@@ -558,6 +567,10 @@ def _load_supervision_examples(path: Path) -> tuple[_SupervisionExample, ...]:
             # A close was useful when waiting did not improve the realised R;
             # a hold was useful when the eventual result did not deteriorate.
             # Five hundredths of R absorbs spread and fill noise around equality.
+            # A close was useful when waiting did not improve the realised R.
+            # A hold, and a stop move, were useful when the eventual result did
+            # not deteriorate — both left the trade running, so they are graded
+            # the same way.
             useful = (
                 result_r <= r_at_the_time + 0.05
                 if action == "close"
@@ -577,9 +590,32 @@ def _load_supervision_examples(path: Path) -> tuple[_SupervisionExample, ...]:
                     reason=str(decision.get("reason") or ""),
                     r_at_the_time=r_at_the_time,
                     result_r=result_r,
+                    stop_fraction=_recorded_stop_fraction(request, decision),
                 )
             )
     return tuple(examples)
+
+
+def _recorded_stop_fraction(
+    request: Mapping[str, object], decision: Mapping[str, object]
+) -> float | None:
+    """Where a past stop move put the stop, as a share of entry-to-price.
+
+    None for anything that is not a stop move, and for a level outside that
+    span: a stop beyond the price of the moment is not a placement worth
+    copying onto a live position.
+    """
+    if str(decision.get("action") or "").lower() != "tighten_stop":
+        return None
+    stop = decision.get("stop_loss")
+    if stop is None:
+        return None
+    entry = _number(request.get("entry_price"))
+    price = _number(request.get("price_now"))
+    if not entry or not price or entry == price:
+        return None
+    share = (_number(stop) - entry) / (price - entry)
+    return share if 0.0 <= share <= 1.0 else None
 
 
 def _closed_trade_outcomes(ledger_path: Path) -> dict[int, float]:
