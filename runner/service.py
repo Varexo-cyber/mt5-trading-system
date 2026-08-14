@@ -4083,9 +4083,34 @@ class JarvisRunner:
                 # and a table without them is why it was reading a file on
                 # this machine instead.
                 features=supervision_features(payload),
+                # Where a stop move actually put the stop, relative to the
+                # distance from entry to price. This is what lets the local
+                # model name a level later instead of deciding to protect a
+                # position and having its verdict refused for carrying none.
+                stop_fraction=self._stop_fraction(payload, verdict),
             )
             if event is not None:
                 self._record_management([event])
+
+    @staticmethod
+    def _stop_fraction(payload, verdict) -> float | None:  # type: ignore[no-untyped-def]
+        """Where this verdict put the stop, as a share of entry-to-price.
+
+        None for anything that is not a stop move, and for a move whose level
+        falls outside that span — a stop beyond the current price is not a
+        placement anything should learn from.
+        """
+        if verdict.action != "tighten_stop" or verdict.stop_loss is None:
+            return None
+        try:
+            entry = float(payload.get("entry_price") or 0.0)
+            price = float(payload.get("price_now") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if not entry or not price or entry == price:
+            return None
+        share = (float(verdict.stop_loss) - entry) / (price - entry)
+        return share if 0.0 <= share <= 1.0 else None
 
     def _supervision_trigger(
         self,

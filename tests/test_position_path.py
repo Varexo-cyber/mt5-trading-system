@@ -308,3 +308,102 @@ class TestTheArchiveLivesInTheBrainNotOnTheVPS:
         }
 
         assert supervision_features(payload) == _supervision_shape(payload).features
+
+
+class TestTheAdviserMayActuallyMoveTheStop:
+    """Three independent reasons the CADCHF stop never went to break-even.
+
+    The mechanical rule read only R, and 0.44R is under its 0.6 floor even
+    though the trade held two percent of the account. That was one.
+
+    The other two are here, and both made the judgement layer unable to protect
+    money no matter what it concluded:
+
+      - `action not in {"hold", "close"}` excluded `tighten_stop` outright, so
+        the model could never return a stop move however strong the evidence;
+      - and had it returned one, `Supervision.is_risk_reducing` refuses a stop
+        move carrying no level, so the verdict would have been built, logged
+        and thrown away.
+    """
+
+    @staticmethod
+    def _state() -> dict:
+        from advisory.local_history import supervision_features
+
+        state = {
+            "direction": "LONG",
+            "symbol": "CADCHF.i",
+            "entry_price": 0.58542,
+            "price_now": 0.58595,
+            "unrealised_r": 0.44,
+            "peak_unrealised_r": 0.44,
+            "profit_given_back_fraction": 0.0,
+            "age_hours": 0.1,
+            "unrealised_pct_of_account": 2.17,
+            "context": {"mechanical_health": {"verdict": "healthy", "severity": 0.0}},
+        }
+        state["_features"] = supervision_features(state)
+        return state
+
+    @classmethod
+    def _advisor(cls, *, with_level: bool):  # type: ignore[no-untyped-def]
+        from pathlib import Path
+
+        from advisory.local_history import LocalHistoryAdvisor
+        from config.loader import load_settings
+
+        root = Path(__file__).resolve().parent.parent
+        config = load_settings(overlay=root / "config" / "eightcap.yaml", env_overrides=False).ai
+        base = cls._state()["_features"]
+
+        class Stocked:
+            def supervision_examples(self) -> list[dict]:
+                out = []
+                for index in range(8):
+                    features = dict(base)
+                    features["unrealised_r"] = base["unrealised_r"] + index * 0.0005
+                    out.append(
+                        {
+                            "symbol": "CADCHF.i",
+                            "direction": "LONG",
+                            "action": "tighten_stop",
+                            "confidence": 0.8,
+                            "r_at_the_time": 0.44,
+                            "features": features,
+                            "stop_fraction": 0.35 if with_level else None,
+                        }
+                    )
+                return out
+
+        advisor = LocalHistoryAdvisor(config, root / "runtime" / "no-such-ledger.jsonl")
+        advisor.attach_brain(Stocked())
+        return advisor
+
+    def test_it_now_returns_a_stop_move_with_a_level(self) -> None:
+        verdict = self._advisor(with_level=True).supervise(self._state())
+
+        assert verdict.action == "tighten_stop"
+        assert verdict.stop_loss is not None
+
+    def test_the_level_lands_above_the_entry(self) -> None:
+        """Which is the entire point: below entry the stop caps a loss, it does
+        not protect a gain."""
+        verdict = self._advisor(with_level=True).supervise(self._state())
+
+        assert verdict.stop_loss > 0.58542
+
+    def test_the_risk_layer_now_accepts_it(self) -> None:
+        """It used to refuse every one of these for carrying no level."""
+        verdict = self._advisor(with_level=True).supervise(self._state())
+
+        assert verdict.is_risk_reducing(
+            direction_sign=1, current_sl=0.58422, current_tp=0.58691, price_now=0.58595
+        )
+
+    def test_without_a_learned_placement_it_holds_instead(self) -> None:
+        """Honest rather than unexpressable. A verdict that will certainly be
+        refused looks like a decision and is worse than a hold."""
+        verdict = self._advisor(with_level=False).supervise(self._state())
+
+        assert verdict.action == "hold"
+        assert verdict.stop_loss is None

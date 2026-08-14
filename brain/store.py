@@ -709,7 +709,8 @@ class Brain:
         """
         rows = self._run(
             """
-            SELECT symbol, direction, action, confidence, r_at_the_time, features
+            SELECT symbol, direction, action, confidence, r_at_the_time, features,
+                   stop_fraction
             FROM supervisions
             WHERE account = %s AND features <> '{}'::JSONB AND direction <> ''
             ORDER BY asked_at DESC
@@ -733,6 +734,7 @@ class Brain:
                     "confidence": float(row[3] or 0.0),
                     "r_at_the_time": float(row[4] or 0.0),
                     "features": {str(k): float(v) for k, v in features.items()},
+                    "stop_fraction": (float(row[6]) if row[6] is not None else None),
                 }
             )
         return examples
@@ -1092,6 +1094,7 @@ class Brain:
         model: str = "",
         direction: str = "",
         features: Mapping[str, float] | None = None,
+        stop_fraction: float | None = None,
     ) -> None:
         """What the reviewer said about an open position, and whether it was
         carried out.
@@ -1122,8 +1125,8 @@ class Brain:
             INSERT INTO supervisions (
                 trade_id, account, asked_at, symbol, action, confidence,
                 reasoning, r_at_the_time, applied, latency_ms, model,
-                direction, features
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                direction, features, stop_fraction
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 trade_id,
@@ -1139,6 +1142,7 @@ class Brain:
                 model,
                 direction,
                 json.dumps(dict(features or {}), default=str),
+                stop_fraction,
             ),
         )
         self.status.writes += 1

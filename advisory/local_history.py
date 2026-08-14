@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,12 @@ class _SupervisionExample:
     reason: str
     r_at_the_time: float
     result_r: float
+    #: Where a `tighten_stop` actually put the stop, as a fraction of the
+    #: distance from entry to the price at that moment. Scale-free on purpose:
+    #: 0.0 is the entry, 1.0 is the current price, so the same number transfers
+    #: to a different instrument with a different stop width. None when the
+    #: example is not a stop move or the level was never recorded.
+    stop_fraction: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +274,29 @@ class LocalHistoryAdvisor:
         separated = runner_up is None or distance <= runner_up * 0.75
         closest = by_action[action][0][1]
 
-        if action not in {"hold", "close"} or confidence < self.veto_rate or not separated:
+        # WHERE the stop would go, worked out before the gate below, because
+        # the gate needs to know whether this action can be expressed at all.
+        #
+        # `tighten_stop` used to be excluded outright by `action not in
+        # {"hold", "close"}`, and that exclusion was correct while the model had
+        # no way to name a level: `Supervision.is_risk_reducing` refuses a stop
+        # move carrying none, so emitting one produced a verdict that was built,
+        # logged and thrown away. It is admitted now that the level itself is
+        # learned from what comparable states actually did.
+        #
+        # `pull_target_in` and `partial_close` stay excluded for the same reason
+        # it used to exclude this one: nothing here can yet say where the target
+        # goes or what fraction to close, and an unexpressable verdict is worse
+        # than a hold because it looks like a decision.
+        learned_stop = (
+            _learned_stop(position_state, [item for _, item in by_action[action]])
+            if action == "tighten_stop"
+            else None
+        )
+        expressible = action in {"hold", "close"} or (
+            action == "tighten_stop" and learned_stop is not None
+        )
+        if not expressible or confidence < self.veto_rate or not separated:
             comparison = (
                 "no competing action has enough evidence"
                 if runner_up is None
@@ -295,6 +323,7 @@ class LocalHistoryAdvisor:
             thesis_state="broken" if action == "close" else "intact",
             urgency="soon" if action == "close" else "routine",
             review_after_minutes=2.0,
+            stop_loss=learned_stop,
         )
 
     def _refresh_supervision_examples(self) -> None:
@@ -400,6 +429,35 @@ def _load_examples(path: Path) -> tuple[_Example, ...]:
 
 
 
+
+def _learned_stop(
+    position_state: Mapping[str, object], neighbors: Sequence[_SupervisionExample]
+) -> float | None:
+    """Where to put the stop, taken from what comparable states actually did.
+
+    Returns None when no neighbour recorded a placement. That is the honest
+    answer and the caller turns it into a hold: emitting `tighten_stop` with no
+    level produces a verdict `is_risk_reducing` refuses, which is how a
+    decision to protect real money gets built, logged and thrown away.
+
+    The median rather than the mean, because one placement recorded against a
+    strange price would otherwise drag every future stop with it.
+    """
+    fractions = sorted(
+        example.stop_fraction
+        for example in neighbors
+        if example.stop_fraction is not None and 0.0 <= example.stop_fraction <= 1.0
+    )
+    if not fractions:
+        return None
+    entry = _number(position_state.get("entry_price"))
+    price = _number(position_state.get("price_now"))
+    if not entry or not price or entry == price:
+        return None
+    share = fractions[len(fractions) // 2]
+    return entry + (price - entry) * share
+
+
 def _merge_supervision_examples(
     local: tuple[_SupervisionExample, ...], brain: Any | None
 ) -> tuple[_SupervisionExample, ...]:
@@ -443,6 +501,11 @@ def _merge_supervision_examples(
                     reason="",
                     r_at_the_time=float(row.get("r_at_the_time") or 0.0),
                     result_r=0.0,
+                    stop_fraction=(
+                        float(row["stop_fraction"])
+                        if row.get("stop_fraction") is not None
+                        else None
+                    ),
                 )
             )
         except (KeyError, TypeError, ValueError):
