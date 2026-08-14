@@ -15,6 +15,7 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from analysis.confluence import TradeIdea
 from config.schema import AIConfig
@@ -95,17 +96,41 @@ class LocalHistoryAdvisor:
     supports_dynamic_management = True
     uses_paid_api = False
 
-    def __init__(self, config: AIConfig, ledger_path: Path) -> None:
+    def __init__(self, config: AIConfig, ledger_path: Path, brain: Any | None = None) -> None:
         self.minimum = config.minimum_confidence
         self.min_neighbors = config.local_history_min_neighbors
         self.max_distance = config.local_history_max_distance
         self.veto_rate = config.local_history_veto_rate
         self.ledger_path = ledger_path
+        #: The durable archive, when one is configured. The local JSONL is a
+        #: file on a rented VPS that starts empty after a fresh clone, and this
+        #: model needs five comparable past states before it may act on a
+        #: position — so on an empty file it holds everything, forever, while
+        #: the account's whole history sits in Postgres unread. Both are used:
+        #: the file is the most recent and the fastest, the brain is the one
+        #: that outlives the machine.
+        self.brain = brain
         self.examples = _load_examples(ledger_path)
-        self.supervision_examples = _load_supervision_examples(ledger_path)
+        self.supervision_examples = _merge_supervision_examples(
+            _load_supervision_examples(ledger_path), brain
+        )
         self._supervision_signature = _supervision_sources_signature(ledger_path)
         self.outcomes = _load_outcome_records(ledger_path)
         self._entry_signature = self._supervision_signature
+
+    def attach_brain(self, brain: Any) -> None:
+        """Adopt the durable archive after construction.
+
+        The runner builds the adviser before it builds the brain, so the
+        constructor cannot be given one. Attaching afterwards and re-merging is
+        less invasive than reordering startup, and it is idempotent: the merge
+        de-duplicates on (direction, feature vector), so calling it twice adds
+        nothing.
+        """
+        self.brain = brain
+        self.supervision_examples = _merge_supervision_examples(
+            _load_supervision_examples(self.ledger_path), brain
+        )
 
     def scout(self, _market_state: Mapping[str, object]) -> ScoutDecision:
         return ScoutDecision(
@@ -277,7 +302,9 @@ class LocalHistoryAdvisor:
         signature = _supervision_sources_signature(self.ledger_path)
         if signature == self._supervision_signature:
             return
-        self.supervision_examples = _load_supervision_examples(self.ledger_path)
+        self.supervision_examples = _merge_supervision_examples(
+            _load_supervision_examples(self.ledger_path), self.brain
+        )
         self._supervision_signature = signature
 
     def _refresh_entry_evidence(self) -> None:
@@ -370,6 +397,57 @@ def _load_examples(path: Path) -> tuple[_Example, ...]:
                 )
             )
     return tuple(examples)
+
+
+
+def _merge_supervision_examples(
+    local: tuple[_SupervisionExample, ...], brain: Any | None
+) -> tuple[_SupervisionExample, ...]:
+    """Local file plus durable archive, the file winning on overlap.
+
+    Both, deliberately, and not one or the other. The JSONL is the freshest
+    and needs no network; the brain is the only copy that survives a fresh
+    clone of the repository onto a new VPS, which is where the local one has
+    been starting from zero. This model refuses to act until it has five
+    comparable states, so an empty archive is not a degraded model — it is a
+    model that holds every position indefinitely.
+
+    Brain rows carry no `result_r`: the outcome grading lives with the closed
+    trade, not with the moment the question was asked. They are matched on and
+    counted, and the outcome-weighted paths simply see a zero, which is the
+    same treatment an ungraded local row already receives.
+    """
+    if brain is None:
+        return local
+    try:
+        rows = brain.supervision_examples()
+    except Exception:  # noqa: BLE001 - memory must never break the adviser
+        return local
+    if not rows:
+        return local
+    seen = {(example.direction, tuple(sorted(example.features.items()))) for example in local}
+    merged = list(local)
+    for row in rows:
+        try:
+            features = {str(k): float(v) for k, v in dict(row["features"]).items()}
+            key = (str(row["direction"]), tuple(sorted(features.items())))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(
+                _SupervisionExample(
+                    direction=str(row["direction"]),
+                    features=features,
+                    action=str(row["action"]),
+                    confidence=float(row.get("confidence") or 0.0),
+                    reason="",
+                    r_at_the_time=float(row.get("r_at_the_time") or 0.0),
+                    result_r=0.0,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(merged)
 
 
 def _load_supervision_examples(path: Path) -> tuple[_SupervisionExample, ...]:
@@ -599,6 +677,17 @@ def _distance(current: _Shape, example: _Example) -> float:
     )
     horizon_penalty = 0.0 if not current.horizon or current.horizon == example.horizon else 0.15
     return numerical + family_penalty + horizon_penalty
+
+
+def supervision_features(payload: Mapping[str, object]) -> dict[str, float]:
+    """The feature vector for one supervision payload, for durable storage.
+
+    Public, and a thin wrapper on purpose. The archive is matched on these
+    numbers, so whoever writes a row and whoever compares against it must use
+    one definition — two extractors that drift apart produce a matcher that
+    confidently compares different things, which is worse than no matcher.
+    """
+    return dict(_supervision_shape(payload).features)
 
 
 def _supervision_shape(payload: Mapping[str, object]) -> _SupervisionShape:

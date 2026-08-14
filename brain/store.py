@@ -693,6 +693,50 @@ class Brain:
             for row in rows
         ]
 
+    def supervision_examples(self, limit: int = 2000) -> list[dict[str, Any]]:
+        """Past open-position judgements, in the shape the local model matches on.
+
+        The nearest-neighbour adviser needs comparable past states and was
+        reading them out of `runtime/ai_reviews.jsonl` — a file on a rented VPS
+        that starts empty after a fresh clone. It requires five comparable
+        states before it may act on a position, so on an empty file it holds
+        everything, forever, while the account's whole history sits here.
+
+        Rows without a feature vector are skipped rather than defaulted. They
+        predate the `features` column, and matching an all-zero shape against a
+        live position returns confident nonsense — an empty archive is an
+        honest answer, a fabricated neighbour is not.
+        """
+        rows = self._run(
+            """
+            SELECT symbol, direction, action, confidence, r_at_the_time, features
+            FROM supervisions
+            WHERE account = %s AND features <> '{}'::JSONB AND direction <> ''
+            ORDER BY asked_at DESC
+            LIMIT %s
+            """,
+            (self.account, limit),
+            fetch="all",
+        )
+        if not rows:
+            return []
+        examples: list[dict[str, Any]] = []
+        for row in rows:
+            features = row[5]
+            if not isinstance(features, Mapping) or not features:
+                continue
+            examples.append(
+                {
+                    "symbol": str(row[0] or ""),
+                    "direction": str(row[1] or ""),
+                    "action": str(row[2] or ""),
+                    "confidence": float(row[3] or 0.0),
+                    "r_at_the_time": float(row[4] or 0.0),
+                    "features": {str(k): float(v) for k, v in features.items()},
+                }
+            )
+        return examples
+
     def record_position_path(self, rows: Sequence[Mapping[str, Any]]) -> int:
         """The second-by-second life of open positions, in one round trip.
 
@@ -1046,6 +1090,8 @@ class Brain:
         applied: bool = False,
         latency_ms: float | None = None,
         model: str = "",
+        direction: str = "",
+        features: Mapping[str, float] | None = None,
     ) -> None:
         """What the reviewer said about an open position, and whether it was
         carried out.
@@ -1060,13 +1106,24 @@ class Brain:
         verdict the risk layer refused is still evidence about the adviser, and
         counting it as acted-upon would credit or blame it for something that
         never happened.
+
+        `features` is the shape of the position at the moment of the question,
+        and it is what turns this table from a record of the adviser into
+        material the adviser can learn from. Without it the local
+        nearest-neighbour model cannot find comparable past states here, which
+        is why it was reading a JSONL file on the VPS — a file that starts
+        empty after a fresh clone, so the model holds everything forever while
+        months of decisions sit in Postgres unread.
         """
+        import json
+
         self._run(
             """
             INSERT INTO supervisions (
                 trade_id, account, asked_at, symbol, action, confidence,
-                reasoning, r_at_the_time, applied, latency_ms, model
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                reasoning, r_at_the_time, applied, latency_ms, model,
+                direction, features
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 trade_id,
@@ -1080,6 +1137,8 @@ class Brain:
                 applied,
                 int(latency_ms) if latency_ms is not None else None,
                 model,
+                direction,
+                json.dumps(dict(features or {}), default=str),
             ),
         )
         self.status.writes += 1
@@ -1546,6 +1605,9 @@ class NullBrain:
         return None
 
     def management_records(self, *_: Any, **__: Any) -> list[ManagementRecord]:
+        return []
+
+    def supervision_examples(self, *_: Any, **__: Any) -> list[dict[str, Any]]:
         return []
 
     def record_trade_closed(self, **_: Any) -> None:
