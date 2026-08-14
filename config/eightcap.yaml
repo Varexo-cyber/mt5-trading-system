@@ -247,7 +247,7 @@ external_signals:
     XAUUSD: XAUUSD
 
 analysis:
-  # HET DOEL VAN 2R NAAR 1.5R, en dit is de grootste enkele oorzaak dat er
+  # HET DOEL VAN 2R VIA 1.5R NAAR 1.2R, en dit is de grootste enkele oorzaak dat er
   # niets handelt. Gemeten, niet beredeneerd.
   #
   # Van alles wat de entry-poorten overleeft sterft 95,8% op de kostenstap, en
@@ -266,18 +266,17 @@ analysis:
   #   2,50     19,9%    28,6%   -8,7
   #   2,00     30,4%    33,3%   -2,9   <- waar hij nu staat
   #   1,75     36,8%    36,4%   +0,4
-  #   1,50     44,1%    40,0%   +4,1   <- hierheen
-  #   1,20     53,7%    45,5%   +8,2
+  #   1,50     44,1%    40,0%   +4,1
+  #   1,20     53,7%    45,5%   +8,2   <- hierheen
   #
-  # WAT DIT KOST EN WAT ER GEWED WORDT. Na kosten (25% van 1R) heeft een
-  # 1,5R-plan een winstpercentage van 50% nodig in plaats van 41,7%. De kale
-  # bereikkans is 44,1%. Dat gat van zes punten moet uit de modules komen —
-  # uit het feit dat een setup géén willekeurig startpunt is. Of die edge
-  # bestaat is op dit account niet aangetoond, en dit is expliciet de aanname
-  # waarop de eigenaar heeft besloten te handelen.
+  # WAT DIT KOST EN WAT ER GEWED WORDT. Een dichter doel levert minder op per
+  # winnaar en heeft dus een hogere vereiste winrate, maar wordt in de gemeten
+  # horizon veel vaker bereikt. De reach-meting blijft een poort: een dichter
+  # doel maakt een slechte richting niet vanzelf goed. Of de modules het gat na
+  # werkelijke spread, commissie en slippage dichten is nog niet aangetoond.
   #
-  # `scorecard.py --days 3` leest het terug: als de trades met een 1,5R-doel
-  # onder 44% winnen, klopte de aanname niet en gaat dit terug naar 2,0.
+  # `scorecard.py --days 3` leest het terug. Deze wijziging moet op nieuwe data
+  # worden beoordeeld; meer trades is volume, geen bewijs van een edge.
   # De waarde zelf staat in het confluence-blok verderop.
 
   # De poort die de eigenaar bij naam noemde: "XAUUSD flipte omhoog als een
@@ -467,15 +466,18 @@ analysis:
     # weer het enige antwoord.
     score_threshold: 26.0
 
-    # 1.5, van 2.0. Zie de lange toelichting bovenaan dit `analysis`-blok: dit
-    # is de grootste enkele oorzaak dat er niets handelt, en de bereikkans
-    # stijgt sneller dan de break-even eis als het doel krimpt.
-    target_r_multiple: 1.5
-    # De vloer waaronder het doel niet verder mag krimpen. Van 1.0 naar 0.9,
-    # zodat het bijsnijden ook nog ruimte heeft als 1.5 net niet haalbaar is
-    # op een traag instrument. Onder 0.9 wordt de setup geweigerd in plaats van
-    # verkleind tot iets dat zijn eigen spread niet meer kan betalen.
-    minimum_r_multiple: 0.9
+    # Van 1.5 naar 1.2. De live funnel liet TARGET_RARELY_REACHED als grootste
+    # concrete late blokkade zien. Een 1.2R-doel past beter bij quick/intraday
+    # bewegingen en wordt eerder gebankt; de stop wordt hierdoor niet verbreed.
+    target_r_multiple: 1.2
+    # Houd analyse en position sizer op exact dezelfde 1.0R-vloer. Voorheen kon
+    # de analyse tot 0.9R trimmen terwijl de sizer alles onder 1.1R alsnog
+    # weigerde. Dat was een verborgen dubbele poort, geen extra marktkennis.
+    minimum_r_multiple: 1.0
+    # De bereiktest vraagt al om de rekenkundige break-even reach rate. De extra
+    # vaste drie procentpunten waren een tweede veiligheidsmarge bovenop spread-
+    # en kostengates. Weg ermee; de marktmeting zelf blijft hard actief.
+    target_reach_margin_pct: 0.0
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
@@ -951,19 +953,18 @@ risk:
   # sinds `risk_manager.risk_multiplier` ook zonder te beweren van wel.
   losing_streak_risk_multiplier: 1.0
 
-  # Van 2.0 naar 1.5, en dit is een correctie en geen versoepeling.
+  # Van 2.0 via 1.5 en 1.1 naar 1.0. Dit is nu gelijk aan de target-trimvloer.
   #
   # Die 2.0 is afgestemd op de stops van vóór `min_stop_atr`. Die vloer maakt de
   # stop breder waar hij in de ruis lag; het target verandert niet mee, dus
   # dezelfde trade scoort nu mechanisch lager op reward/risk. In de laatste
   # cyclus vielen er acht af op RR_BELOW_MINIMUM die daarvoor door zouden zijn
   # gekomen. Het getal verlagen houdt de strengheid gelijk aan wat hij was.
-  # En van 1.5 naar 1.1, want anders is dit de nieuwe muur. Met
-  # `target_r_multiple` op 1.5 zou een vloer van 1.5 betekenen dat elk doel dat
-  # ook maar een fractie moet worden bijgesneden alsnog wordt geweigerd —
-  # RR_BELOW_MINIMUM in plaats van TARGET_RARELY_REACHED, dezelfde trade en een
-  # andere naam. 1.1 laat het bijsnijden zijn werk doen.
-  min_risk_reward: 1.1
+  # De vorige combinatie was intern tegenstrijdig: confluence mocht tot 0.9R
+  # bijsnijden, maar deze laag weigerde daarna alles onder 1.1R. Op 1.0 blijft
+  # minder dan de mogelijke stop verdienen verboden, terwijl een exact 1R-plan
+  # niet langer door een latere laag wordt weggegooid.
+  min_risk_reward: 1.0
   max_trades_per_day: 0
   max_trades_per_week: 0
 
