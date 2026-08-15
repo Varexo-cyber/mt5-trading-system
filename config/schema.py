@@ -2486,6 +2486,23 @@ class TradeManagementConfig(Base):
     #: back, ask the judgement layer early. The hard mechanical give-back rule
     #: remains in force and does not wait for the API.
     supervision_giveback_trigger_fraction: float = Field(default=0.25, gt=0.0, le=1.0)
+    #: The same two ladders, on the losing side. Every trigger above clips the
+    #: negative half away with `max(x, 0.0)`, so a position walking from -0.1R
+    #: to -0.8R crossed nothing and nobody was asked about it. Between the
+    #: fifteen-minute review and the health reader — which speaks about
+    #: structure, not about the money — a trade could lose most of its risk
+    #: budget without one deliberate look.
+    #:
+    #: That is the wrong half to be quiet on. A gain handed back is a gain; a
+    #: loss deepening is the account. The question these ask is the one a person
+    #: asks out loud: is this going further against me, and would I rather take
+    #: the smaller loss now? The answer is the reviewer's — nothing here closes
+    #: anything, and the stop remains the only thing that does so by itself.
+    supervision_loss_step_r: float = Field(default=0.25, ge=0.0, le=5.0)
+    #: The money rung on the losing side. Deliberately tighter than the profit
+    #: ladder: a missed gain can be re-entered tomorrow and a loss cannot be
+    #: un-lost, so the losing side is worth asking about sooner.
+    supervision_loss_step_equity_pct: float = Field(default=0.35, ge=0.0, le=10.0)
 
     #: How far back an unrecorded broker position may reach to claim a matching
     #: entry intent, in minutes. Beyond this it is treated as an orphan and

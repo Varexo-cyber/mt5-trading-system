@@ -42,8 +42,15 @@ def _runner() -> JarvisRunner:
             supervision_event_driven=True,
             supervision_min_interval_minutes=2.0,
             supervision_profit_step_r=0.25,
+            supervision_profit_step_equity_pct=0.5,
             supervision_giveback_trigger_fraction=0.25,
             giveback_arm_r=0.5,
+            # The losing-side ladders, at their schema defaults. `equity` is
+            # zero above, so the cash route reads nothing, and the R route sees
+            # only the positive readings these tests were written with. Neither
+            # changes an existing expectation.
+            supervision_loss_step_r=0.25,
+            supervision_loss_step_equity_pct=0.35,
         )
     )
     runner._supervised_at = {}
@@ -357,3 +364,112 @@ def _payload_at_peak(peak_r: float):  # type: ignore[no-untyped-def]
         opened_at=now,
     )
     return build_supervision_payload(position, context, {"account_equity": 130.0, "peak_r": peak_r})
+
+
+class TestTheLosingHalfIsAskedAboutToo:
+    """ "Ook als het -50 cent is: hey, gaat dit verder zakken?"
+
+    Every trigger in this function clipped its reading with `max(x, 0.0)` — the
+    R milestone, the cash milestone, and both halves of the give-back. Four
+    separate places, the same clip, and between them the losing half of a trade
+    was invisible. A position could walk from -0.1R to -0.8R, most of the risk
+    budget, and cross nothing at all.
+
+    What remained was the fifteen-minute scheduled review and a health reader
+    that speaks about structure rather than about money. Neither is the question
+    a person asks while watching a trade go against them, and that question is
+    worth more here than on the winning side: a gain handed back can be taken
+    again tomorrow, and a loss cannot be un-lost.
+    """
+
+    RISK = 3.0
+
+    def _runner(self, *, mfe_r: float = 0.0) -> JarvisRunner:
+        runner = _runner()
+        runner.manager.equity = 133.0
+        runner.settings.trade_management.supervision_loss_step_r = 0.25
+        runner.settings.trade_management.supervision_loss_step_equity_pct = 0.35
+        runner.journal = SimpleNamespace(  # type: ignore[assignment]
+            open_trade_by_ticket=lambda _t: {"sl": 97.0, "mfe_r": mfe_r}
+        )
+        runner._supervised_at[1] = NOW - timedelta(minutes=5)
+        runner._supervision_due_at[1] = NOW + timedelta(minutes=10)
+        return runner
+
+    @staticmethod
+    def _position(profit: float) -> Position:
+        return Position(
+            ticket=1,
+            symbol="TEST",
+            direction=Direction.LONG,
+            volume=0.01,
+            price_open=100.0,
+            sl=97.0,
+            tp=120.0,
+            profit=profit,
+            swap=0.0,
+            opened_at=NOW - timedelta(hours=1),
+        )
+
+    @staticmethod
+    def _was(r_now: float, pct: float) -> _SupervisionSnapshot:
+        return _SupervisionSnapshot(
+            r_now=r_now,
+            peak_r=max(r_now, 0.0),
+            giveback_fraction=0.0,
+            health_verdict="healthy",
+            health_severity=0.0,
+            profit_pct_of_equity=pct,
+            peak_pct_of_equity=max(pct, 0.0),
+        )
+
+    def test_a_deepening_loss_in_r_now_asks(self) -> None:
+        """-0.2R to -0.4R crosses the 0.25R rung on the losing side."""
+        runner = self._runner()
+        runner.broker.bid = 100.0 - 0.4 * self.RISK
+        runner._supervision_snapshots[1] = self._was(-0.2, -0.30)
+
+        triggered = runner._supervision_trigger(self._position(-0.94), NOW)
+
+        assert triggered is not None
+        assert triggered[0].startswith("loss_deepened")
+
+    def test_fifty_cents_against_is_a_question_not_a_shrug(self) -> None:
+        """EUR 0.47 is the first cash rung on a EUR 133 account. This is it."""
+        runner = self._runner()
+        # -0.16R: far short of the 0.25R rung, so only the money route can speak.
+        runner.broker.bid = 100.0 - 0.16 * self.RISK
+        runner._supervision_snapshots[1] = self._was(-0.05, -0.11)
+
+        triggered = runner._supervision_trigger(self._position(-0.50), NOW)
+
+        assert triggered is not None
+        assert triggered[0].startswith("loss_deepened_in_cash")
+
+    def test_a_loss_that_is_recovering_is_left_alone(self) -> None:
+        """Coming back is not new evidence. Only a deeper loss is."""
+        runner = self._runner()
+        runner.broker.bid = 100.0 - 0.1 * self.RISK
+        runner._supervision_snapshots[1] = self._was(-0.6, -1.20)
+
+        assert runner._supervision_trigger(self._position(-0.30), NOW) is None
+
+    def test_both_ladders_can_be_switched_off(self) -> None:
+        runner = self._runner()
+        runner.settings.trade_management.supervision_loss_step_r = 0.0
+        runner.settings.trade_management.supervision_loss_step_equity_pct = 0.0
+        runner.broker.bid = 100.0 - 0.9 * self.RISK
+        runner._supervision_snapshots[1] = self._was(-0.05, -0.10)
+
+        assert runner._supervision_trigger(self._position(-2.10), NOW) is None
+
+    def test_the_overlay_asks_sooner_on_the_losing_side(self) -> None:
+        """Not a symmetry slip. Losses are the half you cannot re-enter out of."""
+        from config.loader import load_settings
+
+        settings = load_settings("config/config.yaml", overlay="config/eightcap.yaml")
+        management = settings.trade_management
+
+        assert management.supervision_loss_step_equity_pct < (
+            management.supervision_profit_step_equity_pct
+        )
