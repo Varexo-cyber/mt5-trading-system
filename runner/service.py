@@ -3597,11 +3597,37 @@ class JarvisRunner:
                 actual_pnl_r=float(row["actual_pnl_r"]),  # type: ignore[arg-type]
                 after_exit_best_r=row.get("after_exit_best_r"),  # type: ignore[arg-type]
                 after_exit_worst_r=row.get("after_exit_worst_r"),  # type: ignore[arg-type]
+                **self._best_exit_available(row),
             )
         except (KeyError, TypeError, ValueError):
             # Learning is not a risk control. A malformed row costs one
             # observation, never the resolver loop.
             return
+
+    def _best_exit_available(self, row: dict[str, object]) -> dict[str, float]:
+        """The best moment this trade ever offered, read back from its path.
+
+        The losing side of the exit question, and the side nothing measured.
+        HK50 short on 14 August: peak +0.00R, took -0.89R, ran to the broker
+        stop with no exit chosen by anything. Whether there was an earlier way
+        out is answerable only from the second-by-second path, which is what
+        `position_path` is for and the first thing that actually reads it.
+
+        Empty rather than zero when there is no path. A position opened before
+        the table existed, or one whose samples were lost, has an unknown best
+        moment — and recording zero would claim every one of them was held to
+        the perfect second.
+        """
+        brain_trade = self._brain_trades.get(int(row.get("ticket") or 0))
+        if brain_trade is None:
+            return {}
+        try:
+            best = self.brain.best_exit_available(brain_trade)
+        except Exception:  # noqa: BLE001 - learning must not break the resolver
+            return {}
+        if best is None:
+            return {}
+        return {"best_exit_r": best[0], "minutes_to_best_exit": best[1]}
 
     def _persist_counterfactual(self, row: dict[str, object]) -> None:
         """Copy one resolved local shadow plan to the durable Neon brain."""
@@ -3873,7 +3899,15 @@ class JarvisRunner:
                 market=market,
                 health=health,
             )
-            self._buffer_position_path(int(row["id"]), position, row, market, observed_at)
+            # The BRAIN's trade id, not the journal's. `position_path.trade_id`
+            # has a foreign key into Neon's `trades`, and feeding it the local
+            # SQLite id made every insert violate it — the whole table would
+            # have stayed empty while the flush reported rows written.
+            brain_trade = self._brain_trades.get(position.ticket)
+            if brain_trade is not None:
+                self._buffer_position_path(
+                    brain_trade, position, row, market, observed_at
+                )
         self._flush_position_path(observed_at)
 
     def _buffer_position_path(  # type: ignore[no-untyped-def]

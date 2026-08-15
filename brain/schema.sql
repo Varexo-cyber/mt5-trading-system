@@ -423,3 +423,26 @@ ALTER TABLE management_outcomes
     ADD COLUMN IF NOT EXISTS after_exit_best_r NUMERIC(10, 4);
 ALTER TABLE management_outcomes
     ADD COLUMN IF NOT EXISTS after_exit_worst_r NUMERIC(10, 4);
+
+-- The best exit that was available while the trade was open, and what not
+-- taking it cost.
+--
+-- The mirror of `after_exit_best_r`, and the side nothing measured. A losing
+-- trade that runs to its stop leaves no trace of the moment it was only 0.2R
+-- down and drifting — every column here says "-0.89R, hit the broker stop" and
+-- the decision to keep holding is invisible.
+--
+-- Two live shorts on 14 August: HK50 peaked at exactly +0.00R and took
+-- -0.89R, UKOUSD peaked at +0.08R and took -0.83R. Neither exit was chosen by
+-- anything; both ran to a level left sitting at the broker. Whether an earlier
+-- exit was available, and how much earlier, is answerable only from the path —
+-- and the path is now recorded second by second.
+--
+-- `missed_r` is `best_exit_r` minus what the trade actually took. Positive
+-- means there was a better moment and it went by.
+ALTER TABLE management_outcomes
+    ADD COLUMN IF NOT EXISTS best_exit_r NUMERIC(10, 4);
+ALTER TABLE management_outcomes
+    ADD COLUMN IF NOT EXISTS missed_r NUMERIC(10, 4);
+ALTER TABLE management_outcomes
+    ADD COLUMN IF NOT EXISTS minutes_to_best_exit NUMERIC(10, 2);
