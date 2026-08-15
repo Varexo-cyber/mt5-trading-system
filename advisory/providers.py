@@ -1392,6 +1392,17 @@ def build_supervision_payload(
         "peak_unrealised_r": round(peak_r, 2),
         "profit_given_back_r": round(giveback_r, 2),
         "profit_given_back_fraction": round(giveback_fraction, 3),
+        # The give-back in money, because that is the form the question is
+        # actually asked in. "Peak 0.42R, gave back 15%" is a shape; "it was
+        # worth EUR 1.00 and it is worth EUR 0.85" is the decision. On a wide
+        # stop those two read completely differently, and the reviewer was only
+        # ever handed the first one.
+        "peak_unrealised_money": (
+            round(peak_r * risk * per_unit, 2) if per_unit and risk and peak_r > 0 else None
+        ),
+        "money_handed_back_from_peak": (
+            round(giveback_r * risk * per_unit, 2) if per_unit and risk and giveback_r > 0 else None
+        ),
         "spread_as_fraction_of_initial_risk": (
             round(context.tick.spread / risk, 3) if context.tick is not None and risk else None
         ),
@@ -1437,7 +1448,9 @@ def _parse_scout(
         if not isinstance(patterns, list) or not isinstance(risks, list):
             raise TypeError("patterns/risks must be arrays")  # noqa: TRY301
         if action != "WAIT" and (not symbol or not thesis or not counter):
-            raise ValueError("directional scout decision needs symbol and both theses")  # noqa: TRY301
+            raise ValueError(  # noqa: TRY301
+                "directional scout decision needs symbol and both theses"
+            )
         if action == "WAIT":
             symbol = ""
         return ScoutDecision(

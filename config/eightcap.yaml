@@ -1031,6 +1031,17 @@ trade_management:
   # nooduitgangen blijven vangrails; ze zijn geen winstdoel.
   bank_enabled: false
 
+  # Wanneer de AI wakker wordt terwijl winst wegloopt. Dit sluit NIETS. Het is
+  # de drempel waarbij de vraag gesteld wordt; het antwoord komt van de
+  # beoordeling zelf, niet van dit getal.
+  #
+  # Op 0,25 werd er pas gebeld nadat een kwart weg was: een piek van EUR 1,00
+  # vraagt dan pas op EUR 0,75. Beide winstladders praten alleen bij een NIEUWE
+  # top, dus tussen EUR 1,00 en EUR 0,75 keek er letterlijk niets naar de
+  # positie. Op 0,15 valt die vraag op EUR 0,85 — terwijl er nog iets te
+  # beslissen valt in plaats van erna.
+  supervision_giveback_trigger_fraction: 0.15
+
   # Het leren van de bankdrempel staat UIT, en dat is op bewijs.
   #
   # `management_baselines` speelde tien gebankte trades na tegen hun eigen
