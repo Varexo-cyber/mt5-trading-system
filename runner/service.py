@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -3715,6 +3716,64 @@ class JarvisRunner:
                 f"{closed.pnl_money:+.2f} {self.broker.account().currency}"
             )
 
+    #: Mechanical rules whose whole effect is "the stop moved to here". These
+    #: are the only examples of a stop placement this account can produce
+    #: without a paid reviewer, and they are what breaks the cold start.
+    _STOP_PLACEMENT_ACTIONS = frozenset({"BREAK_EVEN", "PROFIT_LOCK", "TRAIL"})
+
+    def _teach_stop_placement(self, event) -> None:  # type: ignore[no-untyped-def]
+        """Record a mechanical stop move as an example the model can learn from.
+
+        The judgement layer may now move a stop, but only to a level a
+        comparable past state recorded — and it can only record one by moving a
+        stop. Three conditions in a circle, so it could never make the first
+        move. With Claude switched off nothing external breaks it either.
+
+        The deterministic rules break it. They place stops all day, at a level
+        derived from the peak, and each placement is a real answer to "where
+        did the stop go in a state like this". The model reads them as examples
+        and can then diverge on what it sees in the market, which is the whole
+        point — it starts by copying and ends by judging.
+
+        Not circular: these are outcomes of a rule with its own reasoning, not
+        the model's own past output fed back to it. And every example is graded
+        later by what the trade actually did.
+        """
+        if event.action not in self._STOP_PLACEMENT_ACTIONS:
+            return
+        position = next(
+            (item for item in self._managed_positions() if item.ticket == event.ticket), None
+        )
+        if position is None or not position.sl:
+            return
+        try:
+            context = self.data.get_context(position.symbol)
+        except Exception:  # noqa: BLE001 - teaching must never disturb the guard
+            return
+        if context is None or context.tick is None:
+            return
+        payload = build_supervision_payload(
+            position, context, {"account_equity": self.broker.account().equity}
+        )
+        verdict = SimpleNamespace(action="tighten_stop", stop_loss=float(position.sl))
+        fraction = self._stop_fraction(payload, verdict)
+        if fraction is None:
+            return
+        self.brain.record_supervision(
+            trade_id=self._brain_trades.get(event.ticket),
+            asked_at=self.clock.now(),
+            symbol=position.symbol,
+            action="tighten_stop",
+            confidence=1.0,
+            reasoning=f"mechanical {event.action}: {event.detail}"[:400],
+            r_at_the_time=event.r_at_action,
+            applied=True,
+            model="mechanical_rule",
+            direction=position.direction.name,
+            features=supervision_features(payload),
+            stop_fraction=fraction,
+        )
+
     def _record_management(self, events) -> None:  # type: ignore[no-untyped-def]
         for event in events:
             if event.action in {
@@ -3749,6 +3808,7 @@ class JarvisRunner:
                     price=event.exit_price,
                     money=event.pnl_money,
                 )
+            self._teach_stop_placement(event)
             if event.remaining_volume is not None:
                 self.journal.update_open_trade_volume(event.ticket, event.remaining_volume)
             if event.exit_price is not None and event.pnl_money is not None:
