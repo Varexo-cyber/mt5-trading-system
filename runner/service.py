@@ -4298,6 +4298,32 @@ class JarvisRunner:
                 f"new_cash_milestone:{snapshot.profit_pct_of_equity:.2f}%_of_account",
                 snapshot,
             )
+        # Both ladders again, pointing the other way.
+        #
+        # Every trigger above wraps its reading in `max(x, 0.0)`, and that is
+        # the same clip repeated four times: the losing half of the trade was
+        # invisible to all of them. A position could walk from -0.1R to -0.8R —
+        # most of its risk budget — and cross nothing. What was left watching it
+        # was the fifteen-minute review, and a health reader that speaks about
+        # structure rather than about money.
+        #
+        # So the deliberate look at "is this going further against me, and would
+        # I rather take the smaller loss now" happened only by accident of
+        # timing. It is the half where being late costs the most, and it was the
+        # half nobody was asked about.
+        loss_step = config.supervision_loss_step_r
+        if loss_step > 0 and int(max(-snapshot.r_now, 0.0) / loss_step) > int(
+            max(-previous.r_now, 0.0) / loss_step
+        ):
+            return f"loss_deepened:{snapshot.r_now:.2f}R", snapshot
+        loss_cash = config.supervision_loss_step_equity_pct
+        if loss_cash > 0 and int(max(-snapshot.profit_pct_of_equity, 0.0) / loss_cash) > int(
+            max(-previous.profit_pct_of_equity, 0.0) / loss_cash
+        ):
+            return (
+                f"loss_deepened_in_cash:{snapshot.profit_pct_of_equity:.2f}%_of_account",
+                snapshot,
+            )
         # Draining. Both ladders above only speak on a NEW high, so this is the
         # only trigger that fires while a trade is handing profit back — and it
         # inherited the mechanical closer's R floor, which on this account meant

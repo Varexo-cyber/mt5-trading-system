@@ -1042,6 +1042,21 @@ trade_management:
   # beslissen valt in plaats van erna.
   supervision_giveback_trigger_fraction: 0.15
 
+  # Dezelfde vraag aan de verliezende kant, en die ontbrak volledig. Alle vier
+  # de triggers hierboven knippen het negatieve deel weg met `max(x, 0)`, dus
+  # een positie kon van -0,1R naar -0,8R lopen zonder dat er iets overheen ging.
+  # Wat er overbleef was de review van elke vijftien minuten.
+  #
+  # Op EUR 133 equity: de eerste geldsport valt op EUR 0,47, de tweede op
+  # EUR 0,93. Dus "hey, zakt dit door? dan liever nu eruit voor 50 cent" wordt
+  # daadwerkelijk gevraagd in plaats van toevallig opgemerkt.
+  #
+  # De geldsport is krapper dan die aan de winstkant (0,35 tegen 0,50) en dat is
+  # geen symmetriefout. Een gemiste winst kun je morgen opnieuw pakken; een
+  # verlies kun je niet terugdraaien.
+  supervision_loss_step_r: 0.25
+  supervision_loss_step_equity_pct: 0.35
+
   # Het leren van de bankdrempel staat UIT, en dat is op bewijs.
   #
   # `management_baselines` speelde tien gebankte trades na tegen hun eigen
