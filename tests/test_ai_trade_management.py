@@ -212,3 +212,148 @@ class TestTheReviewerIsToldWhetherTheProfitIsSafe:
         payload = self._payload(stop=0.0)
 
         assert payload["profit_is_protected"] is False
+
+
+class TestAPeakThatDrainsWakesSomebody:
+    """One euro, then ninety cents, then eighty. Who is watching?
+
+    The operator asked it as a yes-or-no and the honest answer was no. On a
+    EUR 133 account with 1R around EUR 2.35, a EUR 1.00 peak is 0.42R. The
+    give-back closer arms at 0.50R, the peak-stall closer at 0.60R, and the
+    give-back SUPERVISION trigger — the one that only asks — had inherited the
+    closer's 0.50R floor. Both milestone ladders speak only on a new high. So
+    between EUR 1.00 and EUR 0.75 there was no rule, no reviewer, and no call.
+
+    Arming the question in money does not close anything. It buys one review at
+    the moment there is still something left to decide, and the decision is the
+    reviewer's: hold it because the pullback is a pullback, or bank it because
+    it is not. That is the difference between judgement and a tripwire, and it
+    is the whole reason the closers keep their R floors here.
+    """
+
+    #: Entry 100, original stop 97, so 1R is three points — the wide structural
+    #: stop that makes EUR 1.00 read as 0.42R.
+    RISK = 3.0
+    PEAK_R = 0.42
+
+    def _runner(self, *, profit: float, mfe_r: float, price: float) -> JarvisRunner:
+        runner = _runner()
+        runner.manager.equity = 133.0
+        runner.settings.trade_management.supervision_profit_step_equity_pct = 0.5
+        runner.settings.trade_management.supervision_giveback_trigger_fraction = 0.15
+        runner.journal = SimpleNamespace(  # type: ignore[assignment]
+            open_trade_by_ticket=lambda _t: {"sl": 97.0, "mfe_r": mfe_r}
+        )
+        runner.broker.bid = price
+        runner._supervised_at[1] = NOW - timedelta(minutes=5)
+        runner._supervision_due_at[1] = NOW + timedelta(minutes=10)
+        self._profit = profit
+        return runner
+
+    def _position(self, profit: float) -> Position:
+        return Position(
+            ticket=1,
+            symbol="TEST",
+            direction=Direction.LONG,
+            volume=0.01,
+            price_open=100.0,
+            sl=97.0,
+            tp=120.0,
+            profit=profit,
+            swap=0.0,
+            opened_at=NOW - timedelta(hours=1),
+        )
+
+    @staticmethod
+    def _was(r_now: float, pct: float) -> _SupervisionSnapshot:
+        return _SupervisionSnapshot(
+            r_now=r_now,
+            peak_r=r_now,
+            giveback_fraction=0.0,
+            health_verdict="healthy",
+            health_severity=0.0,
+            profit_pct_of_equity=pct,
+            peak_pct_of_equity=pct,
+        )
+
+    def test_a_small_r_peak_draining_in_money_now_asks(self) -> None:
+        """Peaked at EUR 1.00 (0.42R), now EUR 0.80. Twenty percent gone."""
+        runner = self._runner(profit=0.80, mfe_r=self.PEAK_R, price=100.0 + 0.336 * self.RISK)
+        runner._supervision_snapshots[1] = self._was(self.PEAK_R, 0.752)
+
+        triggered = runner._supervision_trigger(self._position(0.80), NOW)
+
+        assert triggered is not None
+        assert triggered[0].startswith("profit_giveback:")
+
+    def test_the_r_floor_alone_would_have_stayed_silent(self) -> None:
+        """Identical trade, money route off: 0.42R never reaches the 0.50R arm."""
+        runner = self._runner(profit=0.80, mfe_r=self.PEAK_R, price=100.0 + 0.336 * self.RISK)
+        runner.settings.trade_management.supervision_profit_step_equity_pct = 0.0
+        runner._supervision_snapshots[1] = self._was(self.PEAK_R, 0.752)
+
+        assert runner._supervision_trigger(self._position(0.80), NOW) is None
+
+    def test_a_peak_too_small_to_matter_is_still_ignored(self) -> None:
+        """Not every wobble is worth paying for. EUR 0.20 on EUR 133 is not."""
+        runner = self._runner(profit=0.16, mfe_r=0.084, price=100.0 + 0.0672 * self.RISK)
+        runner._supervision_snapshots[1] = self._was(0.084, 0.150)
+
+        assert runner._supervision_trigger(self._position(0.16), NOW) is None
+
+    def test_the_reviewer_is_told_the_peak_in_money(self) -> None:
+        """A shape is not a decision. "It was EUR 1.00, it is EUR 0.85" is."""
+        payload = _payload_at_peak(0.60)
+
+        assert payload["peak_unrealised_money"] == pytest.approx(3.85, abs=0.25)
+        assert payload["money_handed_back_from_peak"] == pytest.approx(1.03, abs=0.25)
+
+    def test_no_peak_means_no_invented_number(self) -> None:
+        payload = _payload_at_peak(0.0)
+
+        assert payload["peak_unrealised_money"] is None
+        assert payload["money_handed_back_from_peak"] is None
+
+
+def _payload_at_peak(peak_r: float):  # type: ignore[no-untyped-def]
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    from advisory.providers import build_supervision_payload
+    from core.types import Direction, MarketContext, Position, Series, Tick, Timeframe
+
+    now = datetime(2026, 8, 14, 19, 40, tzinfo=UTC)
+    index = pd.date_range("2026-08-14", periods=60, freq="15min", tz=UTC)
+    close = pd.Series([0.5850 + i * 0.00002 for i in range(60)], index=index)
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 0.0002,
+            "low": close - 0.0002,
+            "close": close,
+            "tick_volume": 100,
+            "spread": 10,
+            "real_volume": 0,
+        },
+        index=index,
+    )
+    context = MarketContext(
+        symbol="CADCHF.i",
+        now=now,
+        series={Timeframe.M15: Series("CADCHF.i", Timeframe.M15, frame, now)},
+        tick=Tick("CADCHF.i", now, 0.58595, 0.58600),
+    )
+    position = Position(
+        ticket=134663779,
+        symbol="CADCHF.i",
+        direction=Direction.LONG,
+        volume=0.05,
+        price_open=0.58542,
+        sl=0.58422,
+        tp=0.58691,
+        profit=2.82,
+        swap=0.0,
+        opened_at=now,
+    )
+    return build_supervision_payload(position, context, {"account_equity": 130.0, "peak_r": peak_r})

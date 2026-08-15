@@ -185,6 +185,12 @@ class _SupervisionSnapshot:
     #: the account at 0.44R, so the 0.25R milestone ladder had last spoken at
     #: EUR 1.60 and would not speak again until EUR 3.20.
     profit_pct_of_equity: float = 0.0
+    #: The BEST this trade has been worth, as a share of equity. The field above
+    #: is what it is worth now, and on the way down those diverge — which is the
+    #: entire case this exists for. Both milestone ladders only speak on a new
+    #: high, so a trade that peaks and then drains is silent in every trigger
+    #: except the give-back, and the give-back was gated on R alone.
+    peak_pct_of_equity: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -3905,9 +3911,7 @@ class JarvisRunner:
             # have stayed empty while the flush reported rows written.
             brain_trade = self._brain_trades.get(position.ticket)
             if brain_trade is not None:
-                self._buffer_position_path(
-                    brain_trade, position, row, market, observed_at
-                )
+                self._buffer_position_path(brain_trade, position, row, market, observed_at)
         self._flush_position_path(observed_at)
 
     def _buffer_position_path(  # type: ignore[no-untyped-def]
@@ -4236,6 +4240,15 @@ class JarvisRunner:
             health_verdict=health.verdict if health is not None else "unknown",
             health_severity=health.severity if health is not None else 0.0,
             profit_pct_of_equity=(100.0 * money / equity) if equity > 0 else 0.0,
+            # Peak in money, from the same two numbers that produced `money`:
+            # r_now and the profit at r_now fix the value of one R, and the peak
+            # is that many R. No second source, so the two percentages below can
+            # never disagree about what the trade is worth.
+            peak_pct_of_equity=(
+                (100.0 * money / equity) * (peak_r / r_now)
+                if equity > 0 and r_now > 0 and money > 0
+                else 0.0
+            ),
         )
 
         previous = self._supervision_snapshots.get(position.ticket)
@@ -4285,9 +4298,31 @@ class JarvisRunner:
                 f"new_cash_milestone:{snapshot.profit_pct_of_equity:.2f}%_of_account",
                 snapshot,
             )
+        # Draining. Both ladders above only speak on a NEW high, so this is the
+        # only trigger that fires while a trade is handing profit back — and it
+        # inherited the mechanical closer's R floor, which on this account meant
+        # it never spoke at all. A EUR 1.00 peak on EUR 133 is 0.42R against a
+        # 0.50R arm: the give-back closer stays out of reach, the peak-stall
+        # closer stays out of reach, and this, the one thing that only ASKS,
+        # stayed out of reach with them. So the trade slid from EUR 1.00 to
+        # EUR 0.80 to EUR 0.60 with nothing looking at it.
+        #
+        # Waking the reviewer is not an exit. It costs one call and returns
+        # hold, close or a stop move, and the trade is held or banked on that
+        # reading rather than on a threshold — which is the point. The R floor
+        # still governs the rules that close positions by themselves; it has no
+        # business governing the question.
         threshold = config.supervision_giveback_trigger_fraction
+        # The money floor is the cash ladder's own first rung, not the capital
+        # protection level. If a peak was large enough to be worth a call on the
+        # way up, it is worth one on the way down; borrowing a stricter number
+        # here would mean the system paid to admire a gain and then declined to
+        # pay when that same gain started leaving.
+        armed = snapshot.peak_r >= config.giveback_arm_r or (
+            cash_step > 0 and snapshot.peak_pct_of_equity >= cash_step
+        )
         if (
-            snapshot.peak_r >= config.giveback_arm_r
+            armed
             and snapshot.giveback_fraction >= threshold
             and previous.giveback_fraction < threshold
         ):
