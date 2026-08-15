@@ -516,7 +516,14 @@ class TestGradingTheAdviser:
         source = (
             __import__("pathlib").Path(__file__).resolve().parent.parent / "runner" / "service.py"
         ).read_text(encoding="utf-8")
-        call = source[source.index("self.brain.record_supervision(") :]
+        # Anchored on the supervision path specifically. There is a second
+        # `record_supervision` call now — `_teach_stop_placement`, which feeds
+        # the model mechanical stop placements — and it legitimately passes
+        # `applied=True` because a rule that moved a stop did move it. Grepping
+        # for the first call in the file found that one and failed on a
+        # property it was never meant to have.
+        call = source[source.index("verdict = self.advisor.supervise(payload)") :]
+        call = call[call.index("self.brain.record_supervision(") :]
 
         # The early `continue` on hold is gone: the verdict is recorded first
         # and the action decides only whether an event was applied.
