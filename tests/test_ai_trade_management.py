@@ -473,3 +473,107 @@ class TestTheLosingHalfIsAskedAboutToo:
         assert management.supervision_loss_step_equity_pct < (
             management.supervision_profit_step_equity_pct
         )
+
+
+class TestTheManagementRecordReachesTheManagementDecision:
+    """The account's own replay was being read by the wrong reviewer.
+
+    `what_stepping_in_has_earned` replays every closed trade against its own
+    untouched stop and target, so it is the only evidence in this system about
+    MANAGEMENT rather than entries. Its own text in the briefing says "this is
+    the question you are being asked".
+
+    It was attached to the payload that asks whether to OPEN something — which
+    cannot act on it — and the payload deciding whether to hold or bank a live
+    position received the local memory and nothing else. So the ten-trade
+    replay showing PEAK_STALL banking +0.43R where holding paid +1.92R was
+    shown only to the half of the system that has no exits to make.
+    """
+
+    def _runner(self, *, brain_says: dict) -> tuple[JarvisRunner, list]:  # type: ignore[type-arg]
+        from advisory.providers import Supervision
+        from runner.service import OperationMode
+
+        seen: list = []
+
+        class _Advisor:
+            supports_dynamic_management = True
+
+            def supervise(self, payload):  # type: ignore[no-untyped-def]
+                seen.append(payload)
+                return Supervision(action="hold", confidence=0.6, reason="test", model="stub")
+
+        runner = _runner()
+        runner.advisor = _Advisor()  # type: ignore[assignment]
+        runner.operation = OperationMode.EXPERIMENTAL_LIVE
+        runner.clock = SimpleNamespace(now=lambda: NOW)  # type: ignore[assignment]
+        runner.manager.equity = 133.0
+        runner.manager.apply_supervision = lambda *_: None
+        runner.brain = SimpleNamespace(  # type: ignore[assignment]
+            briefing=lambda *_: brain_says,
+            record_supervision=lambda **_: None,
+        )
+        runner.memory = SimpleNamespace(briefing=lambda *_: {})  # type: ignore[assignment]
+        runner.posture = SimpleNamespace(brief=lambda: {})  # type: ignore[assignment]
+        runner.journal = SimpleNamespace(  # type: ignore[assignment]
+            open_trade_by_ticket=lambda _t: {"sl": 97.0, "mfe_r": 0.0},
+            supervision_context=lambda _t: {},
+        )
+        runner.broker.account = lambda: SimpleNamespace(currency="EUR", equity=133.0)
+        runner.data = SimpleNamespace(get_context=lambda _s: _context())  # type: ignore[assignment]
+        runner.ai_ledger = SimpleNamespace(append=lambda *_a, **_k: None)  # type: ignore[assignment]
+        runner._headlines_for = lambda _s: []  # type: ignore[method-assign]
+        runner._health_brief = lambda _t: {}  # type: ignore[method-assign]
+        runner._managed_positions = lambda: ()  # type: ignore[method-assign]
+        runner._brain_trades = {}
+        return runner, seen
+
+    def test_the_supervisor_is_handed_the_account_record(self) -> None:
+        record = {
+            "what_stepping_in_has_earned": {
+                "records": ["PEAK_STALL: 3 trades, took +0.43R, holding paid +1.92R"],
+                "weight": "the only evidence about management",
+            }
+        }
+        runner, seen = self._runner(brain_says=record)
+
+        runner._supervise_positions([_position()])
+
+        assert seen, "the supervisor was never called"
+        assert seen[0]["context"]["learned_over_the_account_lifetime"] == record
+
+    def test_an_empty_record_is_left_out_rather_than_sent_blank(self) -> None:
+        """A blank key reads as a consulted record. A missing one reads as none."""
+        runner, seen = self._runner(brain_says={})
+
+        runner._supervise_positions([_position()])
+
+        assert seen
+        assert "learned_over_the_account_lifetime" not in seen[0]["context"]
+
+
+def _context():  # type: ignore[no-untyped-def]
+    import pandas as pd
+
+    from core.types import MarketContext, Series, Tick, Timeframe
+
+    index = pd.date_range("2026-08-08", periods=60, freq="15min", tz=UTC)
+    close = pd.Series([100.0 + i * 0.01 for i in range(60)], index=index)
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 0.02,
+            "low": close - 0.02,
+            "close": close,
+            "tick_volume": 100,
+            "spread": 10,
+            "real_volume": 0,
+        },
+        index=index,
+    )
+    return MarketContext(
+        symbol="TEST",
+        now=NOW,
+        series={Timeframe.M15: Series("TEST", Timeframe.M15, frame, NOW)},
+        tick=Tick("TEST", NOW, 101.0, 101.1),
+    )
