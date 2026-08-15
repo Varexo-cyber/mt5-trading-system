@@ -256,6 +256,11 @@ class ManagementRecord:
     #: The number that separates "closed at +0.1R and it ran to +2R" from
     #: "closed at +0.1R and it collapsed" — the same row in every other column.
     left_on_the_table_r: float | None = None
+    #: Average gap between the best exit that was available while the trade was
+    #: open and what it actually took. The losing side of the same question:
+    #: a short that ran straight to its stop reports -0.89R and says nothing
+    #: about the moment it was only 0.2R down.
+    missed_r: float | None = None
 
     @property
     def mean_lift_r(self) -> float:
@@ -269,9 +274,14 @@ class ManagementRecord:
             if self.left_on_the_table_r is not None
             else ""
         )
+        missed = (
+            f"; a better exit was available and missed by {self.missed_r:.2f}R on average"
+            if self.missed_r is not None and self.missed_r > 0
+            else ""
+        )
         return (
             f"{self.action}: {self.trades} trades, {self.better} better than leaving it "
-            f"alone, {self.mean_lift_r:+.2f}R per trade — {verdict}{after}"
+            f"alone, {self.mean_lift_r:+.2f}R per trade — {verdict}{after}{missed}"
         )
 
 
@@ -637,6 +647,8 @@ class Brain:
         actual_pnl_r: float,
         after_exit_best_r: float | None = None,
         after_exit_worst_r: float | None = None,
+        best_exit_r: float | None = None,
+        minutes_to_best_exit: float | None = None,
     ) -> None:
         """What stepping in was worth on one closed trade.
 
@@ -652,8 +664,9 @@ class Brain:
             INSERT INTO management_outcomes (
                 account, local_trade_id, resolved_at, symbol, direction,
                 exit_action, baseline_pnl_r, actual_pnl_r, lift_r,
-                after_exit_best_r, after_exit_worst_r
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                after_exit_best_r, after_exit_worst_r,
+                best_exit_r, missed_r, minutes_to_best_exit
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (account, local_trade_id) DO NOTHING
             """,
             (
@@ -668,6 +681,9 @@ class Brain:
                 actual_pnl_r - baseline_pnl_r,
                 after_exit_best_r,
                 after_exit_worst_r,
+                best_exit_r,
+                (best_exit_r - actual_pnl_r) if best_exit_r is not None else None,
+                minutes_to_best_exit,
             ),
         )
         self.status.writes += 1
@@ -687,7 +703,7 @@ class Brain:
         rows = self._run(
             """
             SELECT exit_action, COUNT(*), SUM(lift_r), COUNT(*) FILTER (WHERE lift_r > 0),
-                   AVG(after_exit_best_r)
+                   AVG(after_exit_best_r), AVG(missed_r)
             FROM management_outcomes
             WHERE account = %s AND exit_action <> ''
             GROUP BY exit_action
@@ -706,6 +722,7 @@ class Brain:
                 total_lift_r=float(row[2] or 0.0),
                 better=int(row[3]),
                 left_on_the_table_r=(float(row[4]) if row[4] is not None else None),
+                missed_r=(float(row[5]) if row[5] is not None else None),
             )
             for row in rows
         ]
@@ -755,6 +772,36 @@ class Brain:
                 }
             )
         return examples
+
+    def best_exit_available(self, trade_id: int) -> tuple[float, float] | None:
+        """The best R this position ever showed, and how many minutes in.
+
+        Read from `position_path`, which is why that table exists. Its rows are
+        the only record of what was on offer between the open and the close: a
+        trade that ran to its stop reports -0.89R and nothing else, and the
+        moment it was 0.2R down and drifting leaves no trace anywhere else.
+
+        None when the path was never recorded — a position opened before this
+        existed, or one whose samples were lost to an unreachable brain. An
+        absent path is not a path with no good moment in it.
+        """
+        row = self._run(
+            """
+            SELECT MAX(r_now),
+                   EXTRACT(EPOCH FROM (
+                       MIN(sampled_at) FILTER (
+                           WHERE r_now = (SELECT MAX(r_now) FROM position_path WHERE trade_id = %s)
+                       ) - MIN(sampled_at)
+                   )) / 60.0
+            FROM position_path
+            WHERE trade_id = %s
+            """,
+            (trade_id, trade_id),
+            fetch="one",
+        )
+        if not row or row[0] is None:
+            return None
+        return float(row[0]), float(row[1] or 0.0)
 
     def record_position_path(self, rows: Sequence[Mapping[str, Any]]) -> int:
         """The second-by-second life of open positions, in one round trip.
@@ -1630,6 +1677,9 @@ class NullBrain:
 
     def supervision_examples(self, *_: Any, **__: Any) -> list[dict[str, Any]]:
         return []
+
+    def best_exit_available(self, *_: Any, **__: Any) -> tuple[float, float] | None:
+        return None
 
     def record_trade_closed(self, **_: Any) -> None:
         return None

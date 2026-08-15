@@ -547,3 +547,66 @@ class TestItLearnsFromWhatHappenedAfterItLetGo:
         record = ManagementRecord(action="AI_CLOSE", trades=3, total_lift_r=1.9, better=3)
 
         assert "went on to reach" not in record.summary()
+
+
+class TestItLearnsWhenItShouldHaveGotOutEarlier:
+    """The losing side of the exit question, and the side nothing measured.
+
+    HK50 short, 14 August: peak +0.00R, took -0.89R, ran to the broker stop
+    with no exit chosen by anything. UKOUSD the same shape. Every column about
+    those trades says "-0.89R, hit the stop" — the moment it was only 0.2R down
+    and drifting leaves no trace, so the decision to keep holding is invisible
+    and unlearnable.
+
+    `position_path` is the only record of what was on offer between the open
+    and the close. This is the first thing that reads it.
+    """
+
+    def test_the_missed_exit_is_reported_when_there_was_one(self) -> None:
+        from brain.store import ManagementRecord
+
+        record = ManagementRecord(
+            action="BROKER_SL",
+            trades=4,
+            total_lift_r=0.0,
+            better=0,
+            missed_r=0.71,
+        )
+
+        assert "a better exit was available and missed by 0.71R on average" in record.summary()
+
+    def test_a_perfect_exit_says_nothing(self) -> None:
+        """Nothing was left behind, so there is nothing to report. A zero line
+        in a briefing is a sentence the reader has to discard."""
+        from brain.store import ManagementRecord
+
+        record = ManagementRecord(
+            action="BROKER_TP", trades=3, total_lift_r=0.2, better=2, missed_r=0.0
+        )
+
+        assert "better exit was available" not in record.summary()
+
+    def test_both_sides_can_appear_together(self) -> None:
+        """One rule can be late out of a loser and early out of a winner, and
+        those are different corrections."""
+        from brain.store import ManagementRecord
+
+        record = ManagementRecord(
+            action="AI_CLOSE",
+            trades=6,
+            total_lift_r=-1.2,
+            better=2,
+            left_on_the_table_r=1.4,
+            missed_r=0.3,
+        )
+        summary = record.summary()
+
+        assert "went on to reach +1.40R" in summary
+        assert "missed by 0.30R" in summary
+
+    def test_an_unrecorded_path_yields_nothing_rather_than_zero(self) -> None:
+        """A position opened before the table existed has an UNKNOWN best
+        moment. Zero would claim it was held to the perfect second."""
+        from brain.store import NullBrain
+
+        assert NullBrain().best_exit_available(1) is None
