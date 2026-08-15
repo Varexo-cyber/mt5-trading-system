@@ -252,6 +252,10 @@ class ManagementRecord:
     trades: int
     total_lift_r: float
     better: int
+    #: Average best R the trade went on to reach AFTER this rule closed it.
+    #: The number that separates "closed at +0.1R and it ran to +2R" from
+    #: "closed at +0.1R and it collapsed" — the same row in every other column.
+    left_on_the_table_r: float | None = None
 
     @property
     def mean_lift_r(self) -> float:
@@ -259,9 +263,15 @@ class ManagementRecord:
 
     def summary(self) -> str:
         verdict = "beat holding" if self.mean_lift_r > 0 else "cost us against holding"
+        after = (
+            f"; the market went on to reach {self.left_on_the_table_r:+.2f}R on average "
+            f"after it acted"
+            if self.left_on_the_table_r is not None
+            else ""
+        )
         return (
             f"{self.action}: {self.trades} trades, {self.better} better than leaving it "
-            f"alone, {self.mean_lift_r:+.2f}R per trade — {verdict}"
+            f"alone, {self.mean_lift_r:+.2f}R per trade — {verdict}{after}"
         )
 
 
@@ -625,6 +635,8 @@ class Brain:
         exit_action: str,
         baseline_pnl_r: float,
         actual_pnl_r: float,
+        after_exit_best_r: float | None = None,
+        after_exit_worst_r: float | None = None,
     ) -> None:
         """What stepping in was worth on one closed trade.
 
@@ -639,8 +651,9 @@ class Brain:
             """
             INSERT INTO management_outcomes (
                 account, local_trade_id, resolved_at, symbol, direction,
-                exit_action, baseline_pnl_r, actual_pnl_r, lift_r
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                exit_action, baseline_pnl_r, actual_pnl_r, lift_r,
+                after_exit_best_r, after_exit_worst_r
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (account, local_trade_id) DO NOTHING
             """,
             (
@@ -653,6 +666,8 @@ class Brain:
                 baseline_pnl_r,
                 actual_pnl_r,
                 actual_pnl_r - baseline_pnl_r,
+                after_exit_best_r,
+                after_exit_worst_r,
             ),
         )
         self.status.writes += 1
@@ -671,7 +686,8 @@ class Brain:
         """
         rows = self._run(
             """
-            SELECT exit_action, COUNT(*), SUM(lift_r), COUNT(*) FILTER (WHERE lift_r > 0)
+            SELECT exit_action, COUNT(*), SUM(lift_r), COUNT(*) FILTER (WHERE lift_r > 0),
+                   AVG(after_exit_best_r)
             FROM management_outcomes
             WHERE account = %s AND exit_action <> ''
             GROUP BY exit_action
@@ -689,6 +705,7 @@ class Brain:
                 trades=int(row[1]),
                 total_lift_r=float(row[2] or 0.0),
                 better=int(row[3]),
+                left_on_the_table_r=(float(row[4]) if row[4] is not None else None),
             )
             for row in rows
         ]

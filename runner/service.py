@@ -3595,6 +3595,8 @@ class JarvisRunner:
                 exit_action=str(row.get("exit_action", "") or ""),
                 baseline_pnl_r=float(row["baseline_pnl_r"]),  # type: ignore[arg-type]
                 actual_pnl_r=float(row["actual_pnl_r"]),  # type: ignore[arg-type]
+                after_exit_best_r=row.get("after_exit_best_r"),  # type: ignore[arg-type]
+                after_exit_worst_r=row.get("after_exit_worst_r"),  # type: ignore[arg-type]
             )
         except (KeyError, TypeError, ValueError):
             # Learning is not a risk control. A malformed row costs one

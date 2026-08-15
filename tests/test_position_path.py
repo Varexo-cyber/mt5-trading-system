@@ -457,3 +457,93 @@ class TestTheColdStartDeadlock:
         ).read_text(encoding="utf-8")
 
         assert 'if action not in {"hold", "close", "tighten_stop"}:' in source
+
+
+class TestItLearnsFromWhatHappenedAfterItLetGo:
+    """"Je safede 90 cent maar het ging verder omhoog" — that lesson.
+
+    Every other column about an exit reduces to one binary answer: would the
+    untouched plan have reached its stop or its target. Which means "closed at
+    +0.1R and it ran to +2R" and "closed at +0.1R and it collapsed" are the
+    same row, and the system could never learn the difference between banking
+    too early and banking exactly right.
+    """
+
+    @staticmethod
+    def _frame(after_close: list[tuple[float, float]]):  # type: ignore[no-untyped-def]
+        import pandas as pd
+
+        index = pd.date_range("2026-08-14T19:00", periods=len(after_close) + 2, freq="15min",
+                              tz="UTC")
+        highs = [1.1000, 1.1000, *[high for high, _ in after_close]]
+        lows = [1.1000, 1.1000, *[low for _, low in after_close]]
+        return pd.DataFrame({"high": highs, "low": lows}, index=index)
+
+    @staticmethod
+    def _row(direction: str = "LONG"):  # type: ignore[no-untyped-def]
+        return {
+            "direction": direction,
+            "closed_at": "2026-08-14T19:15:00+00:00",
+        }
+
+    def _measure(self, after, direction="LONG"):  # type: ignore[no-untyped-def]
+        from learning.counterfactual import _post_exit_excursion
+
+        return _post_exit_excursion(
+            self._frame(after), self._row(direction), entry=1.1000, risk=0.0010
+        )
+
+    def test_it_reports_what_was_left_on_the_table(self) -> None:
+        """Banked early and the market ran two more R. That is the finding."""
+        best, _ = self._measure([(1.1020, 1.1000), (1.1010, 1.1005)])
+
+        assert best == pytest.approx(2.0, abs=0.01)
+
+    def test_it_reports_what_getting_out_avoided(self) -> None:
+        """The same measurement, the other way. An exit before a collapse is
+        the rule earning its keep, and it deserves to be visible too."""
+        _, worst = self._measure([(1.1000, 1.0985), (1.0990, 1.0980)])
+
+        assert worst == pytest.approx(-2.0, abs=0.01)
+
+    def test_a_short_is_measured_in_its_own_direction(self) -> None:
+        """Price falling after a short exit is profit forgone, not a loss."""
+        best, _ = self._measure([(1.1000, 1.0980)], direction="SHORT")
+
+        assert best == pytest.approx(2.0, abs=0.01)
+
+    def test_unmeasured_is_not_zero(self) -> None:
+        """No bar after the exit means no answer. Recording it as zero would
+        report every unresolvable trade as a perfect exit."""
+        assert self._measure([]) == (None, None)
+
+    def test_a_missing_exit_time_says_nothing(self) -> None:
+        from learning.counterfactual import _post_exit_excursion
+
+        assert _post_exit_excursion(
+            self._frame([(1.1020, 1.1000)]),
+            {"direction": "LONG", "closed_at": None},
+            entry=1.1000,
+            risk=0.0010,
+        ) == (None, None)
+
+    def test_the_briefing_line_states_it_plainly(self) -> None:
+        from brain.store import ManagementRecord
+
+        record = ManagementRecord(
+            action="PROFIT_BANKED",
+            trades=6,
+            total_lift_r=-3.0,
+            better=1,
+            left_on_the_table_r=1.8,
+        )
+
+        assert "went on to reach +1.80R on average after it acted" in record.summary()
+        assert "cost us against holding" in record.summary()
+
+    def test_without_the_measurement_the_line_stays_quiet(self) -> None:
+        from brain.store import ManagementRecord
+
+        record = ManagementRecord(action="AI_CLOSE", trades=3, total_lift_r=1.9, better=3)
+
+        assert "went on to reach" not in record.summary()
