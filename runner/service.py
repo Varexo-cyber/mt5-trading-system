@@ -4079,6 +4079,10 @@ class JarvisRunner:
                     },
                 )
                 continue
+            # Empty when no database is configured, and an empty key is worse
+            # than a missing one: it makes a blank record look like a consulted
+            # one. Same guard the entry path uses.
+            remembered = self.brain.briefing(position.symbol, position.direction.name)
             payload = build_supervision_payload(
                 position,
                 context,
@@ -4095,6 +4099,25 @@ class JarvisRunner:
                     "learned_so_far": self.memory.briefing(
                         position.symbol, position.direction.name
                     ),
+                    # The account's whole record, on the decision it is actually
+                    # about. The entry review has had this since the brain was
+                    # built; supervision never did, and supervision is the half
+                    # that needed it.
+                    #
+                    # `what_stepping_in_has_earned` replays every closed trade
+                    # against its own untouched stop and target, so it is the
+                    # only evidence anywhere in this system about MANAGEMENT
+                    # rather than entries. Its own text says "this is the
+                    # question you are being asked" — and it was being attached
+                    # to the payload that asks whether to OPEN something, while
+                    # the payload deciding whether to hold or bank a live
+                    # position got the local memory and nothing else.
+                    #
+                    # So the ten-trade replay showing that PEAK_STALL banked
+                    # +0.43R where holding gave +1.92R was read by the reviewer
+                    # judging entries, which cannot act on it, and never by the
+                    # reviewer judging exits, which is the only one that can.
+                    **({"learned_over_the_account_lifetime": remembered} if remembered else {}),
                     # What the per-second layer has been seeing. Without this
                     # the adviser judges a snapshot of the moment it happened
                     # to be asked and cannot know the trade has been bleeding
