@@ -407,3 +407,19 @@ CREATE INDEX IF NOT EXISTS supervisions_account_direction
 -- built, logged and thrown away every time.
 ALTER TABLE supervisions
     ADD COLUMN IF NOT EXISTS stop_fraction NUMERIC(10, 6);
+
+-- How far the trade ran AFTER we let go of it.
+--
+-- Everything else about an exit reduces to one binary answer: would the
+-- untouched plan have reached its stop or its target. That grades the plan and
+-- teaches nothing about the decision, because "closed at +0.1R and it ran to
+-- +2R" and "closed at +0.1R and it collapsed" are the same row.
+--
+-- These two separate them. Best is what was left on the table; worst is what
+-- getting out avoided. NULL means unmeasured — no exit time, or no bar after
+-- it — and is deliberately not zero, which would report every unresolvable
+-- trade as a perfect exit.
+ALTER TABLE management_outcomes
+    ADD COLUMN IF NOT EXISTS after_exit_best_r NUMERIC(10, 4);
+ALTER TABLE management_outcomes
+    ADD COLUMN IF NOT EXISTS after_exit_worst_r NUMERIC(10, 4);

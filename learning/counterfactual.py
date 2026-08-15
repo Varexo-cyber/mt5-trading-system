@@ -143,12 +143,36 @@ def resolve_management_baselines(
         )
         if outcome is None:
             continue
+        # HOW FAR IT WENT AFTER WE LET GO.
+        #
+        # Everything above reduces the replay to one binary answer: would the
+        # untouched plan have hit its stop or its target. That grades the exit
+        # and teaches nothing about the decision, because "we closed at +0.1R
+        # and it ran to +2R" and "we closed at +0.1R and it collapsed" produce
+        # the same verdict whenever the original stop was eventually hit.
+        #
+        # The excursion after the exit is the number that separates them, and
+        # it is the one the owner actually asked for: keep watching the market
+        # after the trade is over and see what it could have been.
+        best_after, worst_after = _post_exit_excursion(frame, row, entry, risk)
         recorded_r = row["pnl_r"]
         actual_r = (
             float(recorded_r)
             if recorded_r is not None
             else float(row["pnl_money"] or 0.0) / float(row["risk_money"] or 1.0)
         )
+        # HOW FAR IT WENT AFTER WE LET GO.
+        #
+        # Everything above reduces the replay to one binary answer: would the
+        # untouched plan have hit its stop or its target. That grades the exit
+        # and teaches nothing about the decision, because "we closed at +0.1R
+        # and it ran to +2R" and "we closed at +0.1R and it collapsed" produce
+        # the same verdict whenever the original stop was eventually hit.
+        #
+        # The excursion after the exit is the number that separates them, and
+        # it is the one the owner actually asked for: keep watching the market
+        # after the trade is over and see what it could have been.
+        best_after, worst_after = _post_exit_excursion(frame, row, entry, risk)
         recorder.record_management_baseline(
             trade_id=int(row["id"]),
             outcome=outcome,
@@ -173,10 +197,47 @@ def resolve_management_baselines(
                     "exit_action": str(row["exit_reason"] or ""),
                     "baseline_pnl_r": baseline_r,
                     "actual_pnl_r": actual_r,
+                    "after_exit_best_r": best_after,
+                    "after_exit_worst_r": worst_after,
                 }
             )
         resolved += 1
     return resolved
+
+
+
+def _post_exit_excursion(
+    frame: pd.DataFrame, row: Any, entry: float, risk: float
+) -> tuple[float | None, float | None]:
+    """Best and worst R the trade would have reached AFTER it was closed.
+
+    Measured from the exit onward rather than from the open, because the
+    question is about the decision to get out, not about the trade. A close at
+    +0.1R that was followed by a run to +2R and one that was followed by a
+    collapse are the same row in every other column here.
+
+    Returns (None, None) when the exit time cannot be read or no bar follows
+    it. An unmeasured excursion is not a zero one, and recording it as zero
+    would quietly report every unresolvable trade as a perfect exit.
+    """
+    raw_closed = row["closed_at"] if "closed_at" in row.keys() else None  # noqa: SIM118
+    if not raw_closed or risk <= 0:
+        return None, None
+    try:
+        closed = datetime.fromisoformat(str(raw_closed))
+    except (TypeError, ValueError):
+        return None, None
+    if closed.tzinfo is None:
+        closed = closed.replace(tzinfo=UTC)
+    after = frame[frame.index > closed]
+    if after.empty:
+        return None, None
+    sign = int(Direction[str(row["direction"])])
+    highs = (after["high"] - entry) * sign / risk
+    lows = (after["low"] - entry) * sign / risk
+    best = float(highs.max()) if sign > 0 else float((-(after["low"] - entry) / risk).max())
+    worst = float(lows.min()) if sign > 0 else float((-(after["high"] - entry) / risk).min())
+    return round(best, 3), round(worst, 3)
 
 
 def classify_path(
