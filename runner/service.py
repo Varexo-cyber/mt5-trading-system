@@ -8,6 +8,7 @@ import math
 import os
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -3562,7 +3563,24 @@ class JarvisRunner:
         )
 
     def _resolve_counterfactuals(self) -> None:
-        """Update passive evidence every fifteen minutes, never the live policy."""
+        """Update passive evidence every fifteen minutes, never the live policy.
+
+        Every pass here is bookkeeping about trades that are already over. None
+        of it can open, close, size or protect anything, and the live account is
+        in exactly the same state whether it succeeds or not.
+
+        So it must never be able to stop the runner, and it was. A resolver
+        compared a bar's integer index against a datetime, pandas raised
+        TypeError, and it travelled up through `run_once` and out of
+        `run_forever` — the process died at launch, with positions open at the
+        broker, because a learning pass could not read a timestamp.
+
+        That is the wrong failure direction by a wide margin. Losing an
+        excursion measurement costs one row in a table that refills on the next
+        closed trade. Losing the runner costs supervision of real money. Each
+        stage is therefore isolated: one that fails is logged with its
+        traceback and skipped, and the others still run.
+        """
         now = self.clock.now()
         if (
             self._counterfactuals_checked_at is not None
@@ -3570,19 +3588,38 @@ class JarvisRunner:
         ):
             return
         self._counterfactuals_checked_at = now
-        resolve_counterfactuals(
-            self.recorder,
-            self.broker,
-            now,
-            on_resolved=self._persist_counterfactual,
+        stages: tuple[tuple[str, Callable[[], object]], ...] = (
+            (
+                "entry_counterfactuals",
+                lambda: resolve_counterfactuals(
+                    self.recorder,
+                    self.broker,
+                    now,
+                    on_resolved=self._persist_counterfactual,
+                ),
+            ),
+            (
+                "management_baselines",
+                lambda: resolve_management_baselines(
+                    self.recorder,
+                    self.broker,
+                    now,
+                    on_resolved=self._persist_management_outcome,
+                ),
+            ),
+            ("shadow_book", lambda: self.shadow.resolve(self.broker, now)),
         )
-        resolve_management_baselines(
-            self.recorder,
-            self.broker,
-            now,
-            on_resolved=self._persist_management_outcome,
-        )
-        self.shadow.resolve(self.broker, now)
+        for name, stage in stages:
+            try:
+                stage()
+            except Exception:
+                # Deliberately bare. The whole point is that no exception type
+                # from a passive pass may reach the trading loop, and naming a
+                # list here would mean the next unanticipated one still does.
+                log.exception(
+                    "passive evidence pass failed; trading continues",
+                    extra={"event": "counterfactual_stage_failed", "stage": name},
+                )
 
     def _persist_management_outcome(self, row: dict[str, object]) -> None:
         """Copy one resolved hold-versus-close comparison into the Neon brain.

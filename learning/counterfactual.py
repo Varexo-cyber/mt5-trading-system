@@ -161,18 +161,6 @@ def resolve_management_baselines(
             if recorded_r is not None
             else float(row["pnl_money"] or 0.0) / float(row["risk_money"] or 1.0)
         )
-        # HOW FAR IT WENT AFTER WE LET GO.
-        #
-        # Everything above reduces the replay to one binary answer: would the
-        # untouched plan have hit its stop or its target. That grades the exit
-        # and teaches nothing about the decision, because "we closed at +0.1R
-        # and it ran to +2R" and "we closed at +0.1R and it collapsed" produce
-        # the same verdict whenever the original stop was eventually hit.
-        #
-        # The excursion after the exit is the number that separates them, and
-        # it is the one the owner actually asked for: keep watching the market
-        # after the trade is over and see what it could have been.
-        best_after, worst_after = _post_exit_excursion(frame, row, entry, risk)
         recorder.record_management_baseline(
             trade_id=int(row["id"]),
             outcome=outcome,
@@ -205,7 +193,6 @@ def resolve_management_baselines(
     return resolved
 
 
-
 def _post_exit_excursion(
     frame: pd.DataFrame, row: Any, entry: float, risk: float
 ) -> tuple[float | None, float | None]:
@@ -229,7 +216,20 @@ def _post_exit_excursion(
         return None, None
     if closed.tzinfo is None:
         closed = closed.replace(tzinfo=UTC)
-    after = frame[frame.index > closed]
+    # The time lives in a COLUMN, not in the index.
+    #
+    # `future_bars` ends with `.reset_index(drop=True)`, so every frame reaching
+    # this function carries a plain integer RangeIndex and its timestamps stay
+    # in `time` as epoch seconds. Comparing that index against a datetime threw
+    # TypeError out of pandas, up through the resolver, and killed the runner at
+    # launch — a passive learning pass taking down live trading.
+    #
+    # Read the timestamps the same way `future_bars` does, from the same column,
+    # so the two can never disagree about what a bar's time is.
+    if "time" not in frame.columns:
+        return None, None
+    timestamps = pd.to_datetime(frame["time"], unit="s", utc=True, errors="coerce")
+    after = frame.loc[timestamps > closed]
     if after.empty:
         return None, None
     sign = int(Direction[str(row["direction"])])

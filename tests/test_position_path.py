@@ -87,7 +87,16 @@ class TestItKeepsWhatMattersForManagement:
 
         assert store.record_position_path([sample()]) == 1
         assert sink["rows"][0] == (
-            7, NOW, 0.58595, 0.44, 0.44, 2.82, 0.58422, -1.0, False, "healthy"
+            7,
+            NOW,
+            0.58595,
+            0.44,
+            0.44,
+            2.82,
+            0.58422,
+            -1.0,
+            False,
+            "healthy",
         )
 
     def test_it_records_whether_the_money_was_safe(self) -> None:
@@ -156,7 +165,7 @@ class TestWhatSteppingInEarned:
     """
 
     def test_it_groups_by_the_rule_that_closed_the_trade(self) -> None:
-        """"Our exits cost us" names nothing to stop doing. AI_CLOSE and
+        """ "Our exits cost us" names nothing to stop doing. AI_CLOSE and
         PEAK_STALL are different decisions and on this account they have
         pointed in opposite directions."""
         from brain.store import ManagementRecord
@@ -460,7 +469,7 @@ class TestTheColdStartDeadlock:
 
 
 class TestItLearnsFromWhatHappenedAfterItLetGo:
-    """"Je safede 90 cent maar het ging verder omhoog" — that lesson.
+    """ "Je safede 90 cent maar het ging verder omhoog" — that lesson.
 
     Every other column about an exit reduces to one binary answer: would the
     untouched plan have reached its stop or its target. Which means "closed at
@@ -471,13 +480,36 @@ class TestItLearnsFromWhatHappenedAfterItLetGo:
 
     @staticmethod
     def _frame(after_close: list[tuple[float, float]]):  # type: ignore[no-untyped-def]
+        """The shape `future_bars` actually returns, not a convenient one.
+
+        This fixture used to hand over a DatetimeIndex, and no caller in the
+        system ever produces one: `future_bars` ends on `.reset_index(drop=True)`
+        and keeps its timestamps in a `time` column of epoch seconds. So the
+        measurement was tested against a frame that does not exist, passed, and
+        raised TypeError the first time it met a real one — taking the runner
+        down at launch with positions open at the broker.
+
+        Built through `future_bars` below rather than described here, so the
+        fixture cannot drift away from production a second time.
+        """
         import pandas as pd
 
-        index = pd.date_range("2026-08-14T19:00", periods=len(after_close) + 2, freq="15min",
-                              tz="UTC")
+        from learning.counterfactual import future_bars
+
+        opened = pd.Timestamp("2026-08-14T18:59", tz="UTC")
+        stamps = pd.date_range(
+            "2026-08-14T19:00", periods=len(after_close) + 2, freq="15min", tz="UTC"
+        )
         highs = [1.1000, 1.1000, *[high for high, _ in after_close]]
         lows = [1.1000, 1.1000, *[low for _, low in after_close]]
-        return pd.DataFrame({"high": highs, "low": lows}, index=index)
+        raw = pd.DataFrame(
+            {
+                "time": [int(stamp.timestamp()) for stamp in stamps],
+                "high": highs,
+                "low": lows,
+            }
+        )
+        return future_bars(raw, opened.to_pydatetime())
 
     @staticmethod
     def _row(direction: str = "LONG"):  # type: ignore[no-untyped-def]
@@ -610,3 +642,92 @@ class TestItLearnsWhenItShouldHaveGotOutEarlier:
         from brain.store import NullBrain
 
         assert NullBrain().best_exit_available(1) is None
+
+
+class TestPassiveLearningCannotKillTheRunner:
+    """A bookkeeping pass took the process down at launch. It must not be able to.
+
+    The live traceback: `_post_exit_excursion` compared a bar's integer index
+    against a datetime, pandas raised TypeError, and it travelled up through
+    `resolve_management_baselines`, `_resolve_counterfactuals`, `run_once` and
+    out of `run_forever`. Jarvis died on startup with positions open at the
+    broker, because a learning pass could not read a timestamp.
+
+    Everything in that pass is about trades that are already finished. It
+    cannot open, close, size or protect anything, and the account is in the
+    same state whether it succeeds or not. Losing a row costs one measurement
+    that refills on the next closed trade; losing the runner costs supervision
+    of real money. The failure direction was exactly backwards.
+    """
+
+    @staticmethod
+    def _runner(failing: str):  # type: ignore[no-untyped-def]
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+
+        from runner.service import JarvisRunner
+
+        now = datetime(2026, 8, 15, 12, 0, tzinfo=UTC)
+        ran: list[str] = []
+
+        def _stage(name: str):  # type: ignore[no-untyped-def]
+            def _call(*_a, **_k):  # type: ignore[no-untyped-def]
+                if name == failing:
+                    raise TypeError("'>' not supported between 'int' and 'datetime.datetime'")
+                ran.append(name)
+                return 0
+
+            return _call
+
+        runner = object.__new__(JarvisRunner)
+        runner.clock = SimpleNamespace(now=lambda: now)  # type: ignore[assignment]
+        runner._counterfactuals_checked_at = None
+        runner.recorder = SimpleNamespace()  # type: ignore[assignment]
+        runner.broker = SimpleNamespace()  # type: ignore[assignment]
+        runner.shadow = SimpleNamespace(resolve=_stage("shadow_book"))  # type: ignore[assignment]
+        runner._persist_counterfactual = lambda _row: None  # type: ignore[method-assign]
+        runner._persist_management_outcome = lambda _row: None  # type: ignore[method-assign]
+        return runner, ran, _stage
+
+    def test_the_live_crash_no_longer_reaches_the_trading_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner, ran, stage = self._runner("management_baselines")
+        monkeypatch.setattr(
+            "runner.service.resolve_counterfactuals", stage("entry_counterfactuals")
+        )
+        monkeypatch.setattr(
+            "runner.service.resolve_management_baselines", stage("management_baselines")
+        )
+
+        runner._resolve_counterfactuals()  # must not raise
+
+        assert "shadow_book" in ran, "a later stage was skipped by an earlier failure"
+
+    def test_one_broken_stage_does_not_silence_the_others(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner, ran, stage = self._runner("entry_counterfactuals")
+        monkeypatch.setattr(
+            "runner.service.resolve_counterfactuals", stage("entry_counterfactuals")
+        )
+        monkeypatch.setattr(
+            "runner.service.resolve_management_baselines", stage("management_baselines")
+        )
+
+        runner._resolve_counterfactuals()
+
+        assert ran == ["management_baselines", "shadow_book"]
+
+    def test_a_healthy_pass_still_runs_everything(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        runner, ran, stage = self._runner("")
+        monkeypatch.setattr(
+            "runner.service.resolve_counterfactuals", stage("entry_counterfactuals")
+        )
+        monkeypatch.setattr(
+            "runner.service.resolve_management_baselines", stage("management_baselines")
+        )
+
+        runner._resolve_counterfactuals()
+
+        assert ran == ["entry_counterfactuals", "management_baselines", "shadow_book"]
