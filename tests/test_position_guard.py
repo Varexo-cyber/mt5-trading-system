@@ -514,6 +514,16 @@ def test_management_events_are_still_typed() -> None:
     assert event.r_at_action == pytest.approx(0.1)
 
 
+#: The health read a stalled position is handed in these tests.
+#:
+#: `watch` and not `healthy` on purpose: the stall rule now asks the readers
+#: before it closes anything, and a healthy read buys the trade more time. These
+#: tests are about the stall MECHANISM — the clock, the new-high reset, the
+#: per-position timing — so they hand it the case where the clock is allowed to
+#: stand. `TestPeakStallAsksTheReadFirst` covers the other branch.
+STALLED = PositionHealth("watch", 0.30, "hold", (), "the move has gone quiet")
+
+
 # ------------------------------------------------------- evening wind-down ---
 
 EVENING = datetime(2026, 8, 4, 20, 30, tzinfo=UTC)  # 22:30 in Amsterdam
@@ -1006,8 +1016,8 @@ class TestPeakStall:
         manager = self.manager()
         position = self.position()
 
-        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(0)) is None
-        event = manager._peak_stall_exit(position, 0.90, 0.92, self.at(7))
+        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(0), STALLED) is None
+        event = manager._peak_stall_exit(position, 0.90, 0.92, self.at(7), STALLED)
 
         assert event is not None
         assert event.action == "PEAK_STALL"
@@ -1023,7 +1033,7 @@ class TestPeakStall:
         position = self.position()
         peak = 0.70
         for minute in range(0, 60, 5):
-            assert manager._peak_stall_exit(position, peak, peak, self.at(minute)) is None
+            assert manager._peak_stall_exit(position, peak, peak, self.at(minute), STALLED) is None
             peak += 0.10
         assert manager.closed == []
 
@@ -1036,30 +1046,32 @@ class TestPeakStall:
         """
         manager = self.manager()
         position = self.position()
-        manager._peak_stall_exit(position, 0.90, 0.9000, self.at(0))
+        manager._peak_stall_exit(position, 0.90, 0.9000, self.at(0), STALLED)
         # Well inside the wait, so only the epsilon decides whether the clock
         # survives these passes.
         for minute in (1, 2, 3):
             assert (
-                manager._peak_stall_exit(position, 0.90, 0.9000 + minute * 0.0001, self.at(minute))
+                manager._peak_stall_exit(
+                    position, 0.90, 0.9000 + minute * 0.0001, self.at(minute), STALLED
+                )
                 is None
             )
-        event = manager._peak_stall_exit(position, 0.90, 0.9007, self.at(7))
+        event = manager._peak_stall_exit(position, 0.90, 0.9007, self.at(7), STALLED)
         assert event is not None
 
     def test_too_soon_is_left_alone(self) -> None:
         manager = self.manager()
         position = self.position()
-        manager._peak_stall_exit(position, 0.92, 0.92, self.at(0))
-        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(5)) is None
+        manager._peak_stall_exit(position, 0.92, 0.92, self.at(0), STALLED)
+        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(5), STALLED) is None
 
     def test_a_small_gain_is_not_worth_protecting(self) -> None:
         """Below the arming R the noise band is wide enough that no new high
         says nothing at all."""
         manager = self.manager()
         position = self.position()
-        manager._peak_stall_exit(position, 0.40, 0.40, self.at(0))
-        assert manager._peak_stall_exit(position, 0.40, 0.40, self.at(30)) is None
+        manager._peak_stall_exit(position, 0.40, 0.40, self.at(0), STALLED)
+        assert manager._peak_stall_exit(position, 0.40, 0.40, self.at(30), STALLED) is None
 
     def test_a_trade_that_already_gave_it_back_belongs_to_the_giveback(self) -> None:
         """This rule leaves at the top; it does not confirm a retrace.
@@ -1069,8 +1081,8 @@ class TestPeakStall:
         """
         manager = self.manager()
         position = self.position()
-        manager._peak_stall_exit(position, 2.00, 2.00, self.at(0))
-        assert manager._peak_stall_exit(position, 0.80, 2.00, self.at(30)) is None
+        manager._peak_stall_exit(position, 2.00, 2.00, self.at(0), STALLED)
+        assert manager._peak_stall_exit(position, 0.80, 2.00, self.at(30), STALLED) is None
 
     def test_switching_it_off_forgets_the_position_entirely(self) -> None:
         manager = self.manager()
@@ -1078,18 +1090,18 @@ class TestPeakStall:
             update={"peak_stall_minutes": 0.0}
         )
         position = self.position()
-        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(0)) is None
-        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(30)) is None
+        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(0), STALLED) is None
+        assert manager._peak_stall_exit(position, 0.92, 0.92, self.at(30), STALLED) is None
         assert manager._peak_seen == {}
 
     def test_each_position_is_timed_separately(self) -> None:
         manager = self.manager()
         first, second = self.position(1), self.position(2)
-        manager._peak_stall_exit(first, 0.92, 0.92, self.at(0))
-        manager._peak_stall_exit(second, 0.92, 0.92, self.at(5))
+        manager._peak_stall_exit(first, 0.92, 0.92, self.at(0), STALLED)
+        manager._peak_stall_exit(second, 0.92, 0.92, self.at(5), STALLED)
 
-        assert manager._peak_stall_exit(first, 0.92, 0.92, self.at(7)) is not None
-        assert manager._peak_stall_exit(second, 0.92, 0.92, self.at(7)) is None
+        assert manager._peak_stall_exit(first, 0.92, 0.92, self.at(7), STALLED) is not None
+        assert manager._peak_stall_exit(second, 0.92, 0.92, self.at(7), STALLED) is None
 
     def test_a_restart_resets_the_clock_toward_holding(self) -> None:
         """Losing the timer must never be able to close a trade sooner.
@@ -1099,11 +1111,11 @@ class TestPeakStall:
         """
         manager = self.manager()
         position = self.position()
-        manager._peak_stall_exit(position, 0.92, 0.92, self.at(0))
+        manager._peak_stall_exit(position, 0.92, 0.92, self.at(0), STALLED)
 
         restarted = self.manager()
-        assert restarted._peak_stall_exit(position, 0.92, 0.92, self.at(7)) is None
-        assert restarted._peak_stall_exit(position, 0.92, 0.92, self.at(14)) is not None
+        assert restarted._peak_stall_exit(position, 0.92, 0.92, self.at(7), STALLED) is None
+        assert restarted._peak_stall_exit(position, 0.92, 0.92, self.at(14), STALLED) is not None
 
 
 class TestUnmanagedIsVisible:
@@ -2151,3 +2163,61 @@ class TestALosingTradeIsNotLeftToRunToItsStop:
         )
 
         assert moved is None
+
+
+class TestPeakStallAsksTheReadFirst:
+    """The last exit in this file that closed a live position on a timer alone.
+
+    `_giveback_exit` has consulted the health read for weeks — "is this still
+    working?" — and this one, which fires while the money is still on the table
+    and is therefore the more expensive of the two to get wrong, never asked.
+    The account's own replay agrees: PEAK_STALL banked +0.54R where leaving the
+    position alone returned +1.17R, a lift of -0.64R.
+
+    A healthy read DOUBLES the wait rather than cancelling it. Cancelling would
+    hand the decision to the readers outright, and a market pausing quietly at
+    its high is exactly the shape they call healthy — nothing is going wrong, it
+    simply stopped. The rule would then never fire again, which is not
+    "analysis first", it is analysis only.
+    """
+
+    HEALTHY = PositionHealth("healthy", 0.0, "hold", (), "nothing wrong")
+
+    @staticmethod
+    def at(minute: int) -> datetime:
+        return NOW + timedelta(minutes=minute)
+
+    def _manager(self):  # type: ignore[no-untyped-def]
+        return manager_for(BrokerStub(), JournalStub(), peak_stall_minutes=6.0)
+
+    def test_a_healthy_read_buys_the_trade_more_time(self) -> None:
+        manager = self._manager()
+        manager._peak_stall_exit(position(), 0.92, 0.92, self.at(0), self.HEALTHY)
+
+        assert manager._peak_stall_exit(position(), 0.92, 0.92, self.at(7), self.HEALTHY) is None
+
+    def test_but_the_clock_still_has_the_last_word(self) -> None:
+        """Twice the wait and it goes, read or no read. A move that has stopped
+        does not start again because a reader has not noticed yet."""
+        manager = self._manager()
+        manager._peak_stall_exit(position(), 0.92, 0.92, self.at(0), self.HEALTHY)
+
+        event = manager._peak_stall_exit(position(), 0.92, 0.92, self.at(13), self.HEALTHY)
+
+        assert event is not None
+        assert event.action == "PEAK_STALL"
+
+    def test_a_worried_read_gets_no_extension(self) -> None:
+        manager = self._manager()
+        manager._peak_stall_exit(position(), 0.92, 0.92, self.at(0), STALLED)
+
+        assert manager._peak_stall_exit(position(), 0.92, 0.92, self.at(7), STALLED) is not None
+
+    def test_the_new_high_reset_still_outranks_everything(self) -> None:
+        """A trade that is still making highs has not stalled on any reading."""
+        manager = self._manager()
+        for minute in range(0, 20, 3):
+            verdict = manager._peak_stall_exit(
+                position(), 0.92 + minute * 0.01, 0.92 + minute * 0.01, self.at(minute), STALLED
+            )
+            assert verdict is None
