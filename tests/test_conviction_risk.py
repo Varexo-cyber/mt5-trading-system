@@ -449,3 +449,165 @@ class TestTheAggregateCap:
 
 def eurusd_spec_object() -> InstrumentSpec:
     return InstrumentSpec.from_mt5(eurusd_spec())
+
+
+class TestTheEngineSizesTheTradeNotTheArchive:
+    """With the paid reviewer switched off, whose conviction was buying the lots?
+
+    `ai.provider: local_history` makes the adviser the nearest-neighbour
+    archive, and its confidence means two different things depending on how much
+    history it happens to hold:
+
+        under min_neighbors   it passes the engine's confidence straight through
+        at or over it         it returns 1 - learned_veto_rate
+
+    The first is the engine's read of the chart in front of it. The second is a
+    hit rate over comparable past setups — a real measurement, and not the one
+    sizing asks for. So the stake would have stopped responding to the live
+    chart the moment enough history existed, with no config change and nothing
+    in the log to show the input had been swapped.
+
+    The owner's instruction was explicit: everything comes from the engine.
+    """
+
+    @staticmethod
+    def _runner(open_risk: float = 0.0):  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        from runner.service import JarvisRunner
+
+        runner = object.__new__(JarvisRunner)
+        runner.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        runner.broker = SimpleNamespace(spec=lambda _s: None)  # type: ignore[assignment]
+        runner.risk = SimpleNamespace(  # type: ignore[assignment]
+            room_for_more_risk=lambda *_: 100.0,
+            open_risk_pct=lambda *_: open_risk,
+        )
+        return runner
+
+    @staticmethod
+    def _idea(confidence: float):  # type: ignore[no-untyped-def]
+        from analysis.confluence import TradeIdea
+        from core.types import Direction
+
+        return TradeIdea(
+            symbol="EURUSD.i",
+            approved=True,
+            direction=Direction.LONG,
+            score=44.0,
+            confidence=confidence,
+            entry=1.1000,
+            stop_loss=1.0980,
+            take_profit=1.1030,
+            reason="test",
+            signals=(),
+        )
+
+    @staticmethod
+    def _advice(confidence: float):  # type: ignore[no-untyped-def]
+        from advisory.providers import Advice
+
+        return Advice(True, confidence, "test", provider="local_history", said_yes=True)
+
+    def test_the_stake_follows_the_engine_where_the_two_disagree(self) -> None:
+        """Engine sure, archive lukewarm. The chart decides the size."""
+        runner = self._runner()
+
+        stake, why = runner._conviction_stake(
+            None, self._idea(confidence=0.70), self._advice(confidence=0.50)
+        )
+
+        assert stake == pytest.approx(6.0), "the archive's hit rate sized the trade"
+        assert "engine conviction 0.70" in why
+
+    def test_a_confident_archive_cannot_inflate_a_weak_setup(self) -> None:
+        """The same swap in the other direction, which is the dangerous one:
+        history saying 'these usually work' must not buy lots on a chart the
+        engine is unsure about."""
+        runner = self._runner()
+
+        stake, why = runner._conviction_stake(
+            None, self._idea(confidence=0.50), self._advice(confidence=0.95)
+        )
+
+        assert stake == pytest.approx(2.0)
+        assert "engine conviction 0.50" in why
+
+    def test_both_numbers_are_recorded_so_the_journal_shows_the_input(self) -> None:
+        """A stake reason naming only the output cannot be audited later."""
+        runner = self._runner()
+
+        _, why = runner._conviction_stake(
+            None, self._idea(confidence=0.60), self._advice(confidence=0.48)
+        )
+
+        assert "engine conviction 0.60" in why
+        assert "adviser said 0.48" in why
+
+    def test_the_exposure_cap_still_speaks_in_engine_terms(self) -> None:
+        """The trimmed path names the engine too, or the two branches would
+        report different inputs for the same decision."""
+        runner = self._runner(open_risk=11.0)
+        runner.risk.room_for_more_risk = lambda *_: 1.0
+
+        stake, why = runner._conviction_stake(
+            None, self._idea(confidence=0.70), self._advice(confidence=0.70)
+        )
+
+        assert stake == 0.0
+        assert "engine conviction 0.70" in why
+
+
+class TestAFreeAdviserIsNotRationed:
+    """Setups were being refused to save money on a call that costs nothing.
+
+    Three gates suppress a review of a setup already refused: the exact-proposal
+    veto memory, the broader veto pattern, and the per-pair cooldown. All three
+    justify themselves on cost, in their own words — "only ever suppresses a
+    paid call", "not buying the same question again", "a replayed verdict costs
+    nothing and is not rationed".
+
+    `ai.provider: local_history` made the adviser a free nearest-neighbour
+    lookup. The gates kept firing, so they saved nothing and refused trades for
+    it. And the memories they read had been written by the PAID reviewer while
+    it was still switched on — so a setup could be blocked by the recorded
+    opinion of a model that is no longer consulted and can no longer change its
+    mind. The operator named it exactly: blocked by Claude, after Claude.
+    """
+
+    @staticmethod
+    def _runner(paid: bool):  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        from runner.service import JarvisRunner
+
+        runner = object.__new__(JarvisRunner)
+        runner.advisor = SimpleNamespace(uses_paid_api=paid)  # type: ignore[assignment]
+        runner.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        runner._reviews_this_cycle = 0
+        return runner
+
+    def test_a_free_adviser_reports_no_cost(self) -> None:
+        assert self._runner(paid=False)._reviews_cost_money() is False
+
+    def test_a_paid_adviser_still_reports_cost(self) -> None:
+        """The rationing must come straight back if the paid reviewer returns."""
+        assert self._runner(paid=True)._reviews_cost_money() is True
+
+    def test_an_absent_marker_is_treated_as_paid(self) -> None:
+        """Fails closed. An adviser that does not say is assumed to bill."""
+        from types import SimpleNamespace
+
+        runner = self._runner(paid=True)
+        runner.advisor = SimpleNamespace()  # type: ignore[assignment]
+
+        assert runner._reviews_cost_money() is True
+
+    def test_the_review_budget_agrees_with_it(self) -> None:
+        """One source for 'does this cost money', so the budget and the veto
+        memories cannot disagree about whether the adviser bills."""
+        assert self._runner(paid=False)._review_budget_left() is None
