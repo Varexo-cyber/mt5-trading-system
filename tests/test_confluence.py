@@ -92,7 +92,10 @@ def test_a_target_the_market_never_reaches_is_trimmed_or_refused() -> None:
     slow = ConfluenceEngine(modules(), config()).evaluate(context(step=0.00002), TradingMode.PAPER)
 
     assert not slow.approved
-    assert "reachable target" in slow.reason
+    # The refusal now names the measurement instead of a floor: how often this
+    # market reaches the distance FIRST, against what it must reach to pay.
+    assert "pays on this market" in slow.reason
+    assert "break even" in slow.reason
 
 
 def test_a_trimmed_target_still_clears_the_minimum() -> None:
@@ -637,3 +640,91 @@ class TestALoneDetectorHasToBeSureOfItself:
         assert settings.analysis.confluence.lone_module_minimum_confidence == 0.65
         # The blunt alternative stays off: a sure lone detector is still allowed.
         assert settings.analysis.confluence.minimum_directional_modules == 1
+
+
+class TestTheTargetGoesWhereItPays:
+    """A fixed multiple never asks whether the distance is worth aiming at.
+
+    `runs` is the whole empirical distribution of how far this market travels.
+    The code reduced it to one quantile, capped the plan at it, and never asked
+    the question the trade turns on: how often is THIS distance reached, and
+    does that beat what it costs to find out.
+
+    At 1.2R a market must win 45.5% before costs. Whether it delivers 30% or
+    60% is a property of the instrument that a multiple cannot consult, so a
+    market reaching 1.2R half the time and one reaching it a fifth of the time
+    were handed the same target — and a market paying handsomely at 1.0R but
+    not at 1.2R was refused for missing a floor.
+
+    Both failures cost trades and cost money at once, which is why the search
+    below is not a loosening: it can only ever pick a distance whose measured
+    expectancy is positive.
+    """
+
+    @staticmethod
+    def _idea(step: float):  # type: ignore[no-untyped-def]
+        engine = ConfluenceEngine(modules(), config(minimum_r_multiple=0.5))
+        return engine.evaluate(context(step=step), TradingMode.PAPER)
+
+    def test_a_market_that_pays_gets_a_target_and_the_arithmetic_behind_it(self) -> None:
+        idea = self._idea(step=0.0004)
+
+        assert idea.approved, idea.reason
+        assert "reached first" in idea.reason
+        assert "expected" in idea.reason
+
+    def test_a_market_that_does_not_pay_is_refused_with_the_numbers(self) -> None:
+        """Not a floor it missed — the measurement that decides it."""
+        idea = self._idea(step=0.00002)
+
+        assert not idea.approved
+        assert "pays on this market" in idea.reason
+        assert "break even" in idea.reason
+
+    def test_the_reach_is_first_touch_and_not_the_favourable_excursion(self) -> None:
+        """The measurement that makes this honest rather than merely different.
+
+        A plain favourable excursion counts a window where price fell a full R
+        and only then rallied. That trade was already stopped out, so counting
+        it inflates every reach rate — most in exactly the volatile markets
+        where the inflation matters. This walks each window to the first bar
+        that would have taken the stop and measures only up to there.
+        """
+        import numpy as np
+        import pandas as pd
+
+        from analysis.confluence import ConfluenceEngine
+        from core.types import Direction
+
+        # One window: price drops through the stop, then rallies far beyond it.
+        frame = pd.DataFrame(
+            {
+                "high": [100.0, 100.2, 100.1, 105.0, 105.0],
+                "low": [100.0, 100.1, 97.0, 100.0, 100.0],
+            }
+        )
+        closes = np.array([100.0, 100.2, 100.1, 105.0, 105.0])
+
+        reached = ConfluenceEngine._first_touch_reach(
+            frame, closes, Direction.LONG, risk=1.0, horizon=4
+        )
+
+        assert reached is not None
+        # Without the stop the answer would be 5.0. The trade was dead first.
+        assert reached[0] < 1.0
+
+    def test_a_frame_without_highs_falls_back_rather_than_inventing(self) -> None:
+        import numpy as np
+        import pandas as pd
+
+        from analysis.confluence import ConfluenceEngine
+        from core.types import Direction
+
+        bare = pd.DataFrame({"close": [1.0, 2.0, 3.0]})
+
+        assert (
+            ConfluenceEngine._first_touch_reach(
+                bare, np.array([1.0, 2.0, 3.0]), Direction.LONG, risk=1.0, horizon=1
+            )
+            is None
+        )

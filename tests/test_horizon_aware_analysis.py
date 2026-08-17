@@ -72,6 +72,13 @@ def context(*, h4_drift: float = 0.0, d1_drift: float = 0.0) -> MarketContext:
             return d1_drift
         if timeframe is Timeframe.M15:
             return 0.1
+        if timeframe is Timeframe.M5:
+            # The quick plan is priced off M5, and a pure sine wave has no
+            # payable target at any distance by construction — the target
+            # search now says so instead of placing one anyway. These tests are
+            # about horizon classification, so the market has to be one a trade
+            # could actually be taken on.
+            return 0.20
         return 0.0
 
     series = {
