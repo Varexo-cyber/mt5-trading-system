@@ -2384,6 +2384,27 @@ class TradeManagementConfig(Base):
     #: Without this the rule degenerates into closing every loser a moment
     #: early, which changes the risk profile for no gain.
     spread_squeeze_min_r: float = Field(default=-0.5)
+    #: ...and not once the trade is meaningfully in profit. THE RULE PAYS THE
+    #: VERY COST IT IS TRYING TO AVOID.
+    #:
+    #: Closing at market during a blown-out quote crosses that spread with
+    #: certainty. Being stopped by it costs the same spread only IF price
+    #: actually travels to the stop. So on a losing trade already leaning on its
+    #: stop the trade is worth making — a probable cost swapped for a certain,
+    #: smaller one, which is what the NZDJPY case in `_spread_squeeze_exit`
+    #: describes. On a winner with room to spare it is the reverse: a certain
+    #: cost paid to avoid a possible one, on a position that is working.
+    #:
+    #: The account's own replay says so. `SPREAD_SQUEEZE` closed eight of
+    #: twenty-two trades on 17 August and every one of them scored a negative
+    #: lift against its own untouched stop and target: it banked +0.38R where
+    #: leaving the position alone returned +1.02R. The blowout passed, as
+    #: blowouts do, and the trade carried on without us.
+    #:
+    #: Zero means "only at or below break-even", which is the shape the rule's
+    #: own justification describes. Raise it to let the squeeze reach into
+    #: profit again; a large value restores the previous behaviour.
+    spread_squeeze_max_r: float = Field(default=0.0)
 
     #: The per-second read of how an open trade is actually behaving — has the
     #: structure broken, has momentum turned, is it running against us, has the
