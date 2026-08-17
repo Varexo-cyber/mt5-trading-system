@@ -515,14 +515,16 @@ class TestAnOpenSharePositionIsStillManaged:
     instrument class it was meant to remove.
     """
 
-    def test_shares_are_no_longer_scanned(self) -> None:
+    def test_shares_are_scanned_but_have_to_earn_it(self) -> None:
+        """Back in the scan, behind a measurement rather than behind the list."""
         from config.loader import load_settings
 
         settings = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         )
 
-        assert "stock" not in settings.instruments.asset_classes
+        assert "stock" in settings.instruments.asset_classes
+        assert settings.filters.liveliness.max_gap_atr > 0
 
     def test_but_a_share_still_gets_flattened_before_its_close(self) -> None:
         """The wind-down stays armed as a net, not as a live gate — so an open
@@ -544,3 +546,128 @@ class TestAnOpenSharePositionIsStillManaged:
         ).filters.liveliness
 
         assert liveliness.min_bar_range_in_spreads > 0
+
+
+class TestAMarketThatJumpsCannotKeepItsStop:
+    """ENR: -3.61R on an exit recorded as BROKER_SL.
+
+    A stop costs 1.00R by definition, so 2.61R went straight through it. The
+    exchange was shut and the share reopened somewhere else. Every rule in this
+    system is written in R and R assumes the stop binds; an instrument that gaps
+    breaks that several times a week and no management rule repairs it after the
+    fact.
+
+    Banning the asset class was the first answer and it was a proxy. The defect
+    is not that ENR is a share — it is that it opened past its stop. This gate
+    says so directly, which lets shares back in on behaviour and would refuse a
+    forex pair that started doing the same thing.
+    """
+
+    @staticmethod
+    def _series(gap_every: int, gap_size: float):  # type: ignore[no-untyped-def]
+        import numpy as np
+        import pandas as pd
+
+        from core.types import Series, Timeframe
+
+        count = 200
+        close = np.full(count, 100.0)
+        open_ = close.copy()
+        for i in range(gap_every, count, gap_every):
+            open_[i] = close[i - 1] + gap_size
+        frame = pd.DataFrame(
+            {
+                "open": open_,
+                "high": np.maximum(open_, close) + 0.10,
+                "low": np.minimum(open_, close) - 0.10,
+                "close": close,
+                "tick_volume": np.full(count, 100),
+                "spread": np.zeros(count),
+                "real_volume": np.zeros(count),
+            },
+            index=pd.date_range("2026-03-01", periods=count, freq="5min", tz=UTC),
+        )
+        return Series("TEST", Timeframe.M5, frame, datetime(2026, 3, 11, 14, 30, tzinfo=UTC))
+
+    def test_a_market_that_gaps_every_session_is_refused(self, spec: InstrumentSpec) -> None:
+        gappy = self._series(gap_every=5, gap_size=2.0)
+        gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(gappy))
+
+        verdict = gate.check(ctx(spec, at(WEDNESDAY, 14, 30)))
+
+        assert not verdict.passed
+        assert verdict.reason is Reason.MARKET_TOO_QUIET
+        assert "jumps" in verdict.detail
+        assert verdict.data["gap_in_atr"] > 1.0
+
+    def test_a_market_that_holds_its_close_passes(self, spec: InstrumentSpec) -> None:
+        smooth = self._series(gap_every=10_000, gap_size=0.0)
+        gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(smooth))
+
+        assert gate.check(ctx(spec, at(WEDNESDAY, 14, 30))).passed
+
+    def test_one_single_jump_does_not_ban_an_instrument(self, spec: InstrumentSpec) -> None:
+        """The 99th percentile, not the maximum: a lone flash print is not a
+        property of the market, and treating it as one costs a week of trading."""
+        once = self._series(gap_every=190, gap_size=5.0)
+        gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(once))
+
+        assert gate.check(ctx(spec, at(WEDNESDAY, 14, 30))).passed
+
+    def test_it_can_be_switched_off(self, spec: InstrumentSpec) -> None:
+        gappy = self._series(gap_every=5, gap_size=2.0)
+        gate = LivelinessFilter(
+            LivelinessFilterConfig(max_gap_atr=0.0, min_bar_range_in_spreads=0.0),
+            provider_for(gappy),
+        )
+
+        assert gate.check(ctx(spec, at(WEDNESDAY, 14, 30))).passed
+
+
+class TestTheSpreadGateSelectsInsteadOfPreselecting:
+    """151 of 231 symbols were weighed out on spread before anything analysed them.
+
+    Basis points are spread as a share of the PRICE. What breaks a trade is
+    spread as a share of its RISK, and the two are unrelated: five pips against
+    a ten-pip stop is fatal, five pips against a two-hundred-pip stop is noise.
+    The bps gate cannot tell those apart, so it discarded good setups for the
+    same reason it discarded bad ones — and it did it to two thirds of the
+    catalogue, every cycle, before a single module ran.
+
+    The right number already existed one step further on and had been running
+    the whole time: `max_cost_share_of_risk`, spread plus commission against the
+    trade's own risk, per order, refused as SL_TOO_TIGHT_FOR_COSTS. This is the
+    division of labour those two should have had from the start — the cheap gate
+    stops the absurd, the real gate prices the trade.
+    """
+
+    def test_the_absolute_gate_is_wide_enough_to_stop_preselecting(self) -> None:
+        from config.loader import load_settings
+
+        spread = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).filters.spread
+
+        assert spread.max_spread_bps["forex"] >= 6.0
+        assert spread.max_spread_bps["metal"] >= 20.0
+
+    def test_but_it_is_not_switched_off(self) -> None:
+        """An absurd quote is still not a market. 30 bps on forex is absurd."""
+        from config.loader import load_settings
+
+        spread = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).filters.spread
+
+        assert spread.max_spread_bps["forex"] < 30.0
+        assert spread.enabled
+
+    def test_the_gate_that_actually_prices_a_trade_still_binds(self) -> None:
+        """Loosening the proxy is only safe because this one runs per order."""
+        from config.loader import load_settings
+
+        risk = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).risk
+
+        assert 0.0 < risk.max_cost_share_of_risk <= 0.5

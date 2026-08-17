@@ -33,6 +33,17 @@ from risk.reasons import Reason
 
 log = get_logger(__name__)
 
+#: Lookback for the gap measurement, and the minimum that makes it meaningful.
+#:
+#: Its own window rather than `quality_bars`, which defaults to thirty. A gap is
+#: a rare event: over thirty bars a single one already sits at the 97th
+#: percentile, so a short window would ban an instrument for one flash print —
+#: exactly what a percentile is supposed to prevent. Over four hundred M5 bars a
+#: market that gaps every session shows several of them, and one that printed
+#: once shows 0.25% and passes.
+_GAP_WINDOW_BARS = 400
+_GAP_MINIMUM_BARS = 100
+
 #: (symbol, timeframe) -> Series. Injected for the same reason the correlation
 #: filter injects it: this gate never touches the connector, so it replays.
 SeriesProvider = Callable[[str, Timeframe], Series]
@@ -115,6 +126,42 @@ class LivelinessFilter(Filter):
             return None
         ranges = (df["high"] - df["low"]).abs()
         return float(ranges.median()) if len(ranges) else None
+
+    def gap_in_atr(self, series: Series) -> float | None:
+        """How far this instrument jumps between bars, in its own ATR.
+
+        A stop is a price level, and a market that opens away from where it
+        closed does not fill it there. ENR is the case: -3.61R on an exit
+        recorded as BROKER_SL, so 2.61R went straight through a stop that by
+        definition costs 1.00R, because the exchange was shut and the share
+        reopened somewhere else.
+
+        The 99th percentile, not the maximum. One flash print should not ban an
+        instrument for a week; an instrument that gaps every session has a 99th
+        percentile made of those gaps. Normalised by the bar range so it means
+        the same on gold and on a five-euro share.
+
+        None when it cannot be measured, which the caller treats as "not proven
+        to gap" rather than as proven safe — the freshness and spread gates
+        still stand, and blocking on an unmeasurable is how a cold start becomes
+        a silent no-trade day.
+
+        Its own window, deliberately longer than `quality_bars`. A gap is a rare
+        event, and over thirty bars a single one is already the 97th percentile —
+        so the short window would ban an instrument for one flash print, which is
+        the opposite of what the percentile is for. Over four hundred M5 bars a
+        market that gaps each session shows several and is caught; one that
+        printed once shows 0.25% and is not.
+        """
+        df = series.df.tail(_GAP_WINDOW_BARS)
+        if len(df) < _GAP_MINIMUM_BARS or "open" not in df.columns:
+            return None
+        jumps = (df["open"] - df["close"].shift(1)).abs().dropna()
+        ranges = (df["high"] - df["low"]).abs()
+        scale = float(ranges.median())
+        if scale <= 0 or jumps.empty:
+            return None
+        return float(jumps.quantile(0.99) / scale)
 
     # -- gate --------------------------------------------------------------
 
@@ -199,6 +246,31 @@ class LivelinessFilter(Filter):
         # market moved in a minute, so the spread decided the trade before the
         # thesis had a say — and every gate in this file said the market was
         # fine, because each of them was grading it against itself.
+        # DOES THIS MARKET KEEP ITS STOP?
+        #
+        # The one gate that judges an instrument on whether the system's central
+        # assumption survives it. Everything here is written in R, and R assumes
+        # a stop fills where it is placed. A market that opens away from its
+        # last close does not, and no management rule can repair that after the
+        # event — ENR went 2.61R through a stop that costs 1.00R by definition.
+        #
+        # This is what lets exchange products back into the scan on behaviour
+        # instead of on their name: a share that does not jump keeps its stop
+        # and is welcome, and a forex pair that started jumping would be refused
+        # on exactly the same evidence.
+        gap_limit = self.config.max_gap_atr
+        gap = self.gap_in_atr(series) if gap_limit > 0 else None
+        if gap is not None and gap > gap_limit:
+            return FilterVerdict.block(
+                self.name,
+                Reason.MARKET_TOO_QUIET,
+                f"{ctx.symbol} jumps {gap:.1f} bar-ranges between bars at the 99th "
+                f"percentile (limit {gap_limit:.1f}); a stop on this market is a price "
+                f"it can open straight past, so the risk on every plan here is unbounded",
+                activity_ratio=round(measured, 3),
+                gap_in_atr=round(gap, 2),
+            )
+
         spreads = self.config.min_bar_range_in_spreads
         spread = getattr(ctx.tick, "spread", 0.0) or 0.0
         typical = self.typical_bar_range(series) if spreads > 0 and spread > 0 else None

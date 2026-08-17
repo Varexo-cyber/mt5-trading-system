@@ -48,17 +48,18 @@ class TestShippedConfig:
         `stock` is therefore out. That is a narrowing and not a loosening: no
         gate moved, only the noise the gates were tripping over.
 
-        It went back in at some point and this assertion was updated to match
-        while the reasoning above was left standing. Everything the account has
-        learned since agrees with the docstring rather than with the edit: ENR
-        gapped 2.61R through its stop with its exchange shut, QIA and ANTO quoted
-        two cents on a EUR 36 price so the spread decided the outcome instead of
-        the setup, and three share positions once held three of four slots with
-        no way to close or protect any of them.
+        `stock` is back, and the reasoning above is now enforced by MEASUREMENT
+        rather than by the list. Every failure it describes has a gate of its
+        own: ENR gapped 2.61R through its stop and `max_gap_atr` refuses an
+        instrument that jumps; QIA and ANTO quoted two cents on a EUR 36 price
+        and `min_bar_range_in_spreads` refuses a market whose bars do not cover
+        their own round trip; the CORRELATED_EXPOSURE deaths are the correlation
+        filter doing its job.
 
-        Indices stay. Same exchange, a fraction of the spread, and a book that
-        quotes nearly around the clock — UK100 produced the one clean trade of
-        15 August at +1.45R on its own target.
+        That is strictly better than the class ban. The real defect of ENR was
+        not that it is a share, it is that it opened past its stop — and a
+        forex pair that started doing that would now be refused on exactly the
+        same evidence, where the list would have waved it through.
         """
         overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"
         settings = load_settings(overlay=overlay, env_overrides=False)
@@ -67,9 +68,9 @@ class TestShippedConfig:
             "metal",
             "index",
             "commodity",
+            "stock",
             "crypto",
         )
-        assert "stock" not in settings.instruments.asset_classes
         assert settings.instruments.symbols_only == ()
         assert settings.scanner.batch_size is None
         assert not settings.scanner.priority_every_cycle
@@ -486,9 +487,9 @@ class TestTradeFrequency:
             "metal",
             "index",
             "commodity",
+            "stock",
             "crypto",
         )
-        assert "stock" not in settings.instruments.asset_classes
         assert settings.instruments.symbols_only == ()
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
         assert settings.ai.provider == "local_history"
