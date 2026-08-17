@@ -37,9 +37,9 @@ class ConfluenceEngine:
         self.config = config
         #: symbol -> (bar fingerprint, signals). One entry per symbol, so a
         #: whole broker catalogue costs a few hundred small tuples.
-        self._signal_cache: dict[
-            str, tuple[tuple[tuple[str, object], ...], tuple[Signal, ...]]
-        ] = {}
+        self._signal_cache: dict[str, tuple[tuple[tuple[str, object], ...], tuple[Signal, ...]]] = (
+            {}
+        )
 
     def _bar_fingerprint(self, ctx: MarketContext) -> tuple[tuple[str, object], ...] | None:
         """Identity of the closed bars this evaluation would read.
@@ -112,6 +112,34 @@ class ConfluenceEngine:
         direction, agreeing, agreement, conflict = self._resolve_direction(weighted)
         if len(agreeing) < self.config.minimum_directional_modules:
             return self._reject(ctx, signals, "too few independent directional modules")
+        # A lone detector has to be sure of itself.
+        #
+        # For one module the score IS `|raw| x confidence` — the weight cancels,
+        # because numerator and denominator both run over the agreeing modules.
+        # So a detector firing at the bare `minimum_confidence` floor produces a
+        # score the threshold cannot tell apart from a convinced one, and there
+        # is no second reading to corroborate or contradict it.
+        #
+        # HK50 SHORT on 17 August: `impulse_break` alone at exactly 0.45,
+        # scoring 60 x 0.45 = 27.0 against a 26.0 bar. EUR 3.13 of a EUR 182
+        # account on one unconvinced opinion, not a single positive tick, and
+        # -0.56R at the close.
+        #
+        # Aimed at lone AND unconvinced rather than at lone. Requiring two
+        # modules would also refuse a single detector reading 0.90, which is the
+        # strongest single piece of evidence this engine can produce, and would
+        # cost far more setups than the one failure mode being removed.
+        lone_floor = self.config.lone_module_minimum_confidence
+        if len(agreeing) == 1 and lone_floor > 0:
+            solo = agreeing[0][0]
+            if solo.confidence < lone_floor:
+                return self._reject(
+                    ctx,
+                    signals,
+                    f"{solo.module} is the only detector pointing this way and reads "
+                    f"{solo.confidence:.2f}, under the {lone_floor:.2f} a lone module needs; "
+                    f"one unconvinced opinion is not corroborated evidence",
+                )
         if agreement < self.config.minimum_agreement_ratio:
             return self._reject(
                 ctx, signals, f"directional agreement {agreement:.1%} below threshold"

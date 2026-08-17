@@ -1734,6 +1734,28 @@ class ConfluenceConfig(Base):
     score_threshold: float = Field(default=55.0, ge=1.0, le=100.0)
     minimum_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
     minimum_directional_modules: int = Field(default=2, ge=1, le=10)
+    #: What a SINGLE detector must be sure of before it may carry a trade alone.
+    #:
+    #: With `minimum_directional_modules: 1` a lone module needs nothing but the
+    #: score, and for one module the score IS `|raw| x confidence` — the weight
+    #: cancels, because numerator and denominator both run over the agreeing
+    #: modules. So a detector firing at the bare `minimum_confidence` floor
+    #: produces a score it cannot distinguish itself from a genuinely convinced
+    #: one, and the threshold cannot tell them apart either.
+    #:
+    #: HK50 SHORT on 17 August is the case. `impulse_break` alone at confidence
+    #: 0.45 — the floor exactly — scored 60 x 0.45 = 27.0 against a 26.0 bar,
+    #: took EUR 3.13 of a EUR 182 account, never printed a single positive tick
+    #: and returned -0.56R. One unconvinced opinion is not evidence, and raising
+    #: the score bar to catch it would have cost every three-module setup in the
+    #: same band as well.
+    #:
+    #: Aimed at the actual defect instead: lone AND unconvinced. A lone detector
+    #: that is genuinely sure still trades, which is the half that
+    #: `minimum_directional_modules: 2` would have thrown away with it.
+    #:
+    #: Only consulted when exactly one module agrees. Zero disables it.
+    lone_module_minimum_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     minimum_agreement_ratio: float = Field(default=0.60, ge=0.5, le=1.0)
     #: Refuse a target this market does not actually reach often enough for the
     #: plan's own reward-to-risk to break even.

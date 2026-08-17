@@ -158,9 +158,9 @@ def test_every_live_enabled_module_has_a_hypothesis_document() -> None:
         settings = load_settings(overlay=overlay, env_overrides=False)
         for module in settings.analysis.confluence.live_enabled_modules:
             document = Path(root / "docs" / "hypotheses" / f"{module}.md")
-            assert document.exists(), (
-                f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
-            )
+            assert (
+                document.exists()
+            ), f"{module} is live-enabled but has no docs/hypotheses/{module}.md"
 
 
 def test_weighted_modules_are_documented() -> None:
@@ -198,7 +198,11 @@ class TestRejectionCarriesItsScore:
                 return Signal(
                     module="trend_momentum",
                     score=65.0,
-                    confidence=0.5,  # 65 * 0.5 = 32.5, under any sane threshold
+                    # 65 * 0.7 = 45.5, under the 55 bar. Above the lone-module
+                    # confidence floor on purpose: this test is about a score
+                    # rejection carrying its numbers, and a detector refused for
+                    # being an unconvinced loner never reaches that check.
+                    confidence=0.7,
                     reasoning="test",
                     invalidation_price=1.0,
                 )
@@ -548,3 +552,88 @@ class TestHorizonsDoNotOutvoteEachOther:
         ).evaluate(self._split_context(), TradingMode.PAPER)
 
         assert not idea.approved
+
+
+class TestALoneDetectorHasToBeSureOfItself:
+    """HK50 SHORT: one unconvinced opinion took EUR 3.13 of a EUR 182 account.
+
+    `impulse_break` fired alone at confidence 0.45 — the `minimum_confidence`
+    floor exactly — and scored 60 x 0.45 = 27.0 against a 26.0 bar. It never
+    printed a positive tick and returned -0.56R.
+
+    For a single module the score IS `|raw| x confidence`: the weight cancels,
+    because numerator and denominator both run over the agreeing modules. So the
+    threshold cannot tell a detector that is sure from one that is not, and with
+    only one reading there is nothing to corroborate or contradict it.
+
+    Raising `minimum_directional_modules` to 2 would also have stopped this, and
+    would have cost every lone detector reading 0.90 as well — the strongest
+    single piece of evidence this engine can produce. This gate is aimed at the
+    actual failure: lone AND unconvinced.
+    """
+
+    @staticmethod
+    def _engine(confidence: float, *, modules: int = 1):  # type: ignore[no-untyped-def]
+        from analysis.confluence import ConfluenceEngine
+        from config.loader import load_settings
+        from core.types import Signal
+
+        class _Detector:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def analyze(self, ctx):  # type: ignore[no-untyped-def]
+                return Signal(
+                    module=self.name,
+                    score=60.0,
+                    confidence=confidence,
+                    reasoning="test",
+                    invalidation_price=1.0,
+                )
+
+        settings = load_settings(env_overrides=False)
+        names = ["trend_momentum", "market_structure"][:modules]
+        config = settings.analysis.confluence.model_copy(
+            update={
+                "score_threshold": 26.0,
+                "minimum_directional_modules": 1,
+                "lone_module_minimum_confidence": 0.65,
+                "weights": dict.fromkeys(names, 1.0),
+            }
+        )
+        engine = ConfluenceEngine([_Detector(name) for name in names], config)
+        return engine.evaluate(_context(), settings.system.mode)
+
+    def test_the_hk50_shape_is_refused(self) -> None:
+        idea = self._engine(confidence=0.45)
+
+        assert not idea.approved
+        assert "only detector pointing this way" in idea.reason
+
+    def test_a_lone_detector_that_is_sure_still_trades(self) -> None:
+        """The half `minimum_directional_modules: 2` would have thrown away."""
+        idea = self._engine(confidence=0.90)
+
+        assert "only detector pointing this way" not in idea.reason
+
+    def test_two_agreeing_detectors_are_never_asked(self) -> None:
+        """Corroboration is the thing the floor stands in for. Once it exists,
+        the floor must not also apply — that would be paying for it twice."""
+        idea = self._engine(confidence=0.45, modules=2)
+
+        assert "only detector pointing this way" not in idea.reason
+
+    def test_it_can_be_switched_off(self) -> None:
+        from config.schema import ConfluenceConfig
+
+        assert ConfluenceConfig(lone_module_minimum_confidence=0.0)
+
+    def test_the_overlay_sets_it(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"
+        settings = load_settings(overlay=overlay, env_overrides=False)
+
+        assert settings.analysis.confluence.lone_module_minimum_confidence == 0.65
+        # The blunt alternative stays off: a sure lone detector is still allowed.
+        assert settings.analysis.confluence.minimum_directional_modules == 1
