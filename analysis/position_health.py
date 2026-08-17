@@ -49,9 +49,19 @@ Action = Literal["hold", "tighten", "secure", "exit"]
 #: see with their own eyes is false, while the real one went unsaid.
 Verdict = Literal["healthy", "watch", "deteriorating", "broken", "unmanaged"]
 
-#: Below this the trade is too young to judge. Entry noise — the first tick
+#: Below this the DRIFT readers are not consulted. Entry noise — the first tick
 #: against you, the spread crossing — would otherwise read as a momentum turn
 #: and close good trades before they can breathe.
+#:
+#: It used to return "too young to judge" for the whole function, and that was
+#: the wrong scope. The noise it protects against is specifically a slope or a
+#: run computed across the entry tick. Nothing else here has that problem: a
+#: broken structure is broken whenever it breaks, a blown-out spread is blown
+#: out, and the position's own excursion arms at 0.35R, which is far beyond any
+#: spread crossing. Silencing those for two minutes meant a trade that went
+#: violently wrong immediately after entry had nothing looking at it at all —
+#: and "wrong within two minutes" is a stronger signal than "wrong within two
+#: hours", not a weaker one.
 MIN_AGE_MINUTES = 2.0
 
 #: Bars of the fast timeframe each drift reader needs to have formed *since the
@@ -157,7 +167,18 @@ class HealthWeights:
     #: to be the SECOND family, so a chart reader that is already saying
     #: something is wrong can be acted on at minute six instead of minute
     #: twelve.
-    trajectory: float = 0.28
+    #:
+    #: 0.30 and not 0.28, so that `structure` + `trajectory` lands exactly on
+    #: BROKEN_AT. That pair is the one combination that should be able to close
+    #: a trade at any age, including inside the first two minutes: the swing
+    #: that justified the position has broken AND the market has already taken
+    #: real money. Neither is a clock reading and neither needs a bar to form,
+    #: so waiting adds nothing except the loss.
+    #:
+    #: Every other pairing still falls short — drift 0.65, liquidity 0.60 — and
+    #: alone it is 0.30 against a 0.45 `deteriorating` floor, so "this trade is
+    #: down" on its own remains a hold.
+    trajectory: float = 0.30
 
     def of(self, family: Family) -> float:
         return {
@@ -430,8 +451,6 @@ def assess_position(
     and closing through that swing is a real break whenever it happens.
     """
     weights = weights or HealthWeights()
-    if age_minutes < MIN_AGE_MINUTES:
-        return PositionHealth("healthy", 0.0, "hold", (), "too young to judge")
 
     signals: list[HealthSignal] = []
     if structure is not None and not structure.empty:
@@ -439,7 +458,7 @@ def assess_position(
         if found is not None:
             signals.append(found)
     since_entry = age_minutes / fast_bar_minutes if fast_bar_minutes > 0 else 0.0
-    if fast is not None and not fast.empty:
+    if fast is not None and not fast.empty and age_minutes >= MIN_AGE_MINUTES:
         # A READER ALWAYS SPEAKS. WHAT IT SAYS IS WORTH WHAT IT HAS SEEN.
         #
         # These used to be hard gates: below twelve bars the slope said nothing
