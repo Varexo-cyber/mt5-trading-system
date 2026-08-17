@@ -88,7 +88,13 @@ WATCH_AT = 0.20
 #: twice, which is exactly the failure that rule exists to prevent. Corroboration
 #: is required across families, and severity within a family takes the strongest
 #: reader rather than adding them up.
-Family = Literal["structure", "drift", "liquidity"]
+#: `trajectory` is the position's OWN path, and it is the only family here that
+#: does not read the chart. That is why it exists: the three chart families each
+#: need bars to have formed since the entry — twelve for the slope, six for the
+#: run — and `corroborated` needs two families to agree, so before twelve
+#: minutes agreement is impossible by construction. A trade that goes wrong
+#: inside its first quarter of an hour had nothing watching it at all.
+Family = Literal["structure", "drift", "liquidity", "trajectory"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,11 +151,21 @@ class HealthWeights:
     structure: float = 0.45
     drift: float = 0.35
     liquidity: float = 0.30
+    #: Deliberately the smallest. On its own it must not be able to do anything
+    #: — "this trade is down" is not a reason to close a trade, it is the
+    #: ordinary condition of a trade that has not finished yet. Its whole job is
+    #: to be the SECOND family, so a chart reader that is already saying
+    #: something is wrong can be acted on at minute six instead of minute
+    #: twelve.
+    trajectory: float = 0.28
 
     def of(self, family: Family) -> float:
-        return {"structure": self.structure, "drift": self.drift, "liquidity": self.liquidity}[
-            family
-        ]
+        return {
+            "structure": self.structure,
+            "drift": self.drift,
+            "liquidity": self.liquidity,
+            "trajectory": self.trajectory,
+        }[family]
 
 
 # ------------------------------------------------------------------ readers ---
@@ -294,6 +310,43 @@ def adverse_run(
     )
 
 
+def adverse_excursion(r_now: float, *, arm_r: float = 0.35) -> HealthSignal | None:
+    """How far this trade has gone wrong — the one reader that skips the chart.
+
+    Every other reader here needs bars to have formed SINCE the entry: twelve
+    for the momentum slope, six for the adverse run, and both belong to the same
+    family so they count once. `corroborated` requires two families. On an index
+    or a metal the fast frame is M1, so before minute twelve two-family
+    agreement is arithmetically impossible and the strongest verdict available
+    is a demoted one.
+
+    A live UK100 long shows the shape exactly. Held fifteen minutes, and the
+    first reading that could act arrived at fourteen — by then it was -0.83R of
+    a -0.99R worst case. The layer was not wrong, it was not allowed to speak.
+
+    The position's own excursion needs no bars. It is available from
+    `MIN_AGE_MINUTES` and it is genuinely independent of the chart readers: they
+    describe the market, this describes what the market has done to us.
+
+    Deliberately weak on its own — see `HealthWeights.trajectory`. Being down is
+    the ordinary condition of an unfinished trade, not a reason to close it. The
+    job is to be the SECOND family, so a chart reader already saying something
+    is wrong can be acted on at minute six instead of minute twelve.
+
+    `arm_r` is where "down" becomes "materially down". Below it there is nothing
+    to corroborate; a trade a fifth of an R offside is inside its own noise.
+    """
+    if r_now >= -arm_r or arm_r <= 0:
+        return None
+    beyond = (abs(r_now) - arm_r) / arm_r
+    return HealthSignal(
+        "adverse_excursion",
+        min(1.0, 0.4 + beyond),
+        f"trade is {r_now:.2f}R offside, past the {arm_r:.2f}R the plan calls noise",
+        "trajectory",
+    )
+
+
 def spread_blowout(spread: float, risk: float, *, limit: float = 0.25) -> HealthSignal | None:
     """Has getting out become expensive?
 
@@ -363,6 +416,13 @@ def assess_position(
     blown = spread_blowout(spread, risk)
     if blown is not None:
         signals.append(blown)
+    # The position's own path. No bars required, so this is the only reader that
+    # can corroborate anything before the drift family becomes eligible — which
+    # is the whole reason a trade that went wrong in fifteen minutes had nothing
+    # watching it.
+    offside = adverse_excursion(r_now)
+    if offside is not None:
+        signals.append(offside)
 
     # Strongest reader per family, then sum across families. Adding two readers
     # of the same family would double-count one observation and inflate the

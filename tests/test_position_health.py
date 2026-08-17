@@ -222,7 +222,10 @@ def test_the_slope_and_the_run_are_not_two_opinions() -> None:
     failure the two-signal rule exists to prevent.
     """
     fast, _ = deteriorating_bars()
-    health = assess_position(sign=LONG, r_now=-0.5, age_minutes=30, fast=fast, structure=flat())
+    # Inside the trajectory reader's own arming level on purpose. This test is
+    # about the two DRIFT readers counting once, and a trade materially offside
+    # would add a second, genuinely independent family and change the subject.
+    health = assess_position(sign=LONG, r_now=-0.1, age_minutes=30, fast=fast, structure=flat())
     assert {s.name for s in health.signals} == {"momentum_turned", "adverse_run"}
     assert {s.family for s in health.signals} == {"drift"}
     assert health.action not in ("exit", "secure")
@@ -385,3 +388,62 @@ class TestDriftReadersWaitForTheirOwnBars:
             sign=LONG, r_now=-0.3, age_minutes=2.5, fast=fast, structure=structure
         )
         assert "structure_broken" in _names(health)
+
+
+class TestBeingDownIsNeverAReasonToClose:
+    """The one reader that skips the chart, and the one it must never overrule.
+
+    Every other reader needs bars formed SINCE the entry — twelve for the
+    momentum slope, six for the adverse run, and both are the same family so
+    they count once. `corroborated` needs two families, so on an M1 fast frame
+    two-family agreement is arithmetically impossible before minute twelve. A
+    live UK100 long was held fifteen minutes and the first actionable reading
+    arrived at fourteen, by which point it was -0.83R of a -0.99R worst case.
+    The layer was not wrong; it was not allowed to speak.
+
+    But "this trade is down" must not become a reason to close it — that is the
+    ordinary condition of a trade that has not finished. So the weight is set so
+    the trajectory family CANNOT reach `broken` with any partner at full
+    strength: it can bring a warning forward to a stop tightening and it can
+    never bring one forward to an exit.
+    """
+
+    def test_it_cannot_close_a_trade_alone(self) -> None:
+        from analysis.position_health import BROKEN_AT, DETERIORATING_AT, HealthWeights
+
+        assert HealthWeights().trajectory < DETERIORATING_AT
+        assert HealthWeights().trajectory < BROKEN_AT
+
+    def test_it_cannot_close_a_trade_with_any_partner_either(self) -> None:
+        """The structural claim, checked rather than asserted in a comment."""
+        from analysis.position_health import BROKEN_AT, HealthWeights
+
+        weights = HealthWeights()
+        for partner in (weights.drift, weights.structure, weights.liquidity):
+            assert weights.trajectory + partner < BROKEN_AT
+
+    def test_a_trade_inside_its_own_noise_says_nothing(self) -> None:
+        from analysis.position_health import adverse_excursion
+
+        assert adverse_excursion(-0.20) is None
+        assert adverse_excursion(0.50) is None
+
+    def test_a_materially_offside_trade_speaks(self) -> None:
+        from analysis.position_health import adverse_excursion
+
+        signal = adverse_excursion(-0.60)
+
+        assert signal is not None
+        assert signal.family == "trajectory"
+
+    def test_it_brings_a_chart_warning_forward_to_a_tighten(self) -> None:
+        """The whole point: at minute six the run reader is eligible and the
+        slope is not, so without this there is one family and nothing happens."""
+        fast, _ = deteriorating_bars()
+        health = assess_position(
+            sign=LONG, r_now=-0.60, age_minutes=30, fast=fast, structure=flat()
+        )
+
+        assert {s.family for s in health.signals} == {"drift", "trajectory"}
+        assert health.action == "tighten"
+        assert health.action not in ("exit", "secure")
