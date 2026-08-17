@@ -75,7 +75,38 @@ instruments:
   #
   # Dit opent geen risicopoort: spread, brokerstatus, betaalbaarheid, margin,
   # correlatie, sizing en de AI/local-history review blijven per order gelden.
-  asset_classes: [forex, metal, index, commodity, stock, crypto]
+  # `stock` is eraf, en dat is op bewijs van dit account in plaats van op smaak.
+  #
+  # Vier gevallen, allemaal losse aandelen, allemaal een ander mankement:
+  #
+  #   ENR   -3,61R op een BROKER_SL. Een stop kost per definitie 1,00R, dus er
+  #         ging 2,61R doorheen. De beurs was dicht en het aandeel opende
+  #         ergens anders. De stop stond er; er was geen markt om hem te vullen.
+  #   QIA   36,6349 / 36,6550 - 2,01 cent spread - met M1-bars van een paar
+  #         punten. Erin en eruit kostte meer dan de markt in een minuut bewoog.
+  #   ANTO  2 cent spread op EUR 36,34, en bars van twee tot vijf cent. Die komt
+  #         langs het liveliness-filter, want hij BEWEEGT wel. De kosten zijn
+  #         alleen zo'n groot deel van elke beweging dat de spread de uitkomst
+  #         bepaalt in plaats van de analyse.
+  #   ba, con, dbk  drie stuks tegelijk open met een gesloten beurs. Niet te
+  #         sluiten, geen stop te verzetten, en ze hielden drie van de vier
+  #         slots bezet.
+  #
+  # Wat die vier delen: op een rekening van EUR 130 is een CFD op een los
+  # aandeel van EUR 36 met twee cent spread geen instrument om mee te handelen.
+  # De spread is 0,055% van de prijs, de beurs staat zestien uur per dag stil,
+  # en er is geen drempel die dat repareert - ik heb het twee keer geprobeerd en
+  # ANTO glipt er alsnog door. Het is de assetklasse zelf.
+  #
+  # De avonduitfasering voor aandelen en `min_bar_range_in_spreads` blijven
+  # staan. Ze zijn nu geen actieve poort meer maar een vangnet: zet iemand
+  # `stock` ooit terug, dan gelden ze meteen weer.
+  #
+  # Indices blijven WEL staan. Die volgen dezelfde beurs maar zijn een index-CFD
+  # met een spread van een fractie hiervan en een boek dat vrijwel dag en nacht
+  # quoteert. UK100 leverde gisteren de enige schone trade van de dag op
+  # (+1,45R, BROKER_TP, 96% van zijn top gehouden).
+  asset_classes: [forex, metal, index, commodity, crypto]
 
   # Or watch a single instrument. Leave empty for the list above; set e.g.
   # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded

@@ -47,6 +47,18 @@ class TestShippedConfig:
 
         `stock` is therefore out. That is a narrowing and not a loosening: no
         gate moved, only the noise the gates were tripping over.
+
+        It went back in at some point and this assertion was updated to match
+        while the reasoning above was left standing. Everything the account has
+        learned since agrees with the docstring rather than with the edit: ENR
+        gapped 2.61R through its stop with its exchange shut, QIA and ANTO quoted
+        two cents on a EUR 36 price so the spread decided the outcome instead of
+        the setup, and three share positions once held three of four slots with
+        no way to close or protect any of them.
+
+        Indices stay. Same exchange, a fraction of the spread, and a book that
+        quotes nearly around the clock — UK100 produced the one clean trade of
+        15 August at +1.45R on its own target.
         """
         overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"
         settings = load_settings(overlay=overlay, env_overrides=False)
@@ -55,17 +67,9 @@ class TestShippedConfig:
             "metal",
             "index",
             "commodity",
-            "stock",
             "crypto",
         )
-        assert set(settings.instruments.asset_classes) == {
-            "forex",
-            "metal",
-            "index",
-            "commodity",
-            "stock",
-            "crypto",
-        }
+        assert "stock" not in settings.instruments.asset_classes
         assert settings.instruments.symbols_only == ()
         assert settings.scanner.batch_size is None
         assert not settings.scanner.priority_every_cycle
@@ -470,15 +474,21 @@ class TestTradeFrequency:
         )
         assert settings.instruments.symbol_suffix == ".i"
         assert settings.instruments.universe_mode == "affordable"
-        # Every broker asset family participates in one complete catalogue pass.
+        # Every broker asset family except single shares. `stock` came off on
+        # this account's own evidence: ENR gapped 2.61R through its stop while
+        # its exchange was shut, QIA and ANTO quoted two cents on a EUR 36 price
+        # so the spread decided the outcome rather than the setup, and three
+        # share positions once held three of four slots with their exchange
+        # closed and no way to modify them. Indices stay — same exchange, a
+        # fraction of the spread, and a book that quotes nearly around the clock.
         assert settings.instruments.asset_classes == (
             "forex",
             "metal",
             "index",
             "commodity",
-            "stock",
             "crypto",
         )
+        assert "stock" not in settings.instruments.asset_classes
         assert settings.instruments.symbols_only == ()
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
         assert settings.ai.provider == "local_history"
