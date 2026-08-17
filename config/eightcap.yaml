@@ -733,6 +733,32 @@ filters:
     # bindt zonder een normaal uur weg te gooien.
     block_friday_after: "20:00"
 
+    # LOSSE AANDELEN GAAN NIET DOOR HUN EIGEN BEURSSLUITING HEEN.
+    #
+    # ENR (Siemens Energy) verloor -3,61R op een BROKER_SL. Een stop is per
+    # definitie -1,00R, dus er ging 2,61R doorheen. Dat kan maar op een manier:
+    # het aandeel stond stil terwijl de beurs dicht was en opende ergens anders.
+    # De stop stond er wel, er was alleen geen markt om hem in te vullen.
+    #
+    # Een los aandeel handelt zo'n acht uur per dag en staat er zestien stil.
+    # Elke regel in dit systeem is in R geschreven en R gaat ervan uit dat de
+    # stop bindt. Zestien uur per dag doet hij dat niet, dus is een aandeel dat
+    # blijft staan feitelijk een trade zonder stoploss - precies wat hier
+    # verboden is.
+    #
+    # 15:30 UTC en niet later, want dat is Xetra's slot in de zomertijd en dus
+    # de vroegste sluiting die dit account kan tegenkomen. Amerikaanse aandelen
+    # worden daarmee eerder gesloten dan nodig; dat is de prijs voor een getal
+    # dat het hele jaar door en op elke beurs klopt. Handel je alleen VS, dan
+    # kan dit naar 19:45 - nooit later dan `evening_flat_from`.
+    #
+    # Dit dekt ook de instap: `INSUFFICIENT_RUNWAY` leest hetzelfde venster, dus
+    # een aandeel dat de tijd niet meer heeft wordt niet meer geopend.
+    evening_flat_asset_classes: [forex, stock]
+    evening_flat_by_class:
+      index: "20:00"
+      stock: "15:30"
+
     # De Aziatische sessie erbij, op verzoek van de eigenaar: de VPS is er om
     # 24/7 te draaien en de rekening stond 's nachts stil.
     #

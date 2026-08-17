@@ -397,9 +397,9 @@ class PositionManager:
             # lock: this rule protects the entry, so what matters is whether
             # the money is on the table now, not whether it once was.
             worth_protecting = self._is_account_meaningful(r_now, risk_money)
-            if (
-                r_now >= config.break_even_at_r or worth_protecting
-            ) and self._worth_moving(position, break_even, risk):
+            if (r_now >= config.break_even_at_r or worth_protecting) and self._worth_moving(
+                position, break_even, risk
+            ):
                 result = self.broker.modify_stops(
                     position,
                     sl=self.broker.spec(position.symbol).normalize_price(break_even),
@@ -569,11 +569,29 @@ class PositionManager:
         # tighten: pull the stop to just inside what the trade is currently
         # worth. Never past price, and never a widening — a reading this weak
         # has not earned the right to close anything, only to risk less.
-        locked = position.price_open + risk * r_now * 0.5 * int(position.direction)
+        #
+        # Two formulas, because "half of what it is worth" is only meaningful
+        # while it is worth something. At -0.5R it puts the stop a quarter of an
+        # R on the losing side of ENTRY — which is on the far side of the live
+        # price, so the broker either fills it instantly or rejects it. That is
+        # why this branch could only ever run on a winner, and why a losing
+        # trade had nothing between it and its original stop.
+        #
+        # Under water the question is a different one and simpler: how much of
+        # the remaining risk is still worth carrying. The stop comes half the
+        # way from the live price to the original stop, so the worst case drops
+        # from a full R to roughly the loss already taken plus half of what was
+        # left. Never past price by construction, and `_worth_moving` below
+        # still refuses a move too small to pay for itself.
+        if r_now >= 0.0:
+            locked = position.price_open + risk * r_now * 0.5 * int(position.direction)
+        else:
+            price = tick.bid if position.direction is Direction.LONG else tick.ask
+            locked = price + (position.sl - price) * 0.5 if position.sl else price
         improves = (position.direction is Direction.LONG and locked > position.sl) or (
             position.direction is Direction.SHORT and locked < position.sl
         )
-        if not improves:
+        if not improves or not self._worth_moving(position, locked, risk):
             return None
         spec = self.broker.spec(position.symbol)
         result = self.broker.modify_stops(position, sl=spec.normalize_price(locked), tp=position.tp)

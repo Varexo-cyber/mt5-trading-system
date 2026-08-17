@@ -829,9 +829,7 @@ class TestProfitLock:
             opened_at=datetime(2026, 8, 6, 10, 0, tzinfo=UTC),
             magic=1,
         )
-        event = manager._profit_lock(
-            position, r_now, peak_r, risk=0.0010, risk_money=risk_money
-        )
+        event = manager._profit_lock(position, r_now, peak_r, risk=0.0010, risk_money=risk_money)
         return event, sent.get("sl")
 
     def test_below_the_arming_peak_nothing_moves(self) -> None:
@@ -2003,3 +2001,153 @@ class TestAWideStopMustNotHideRealMoney:
         off = TradeManagementConfig(capital_protection_at_equity_pct=0.0)
 
         assert off.capital_protection_at_equity_pct == 0.0
+
+
+class TestASharedIsNotCarriedThroughItsOwnClose:
+    """ENR lost 3.61R on a stop that is defined as costing 1.00R.
+
+    Siemens Energy, exit BROKER_SL, and 2.61R went straight through it. There
+    is one way that happens: the share stopped trading while its exchange was
+    shut and reopened somewhere else. The stop was there; there was no market
+    to fill it in.
+
+    A single share trades about eight hours a day and stands still for sixteen.
+    Every rule in this system is written in R, and R assumes the stop binds.
+    Sixteen hours a day it does not, which makes an overnight share position a
+    trade without a working stoploss — the one thing this account forbids
+    outright.
+
+    The wind-down machinery already closed forex before the rollover. Shares
+    were simply not on its list.
+    """
+
+    def test_the_overlay_flattens_shares_as_well_as_forex(self) -> None:
+        from config.loader import load_settings
+
+        session = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml"
+        ).filters.session
+
+        assert "stock" in session.evening_flat_asset_classes
+
+    def test_shares_wind_down_before_the_earliest_cash_close(self) -> None:
+        """15:30 UTC is Xetra in summer — the earliest close this account meets."""
+        from config.loader import load_settings
+
+        session = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml"
+        ).filters.session
+
+        assert session.evening_flat_by_class["stock"] == "15:30"
+        assert session.evening_flat_by_class["stock"] < session.evening_flat_from
+
+    def test_a_share_wind_down_may_never_be_pushed_past_the_forex_one(self) -> None:
+        """The guard that stops this being widened back out by an edit."""
+        from config.schema import SessionFilterConfig
+
+        with pytest.raises(ValueError, match="may only be earlier"):
+            SessionFilterConfig(
+                evening_flat_from="20:15",
+                evening_flat_by_class={"stock": "22:00"},
+            )
+
+
+class TestALosingTradeIsNotLeftToRunToItsStop:
+    """Three of six trades on 15 August went entry-to-full-stop untouched.
+
+    CHFJPY peaked at 0.12R and closed at -1.21R. UK100 peaked at 0.00R and
+    closed at -0.97R. ENR peaked at 0.47R and closed at -3.61R. Every exit was
+    BROKER_SL: not one rule on the account was able to speak.
+
+    That was not caution, it was arithmetic. The give-back arms at 0.5R, the
+    peak-stall at 0.6R, the profit ladders read `max(x, 0.0)`, and the free
+    supervisor holds until it has five comparable states it does not yet have.
+    The health reader was the only layer left, and its `tighten` rung required
+    `r_now >= 0.2` — profit — so on the trades it was actually describing it
+    fell through to `hold`.
+
+    The reading existed, was correct, was logged, and could act on every trade
+    except a losing one.
+    """
+
+    @staticmethod
+    def _verdict(r_now: float):  # type: ignore[no-untyped-def]
+        import numpy as np
+        import pandas as pd
+
+        from analysis.position_health import assess_position
+
+        # Two INDEPENDENT families, which is what `deteriorating` needs and
+        # what the corroboration rule is there to enforce: the drift readers
+        # (a long walking steadily down) and the liquidity reader (a spread
+        # that has widened to a large share of the trade's own risk). Two
+        # drift readers agreeing would be one observation counted twice.
+        falling = pd.DataFrame(
+            {
+                "open": np.linspace(1.1000, 1.0950, 60),
+                "high": np.linspace(1.1002, 1.0952, 60),
+                "low": np.linspace(1.0998, 1.0948, 60),
+                "close": np.linspace(1.1000, 1.0950, 60),
+            }
+        )
+        return assess_position(
+            sign=1,
+            r_now=r_now,
+            age_minutes=180.0,
+            fast=falling,
+            structure=falling,
+            spread=0.0006,
+            risk=0.0010,
+            fast_bar_minutes=15.0,
+        )
+
+    def test_a_deteriorating_loser_no_longer_falls_through_to_hold(self) -> None:
+        health = self._verdict(r_now=-0.45)
+
+        assert health.verdict in ("deteriorating", "broken")
+        assert health.action != "hold", "the losing trade got no answer at all"
+
+    def test_a_trade_sitting_on_its_entry_is_still_left_alone(self) -> None:
+        """The floor keeps meaning something: inside 0.2R a stop move is noise."""
+        health = self._verdict(r_now=-0.05)
+
+        assert health.action == "hold"
+
+    def test_the_tightened_stop_lands_between_price_and_the_original(self) -> None:
+        """Under water the stop cannot be 'half of what it is worth' — that
+        level sits on the far side of the live price. It comes half way in from
+        the price to the original stop instead, so the worst case shrinks."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+        losing = replace(position(), profit=-1.0)
+
+        at(broker, -0.5)
+        moved = manager._act_on_health(
+            losing,
+            PositionHealth("deteriorating", 0.6, "tighten", (), "structure gone"),
+            r_now=-0.5,
+            risk=ENTRY - STOP,
+            tick=broker.tick("EURUSD"),
+        )
+
+        assert moved is not None and moved.action == "HEALTH_TIGHTEN"
+        assert broker.modified, "no stop was actually sent to the broker"
+        sent = broker.modified[-1]
+        assert STOP < sent < broker.price, "the new stop is not between price and the old one"
+
+    def test_it_never_widens_a_stop(self) -> None:
+        """The one thing this may never do, whatever the reading says."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+        already_tight = replace(position(), sl=ENTRY - 0.1 * (ENTRY - STOP), profit=-1.0)
+
+        at(broker, -0.5)
+        moved = manager._act_on_health(
+            already_tight,
+            PositionHealth("deteriorating", 0.6, "tighten", (), "structure gone"),
+            r_now=-0.5,
+            risk=ENTRY - STOP,
+            tick=broker.tick("EURUSD"),
+        )
+
+        assert moved is None
