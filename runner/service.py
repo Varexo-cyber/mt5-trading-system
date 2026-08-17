@@ -192,6 +192,11 @@ class _SupervisionSnapshot:
     #: high, so a trade that peaks and then drains is silent in every trigger
     #: except the give-back, and the give-back was gated on R alone.
     peak_pct_of_equity: float = 0.0
+    #: Whether the entry engine's latest read on this chart opposes the position.
+    #: Carried between reviews so the trigger can fire on the CHANGE rather than
+    #: on the state — being on the wrong side is one event, not a condition to
+    #: re-ask about every two minutes.
+    engine_against: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +443,10 @@ class JarvisRunner:
         self.scout_throttle = ScoutThrottle(root / "runtime" / "market_scout_state.json")
         self._cycle_observations: list[MarketObservation] = []
         self._cycle_contexts: dict[str, MarketContext] = {}
+        #: symbol -> (direction the engine last read, score). Survives the cycle
+        #: reset below on purpose: an open position needs the most recent read
+        #: available, not only one from the cycle currently running.
+        self._latest_direction: dict[str, tuple[str, float]] = {}
         self._world_state: dict[str, object] = {}
         self._last_scout = ScoutDecision(thesis="No scout call recorded yet")
         self._counterfactuals_checked_at: datetime | None = None
@@ -2431,6 +2440,13 @@ class JarvisRunner:
             context = self.data.get_context(symbol, force_refresh=True)
             idea = self.engine.evaluate(context, self.settings.mode)
             self._cycle_contexts[symbol] = context
+            # The scan reads every symbol anyway, including the ones we are
+            # already in. Keeping its directional verdict here makes "the engine
+            # has turned against an open position" free to detect — no second
+            # fetch, no second evaluation, and the same read the entry side used
+            # rather than one derived separately and able to drift from it.
+            if idea.direction is not None:
+                self._latest_direction[symbol] = (idea.direction.name, idea.score)
             observation = observe_market(context, asset_class, idea.signals)
             self._cycle_observations.append(observation)
             if self.shadow_engine is not None:
@@ -4058,6 +4074,82 @@ class JarvisRunner:
                 + "; ".join(f"{item.name}" for item in failures[:6])
             )
 
+    def _conviction_now(self, position, context) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        """What the entry engine would do on this chart at this moment.
+
+        Every other reading about an open position looks backwards. The health
+        engine asks whether the thesis has been damaged; the excursions say
+        where price has already been; the account record says what past exits
+        earned. None of them answer the question the decision actually turns
+        on, which is where this goes NEXT — and that question has two answers
+        worth acting on, not one.
+
+        A position that is down while the engine still reads the same direction
+        is a trade to sit through: the loss is noise against a thesis that is
+        intact, and closing it pays the spread to abandon something the system
+        would open again this second. The identical position while the engine
+        has flipped is a trade on the wrong side of the market, and the size of
+        the loss is beside the point — waiting only adds to it.
+
+        Those two states are indistinguishable in every other field of the
+        payload, which is why the supervisor's answer to both was hold.
+
+        Deliberately the same engine, not a second opinion: same modules, same
+        weights, same live allowlist, same thresholds. Its verdict is therefore
+        comparable to the one that opened the position rather than a different
+        instrument disagreeing for reasons of its own.
+
+        Never raises. A read that cannot be produced is reported as unknown,
+        because a supervisor told nothing is in the state it was in before this
+        existed, while a supervisor told a fabricated agreement is worse off.
+        """
+        try:
+            idea = self.engine.evaluate(context, self.settings.mode)
+        except (TradingSystemError, ValueError, KeyError):
+            log.warning(
+                "no fresh directional read for supervision",
+                extra={"event": "supervision_conviction_failed", "symbol": position.symbol},
+            )
+            return {"verdict": "unknown", "why": "the engine could not read this chart"}
+
+        held = position.direction.name
+        if idea.direction is None:
+            # Not agreement and not disagreement. The engine declining to open
+            # anything here says the chart is unreadable, not that the position
+            # is wrong, and collapsing that into "against" would turn every
+            # quiet hour into a reason to close.
+            return {
+                "verdict": "no_setup",
+                "position_holds": held,
+                "why": idea.reason,
+                "means": (
+                    "The engine would not open anything here either way. That is not "
+                    "evidence against this position; it is the absence of evidence."
+                ),
+            }
+
+        now_says = idea.direction.name
+        agrees = now_says == held
+        return {
+            "verdict": "agrees" if agrees else "against",
+            "position_holds": held,
+            "engine_would_take": now_says,
+            "score": round(idea.score, 1),
+            "confidence": round(idea.confidence, 2),
+            "would_be_approved": idea.approved,
+            "why": idea.reason,
+            "means": (
+                "The same engine that opened this trade still reads the same direction on "
+                "the live chart. Being down is not by itself a reason to leave a thesis "
+                "the system would act on again right now."
+                if agrees
+                else "The same engine that opened this trade now reads the OPPOSITE "
+                "direction on the live chart. This position is on the wrong side of what "
+                "the system currently believes, and how far it has already moved against "
+                "us does not change that."
+            ),
+        }
+
     def _supervise_positions(self, positions) -> None:  # type: ignore[no-untyped-def]
         """Let the adviser manage what is already open, on cadence or evidence.
 
@@ -4133,6 +4225,25 @@ class JarvisRunner:
                     # money and judging a number.
                     "account_equity": self.broker.account().equity,
                     "account_posture": self.posture.brief(),
+                    # WOULD I TAKE THIS TRADE, ON THIS CHART, RIGHT NOW?
+                    #
+                    # The only question here that looks forward. Everything else
+                    # in this payload is a post-mortem of a trade in progress:
+                    # the health read says whether the original thesis has been
+                    # damaged, the excursions say where price has been, the
+                    # record says what past exits earned. None of them answer
+                    # "where does this go next", and that is the answer the
+                    # decision actually turns on — both ways. A position that is
+                    # down while the engine still reads the same direction is a
+                    # trade to sit through; the same position while the engine
+                    # has flipped is one to leave.
+                    #
+                    # The engine that opened the trade is asked again on the
+                    # live chart. It is the same weighted module vote, the same
+                    # thresholds, the same allowlist, so its answer is
+                    # comparable to the one that produced the entry rather than
+                    # a second opinion from a different instrument.
+                    "if_i_were_opening_now": self._conviction_now(position, context),
                     "learned_so_far": self.memory.briefing(
                         position.symbol, position.direction.name
                     ),
@@ -4326,6 +4437,40 @@ class JarvisRunner:
             return None
         if (now - last).total_seconds() < config.supervision_min_interval_minutes * 60:
             return None
+
+        # THE ENGINE HAS TURNED AGAINST THIS POSITION.
+        #
+        # Ahead of every other trigger below, because it is the only one that
+        # says anything about where the trade goes NEXT. The health ladder
+        # reports damage already done, the profit and loss ladders report price
+        # already travelled; all three describe the past of a position and none
+        # of them separates "down and about to come back" from "down and going
+        # further". Those are opposite trades and they looked identical.
+        #
+        # Free to check: the scan evaluates every symbol each cycle, including
+        # the ones already held, so this reads a verdict that has been computed
+        # anyway rather than paying for a second one.
+        #
+        # It fires on the CHANGE, not on the state, so a position that is simply
+        # on the wrong side does not re-ask every two minutes. And it fires in
+        # both directions — a flip back to agreement is exactly as material,
+        # because it is the moment a loser becomes worth sitting through.
+        latest = self._latest_direction.get(position.symbol)
+        if latest is not None:
+            held = position.direction.name
+            now_against = latest[0] != held
+            was_against = previous.engine_against
+            if now_against != was_against:
+                snapshot = replace(snapshot, engine_against=now_against)
+                return (
+                    (
+                        f"engine_turned_against:{latest[0]}_at_score_{latest[1]:.0f}"
+                        if now_against
+                        else f"engine_back_in_agreement:{latest[0]}"
+                    ),
+                    snapshot,
+                )
+            snapshot = replace(snapshot, engine_against=now_against)
 
         health_rank = {
             "unknown": -1,

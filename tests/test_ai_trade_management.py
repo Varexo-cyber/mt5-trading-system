@@ -56,6 +56,10 @@ def _runner() -> JarvisRunner:
     runner._supervised_at = {}
     runner._supervision_due_at = {}
     runner._supervision_snapshots = {}
+    # No scan has run in these fixtures, so there is no fresh directional
+    # read to compare against and the engine trigger stays silent — which
+    # is the behaviour every test below was written against.
+    runner._latest_direction = {}
     return runner
 
 
@@ -514,6 +518,15 @@ class TestTheManagementRecordReachesTheManagementDecision:
             record_supervision=lambda **_: None,
         )
         runner.memory = SimpleNamespace(briefing=lambda *_: {})  # type: ignore[assignment]
+        # The forward read. A stub that opens nothing keeps it at "no_setup",
+        # which is neither agreement nor opposition and changes no assertion
+        # in this class.
+        runner.engine = SimpleNamespace(  # type: ignore[assignment]
+            evaluate=lambda *_: SimpleNamespace(
+                direction=None, reason="flat", score=0.0, confidence=0.0, approved=False
+            )
+        )
+        runner.settings.mode = SimpleNamespace(is_live=False)
         runner.posture = SimpleNamespace(brief=lambda: {})  # type: ignore[assignment]
         runner.journal = SimpleNamespace(  # type: ignore[assignment]
             open_trade_by_ticket=lambda _t: {"sl": 97.0, "mfe_r": 0.0},
@@ -577,3 +590,123 @@ def _context():  # type: ignore[no-untyped-def]
         series={Timeframe.M15: Series("TEST", Timeframe.M15, frame, NOW)},
         tick=Tick("TEST", NOW, 101.0, 101.1),
     )
+
+
+class TestTheOnlyReadingThatLooksForward:
+    """ "Als het systeem zeker weet dit gaat nog meer zakken, laat me er nu uit."
+
+    Every other reading about an open position is a post-mortem in progress.
+    The health engine reports damage already done. The excursions report price
+    already travelled. The account record reports what past exits earned. Not
+    one of them separates the two states the decision actually turns on:
+
+        down, and the thesis is intact        -> sit through it
+        down, and the market has turned       -> leave, size of loss irrelevant
+
+    In every field of the payload those two look identical, which is why the
+    answer to both was hold. The engine that opened the trade is asked again on
+    the live chart, and it answers exactly that question — in both directions,
+    because a flip back into agreement is the moment a loser becomes worth
+    holding rather than a moment to do nothing about.
+    """
+
+    @staticmethod
+    def _runner(engine_says: str | None, score: float = 61.0):  # type: ignore[no-untyped-def]
+
+        runner = _runner()
+        runner.engine = SimpleNamespace(  # type: ignore[assignment]
+            evaluate=lambda *_: SimpleNamespace(
+                direction=None if engine_says is None else Direction[engine_says],
+                score=score,
+                confidence=0.72,
+                approved=True,
+                reason="live read",
+            )
+        )
+        runner.settings.mode = SimpleNamespace(is_live=False)
+        runner._supervised_at[1] = NOW - timedelta(minutes=5)
+        runner._supervision_due_at[1] = NOW + timedelta(minutes=10)
+        return runner
+
+    @staticmethod
+    def _was(*, engine_against: bool) -> _SupervisionSnapshot:
+        return _SupervisionSnapshot(
+            r_now=-0.30,
+            peak_r=0.0,
+            giveback_fraction=0.0,
+            health_verdict="healthy",
+            health_severity=0.0,
+            profit_pct_of_equity=-0.30,
+            peak_pct_of_equity=0.0,
+            engine_against=engine_against,
+        )
+
+    def test_a_turn_against_an_open_position_wakes_the_reviewer(self) -> None:
+        runner = self._runner("SHORT")
+        runner._latest_direction["TEST"] = ("SHORT", 61.0)
+        runner._supervision_snapshots[1] = self._was(engine_against=False)
+
+        triggered = runner._supervision_trigger(_position(), NOW)
+
+        assert triggered is not None
+        assert triggered[0].startswith("engine_turned_against:SHORT")
+
+    def test_a_turn_back_into_agreement_wakes_it_too(self) -> None:
+        """The moment a losing trade becomes one worth sitting through."""
+        runner = self._runner("LONG")
+        runner._latest_direction["TEST"] = ("LONG", 58.0)
+        runner._supervision_snapshots[1] = self._was(engine_against=True)
+
+        triggered = runner._supervision_trigger(_position(), NOW)
+
+        assert triggered is not None
+        assert triggered[0].startswith("engine_back_in_agreement")
+
+    def test_being_on_the_wrong_side_is_not_re_asked_every_two_minutes(self) -> None:
+        """It fires on the change, not on the state. Otherwise a position on the
+        wrong side would bill a review on every guard tick until it closed."""
+        runner = self._runner("SHORT")
+        runner._latest_direction["TEST"] = ("SHORT", 61.0)
+        runner._supervision_snapshots[1] = self._was(engine_against=True)
+
+        assert runner._supervision_trigger(_position(), NOW) is None
+
+    def test_the_reviewer_is_told_which_way_the_engine_now_reads(self) -> None:
+        runner = self._runner("SHORT")
+
+        read = runner._conviction_now(_position(), context=object())
+
+        assert read["verdict"] == "against"
+        assert read["engine_would_take"] == "SHORT"
+        assert read["position_holds"] == "LONG"
+        assert "wrong side" in str(read["means"])
+
+    def test_agreement_is_stated_as_a_reason_to_sit_through_a_loss(self) -> None:
+        """Half the value is here. Without it, 'we are down' is the only fact
+        on the table and every reading of it points one way."""
+        runner = self._runner("LONG")
+
+        read = runner._conviction_now(_position(), context=object())
+
+        assert read["verdict"] == "agrees"
+        assert "not by itself a reason to leave" in str(read["means"])
+
+    def test_no_setup_is_not_counted_as_disagreement(self) -> None:
+        """The absence of evidence, said plainly. Collapsing this into 'against'
+        would turn every quiet hour into a reason to close."""
+        runner = self._runner(None)
+
+        read = runner._conviction_now(_position(), context=object())
+
+        assert read["verdict"] == "no_setup"
+        assert "absence of evidence" in str(read["means"])
+
+    def test_an_unreadable_chart_says_unknown_rather_than_guessing(self) -> None:
+        runner = self._runner("SHORT")
+        runner.engine = SimpleNamespace(  # type: ignore[assignment]
+            evaluate=lambda *_: (_ for _ in ()).throw(ValueError("no bars"))
+        )
+
+        read = runner._conviction_now(_position(), context=object())
+
+        assert read["verdict"] == "unknown"

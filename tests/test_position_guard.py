@@ -2121,11 +2121,11 @@ class TestALosingTradeIsNotLeftToRunToItsStop:
         manager = manager_for(broker, journal)
         losing = replace(position(), profit=-1.0)
 
-        at(broker, -0.5)
+        at(broker, -0.3)
         moved = manager._act_on_health(
             losing,
             PositionHealth("deteriorating", 0.6, "tighten", (), "structure gone"),
-            r_now=-0.5,
+            r_now=-0.3,
             risk=ENTRY - STOP,
             tick=broker.tick("EURUSD"),
         )
@@ -2141,11 +2141,11 @@ class TestALosingTradeIsNotLeftToRunToItsStop:
         manager = manager_for(broker, journal)
         already_tight = replace(position(), sl=ENTRY - 0.1 * (ENTRY - STOP), profit=-1.0)
 
-        at(broker, -0.5)
+        at(broker, -0.3)
         moved = manager._act_on_health(
             already_tight,
             PositionHealth("deteriorating", 0.6, "tighten", (), "structure gone"),
-            r_now=-0.5,
+            r_now=-0.3,
             risk=ENTRY - STOP,
             tick=broker.tick("EURUSD"),
         )
