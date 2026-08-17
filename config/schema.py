@@ -885,6 +885,26 @@ class LivelinessFilterConfig(Base):
     #: are valid occasionally; a tape made mostly of them is not executable
     #: evidence, regardless of how attractive a higher-timeframe trend looks.
     max_flat_bar_fraction: float = Field(default=0.60, ge=0.0, le=1.0)
+    #: How much a typical bar must move, measured in spreads. THE ONLY ABSOLUTE
+    #: TEST IN THIS FILTER, and the gap the other three left open.
+    #:
+    #: `min_activity_ratio` compares a market with its OWN recent normal, so a
+    #: market that is always dead has a dead baseline and scores about 1.0 — it
+    #: passes for being consistently untradeable. `max_flat_bar_fraction` only
+    #: counts bars whose high equals their low exactly, and a tape that ticks
+    #: once a minute prints a range of one or two points, which is not flat by
+    #: that definition. Neither can see the pathology.
+    #:
+    #: Live: Qiagen (QIA) quoted 36.6349 / 36.6550 — a 2.01-cent spread — while
+    #: printing M1 bars a few points tall. Getting in and out cost more than the
+    #: market moved in a minute, so the trade was decided by the spread before
+    #: the thesis had any say. There is no threshold elsewhere that catches this,
+    #: because every other gate is relative to the instrument itself.
+    #:
+    #: Median rather than mean, so one news candle cannot vouch for an hour of
+    #: nothing. 1.0 means "a typical minute must at least cover the round trip";
+    #: zero disables the test.
+    min_bar_range_in_spreads: float = Field(default=1.0, ge=0.0, le=20.0)
 
     @model_validator(mode="after")
     def _windows_are_ordered(self) -> LivelinessFilterConfig:

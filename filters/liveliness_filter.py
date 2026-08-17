@@ -103,6 +103,19 @@ class LivelinessFilter(Filter):
         flat = float(((df["high"] - df["low"]).abs() <= 0.0).mean())
         return sparse, flat
 
+    def typical_bar_range(self, series: Series) -> float | None:
+        """The median recent bar range, in price. None when unmeasurable.
+
+        Kept apart from `execution_quality` because it is compared against a
+        number from outside the chart — the live spread — while everything there
+        is a share of the chart's own bars.
+        """
+        df = series.df.tail(self.config.quality_bars)
+        if df.empty:
+            return None
+        ranges = (df["high"] - df["low"]).abs()
+        return float(ranges.median()) if len(ranges) else None
+
     # -- gate --------------------------------------------------------------
 
     def check(self, ctx: FilterContext) -> FilterVerdict:
@@ -170,6 +183,38 @@ class LivelinessFilter(Filter):
                     sparse_gap_fraction=round(sparse, 3),
                     flat_bar_fraction=round(flat, 3),
                 )
+
+        # DOES A MINUTE OF THIS MARKET EVEN COVER THE ROUND TRIP?
+        #
+        # The only absolute test here, and the gap the three above leave open.
+        # `min_activity_ratio` measures a market against its OWN normal, so one
+        # that is permanently dead has a dead baseline and scores about 1.0 —
+        # consistently untradeable reads as healthy. `max_flat_bar_fraction`
+        # counts only bars whose high equals their low exactly, and a tape that
+        # ticks once a minute prints a range of one or two points, which is not
+        # flat by that definition.
+        #
+        # Live: Qiagen quoted 36.6349 / 36.6550, a 2.01-cent spread, while its
+        # M1 bars were a few points tall. Entry and exit cost more than the
+        # market moved in a minute, so the spread decided the trade before the
+        # thesis had a say — and every gate in this file said the market was
+        # fine, because each of them was grading it against itself.
+        spreads = self.config.min_bar_range_in_spreads
+        spread = getattr(ctx.tick, "spread", 0.0) or 0.0
+        typical = self.typical_bar_range(series) if spreads > 0 and spread > 0 else None
+        if typical is not None and typical < spread * spreads:
+            return FilterVerdict.block(
+                self.name,
+                Reason.MARKET_TOO_QUIET,
+                f"a typical {self.timeframe.value} bar on {ctx.symbol} covers {typical:g} "
+                f"against a {spread:g} spread ({typical / spread:.2f} spreads, floor "
+                f"{spreads:.2f}); the round trip costs more than the market moves in a "
+                f"bar, so the spread decides the outcome rather than the setup",
+                activity_ratio=round(measured, 3),
+                typical_bar_range=round(typical, 8),
+                spread=round(spread, 8),
+                bar_range_in_spreads=round(typical / spread, 3),
+            )
 
         floor = self.config.min_activity_ratio
         if measured < floor:

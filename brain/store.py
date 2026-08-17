@@ -518,6 +518,8 @@ class Brain:
         ai: Mapping[str, Any] | None = None,
         headlines: Sequence[Mapping[str, Any]] = (),
         signals: Sequence[Any] = (),
+        features: Mapping[str, float] | None = None,
+        setup_family: str = "",
     ) -> int | None:
         """One row for every decision, taken or refused. Returns its id.
 
@@ -546,11 +548,11 @@ class Brain:
                 detail, taken, equity, conviction, playbook, asset_class, regime,
                 session, horizon, planning_timeframe, entry, stop_loss,
                 take_profit, filters, ai_verdict, ai_confidence, ai_reasoning,
-                ai_tokens, headlines, signals
+                ai_tokens, headlines, signals, features, setup_family
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb,
-                %s::jsonb
+                %s::jsonb, %s::jsonb, %s
             )
             ON CONFLICT (fingerprint) DO UPDATE SET detail = EXCLUDED.detail
             RETURNING id
@@ -583,6 +585,8 @@ class Brain:
                 verdict.get("tokens"),
                 json.dumps(list(headlines), default=str),
                 json.dumps(_signal_rows(signals), default=str),
+                json.dumps(dict(features or {}), default=str),
+                setup_family,
             ),
             fetch="one",
         )
@@ -769,6 +773,77 @@ class Brain:
                     "r_at_the_time": float(row[4] or 0.0),
                     "features": {str(k): float(v) for k, v in features.items()},
                     "stop_fraction": (float(row[6]) if row[6] is not None else None),
+                }
+            )
+        return examples
+
+    def entry_examples(self, limit: int = 2000) -> list[dict[str, Any]]:
+        """Past setups, graded on what the market actually did about them.
+
+        The entry matcher was reading `runtime/ai_reviews.jsonl`, where a setup's
+        usefulness is the paid reviewer's own `said_yes`. That is an archive of
+        OPINIONS, and it could refuse a setup the engine was sure about because a
+        model which is now switched off — and cannot revise itself — once
+        declined something similar.
+
+        These rows are graded on the result. A decision that became a trade is
+        useful when it closed positive; one a gate refused is useful when its
+        counterfactual, the same plan left to its own stop and target, came out
+        positive. Both are facts about this account rather than recollections of
+        an opinion about it.
+
+        Two LEFT JOINs and a COALESCE rather than two queries: a decision is in
+        exactly one of those states and the caller wants one list. Rows with no
+        resolved outcome are dropped — an unresolved setup has nothing to teach
+        yet — and so are rows with no feature vector, because matching an
+        all-zero shape against a live chart returns confident nonsense.
+        """
+        rows = self._run(
+            """
+            SELECT d.symbol, d.direction, d.setup_family, d.horizon, d.features,
+                   COALESCE(t.pnl_r, c.pnl_r) AS realised_r,
+                   d.ai_confidence, d.detail, d.reason
+            FROM decisions d
+            LEFT JOIN trades t
+                   ON t.decision_id = d.id AND t.closed_at IS NOT NULL
+            LEFT JOIN counterfactuals c
+                   ON c.account = d.account
+                  AND c.symbol = d.symbol
+                  AND c.direction = d.direction
+                  AND c.entry = d.entry
+            WHERE d.account = %s
+              AND d.features <> '{}'::JSONB
+              AND d.direction IS NOT NULL AND d.direction <> ''
+              AND COALESCE(t.pnl_r, c.pnl_r) IS NOT NULL
+            ORDER BY d.decided_at DESC
+            LIMIT %s
+            """,
+            (self.account, limit),
+            fetch="all",
+        )
+        if not rows:
+            return []
+        examples: list[dict[str, Any]] = []
+        for row in rows:
+            features = row[4]
+            if not isinstance(features, Mapping) or not features:
+                continue
+            examples.append(
+                {
+                    "symbol": str(row[0] or ""),
+                    "direction": str(row[1] or ""),
+                    "setup_family": str(row[2] or ""),
+                    "horizon": str(row[3] or ""),
+                    "features": {str(k): float(v) for k, v in features.items()},
+                    # The whole reason this method exists. Positive R means the
+                    # setup was worth taking whether or not anyone approved it,
+                    # so a refused setup that would have won now argues FOR the
+                    # next one like it instead of against it.
+                    "useful": float(row[5]) > 0.0,
+                    "realised_r": float(row[5]),
+                    "confidence": float(row[6] or 0.0),
+                    "thesis": str(row[7] or ""),
+                    "blocked_by": str(row[8] or ""),
                 }
             )
         return examples
@@ -1676,6 +1751,9 @@ class NullBrain:
         return []
 
     def supervision_examples(self, *_: Any, **__: Any) -> list[dict[str, Any]]:
+        return []
+
+    def entry_examples(self, *_: Any, **__: Any) -> list[dict[str, Any]]:
         return []
 
     def best_exit_available(self, *_: Any, **__: Any) -> tuple[float, float] | None:

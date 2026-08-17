@@ -4,6 +4,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from advisory.local_history import LocalHistoryAdvisor
 from advisory.providers import build_advisor, build_review_payload
@@ -141,19 +142,105 @@ def _config(**changes: object) -> AIConfig:
     return AIConfig(**values)
 
 
-def test_local_history_repeats_only_a_supported_historical_veto(tmp_path: Path) -> None:
+def test_a_stored_opinion_alone_may_not_throw_away_a_setup(tmp_path: Path) -> None:
+    """Five recorded refusals from the JSONL, and the trade still goes ahead.
+
+    `useful` in that file is the paid reviewer's own `said_yes`, so a veto built
+    on it discards a setup the engine judged sound because a model that is
+    switched off — and cannot revise itself — once declined something similar.
+    That is an echo, not evidence about this trade.
+
+    The objection is not thrown away either: it is stated in the thesis, so a
+    trade that later goes wrong shows plainly that the archive wanted to stop it
+    and was not allowed to on this evidence.
+    """
     history = tmp_path / "reviews.jsonl"
     _ledger(history, 5)
     adviser = LocalHistoryAdvisor(_config(), history)
 
     advice = adviser.review(_idea(), _context())
 
-    assert not advice.approved
-    assert advice.provider == "local_history"
-    assert advice.model == "jarvis_outcome_memory"
-    assert "5 comparable reviewer opinions" in advice.thesis
+    assert advice.approved
+    assert "would have refused this" in advice.thesis
+    assert "graded on a realised result" in advice.thesis
     assert "Jarvis independently formed" in advice.thesis
     assert not advice.usage
+
+
+def test_a_realised_record_may_throw_it_away(tmp_path: Path) -> None:
+    """The same neighbourhood, graded on what the market did instead of on what
+    a reviewer answered. That has earned a veto: it is this account's own result.
+    """
+    from advisory.local_history import entry_features
+
+    history = tmp_path / "reviews.jsonl"
+    features, family, horizon = entry_features(build_review_payload(_idea(), _context(), None))
+    graded = [
+        {
+            "symbol": "EURUSD.i",
+            "direction": "SHORT",
+            "setup_family": family,
+            "horizon": horizon,
+            # Each row a hair apart, because the merge de-duplicates on the
+            # feature vector: five identical shapes are one example, not five.
+            "features": {**features, "conviction": features["conviction"] + i * 0.001},
+            "useful": False,
+            "realised_r": -1.0,
+            "confidence": 0.5,
+            "thesis": "this shape lost money five times on this account",
+        }
+        for i in range(5)
+    ]
+    adviser = LocalHistoryAdvisor(
+        _config(), history, brain=SimpleNamespace(entry_examples=lambda *_, **__: graded)
+    )
+
+    advice = adviser.review(_idea(), _context())
+
+    assert not advice.approved
+    assert "graded on their realised result" in advice.thesis
+
+
+def test_a_refused_setup_that_would_have_won_argues_for_the_next_one(tmp_path: Path) -> None:
+    """The half a said_yes archive can never express. A gate refused these and
+    the counterfactual says they would have paid, so they must not veto."""
+    from advisory.local_history import entry_features
+
+    history = tmp_path / "reviews.jsonl"
+    features, family, horizon = entry_features(build_review_payload(_idea(), _context(), None))
+    graded = [
+        {
+            "symbol": "EURUSD.i",
+            "direction": "SHORT",
+            "setup_family": family,
+            "horizon": horizon,
+            "features": {**features, "conviction": features["conviction"] + i * 0.001},
+            "useful": True,
+            "realised_r": 1.4,
+            "confidence": 0.5,
+            "thesis": "refused at the time; the plan would have reached its target",
+        }
+        for i in range(5)
+    ]
+    adviser = LocalHistoryAdvisor(
+        _config(), history, brain=SimpleNamespace(entry_examples=lambda *_, **__: graded)
+    )
+
+    advice = adviser.review(_idea(), _context())
+
+    assert advice.approved
+
+
+def test_a_broken_brain_never_breaks_the_review(tmp_path: Path) -> None:
+    history = tmp_path / "reviews.jsonl"
+    _ledger(history, 5)
+
+    def _boom(*_: object, **__: object) -> list[dict[str, object]]:
+        raise RuntimeError("neon unreachable")
+
+    adviser = LocalHistoryAdvisor(_config(), history, brain=SimpleNamespace(entry_examples=_boom))
+
+    assert adviser.review(_idea(), _context()).approved
 
 
 def test_unknown_setup_passes_to_deterministic_jarvis(tmp_path: Path) -> None:

@@ -421,3 +421,85 @@ def test_the_wind_down_and_the_runway_floor_leave_no_gap() -> None:
         blocked = not gate.check(entry_ctx).passed or not session.check(entry_ctx).passed
         assert blocked, f"{moment:%H:%M} UTC lets an entry through"
         moment += timedelta(minutes=1)
+
+
+class TestADeadMarketIsNotJudgedAgainstItself:
+    """Qiagen: 36.6349 / 36.6550, and every gate in the file said it was fine.
+
+    A 2.01-cent spread while the M1 bars were a few points tall. Getting in and
+    out cost more than the market moved in a minute, so the spread decided the
+    outcome before the thesis had any say.
+
+    All three existing measures let it through for the same reason: they grade a
+    market against ITSELF. `min_activity_ratio` compares with the instrument's
+    own recent normal, so one that is permanently dead has a dead baseline and
+    scores about 1.0 — consistently untradeable reads as healthy.
+    `max_flat_bar_fraction` counts only bars whose high equals their low exactly,
+    and a tape that ticks once a minute has a range of one or two points, which
+    is not flat by that definition.
+
+    What was missing is the one comparison that comes from outside the chart.
+    """
+
+    @staticmethod
+    def _ctx(spec: InstrumentSpec, spread: float) -> FilterContext:
+        now = at(WEDNESDAY, 14, 30)
+        return FilterContext(
+            symbol=spec.symbol,
+            spec=spec,
+            now=now,
+            direction=Direction.LONG,
+            tick=Tick(symbol=spec.symbol, time=now, bid=1.08500, ask=1.08500 + spread),
+        )
+
+    def test_a_bar_that_does_not_cover_the_spread_is_refused(self, spec: InstrumentSpec) -> None:
+        """The live shape: a steady tape, and every bar smaller than the spread."""
+        steady = [0.0005] * 200
+        gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(bars(steady)))
+
+        verdict = gate.check(self._ctx(spec, spread=0.0020))
+
+        assert not verdict.passed
+        assert verdict.reason is Reason.MARKET_TOO_QUIET
+        assert verdict.data["bar_range_in_spreads"] == pytest.approx(0.25, abs=0.02)
+
+    def test_the_old_measures_would_have_called_it_healthy(self, spec: InstrumentSpec) -> None:
+        """Named explicitly, because this is why it needed a new measure rather
+        than a tighter threshold on an existing one."""
+        steady = [0.0005] * 200
+        gate = LivelinessFilter(
+            LivelinessFilterConfig(min_bar_range_in_spreads=0.0),
+            provider_for(bars(steady)),
+        )
+
+        verdict = gate.check(self._ctx(spec, spread=0.0020))
+
+        assert verdict.passed, "a permanently dead market scores 1.0 against itself"
+        assert verdict.data["activity_ratio"] == pytest.approx(1.0, abs=0.01)
+
+    def test_a_market_that_moves_more_than_it_costs_still_passes(
+        self, spec: InstrumentSpec
+    ) -> None:
+        normal = [0.0010] * 200
+        gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(bars(normal)))
+
+        assert gate.check(self._ctx(spec, spread=0.00012)).passed
+
+    def test_an_unknown_spread_does_not_block(self, spec: InstrumentSpec) -> None:
+        """No quote is a different problem, and the freshness gate owns it. This
+        test exists so a missing tick can never silently blank the catalogue."""
+        steady = [0.0005] * 200
+        gate = LivelinessFilter(LivelinessFilterConfig(), provider_for(bars(steady)))
+        now = at(WEDNESDAY, 14, 30)
+        blind = FilterContext(symbol=spec.symbol, spec=spec, now=now, direction=Direction.LONG)
+
+        assert gate.check(blind).passed
+
+    def test_the_overlay_turns_it_on(self) -> None:
+        from config.loader import load_settings
+
+        liveliness = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).filters.liveliness
+
+        assert liveliness.min_bar_range_in_spreads == pytest.approx(1.0)
