@@ -2079,19 +2079,36 @@ class JarvisRunner:
             required_pct=min(100.0, verdict.required_pct + config.target_reach_margin_pct),
         )
 
-    def _conviction_stake(self, state, advice: Advice) -> tuple[float, str]:
-        """The risk percentage this approval has earned, and why.
+    def _conviction_stake(self, state, idea: TradeIdea, advice: Advice) -> tuple[float, str]:
+        """The risk percentage this setup has earned, and why.
 
-        Two numbers decide it and they do different jobs. The reviewer's
-        confidence sets what the setup is worth; the total-exposure cap decides
-        whether the book can carry it. The second can only reduce the first.
+        Two numbers decide it and they do different jobs. The ENGINE's own
+        confidence in this setup sets what it is worth; the total-exposure cap
+        decides whether the book can carry it. The second can only reduce the
+        first.
 
-        Deliberately NOT the engine's own conviction. That number is measured
-        on this account twice over not to predict the outcome — the "20+ over
-        the bar" bucket was the worst of them all at -4.92R over 23 trades, and
-        across 84 paid reviews the 40-45 band produced nothing useful while
-        20-25 produced 33%. Staking on it would put the most money on the
-        trades the record says are worst.
+        The engine's number and not the adviser's, and that distinction stopped
+        being cosmetic once the paid reviewer was switched off. With
+        `ai.provider: local_history` the adviser is the nearest-neighbour
+        archive, and its confidence means two different things depending on how
+        much history it happens to hold:
+
+          under `min_neighbors`  it passes the engine's confidence straight
+                                 through, so the stake was the engine's anyway
+          at or over it          it returns `1 - learned_veto_rate`, which is a
+                                 statement about how often COMPARABLE PAST
+                                 setups turned out useful
+
+        The second is a real measurement and it is not the one being asked for
+        here. Sizing is "how good is the setup in front of me", and reading it
+        off an archive's hit rate means the stake stops responding to this chart
+        the moment enough history exists — silently, with no config change and
+        nothing in the log to show the input had been swapped.
+
+        `advice` is still what decides whether the trade opens at all; it just
+        no longer decides how much. Which of the two spoke is named in the
+        reason string, so the journal records the input rather than only the
+        output.
 
         A stake of zero means do not open this at all. The cap trims down to
         the ordinary stake and no further: a trade squeezed into whatever
@@ -2101,20 +2118,24 @@ class JarvisRunner:
         a reason naming the account size rather than the full book.
         """
         config = self.settings.risk.conviction_risk
-        wanted = config.stake_for(advice.confidence)
+        conviction = idea.confidence
+        wanted = config.stake_for(conviction)
         allowed = self.risk.room_for_more_risk(state, wanted, self.broker.spec)
         if allowed >= wanted:
-            return wanted, f"conviction {advice.confidence:.2f} stakes {wanted:.1f}%"
+            return wanted, (
+                f"engine conviction {conviction:.2f} stakes {wanted:.1f}% "
+                f"(adviser said {advice.confidence:.2f} and decides only whether to open)"
+            )
         used = self.risk.open_risk_pct(state, self.broker.spec)
         if allowed + 1e-9 < config.floor_pct:
             return 0.0, (
-                f"conviction {advice.confidence:.2f} earned {wanted:.1f}% but the book "
+                f"engine conviction {conviction:.2f} earned {wanted:.1f}% but the book "
                 f"already carries {used:.1f}% of the "
                 f"{self.settings.risk.max_total_open_risk_pct:.1f}% ceiling, leaving "
                 f"{allowed:.1f}% — under the {config.floor_pct:.1f}% ordinary stake"
             )
         return allowed, (
-            f"conviction {advice.confidence:.2f} earned {wanted:.1f}% but the book "
+            f"engine conviction {conviction:.2f} earned {wanted:.1f}% but the book "
             f"already carries {used:.1f}% of the "
             f"{self.settings.risk.max_total_open_risk_pct:.1f}% ceiling, so this "
             f"takes {allowed:.1f}%"
@@ -2536,7 +2557,10 @@ class JarvisRunner:
         # closed M1 event is allowed past the broad symbol/direction cooldown,
         # but it is not a new paid question when entry and stop are still the
         # same proposal within the recorded ATR tolerance.
-        remembered = self._remembered_veto(idea)
+        # ...and only while asking again would cost something. A free adviser
+        # re-reads the live chart for nothing, so replaying a stored refusal
+        # buys no saving and throws away a trade. See `_reviews_cost_money`.
+        remembered = self._remembered_veto(idea) if self._reviews_cost_money() else None
         if remembered is not None:
             self._record_skip(
                 cycle_id,
@@ -3006,6 +3030,8 @@ class JarvisRunner:
         pattern = (
             self.veto_patterns.established(symbol, idea.direction.name, self.clock.now())
             if self.operation is not OperationMode.MONITOR and self._broad_veto_memory_applies(idea)
+            # "Only ever suppresses a paid call" — so only when there is one.
+            and self._reviews_cost_money()
             else None
         )
         if pattern is not None and self._cached_review(idea, context) is None:
@@ -3037,7 +3063,8 @@ class JarvisRunner:
         # Keyed on symbol and direction alone and deliberately short, so a real
         # intraday turn is not missed. An approval clears it, like every other
         # memory here. A replayed verdict costs nothing and is not rationed.
-        cooling = self._veto_cooldown(idea)
+        # "Not buying the same question again" only bites when it is bought.
+        cooling = self._veto_cooldown(idea) if self._reviews_cost_money() else None
         if cooling is not None and self._cached_review(idea, context) is None:
             waited, remaining = cooling
             self._record_skip(
@@ -4764,7 +4791,7 @@ class JarvisRunner:
         # ever use the ordinary stake — which is also the right thing for it to
         # do: that pass exists to find out whether the trade is expressible at
         # all, not to decide how large it should be.
-        stake, why_stake = self._conviction_stake(fresh_state, advice)
+        stake, why_stake = self._conviction_stake(fresh_state, original, advice)
         if stake <= 0:
             return fail(
                 Reason.MAX_POSITIONS_REACHED,
@@ -5449,9 +5476,31 @@ class JarvisRunner:
         # happen is the spend report charging for them a second time.
         return replace(cached, replayed=True)
 
+    def _reviews_cost_money(self) -> bool:
+        """Whether asking the adviser again actually costs anything.
+
+        Three separate gates refuse a setup purely to avoid buying the same
+        opinion twice: the exact-proposal veto memory, the broader veto pattern,
+        and the per-pair cooldown. Each says so in its own comment — "only ever
+        suppresses a paid call", "not buying the same question again for another
+        N min", "a replayed verdict costs nothing and is not rationed".
+
+        With `ai.provider: local_history` the adviser is a free
+        nearest-neighbour lookup, so all three were saving nothing and refusing
+        trades for it. Worse, the memories they read were written by the PAID
+        reviewer while it was still switched on, so setups were being blocked by
+        recorded opinions of a model that is no longer consulted and can no
+        longer revise them. The operator saw precisely that and named it:
+        blocked by Claude, after Claude.
+
+        `_review_budget_left` below already draws this distinction. These three
+        gates were simply never brought along.
+        """
+        return bool(getattr(self.advisor, "uses_paid_api", True))
+
     def _review_budget_left(self) -> int | None:
         """Paid reviews still allowed this cycle. None means no budget is set."""
-        if not getattr(self.advisor, "uses_paid_api", True):
+        if not self._reviews_cost_money():
             return None
         budget = self.settings.ai.max_reviews_per_cycle
         if budget <= 0:
