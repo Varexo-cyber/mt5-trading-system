@@ -106,7 +106,20 @@ instruments:
   # met een spread van een fractie hiervan en een boek dat vrijwel dag en nacht
   # quoteert. UK100 leverde gisteren de enige schone trade van de dag op
   # (+1,45R, BROKER_TP, 96% van zijn top gehouden).
-  asset_classes: [forex, metal, index, commodity, crypto]
+  # `stock` staat er weer op, maar nu bewaakt door een MEETING in plaats van
+  # door een verbod. De eigenaar wil alles scannen behalve markten met gaatjes
+  # of zonder beweging, en dat is precies wat `max_gap_atr` en
+  # `min_bar_range_in_spreads` nu per instrument beoordelen.
+  #
+  # Waarom een meting beter is dan de klasse: het echte mankement van ENR was
+  # niet dat het een aandeel is, maar dat het 2,61R DOOR een stop opende die per
+  # definitie 1,00R kost. Een aandeel dat niet springt houdt zijn stop en mag
+  # meedoen; een valutapaar dat wel zou gaan springen wordt op hetzelfde bewijs
+  # geweigerd. De klasse was een proxy, dit is het ding zelf.
+  #
+  # Wat er dan nog overeind staat voor aandelen: de avonduitfasering om 15:30
+  # UTC, `INSUFFICIENT_RUNWAY` op datzelfde venster, en de kostenpoorten.
+  asset_classes: [forex, metal, index, commodity, stock, crypto]
 
   # Or watch a single instrument. Leave empty for the list above; set e.g.
   # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded
@@ -737,6 +750,34 @@ filters:
     # niet door. Dit geeft vooral rustige crosses en dunne maar open markten
     # wat meer ruimte zonder de spreadcontrole uit te schakelen.
     max_spread_multiple: 2.5
+
+    # DE ABSOLUTE BPS-GRENS WOOG 151 VAN 231 SYMBOLEN WEG, VOOR DE ANALYSE.
+    #
+    # `231 gescand, 151 afgewezen op spread, 72 eligible` - dat is tweederde van
+    # je catalogus weg op een meting die het verkeerde ding meet.
+    #
+    # Bps is spread als deel van de PRIJS. Wat een trade breekt is spread als
+    # deel van je RISICO, en die twee hebben niks met elkaar te maken: 5 pips op
+    # een stop van 10 pips is fataal, 5 pips op een stop van 200 pips is ruis.
+    # Deze poort kan die twee niet onderscheiden en gooide dus goede setups weg
+    # om dezelfde reden waarop hij slechte weggooide.
+    #
+    # Het JUISTE getal bestaat al en staat een stap verder: `max_cost_share_of_
+    # risk` op 0,35 - spread plus commissie tegen het eigen risico van de trade,
+    # per order, met `SL_TOO_TIGHT_FOR_COSTS` als weigering. Dat is strikt beter
+    # dan een percentage van de prijs, en het draaide de hele tijd al.
+    #
+    # Dus gaat deze grens van "kies de kandidaten voor" naar "houd het absurde
+    # tegen". Ruimer, niet uit: een spread van 30 bps op forex is geen markt en
+    # blijft geweigerd. Wat erdoor komt wordt daarna alsnog per trade tegen zijn
+    # eigen stop afgerekend, en dat is waar het over hoort te gaan.
+    max_spread_bps:
+      forex: 8.0
+      crypto: 20.0
+      stock: 45.0
+      index: 25.0
+      metal: 25.0
+      commodity: 35.0
 
   # Ongepland nieuws. De kalender hiernaast weet wat eraan komt; deze laag weet
   # wat er NU gebeurt - de centrale bank die tussen vergaderingen door beweegt,

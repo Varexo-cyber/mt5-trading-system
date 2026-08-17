@@ -885,6 +885,27 @@ class LivelinessFilterConfig(Base):
     #: are valid occasionally; a tape made mostly of them is not executable
     #: evidence, regardless of how attractive a higher-timeframe trend looks.
     max_flat_bar_fraction: float = Field(default=0.60, ge=0.0, le=1.0)
+    #: How far this instrument is allowed to JUMP between bars, in ATR.
+    #:
+    #: A stop is a price level, and a market that opens somewhere other than
+    #: where it closed does not fill it there. Every rule in this system is
+    #: written in R, and R assumes the stop binds; an instrument that gaps
+    #: routinely breaks that assumption several times a week and no amount of
+    #: management can repair it after the fact.
+    #:
+    #: ENR is the case: -3.61R on an exit recorded as BROKER_SL. A stop costs
+    #: 1.00R by definition, so 2.61R went straight through it. The exchange was
+    #: shut and the share reopened elsewhere.
+    #:
+    #: This is what lets shares and other exchange products back into the scan
+    #: on their behaviour rather than on their name. A market that does not jump
+    #: keeps its stop and is welcome; one that jumps is refused whatever class it
+    #: belongs to, and a forex pair that started gapping would be refused too.
+    #:
+    #: 99th percentile rather than the maximum: one flash print should not ban an
+    #: instrument for a week, but a market that gaps every session has a 99th
+    #: percentile made of those gaps. Zero disables the test.
+    max_gap_atr: float = Field(default=1.0, ge=0.0, le=20.0)
     #: How much a typical bar must move, measured in spreads. THE ONLY ABSOLUTE
     #: TEST IN THIS FILTER, and the gap the other three left open.
     #:
