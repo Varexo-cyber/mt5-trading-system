@@ -385,7 +385,35 @@ def assess_position(
     elif verdict == "deteriorating":
         if r_now >= secure_at_r:
             action = "secure"
-        elif r_now >= tighten_at_r:
+        elif abs(r_now) >= tighten_at_r:
+            # Was `elif r_now >= tighten_at_r`, and that floor is why a losing
+            # trade had nothing between its entry and its stop.
+            #
+            # A deteriorating read on a position already under water fell
+            # through to `hold`. Not "hold because the thesis survives" — hold
+            # because the only rung below `secure` demanded 0.2R of profit
+            # first. So the reading that says "this is going the wrong way" was
+            # produced, logged, and could act on every trade EXCEPT the ones it
+            # was describing.
+            #
+            # Three of six trades on 15 August ran from entry to the full stop
+            # with no rule able to touch them: CHFJPY peaked at 0.12R, UK100 at
+            # 0.00R, ENR at 0.47R. Every protective rule on the account arms at
+            # 0.5R or higher, and this one, the only one that could have spoken
+            # earlier, required profit it never had.
+            #
+            # Tightening is the correct response and it always was: it costs
+            # nothing when the read is wrong — the trade continues, with less
+            # at stake — and it takes a smaller loss when the read is right.
+            # The level itself belongs to the caller, which knows the original
+            # stop and the live price; what is decided here is only that a
+            # deteriorating trade has earned a tighter stop whether it is up or
+            # down.
+            #
+            # `abs` rather than a dropped floor, so the knob keeps meaning
+            # something: a trade sitting within 0.2R of its entry has not moved
+            # enough for a stop move to be anything but noise, in either
+            # direction.
             action = "tighten"
 
     # One thing wrong is noise; two independent things agreeing is evidence.
