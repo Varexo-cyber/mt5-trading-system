@@ -45,8 +45,15 @@ def yen_position(direction: Direction = Direction.SHORT) -> Position:
     )
 
 
-def squeeze(spread_pips: float, *, r_now: float = 0.05, direction=Direction.SHORT, **overrides):  # type: ignore[no-untyped-def]
-    """Run the rule at a given spread and return the event, if any."""
+def squeeze(spread_pips: float, *, r_now: float = -0.05, direction=Direction.SHORT, **overrides):  # type: ignore[no-untyped-def]
+    """Run the rule at a given spread and return the event, if any.
+
+    `r_now` defaults just below break-even, which is the situation the rule
+    describes: the live NZDJPY sell had bid 92.845 against a stop at 92.904 and
+    was leaning on it. The squeeze no longer reaches into profit — crossing a
+    blown-out spread there pays a certain cost to avoid a possible one — so a
+    fixture in profit would be testing a case the rule declines by design.
+    """
     manager = manager_for(BrokerStub(), JournalStub(), **overrides)
     bid = NZD_BID
     tick = Tick(symbol="NZDJPY", time=NOW, bid=bid, ask=bid + spread_pips * 0.01)
@@ -82,7 +89,7 @@ def test_the_side_the_stop_triggers_on_is_the_one_read() -> None:
     wide = Tick(symbol="NZDJPY", time=NOW, bid=NZD_BID, ask=NZD_BID + 0.04)
     manager = manager_for(BrokerStub(), JournalStub())
     # Ask is 4 pips from the bid and within 2 pips of the stop.
-    assert manager._spread_squeeze_exit(yen_position(), wide, 0.05) is not None
+    assert manager._spread_squeeze_exit(yen_position(), wide, -0.05) is not None
 
 
 def test_a_long_is_measured_on_the_bid() -> None:
@@ -103,7 +110,7 @@ def test_a_long_is_measured_on_the_bid() -> None:
     )
     # Bid 1.09975, stop 1.0994: 3.5 points of room against a 4-point spread.
     tick = Tick(symbol="EURUSD", time=NOW, bid=1.09975, ask=1.09975 + 0.00040)
-    assert manager._spread_squeeze_exit(long_position, tick, 0.05) is not None
+    assert manager._spread_squeeze_exit(long_position, tick, -0.05) is not None
 
 
 def test_a_trade_already_most_of_the_way_to_its_stop_is_left_to_the_stop() -> None:
@@ -151,7 +158,7 @@ def test_the_reason_carries_the_numbers() -> None:
     event = squeeze(4.0)
     assert event is not None
     assert "%" in event.detail and "stop" in event.detail
-    assert event.r_at_action == pytest.approx(0.05)
+    assert event.r_at_action == pytest.approx(-0.05)
 
 
 def test_the_configured_share_is_what_decides() -> None:
@@ -160,3 +167,42 @@ def test_the_configured_share_is_what_decides() -> None:
 
 
 del ENTRY, STOP  # imported only to keep the shared fixtures importable
+
+
+class TestItDoesNotCashOutAWinner:
+    """The rule was paying the very cost it exists to avoid.
+
+    Closing at market during a blown-out quote crosses that spread with
+    certainty. Being stopped by it costs the same spread only IF price actually
+    travels to the stop. On a losing trade already leaning on its stop that swap
+    is worth making — a probable cost for a certain, smaller one, which is the
+    NZDJPY case the rule was written for. On a winner with room to spare it is
+    the reverse: a certain cost paid to avoid a possible one, on a position that
+    is working.
+
+    The account's own replay says exactly that. SPREAD_SQUEEZE closed eight of
+    twenty-two trades on 17 August and every one scored a NEGATIVE lift against
+    its own untouched stop and target: +0.38R banked where leaving it alone
+    returned +1.02R. The blowout passed, as blowouts do, and the trade carried
+    on without us.
+    """
+
+    def test_a_position_in_profit_is_left_to_its_stop(self) -> None:
+        assert squeeze(3.0, r_now=0.40) is None
+
+    def test_a_position_leaning_on_its_stop_is_still_rescued(self) -> None:
+        """The half that earns its keep, and the reason this is a ceiling rather
+        than a removal."""
+        event = squeeze(3.0, r_now=-0.30)
+
+        assert event is not None
+        assert event.action == "SPREAD_SQUEEZE"
+
+    def test_break_even_is_the_boundary(self) -> None:
+        assert squeeze(3.0, r_now=0.0) is not None
+        assert squeeze(3.0, r_now=0.01) is None
+
+    def test_the_old_reach_into_profit_can_be_restored(self) -> None:
+        """One config away, so the change is reversible on evidence rather than
+        on argument."""
+        assert squeeze(3.0, r_now=0.40, spread_squeeze_max_r=5.0) is not None

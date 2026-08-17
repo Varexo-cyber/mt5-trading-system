@@ -1048,6 +1048,15 @@ class PositionManager:
             return None
         if r_now < config.spread_squeeze_min_r:
             return None
+        # And not on a winner with room to spare, because there the trade being
+        # made is the wrong way round. Crossing a blown-out spread at market
+        # costs it with certainty; being stopped by it costs the same spread
+        # only if price actually travels to the stop. That swap is worth making
+        # on a position already leaning on its stop and not on one that is
+        # working — and the replay agrees, scoring every one of the eight
+        # SPREAD_SQUEEZE exits of 17 August negative against leaving it alone.
+        if r_now > config.spread_squeeze_max_r:
+            return None
         result = self.broker.close_position(position)
         if not result.ok:
             return None
