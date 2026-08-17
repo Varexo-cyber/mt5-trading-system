@@ -90,15 +90,40 @@ class EconomicEvent:
         return f"{self.when:%Y-%m-%d %H:%M} UTC {self.currency} {self.impact.name} — {self.title}"
 
 
+#: Bases that are priced against the dollar wherever they trade. Gold quoted in
+#: yen is still gold: the yen leg is an exchange-rate wrapper around a dollar
+#: market, and the events that move it are American.
+_DOLLAR_DENOMINATED_BASES = frozenset({"XAU", "XAG", "XPT", "XPD", "BTC", "ETH", "LTC", "XRP"})
+
+
 def symbol_currencies(currency_base: str, currency_profit: str) -> frozenset[str]:
     """Currencies whose news moves this instrument.
 
-    Metals and crypto carry a pseudo-currency base (XAU, BTC) that no calendar
-    publishes events for. It is kept in the set anyway rather than filtered
-    out: it simply never matches, and dropping it would mean silently deciding
-    which side of a pair counts.
+    THE ONE THAT MOVES GOLD IS NOT IN THE PAIR. This used to return exactly the
+    two legs, and said so itself: "metals and crypto carry a pseudo-currency
+    base that no calendar publishes events for... it simply never matches". That
+    sentence describes a hole rather than a design. On XAUAUD the blackout was
+    watching Australia while the instrument was waiting on American inflation.
+
+    A live XAUAUD short is the case. It was working, a red-folder release moved
+    gold, and the stop was taken for -1.01R and EUR 6.82 on a EUR 172 account —
+    the largest single loss of the day. The calendar had the event. Nothing
+    asked it, because USD is neither leg of XAUAUD. The same trade on XAUJPY
+    reported its next news as 3,509 minutes away: fifty-eight hours of clear
+    sky, counted over Japanese releases only.
+
+    So a dollar-denominated base adds USD. Gold in yen is gold; the yen leg
+    prices the wrapper, and CPI, payrolls and the FOMC price the metal.
+
+    The base itself stays in the set. It still never matches, and removing it
+    would be deciding which side of a pair counts on a day when a calendar
+    finally does publish something for it.
     """
-    return frozenset({currency_base.upper(), currency_profit.upper()})
+    base, quote = currency_base.upper(), currency_profit.upper()
+    currencies = {base, quote}
+    if base in _DOLLAR_DENOMINATED_BASES:
+        currencies.add("USD")
+    return frozenset(currencies)
 
 
 def deduplicate(events: list[EconomicEvent]) -> list[EconomicEvent]:
