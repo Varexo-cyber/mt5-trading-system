@@ -72,8 +72,18 @@ class TestShippedConfig:
             "crypto",
         )
         assert settings.instruments.symbols_only == ()
-        assert settings.scanner.batch_size is None
-        assert not settings.scanner.priority_every_cycle
+        # A cycle has to be able to FINISH. With shares back in the catalogue
+        # an uncapped pass is 800+ symbols, and five minutes after launch the
+        # log carried only "slow MT5 calls" and "symbol held out of deep
+        # analysis" — no cycle line at all. Scanning was happening; nothing was
+        # ever completed, and an M1 entry three minutes old does not exist.
+        #
+        # 240 a cycle with the liquid core recurring is the design that
+        # `instruments.asset_classes` already described and that was never
+        # switched on: forex, crypto and the priority symbols get fresh data
+        # every pass, the rest of the catalogue rotates behind them.
+        assert settings.scanner.batch_size == 240
+        assert settings.scanner.priority_every_cycle
         assert settings.scanner.deep_candidates >= 847
         assert settings.instruments.ignored_symbols == ("XAUUSD",)
         assert settings.instruments.is_ignored("XAUUSD")
@@ -577,3 +587,54 @@ def test_an_unknown_asset_class_is_rejected_at_load(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigError, match="stonks"):
         load_settings(overlay=overlay, env_overrides=False)
+
+
+class TestACycleCanFinish:
+    """Five minutes after launch there was no cycle line in the log at all.
+
+    Only `slow MT5 calls` and `symbol held out of deep analysis`. Scanning was
+    happening; nothing was ever completed. With shares back in the catalogue an
+    uncapped pass is 800+ symbols across seven timeframes on one vCPU, and an
+    M1 or M5 entry three minutes old is not an entry any more.
+
+    This is also where "more opportunities" actually comes from, rather than from
+    a looser gate: a cycle that finishes produces more usable setups per minute
+    than one that stalls halfway, however many symbols it touches.
+    """
+
+    def test_the_batch_is_small_enough_to_complete(self) -> None:
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.scanner.batch_size is not None
+        assert settings.scanner.batch_size <= 300
+
+    def test_the_liquid_core_is_seen_every_cycle(self) -> None:
+        """Rotation alone would let EURUSD go three cycles without fresh data."""
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.scanner.priority_every_cycle
+        assert "forex" in settings.scanner.priority_asset_classes
+
+    def test_the_whole_catalogue_is_still_reachable(self) -> None:
+        """Batching narrows a cycle, not the universe. Nothing is excluded — it
+        rotates through, which is the difference between this and a blocklist."""
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.instruments.symbols_only == ()
+        assert settings.scanner.deep_candidates >= 847
+
+    def test_the_priority_recurrence_needs_a_batch_to_mean_anything(self) -> None:
+        """Documented in `scanner/universe.py`: with no batch the whole universe
+        is inspected anyway, so the recurring tier is a no-op. Pinned so the two
+        settings are never split apart by a later edit."""
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+        assert not (settings.scanner.priority_every_cycle and settings.scanner.batch_size is None)

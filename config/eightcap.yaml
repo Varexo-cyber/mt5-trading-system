@@ -178,12 +178,27 @@ data:
   max_gap_fraction: 0.05
 
 scanner:
-  # Inspect the complete current broker catalogue every cycle. XAUUSD is
-  # removed before this count by instruments.ignored_symbols. A measured full
-  # pass takes roughly three minutes on the VPS; that is the unavoidable cost
-  # of requesting every market rather than a fresh rotating subset.
-  batch_size: null
-  priority_every_cycle: false
+  # EEN CYCLUS MOET AF KUNNEN, ANDERS BESTAAT ER GEEN CYCLUS.
+  #
+  # `batch_size: null` betekent "de hele catalogus in één cyclus". Met aandelen
+  # eruit was dat 231 symbolen en 59 seconden. Met aandelen er weer bij is het
+  # 800+ en dan komt de cyclusregel simpelweg niet meer in het log: vijf minuten
+  # na de launch stond er alleen `slow MT5 calls` en `symbol held out of deep
+  # analysis`. Er werd wel gescand, maar niks werd ooit afgemaakt, en een M1- of
+  # M5-instap die drie minuten oud is bestaat niet meer.
+  #
+  # 240 per cyclus, met de liquide kern ELKE cyclus vooraan. Dat is precies het
+  # ontwerp dat `instruments.asset_classes` hierboven al beschrijft en dat nooit
+  # aan is gezet: forex, crypto en de priority-symbolen worden elke keer verse
+  # data, en de rest van de catalogus roteert erachter langs in drie of vier
+  # cycli. Zo zie je alles binnen een paar minuten zonder dat een van die
+  # minuten een entry oud maakt.
+  #
+  # Dit is waar de "meer kansen" vandaan komt en niet uit een lossere poort: een
+  # cyclus die afmaakt levert per minuut meer bruikbare setups dan een cyclus
+  # die halverwege blijft hangen, hoeveel symbolen hij ook aanraakt.
+  batch_size: 240
+  priority_every_cycle: true
 
   # Every market that survives the cheap scan gets the full multi-timeframe
   # analysis, not a top-20 slice of it. The cheap scan already threw out
