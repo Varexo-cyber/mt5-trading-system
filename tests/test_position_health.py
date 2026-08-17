@@ -172,15 +172,33 @@ def deteriorating_bars() -> tuple[pd.DataFrame, pd.DataFrame]:
     return fast, structure
 
 
-def test_a_young_trade_is_never_judged() -> None:
+def test_a_young_trade_is_spared_the_drift_readers() -> None:
     """Entry noise — the first tick against you, the spread crossing — would
-    otherwise read as a momentum turn and close good trades instantly."""
+    otherwise read as a momentum turn and close good trades instantly.
+
+    Scoped to the drift family, which is the only one that has this problem: a
+    slope or a run computed across the entry tick. A broken structure is broken
+    whenever it breaks, and the age floor used to silence that too.
+    """
     fast, structure = deteriorating_bars()
     health = assess_position(
         sign=LONG, r_now=0.0, age_minutes=MIN_AGE_MINUTES - 0.1, fast=fast, structure=structure
     )
-    assert health.action == "hold"
-    assert health.verdict == "healthy"
+
+    assert "momentum_turned" not in _names(health)
+    assert "adverse_run" not in _names(health)
+
+
+def test_but_a_broken_structure_is_heard_immediately() -> None:
+    """ "Even inside two minutes, if it is going the wrong way it has to be able
+    to get out" — and the clock was the wrong thing to gate that on."""
+    fast, structure = deteriorating_bars()
+    health = assess_position(
+        sign=LONG, r_now=-0.6, age_minutes=MIN_AGE_MINUTES - 0.1, fast=fast, structure=structure
+    )
+
+    assert "structure_broken" in _names(health)
+    assert health.action == "exit"
 
 
 def test_a_quiet_market_reads_as_healthy() -> None:
@@ -449,13 +467,22 @@ class TestBeingDownIsNeverAReasonToClose:
         assert HealthWeights().trajectory < DETERIORATING_AT
         assert HealthWeights().trajectory < BROKEN_AT
 
-    def test_it_cannot_close_a_trade_with_any_partner_either(self) -> None:
-        """The structural claim, checked rather than asserted in a comment."""
+    def test_only_a_broken_structure_lets_it_reach_an_exit(self) -> None:
+        """The one pairing that should close a trade at any age: the swing that
+        justified the position has broken AND the market has already taken real
+        money. Neither is a clock reading and neither waits for a bar to form,
+        so waiting adds nothing except the loss.
+
+        The noisy pairings stay short of it — being down while the tape drifts,
+        or while the quote widens, is a stop tightening and not an exit.
+        """
         from analysis.position_health import BROKEN_AT, HealthWeights
 
         weights = HealthWeights()
-        for partner in (weights.drift, weights.structure, weights.liquidity):
-            assert weights.trajectory + partner < BROKEN_AT
+
+        assert weights.trajectory + weights.structure >= BROKEN_AT
+        assert weights.trajectory + weights.drift < BROKEN_AT
+        assert weights.trajectory + weights.liquidity < BROKEN_AT
 
     def test_a_trade_inside_its_own_noise_says_nothing(self) -> None:
         from analysis.position_health import adverse_excursion
