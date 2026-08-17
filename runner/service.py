@@ -30,7 +30,7 @@ from advisory import (
     build_supervision_payload,
     read_trade_reflections,
 )
-from advisory.local_history import supervision_features
+from advisory.local_history import entry_features, supervision_features
 from advisory.scout import ScoutThrottle
 from advisory.veto_patterns import readable as veto_readable
 from analysis import (
@@ -3141,6 +3141,12 @@ class JarvisRunner:
                 ),
             }
         request_payload = build_review_payload(idea, context, proposal, briefing)
+        # The matcher's view of this setup, worked out once here and written to
+        # Neon on whichever row this becomes. It is the only thing that makes a
+        # decision row comparable to a live chart later; without it the entry
+        # adviser has no Postgres evidence at all and falls back to a JSONL file
+        # on this machine, graded on whether a switched-off reviewer said yes.
+        shape_features, shape_family, _shape_horizon = entry_features(request_payload)
         try:
             self.ai_ledger.append(
                 "pretrade_request",
@@ -3282,6 +3288,8 @@ class JarvisRunner:
                 signals=list(idea.signals),
                 extra=decision_context,
                 total_score=idea.score,
+                features=shape_features,
+                setup_family=shape_family,
             )
             self._record_review_snapshots(cycle_pk, symbol, request_payload)
             self._record_counterfactual(cycle_pk, idea, Reason.AI_VETO)
@@ -3437,6 +3445,11 @@ class JarvisRunner:
             stop_loss=sizing.sl,
             take_profit=sizing.tp,
             filters=dict(decision_context),
+            # The shape the entry matcher compares on. Without it this row is
+            # invisible to the adviser, which then falls back to a JSONL file
+            # graded on whether a switched-off reviewer said yes.
+            features=shape_features,
+            setup_family=shape_family,
             ai={
                 "verdict": "approved",
                 "confidence": advice.confidence,
@@ -3510,6 +3523,8 @@ class JarvisRunner:
         signals=None,  # type: ignore[no-untyped-def]
         extra=None,  # type: ignore[no-untyped-def]
         total_score: float | None = None,
+        features: dict[str, float] | None = None,
+        setup_family: str = "",
     ) -> int:
         # The score belongs on the skip row, not only on the trade row. Without
         # it "why is nothing trading" cannot be answered from the journal: the
@@ -3551,6 +3566,12 @@ class JarvisRunner:
             filters=dict(extra or {}),
             signals=list(signals or ()),
             headlines=self._headlines_for(symbol),
+            # Only the reviewed refusals carry one. A setup stopped at the spread
+            # gate has no proposal shape to compare, and the ones that DO reach a
+            # review are exactly the rows a counterfactual later grades — which
+            # is what turns "we refused this" into "we were wrong to".
+            features=features,
+            setup_family=setup_family,
         )
         return cycle_pk
 

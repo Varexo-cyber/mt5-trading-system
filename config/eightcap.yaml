@@ -664,6 +664,24 @@ ai:
 # capital backstop. These comments describe the effective settings below and
 # must change with them.
 filters:
+  liveliness:
+    # DODE MARKTEN. Qiagen (QIA) stond op 36,6349 / 36,6550 - 2,01 cent spread -
+    # met M1-bars van een paar punten hoog. Erin en eruit kostte meer dan de
+    # markt in een minuut bewoog.
+    #
+    # Alle drie de bestaande metingen lieten dat door, en om dezelfde reden: ze
+    # meten een markt tegen ZICHZELF. `min_activity_ratio` vergelijkt met het
+    # eigen recente normaal, dus een markt die altijd dood is heeft een dood
+    # normaal en scoort ~1,0. `max_flat_bar_fraction` telt alleen bars waarvan
+    # high exact gelijk is aan low, en een tape die eens per minuut tikt heeft
+    # een range van een of twee punten - niet plat volgens die definitie.
+    #
+    # Dit is de enige absolute test: beweegt een doorsnee bar minstens net zoveel
+    # als de spread. Op 1,0 betekent dat "een minuut moet minimaal de heenweg en
+    # terugweg dekken". Zet hem hoger als je meer marge wilt boven de kosten;
+    # 0 zet de test uit.
+    min_bar_range_in_spreads: 1.0
+
   spread:
     # Van 2.0x naar 2.5x het eigen uur-baseline. De absolute bps-limiet blijft
     # daarnaast actief, dus een werkelijk buitensporige spread komt nog steeds

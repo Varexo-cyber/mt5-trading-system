@@ -43,6 +43,15 @@ class _Example:
     confidence: float
     thesis: str
     risks: tuple[str, ...]
+    #: Whether `useful` came from a realised result or from an approval flag.
+    #:
+    #: The JSONL archive can only record what the paid reviewer ANSWERED, so its
+    #: `useful` is an opinion. Neon records what the trade — or, for a refused
+    #: one, its counterfactual — actually returned. Those are different kinds of
+    #: evidence and only one has earned the right to refuse a setup the engine
+    #: is sure about. Otherwise a strong trade is thrown away on the stored
+    #: say-so of a model that is no longer consulted and cannot revise it.
+    outcome_graded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +130,7 @@ class LocalHistoryAdvisor:
             _load_supervision_examples(ledger_path), brain
         )
         self._supervision_signature = _supervision_sources_signature(ledger_path)
+        self.examples = _merge_entry_examples(self.examples, brain)
         self.outcomes = _load_outcome_records(ledger_path)
         self._entry_signature = self._supervision_signature
 
@@ -137,6 +147,7 @@ class LocalHistoryAdvisor:
         self.supervision_examples = _merge_supervision_examples(
             _load_supervision_examples(self.ledger_path), brain
         )
+        self.examples = _merge_entry_examples(_load_examples(self.ledger_path), brain)
 
     def scout(self, _market_state: Mapping[str, object]) -> ScoutDecision:
         return ScoutDecision(
@@ -185,17 +196,56 @@ class LocalHistoryAdvisor:
         )
         learned_veto_rate = veto_weight / total_weight if total_weight else 0.0
         closest = neighbors[0][1]
-        if learned_veto_rate >= self.veto_rate:
+        # ONLY A REALISED RECORD MAY THROW AWAY A SETUP.
+        #
+        # A refusal here ends a trade the engine has already judged sound, so
+        # what is being weighed matters. The JSONL archive holds what the paid
+        # reviewer ANSWERED — `useful` is literally `said_yes` — so a veto built
+        # on it discards a strong setup because a model that is switched off, and
+        # cannot revise its opinion, once said no to something similar. That is
+        # not evidence about this trade; it is an echo.
+        #
+        # Neon rows carry what the trade actually returned, and for a refused one
+        # what its counterfactual returned. That is a record of this account and
+        # it has earned a veto.
+        #
+        # An opinion-only neighbourhood is not discarded — it still sets the
+        # confidence below and still names its closest recorded reason. It just
+        # cannot refuse on its own.
+        graded = [example for _, example in neighbors if example.outcome_graded]
+        may_veto = len(graded) >= self.min_neighbors
+        if learned_veto_rate >= self.veto_rate and may_veto:
             return Advice(
                 False,
                 min(1.0, learned_veto_rate),
-                f"{engine_basis} Secondary archive veto: {len(neighbors)} comparable reviewer "
-                f"opinions produced a weighted {learned_veto_rate:.0%} refusal rate. Closest "
-                f"recorded reason: {closest.thesis or 'no thesis recorded'}",
+                f"{engine_basis} Secondary archive veto: {len(neighbors)} comparable setups "
+                f"({len(graded)} graded on their realised result) produced a weighted "
+                f"{learned_veto_rate:.0%} refusal rate. Closest recorded reason: "
+                f"{closest.thesis or 'no thesis recorded'}",
                 risks=closest.risks,
                 provider="local_history",
                 model="jarvis_outcome_memory",
                 said_yes=False,
+                threshold=self.minimum,
+            )
+        if learned_veto_rate >= self.veto_rate:
+            # Would have refused, and is not allowed to on this evidence. Said
+            # out loud rather than silently downgraded, because "the archive
+            # wanted to stop this and could not" is exactly the line the owner
+            # needs to see when a trade goes wrong later.
+            return Advice(
+                True,
+                max(self.minimum, min(1.0, idea.confidence)),
+                f"{engine_basis} The archive would have refused this "
+                f"({learned_veto_rate:.0%} of {len(neighbors)} comparable setups), but only "
+                f"{len(graded)} of them are graded on a realised result and "
+                f"{self.min_neighbors} are required before stored opinion may overrule the "
+                f"engine. Closest recorded objection: "
+                f"{closest.thesis or 'no thesis recorded'}",
+                risks=closest.risks,
+                provider="local_history",
+                model="jarvis_outcome_memory",
+                said_yes=True,
                 threshold=self.minimum,
             )
 
@@ -341,7 +391,9 @@ class LocalHistoryAdvisor:
         signature = _supervision_sources_signature(self.ledger_path)
         if signature == self._entry_signature:
             return
-        self.examples = _load_examples(self.ledger_path)
+        self.examples = _merge_entry_examples(
+            _load_examples(self.ledger_path), getattr(self, "brain", None)
+        )
         self.outcomes = _load_outcome_records(self.ledger_path)
         self._entry_signature = signature
 
@@ -428,8 +480,6 @@ def _load_examples(path: Path) -> tuple[_Example, ...]:
     return tuple(examples)
 
 
-
-
 def _learned_stop(
     position_state: Mapping[str, object], neighbors: Sequence[_SupervisionExample]
 ) -> float | None:
@@ -456,6 +506,59 @@ def _learned_stop(
         return None
     share = fractions[len(fractions) // 2]
     return entry + (price - entry) * share
+
+
+def _merge_entry_examples(local: tuple[_Example, ...], brain: Any | None) -> tuple[_Example, ...]:
+    """Local file plus durable archive, and only the archive may refuse.
+
+    Both, and not one or the other. The JSONL is the freshest and needs no
+    network; Neon is the only copy that survives a fresh clone onto a new VPS.
+
+    The two carry different KINDS of evidence and that is the point of keeping
+    them apart. A JSONL row's usefulness is the paid reviewer's `said_yes` — an
+    opinion, from a model that is no longer consulted. A Neon row's usefulness is
+    the realised R of the trade, or of the counterfactual when a gate refused it.
+    Only the second is marked `outcome_graded`, and only outcome-graded
+    neighbours may veto, so a strong setup can no longer be thrown away on a
+    stored objection nobody can revisit.
+
+    De-duplicated on (direction, feature vector) like the supervision merge, so
+    attaching a brain twice adds nothing.
+    """
+    if brain is None:
+        return local
+    try:
+        rows = brain.entry_examples()
+    except Exception:  # noqa: BLE001 - memory must never break the adviser
+        return local
+    if not rows:
+        return local
+    seen = {(example.direction, tuple(sorted(example.features.items()))) for example in local}
+    merged = list(local)
+    for row in rows:
+        try:
+            features = {str(k): float(v) for k, v in dict(row["features"]).items()}
+            key = (str(row["direction"]), tuple(sorted(features.items())))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(
+                _Example(
+                    symbol=str(row.get("symbol") or ""),
+                    direction=str(row["direction"]),
+                    setup_family=str(row.get("setup_family") or ""),
+                    horizon=str(row.get("horizon") or ""),
+                    features=features,
+                    useful=bool(row["useful"]),
+                    confidence=float(row.get("confidence") or 0.0),
+                    thesis=str(row.get("thesis") or ""),
+                    risks=(),
+                    outcome_graded=True,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(merged)
 
 
 def _merge_supervision_examples(
@@ -776,6 +879,19 @@ def _distance(current: _Shape, example: _Example) -> float:
     )
     horizon_penalty = 0.0 if not current.horizon or current.horizon == example.horizon else 0.15
     return numerical + family_penalty + horizon_penalty
+
+
+def entry_features(payload: Mapping[str, object]) -> tuple[dict[str, float], str, str]:
+    """The feature vector, setup family and horizon for one review payload.
+
+    The entry twin of `supervision_features`, and public for the same reason:
+    the archive is matched on these numbers, so whoever writes a Neon row and
+    whoever compares against it must share one definition. Two extractors that
+    drift apart produce a matcher that confidently compares different things,
+    which is worse than having no matcher at all.
+    """
+    shape = _shape(payload)
+    return dict(shape.features), shape.setup_family, shape.horizon
 
 
 def supervision_features(payload: Mapping[str, object]) -> dict[str, float]:

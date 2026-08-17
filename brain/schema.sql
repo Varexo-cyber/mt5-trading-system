@@ -93,6 +93,26 @@ ALTER TABLE decisions ADD COLUMN IF NOT EXISTS planning_timeframe TEXT;
 -- same reason `filters` is -- the set of modules changes, and a migration per
 -- detector means the ones added in a hurry never get recorded at all.
 ALTER TABLE decisions ADD COLUMN IF NOT EXISTS signals JSONB NOT NULL DEFAULT '[]'::JSONB;
+-- The SHAPE of the setup, as the matcher measures it.
+--
+-- `supervisions.features` was added for exactly this on the management side and
+-- the entry side was left behind, so the nearest-neighbour adviser had no Neon
+-- rows to compare against and read `runtime/ai_reviews.jsonl` instead -- a file
+-- on a rented VPS that starts empty after a clone and holds only what the paid
+-- reviewer once answered.
+--
+-- That is the difference between an archive of OPINIONS and one of RESULTS. A
+-- row here joins to `trades` when the setup was taken and to `counterfactuals`
+-- when it was refused, so its usefulness is read off what the market actually
+-- did rather than off whether a model said yes. Nothing else in this schema can
+-- grade an entry that way, which is why a strong setup could be thrown out on a
+-- stored objection from a reviewer that is no longer even consulted.
+--
+-- The same normalised numbers the matcher already uses. JSONB because that set
+-- grows as the payload gains measurements, and a migration per feature means
+-- the ones added in a hurry never get recorded at all.
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS features     JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS setup_family TEXT  NOT NULL DEFAULT '';
 
 CREATE INDEX IF NOT EXISTS decisions_symbol_time  ON decisions (symbol, decided_at DESC);
 CREATE INDEX IF NOT EXISTS decisions_reason_time  ON decisions (reason, decided_at DESC);
