@@ -60,6 +60,12 @@ _UNSET = object()
 #: Not zero. `peak_r` is recomputed from a live tick on every pass, so the last
 #: decimal flickers constantly; treating a 0.0001R wobble as a new high would
 #: reset the stall clock forever and the rule would never fire once.
+#: How much longer a healthy read buys a stalled position before the clock
+#: overrules it. Doubling and not cancelling: a market pausing quietly at its
+#: high is the shape the readers call healthy, so cancelling would retire the
+#: rule rather than inform it.
+_STALL_PATIENCE_WHEN_HEALTHY = 2.0
+
 _PEAK_EPSILON_R = 0.02
 
 #: How much a stop must improve before it is worth moving, in R.
@@ -341,7 +347,9 @@ class PositionManager:
             # the money is still on the table. The two rules cannot both apply:
             # this one needs price near the peak, the give-back needs it far
             # from the peak.
-            stalled = self._peak_stall_exit(position, r_now, peak_r, now, risk_money=risk_money)
+            stalled = self._peak_stall_exit(
+                position, r_now, peak_r, now, health, risk_money=risk_money
+            )
             if stalled is not None:
                 events.append(stalled)
                 continue
@@ -1197,6 +1205,7 @@ class PositionManager:
         r_now: float,
         peak_r: float,
         now: datetime,
+        health: PositionHealth,
         *,
         risk_money: float = 0.0,
     ) -> ManagementEvent | None:
@@ -1250,7 +1259,29 @@ class PositionManager:
 
         if r_now < peak_r * config.peak_stall_near_peak:
             return None
+        # THE READ GETS FIRST SAY. THE CLOCK IS THE BACKSTOP BEHIND IT.
+        #
+        # This was the last exit in the file that closed a live position on a
+        # timer alone. `_giveback_exit` below has consulted the health read for
+        # weeks — "is this still working?" — and this one, which fires while the
+        # money is still on the table and is therefore the more expensive of the
+        # two to get wrong, never asked. The account's own replay agrees:
+        # PEAK_STALL banked +0.54R where leaving the position alone returned
+        # +1.17R, a lift of -0.64R.
+        #
+        # A healthy read doubles the wait rather than cancelling it. Cancelling
+        # would hand the decision to the readers outright, and a market pausing
+        # quietly at its high is exactly the shape they call healthy — nothing is
+        # going wrong, it simply stopped. The rule would then never fire again,
+        # which is not "analysis first", it is analysis only.
+        #
+        # So: six minutes of no new high asks the question, the read answers it,
+        # and twelve minutes of no new high answers it regardless. A move that
+        # has genuinely stopped does not start again because a reader has not
+        # noticed yet.
         standing_minutes = (now - seen[1]).total_seconds() / 60.0
+        if health.verdict == "healthy":
+            wait *= _STALL_PATIENCE_WHEN_HEALTHY
         if standing_minutes < wait:
             return None
 
