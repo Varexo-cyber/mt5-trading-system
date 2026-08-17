@@ -310,6 +310,39 @@ def adverse_run(
     )
 
 
+def _weighted(
+    signal: HealthSignal | None, bars_since_entry: float, bars_needed: int
+) -> HealthSignal | None:
+    """Scale a reading by how much of its window is actually about this trade.
+
+    The alternative was silence below the bar count, and silence says "no
+    evidence" when the truth is "partial evidence". On an M1 fast frame that
+    silenced the whole drift family for the first twelve minutes of every trade.
+
+    A slope reading two bars into a twelve-bar window is a sixth about this
+    position and five sixths about the chart the entry already judged, so it
+    contributes a sixth. At the full count it contributes everything, which is
+    the behaviour the gate used to produce the moment it opened.
+
+    Dropped entirely below a tenth: a reading that thin is arithmetic on noise,
+    and carrying it costs a signal slot and a line in every log.
+    """
+    if signal is None or bars_needed <= 0:
+        return signal
+    share = min(1.0, max(0.0, bars_since_entry / bars_needed))
+    if share < 0.1:
+        return None
+    if share >= 1.0:
+        return signal
+    return HealthSignal(
+        signal.name,
+        signal.severity * share,
+        f"{signal.detail} (weighted to {share:.0%}: {bars_since_entry:.0f} of "
+        f"{bars_needed} bars are since the entry)",
+        signal.family,
+    )
+
+
 def adverse_excursion(r_now: float, *, arm_r: float = 0.35) -> HealthSignal | None:
     """How far this trade has gone wrong — the one reader that skips the chart.
 
@@ -407,11 +440,33 @@ def assess_position(
             signals.append(found)
     since_entry = age_minutes / fast_bar_minutes if fast_bar_minutes > 0 else 0.0
     if fast is not None and not fast.empty:
-        drift = []
-        if since_entry >= _MOMENTUM_BARS:
-            drift.append(momentum_turned(fast, sign))
-        if since_entry >= _RUN_BARS:
-            drift.append(adverse_run(fast, sign))
+        # A READER ALWAYS SPEAKS. WHAT IT SAYS IS WORTH WHAT IT HAS SEEN.
+        #
+        # These used to be hard gates: below twelve bars the slope said nothing
+        # at all, below six the run said nothing at all. The reason was sound —
+        # at two minutes old, ten of the slope's twelve bars are from before the
+        # trade existed, which is the same stretch of chart the entry read, and
+        # letting that count in full means entry and health draw opposite
+        # conclusions from one set of bars while health gets asked again every
+        # second. Three trades on 6 August were cut at 2:14, 2:19 and 2:38 for
+        # exactly that.
+        #
+        # But silence is the wrong way to express "I have only seen part of
+        # this". It made the whole layer blind for the first twelve minutes of
+        # every trade on an M1 frame, which is most of the life of a fast one —
+        # the live UK100 long was over in fifteen and got its first actionable
+        # reading at fourteen.
+        #
+        # Partial evidence, weighted as partial. A slope with two of its twelve
+        # bars since the entry carries a sixth of its strength; at twelve bars
+        # it carries all of it. Nothing is silenced and nothing pre-entry is
+        # counted at face value, and the 6 August failure stays out of reach by
+        # arithmetic: a two-minute-old reading is far too weak to corroborate
+        # into an exit no matter what it sees.
+        drift = [
+            _weighted(momentum_turned(fast, sign), since_entry, _MOMENTUM_BARS),
+            _weighted(adverse_run(fast, sign), since_entry, _RUN_BARS),
+        ]
         signals.extend(found for found in drift if found)
     blown = spread_blowout(spread, risk)
     if blown is not None:

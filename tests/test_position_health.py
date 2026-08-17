@@ -316,58 +316,79 @@ def _names(health) -> set[str]:
     return {signal.name for signal in health.signals}
 
 
-class TestDriftReadersWaitForTheirOwnBars:
-    """A drift reader must not judge a trade on bars from before it existed.
+class TestDriftReadersAreWeightedByWhatTheyHaveSeen:
+    """A reader always speaks. What it says is worth what it has seen.
 
-    `MIN_AGE_MINUTES` alone did not do this. At two minutes old, ten of the
-    slope's twelve bars predate the entry — the same stretch of chart the
-    playbook read when it decided to enter. Entry says the move is continuing
-    and health says it turned, from one set of bars, and health wins because it
-    is asked again every second.
+    These used to be hard gates: below twelve bars the slope said nothing at
+    all, below six the run said nothing at all. The reason was sound — at two
+    minutes old, ten of the slope's twelve bars predate the entry, the same
+    stretch of chart the playbook read when it decided to enter, and health gets
+    asked again every second while entry is asked once. Three trades on 6 August
+    were cut at 2:14, 2:19 and 2:38 for exactly that, none of which reached its
+    stop.
 
-    Live evidence, 6 August: three trades cut at 2:14, 2:19 and 2:38 against a
-    two-minute floor, for -0.16R, -0.71R and -0.48R. Not one reached its stop.
+    But silence is the wrong way to say "I have only seen part of this". It
+    blinded the whole drift family for the first twelve minutes of every trade
+    on an M1 frame, which is most of the life of a fast one: the live UK100 long
+    was over in fifteen minutes and got its first actionable reading at
+    fourteen, already -0.83R deep.
+
+    Partial evidence, weighted as partial. The 6 August failure stays out of
+    reach by arithmetic rather than by silence — a two-minute-old reading is far
+    too weak to corroborate into an exit whatever it sees.
     """
 
-    def test_the_slope_says_nothing_on_a_trade_minutes_old(self) -> None:
-        fast, structure = deteriorating_bars()
-        health = assess_position(
-            sign=LONG, r_now=-0.3, age_minutes=2.5, fast=fast, structure=structure
-        )
-        assert _names(health) == {"structure_broken"}
-
-    def test_and_so_the_trade_is_tightened_rather_than_closed(self) -> None:
-        """The corroboration rule does the rest: one family left standing is
-        not evidence, so `exit` becomes `tighten` and the trade keeps its
-        chance instead of being cut at two and a half minutes."""
-        fast, structure = deteriorating_bars()
-        health = assess_position(
-            sign=LONG, r_now=-0.3, age_minutes=2.5, fast=fast, structure=structure
-        )
-        assert health.action != "exit"
-
-    def test_the_run_reader_speaks_first(self) -> None:
-        """Six bars against twelve. It needs less history, so it earns its say
-        sooner — one number for both would have been wrong for one of them."""
+    def test_the_slope_speaks_early_but_quietly(self) -> None:
         fast, structure = deteriorating_bars()
         early = assess_position(
-            sign=LONG, r_now=-0.3, age_minutes=7.0, fast=fast, structure=structure
+            sign=LONG, r_now=-0.3, age_minutes=3.0, fast=fast, structure=structure
         )
-        assert "adverse_run" in _names(early)
-        assert "momentum_turned" not in _names(early)
+        mature = assess_position(
+            sign=LONG, r_now=-0.3, age_minutes=30.0, fast=fast, structure=structure
+        )
+
+        def strength(health, name):  # type: ignore[no-untyped-def]
+            return next((s.severity for s in health.signals if s.name == name), 0.0)
+
+        assert strength(early, "momentum_turned") > 0.0, "it was silenced, not weighted"
+        assert strength(early, "momentum_turned") < strength(mature, "momentum_turned")
+
+    def test_and_it_still_cannot_close_a_trade_minutes_old(self) -> None:
+        """The guarantee the old gate bought, kept by arithmetic instead. This
+        is the 6 August failure and it must stay out of reach."""
+        fast, structure = deteriorating_bars()
+        health = assess_position(
+            sign=LONG, r_now=-0.3, age_minutes=2.5, fast=fast, structure=structure
+        )
+
+        assert health.action != "exit"
+
+    def test_the_run_reader_carries_more_at_the_same_age(self) -> None:
+        """Six bars against twelve. It needs less history, so at any given age
+        more of its window is about this trade — one number for both would have
+        been wrong for one of them."""
+        fast, structure = deteriorating_bars()
+        health = assess_position(
+            sign=LONG, r_now=-0.3, age_minutes=4.0, fast=fast, structure=structure
+        )
+        strength = {s.name: s.severity for s in health.signals}
+
+        assert strength.get("adverse_run", 0.0) > strength.get("momentum_turned", 0.0)
 
     def test_an_older_trade_is_judged_in_full(self) -> None:
-        """The gate delays the readers; it must not disable them."""
+        """The weighting discounts a reader; it must not permanently damp it."""
         fast, structure = deteriorating_bars()
         health = assess_position(
             sign=LONG, r_now=-0.3, age_minutes=30.0, fast=fast, structure=structure
         )
+
         assert "momentum_turned" in _names(health)
         assert health.action == "exit"
 
-    def test_a_slower_fast_frame_waits_proportionally_longer(self) -> None:
-        """The gate counts bars, not minutes. On a five-minute fast frame the
-        same twelve bars are an hour, and the reader must wait that hour."""
+    def test_a_slower_fast_frame_is_discounted_proportionally(self) -> None:
+        """The share counts bars, not minutes. Thirty minutes of a five-minute
+        frame is six bars, so a twelve-bar reader is half heard and a six-bar
+        reader is heard in full."""
         fast, structure = deteriorating_bars()
         health = assess_position(
             sign=LONG,
@@ -377,7 +398,21 @@ class TestDriftReadersWaitForTheirOwnBars:
             structure=structure,
             fast_bar_minutes=5.0,
         )
-        assert "momentum_turned" not in _names(health)
+        strength = {s.name: s.severity for s in health.signals}
+
+        assert strength.get("adverse_run", 0.0) > strength.get("momentum_turned", 0.0)
+        assert "weighted to 50%" in next(
+            s.detail for s in health.signals if s.name == "momentum_turned"
+        )
+
+    def test_a_reading_thinner_than_a_tenth_is_dropped(self) -> None:
+        """Arithmetic on noise, costing a signal slot and a log line."""
+        from analysis.position_health import HealthSignal, _weighted
+
+        signal = HealthSignal("momentum_turned", 0.9, "detail", "drift")
+
+        assert _weighted(signal, bars_since_entry=1.0, bars_needed=12) is None
+        assert _weighted(signal, bars_since_entry=6.0, bars_needed=12) is not None
 
     def test_structure_is_not_held_back(self) -> None:
         """Deliberately exempt. The swing holding a trade up legitimately
