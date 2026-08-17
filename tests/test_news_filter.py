@@ -464,3 +464,53 @@ class TestRemoteProviders:
 
         assert provider.fetch(NOW, NOW + timedelta(days=7)) == []
         assert captured == TRADINGVIEW_HEADERS
+
+
+class TestGoldIsWatchedInDollars:
+    """The currency that moves gold is not one of gold's two legs.
+
+    `symbol_currencies` returned exactly the pair, and its own docstring said
+    so: "metals and crypto carry a pseudo-currency base that no calendar
+    publishes events for... it simply never matches". That describes a hole, not
+    a design.
+
+    A live XAUAUD short is the case. It was working, a red-folder release moved
+    gold, and the stop was taken for -1.01R and EUR 6.82 on a EUR 172 account —
+    the biggest single loss of the day. The calendar HAD the event. Nothing
+    asked it, because USD is neither leg of XAUAUD. The same day, an XAUJPY
+    trade reported its next news as 3,509 minutes away: fifty-eight hours of
+    clear sky, counted over Japanese releases only.
+    """
+
+    def test_gold_against_the_aussie_still_watches_america(self) -> None:
+        from filters.calendar.events import symbol_currencies
+
+        assert symbol_currencies("XAU", "AUD") == frozenset({"XAU", "AUD", "USD"})
+
+    def test_gold_against_the_yen_too(self) -> None:
+        from filters.calendar.events import symbol_currencies
+
+        assert "USD" in symbol_currencies("XAU", "JPY")
+
+    def test_crypto_is_dollar_priced_as_well(self) -> None:
+        from filters.calendar.events import symbol_currencies
+
+        assert "USD" in symbol_currencies("BTC", "EUR")
+
+    def test_an_ordinary_cross_gains_nothing(self) -> None:
+        """EURJPY has no dollar leg and must not start blacking out on US data."""
+        from filters.calendar.events import symbol_currencies
+
+        assert symbol_currencies("EUR", "JPY") == frozenset({"EUR", "JPY"})
+
+    def test_xauusd_is_unchanged(self) -> None:
+        from filters.calendar.events import symbol_currencies
+
+        assert symbol_currencies("XAU", "USD") == frozenset({"XAU", "USD"})
+
+    def test_the_base_is_still_carried(self) -> None:
+        """It never matches today. Dropping it would be deciding which side of
+        a pair counts, on the day a calendar finally publishes for it."""
+        from filters.calendar.events import symbol_currencies
+
+        assert "XAU" in symbol_currencies("XAU", "AUD")
