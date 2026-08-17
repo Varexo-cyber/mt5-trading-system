@@ -396,6 +396,24 @@ analysis:
     # agreement; two modules that cannot fire together is not.
     minimum_directional_modules: 1
 
+    # Maar dan moet die ene wel overtuigd zijn.
+    #
+    # Bij een losse module IS de score `|ruwe score| x zekerheid` - de weging
+    # valt weg, want teller en noemer lopen allebei over de instemmende modules.
+    # Een detector die op de bodem van 0,45 vuurt levert dus een score op die de
+    # drempel niet kan onderscheiden van een echt overtuigde, en er is geen
+    # tweede lezing die hem bevestigt of tegenspreekt.
+    #
+    # HK50 SHORT op 17 augustus: `impulse_break` alleen, op exact 0,45, score
+    # 60 x 0,45 = 27,0 tegen een lat van 26,0. EUR 3,13 van een rekening van
+    # EUR 182 op een eenzame twijfelaar, geen seconde in de plus, -0,56R eruit.
+    #
+    # 0,65 en niet twee modules eisen. Twee eisen zou ook een losse detector op
+    # 0,90 weigeren, en dat is het sterkste enkele bewijs dat deze engine kan
+    # produceren. Deze knop raakt precies het defect - eenzaam EN onzeker - en
+    # laat alles waar meerdere detectoren het eens zijn volledig met rust.
+    lone_module_minimum_confidence: 0.65
+
     # 40, not the default 55, because 55 is unreachable here.
     #
     # The confluence score is a weighted mean of |module score| x confidence,
