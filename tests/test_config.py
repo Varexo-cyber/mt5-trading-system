@@ -638,3 +638,45 @@ class TestACycleCanFinish:
         )
 
         assert not (settings.scanner.priority_every_cycle and settings.scanner.batch_size is None)
+
+
+class TestABuyIsNotAllowedAtTheTopOfTheRange:
+    """ "Buy high" — the operator's words, on a chart that made it obvious.
+
+    GBPUSD LONG at 19:01 on 17 August. The last twelve M5 bars ran 1.35559 to
+    1.35646 and the entry was 1.35639: ninety-two percent of the way to the top,
+    the peak of a spike that fell straight back to 1.35609. UK100 LONG the same
+    afternoon, in at 10732.25 and out at 10723.55 for -6.10.
+
+    `directional_extreme_location` had been raised to 0.95 for a reason that
+    still holds — a breakout SITS near the top of its range, and 0.88 refused
+    every impulse the engine would ever see. But 0.95 is not a gate, it is a
+    formality: everything except literally the highest tick passes. The middle
+    ground between "refuse every impulse" and "refuse nothing" had not been
+    tried.
+    """
+
+    def test_the_overlay_refuses_the_top_of_the_range(self) -> None:
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.analysis.entry_quality.directional_extreme_location <= 0.85
+
+    def test_the_live_gbpusd_entry_would_now_be_refused(self) -> None:
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+        low, high, entry = 1.35559, 1.35646, 1.35639
+        location = (entry - low) / (high - low)
+
+        assert location > settings.analysis.entry_quality.directional_extreme_location
+
+    def test_but_buying_strength_is_still_allowed(self) -> None:
+        """A breakout entering at seventy percent of its range is not a chase,
+        and refusing it is what 0.88 got wrong in the first place."""
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.analysis.entry_quality.directional_extreme_location > 0.70

@@ -378,7 +378,27 @@ analysis:
   # risico, genoeg margin, en Claude's veto. Wat weg is, is de aanname dat "ver
   # gelopen" hetzelfde is als "te laat".
   entry_quality:
-    directional_extreme_location: 0.95
+    # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
+    #
+    # Het argument hierboven klopt nog steeds: een uitbraak ZIT bij de top van
+    # zijn range, en 0,88 weigerde elke impuls. Maar 0,95 is geen poort meer,
+    # het is een formaliteit - alles behalve letterlijk de hoogste tick komt
+    # erdoor. Tussen "weiger elke impuls" en "weiger niks" ligt een middenweg en
+    # die was niet geprobeerd.
+    #
+    # Wat het kostte, gemeten op de trade zelf. GBPUSD LONG om 19:01: range van
+    # de laatste twaalf M5-bars 1,35559 tot 1,35646, entry op 1,35639. Dat is
+    # 92% van de weg naar de top - de piek van een spike die daarna meteen
+    # terugviel naar 1,35609. UK100 LONG op 10732,25 hetzelfde verhaal, eruit op
+    # 10723,55 voor -6,10.
+    #
+    # 0,80 laat kracht kopen toe en weigert de bovenste vijfde. Beide trades
+    # hierboven vallen af; een uitbraak die op 70% van zijn range instapt niet.
+    #
+    # ENTRY_OVEREXTENDED kostte 3,00R over 3 setups toen dit werd losgezet. Het
+    # is sindsdien 1 setup en 1,20R - en de twee trades hierboven kostten samen
+    # 7,65R. Dat is de rekening van de andere kant, en die is groter.
+    directional_extreme_location: 0.80
     # Hoe ver prijs van zijn EMA20 mag staan. Dit was de poort die goud sloeg.
     max_ema_distance_atr:
       forex: 2.25
