@@ -351,16 +351,130 @@ class ConfluenceEngine:
         if typical <= 0:
             return None, "this market has not moved in this direction over the horizon"
 
-        distance = min(planned, typical)
-        achieved_r = distance / risk
-        if achieved_r < config.minimum_r_multiple:
+        # PICK THE DISTANCE THAT PAYS, INSTEAD OF THE ONE THE MULTIPLE ASKS FOR.
+        #
+        # Everything needed for this was already here and one line threw it
+        # away: `runs` is the whole empirical distribution of how far this
+        # market travels, and the code reduced it to a single quantile, capped
+        # the plan at it, and never asked the question that decides the trade —
+        # how OFTEN is this particular distance reached, and does that beat what
+        # it costs to find out.
+        #
+        # A fixed multiple cannot ask that. At 1.2R a market needs 45.5% to
+        # break even before costs, and whether it delivers 30% or 60% is a
+        # property of the instrument that the multiple never consults. So a
+        # market reaching 1.2R half the time and one reaching it a fifth of the
+        # time were given the same target, and a market that pays handsomely at
+        # 1.0R but not at 1.2R was refused outright for missing a floor.
+        #
+        # Both failures cost trades AND cost money, which is why fixing it is
+        # not a loosening: the search below can only ever choose a distance with
+        # a positive measured expectancy, and there are distances a fixed
+        # multiple refuses that clear that bar comfortably.
+        reach = self._first_touch_reach(frame, closes, direction, risk, horizon)
+        if reach is None:
+            distance = min(planned, typical)
+            achieved_r = distance / risk
+            if achieved_r < config.minimum_r_multiple:
+                return None, (
+                    f"a reachable target is only {achieved_r:.2f}R — this market travels "
+                    f"{typical:.5f} in {horizon} bars against a {risk:.5f} stop, below the "
+                    f"{config.minimum_r_multiple:.2f}R minimum"
+                )
+            note = "planned" if distance >= planned else f"trimmed to {achieved_r:.2f}R"
+            return entry + distance * int(direction), note
+
+        # Cost in R, from the live quote. Commission is not known here and is
+        # charged again by the sizer's own cost gate, so this is the optimistic
+        # half of the bill — deliberately, because the pessimistic half already
+        # has a gate of its own and counting it twice would refuse trades the
+        # sizer is about to accept.
+        spread = getattr(ctx.tick, "spread", 0.0) or 0.0
+        cost_r = (spread / risk) if risk > 0 else 0.0
+
+        best_r, best_reach, best_edge = 0.0, 0.0, 0.0
+        step = 0.05
+        candidate = config.minimum_r_multiple
+        ceiling = max(config.target_r_multiple, config.minimum_r_multiple)
+        while candidate <= ceiling + 1e-9:
+            hit = float((reach >= candidate * risk).mean())
+            # Expected R of one trade at this distance: win pays the target less
+            # the round trip, a loss costs the stop plus the same round trip.
+            edge = hit * (candidate - cost_r) - (1.0 - hit) * (1.0 + cost_r)
+            if edge > best_edge:
+                best_r, best_reach, best_edge = candidate, hit, edge
+            candidate += step
+
+        if best_edge <= 0.0:
+            worst = config.minimum_r_multiple
+            floor_hit = float((reach >= worst * risk).mean())
             return None, (
-                f"a reachable target is only {achieved_r:.2f}R — this market travels "
-                f"{typical:.5f} in {horizon} bars against a {risk:.5f} stop, below the "
-                f"{config.minimum_r_multiple:.2f}R minimum"
+                f"no target between {worst:.2f}R and {ceiling:.2f}R pays on this market: "
+                f"{worst:.2f}R is reached first {floor_hit:.0%} of the time against "
+                f"{(1.0 + cost_r) / (1.0 + worst - cost_r):.0%} needed to break even at "
+                f"a {cost_r:.0%}-of-risk spread"
             )
-        note = "planned" if distance >= planned else f"trimmed to {achieved_r:.2f}R"
+
+        distance = best_r * risk
+        note = (
+            f"{best_r:.2f}R, reached first {best_reach:.0%} of the time here "
+            f"for {best_edge:+.2f}R expected"
+        )
         return entry + distance * int(direction), note
+
+    @staticmethod
+    def _first_touch_reach(
+        frame: pd.DataFrame,
+        closes: np.ndarray,
+        direction: Direction,
+        risk: float,
+        horizon: int,
+    ) -> np.ndarray | None:
+        """Per window: how far price ran our way BEFORE the stop would have hit.
+
+        `runs` above measures the favourable excursion and ignores the stop, so
+        a window where price dropped a full R and only then rallied counts as a
+        win at any distance below that rally. That overstates every reach rate
+        it produces, and the overstatement is largest exactly where it matters —
+        volatile markets that whip both ways.
+
+        This walks each window once, finds the first bar whose adverse extreme
+        would have taken the stop, and measures the favourable extreme only up
+        to that point. The result is a first-touch record: for any distance, the
+        share of windows that reached it while the trade was still alive.
+
+        None when the frame lacks the columns to do it, so the caller keeps its
+        previous behaviour rather than inventing a number.
+        """
+        if "high" not in frame.columns or "low" not in frame.columns or risk <= 0:
+            return None
+        highs = frame["high"].to_numpy()
+        lows = frame["low"].to_numpy()
+        windows = len(closes) - horizon
+        if windows <= 0:
+            return None
+        sign = int(direction)
+        favourable = highs if direction is Direction.LONG else lows
+        adverse = lows if direction is Direction.LONG else highs
+        reached = np.empty(windows, dtype=float)
+        for start in range(windows):
+            begin, end = start + 1, start + 1 + horizon
+            opened = closes[start]
+            stop_level = opened - risk * sign
+            adverse_slice = adverse[begin:end]
+            breached = (
+                adverse_slice <= stop_level
+                if direction is Direction.LONG
+                else adverse_slice >= stop_level
+            )
+            hit = int(np.argmax(breached)) if breached.any() else len(adverse_slice)
+            alive = favourable[begin : begin + hit] if hit else favourable[begin:begin]
+            if alive.size == 0:
+                reached[start] = 0.0
+                continue
+            best = alive.max() if direction is Direction.LONG else alive.min()
+            reached[start] = (best - opened) * sign
+        return reached
 
     def higher_timeframe_conflict(
         self,
