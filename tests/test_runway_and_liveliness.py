@@ -503,3 +503,44 @@ class TestADeadMarketIsNotJudgedAgainstItself:
         ).filters.liveliness
 
         assert liveliness.min_bar_range_in_spreads == pytest.approx(1.0)
+
+
+class TestAnOpenSharePositionIsStillManaged:
+    """Dropping `stock` from the scan must not orphan what is already open.
+
+    The scan universe decides what may be OPENED. Position management reads the
+    broker's own position list, so a share bought before the change keeps its
+    health reads, its stop moves and its wind-down. Worth pinning: a change that
+    silently stopped protecting a live position would be far worse than the
+    instrument class it was meant to remove.
+    """
+
+    def test_shares_are_no_longer_scanned(self) -> None:
+        from config.loader import load_settings
+
+        settings = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert "stock" not in settings.instruments.asset_classes
+
+    def test_but_a_share_still_gets_flattened_before_its_close(self) -> None:
+        """The wind-down stays armed as a net, not as a live gate — so an open
+        share, or a re-enabled `stock`, is still not carried through a close."""
+        from config.loader import load_settings
+
+        session = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).filters.session
+
+        assert "stock" in session.evening_flat_asset_classes
+        assert session.evening_flat_by_class["stock"] == "15:30"
+
+    def test_the_dead_market_test_stays_armed_too(self) -> None:
+        from config.loader import load_settings
+
+        liveliness = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).filters.liveliness
+
+        assert liveliness.min_bar_range_in_spreads > 0
