@@ -1842,7 +1842,20 @@ class ConfluenceConfig(Base):
     #: What still keeps them out of chop is their own evidence — the drift
     #: module's consistency floor, the cross module's separation floor — and
     #: `entry_quality` downstream.
+    #: `drift_continuation` was tried on this list again on 18 August and taken
+    #: straight back off. Two losing trades had it firing in a transition, which
+    #: is not evidence: I had no count of how many WINNERS were taken in the
+    #: same regimes, so "six of six losers were in range or transition" says
+    #: nothing until the denominator is known. Against that stood a measured
+    #: 3,813 refusals in one day and the note above that this is the only module
+    #: on the account that can find a short in a falling market — which is the
+    #: thing the owner has asked for most.
     trend_continuation_modules: tuple[str, ...] = ("trend_momentum",)
+    #: Regimes in which a continuation claim is contradicted rather than merely
+    #: unsupported. Both are measurements that say "there is no trend here";
+    #: `trend_up` and `trend_down` obviously support one, and `extreme` is
+    #: already refused outright at the top of `evaluate`.
+    continuation_contradicting_regimes: tuple[str, ...] = ("range", "transition")
     #: Modules whose evidence lives on a fast chart. When nothing but these
     #: fired, the plan is an intraday one.
     #:
