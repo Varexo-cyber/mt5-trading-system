@@ -109,7 +109,72 @@ class ConfluenceEngine:
             suffix = "; no modules validated for live" if mode.is_live and not allowed_live else ""
             return self._reject(ctx, signals, f"no weighted directional evidence{suffix}")
 
+        # Is the premise of this setup contradicted by a measurement?
+        #
+        # `market_regime` sorts the market into trend_up, trend_down, range,
+        # transition or extreme. It has always been computed, always been sent
+        # to the reviewer, and never read here — the check at the top of this
+        # method reads `volatility_regime`, which answers a different question.
+        #
+        # A trend-continuation module firing while the classifier measures a
+        # range is not weak evidence, it is evidence against. The reviewer said
+        # so three times in one session, once as "the regime module explicitly
+        # flags 'range' with low efficiency (0.08 H1, 0.11 H4) — this is chop,
+        # not a trend", and each time the account paid to hear it.
+        #
+        # THE RANGE DOES NOT GO AWAY BECAUSE A SECOND MODULE IS STANDING THERE.
+        #
+        # This used to test `all(...)` over the AGREEING modules: the setup was
+        # refused only when every one of them was a continuation module. Any
+        # other detector joining in switched the check off completely, so a
+        # module asserting "the trend continues" inside a measured range was
+        # counted at full strength for having company.
+        #
+        # NZDJPY LONG, 18 August. Regime `range`. `trend_momentum` at +65,
+        # describing itself as "H1 bullish with H4 neutral, unconfirmed by the
+        # bias timeframe", and `impulse_break` at +60 — not on the continuation
+        # list, so the check never ran. 3.83% of the account went long into a
+        # range and never printed a positive tick.
+        #
+        # It drops the contradicted CONTRIBUTION and not the setup: a veto on
+        # the whole idea would throw away the other modules' evidence too, and
+        # they were not the ones contradicted. And it runs HERE, before any gate
+        # judges the evidence, so the module count, the lone-module floor, the
+        # agreement ratio and the score all see the honest set. Ordering it
+        # after them let a setup clear the lone-module floor on a module that
+        # was about to be discounted.
+        discounted = ""
+        if self.config.refuse_trend_continuation_in_range:
+            regime_reading = next(
+                (
+                    signal.details.get("regime")
+                    for signal in signals
+                    if signal.module == "market_regime"
+                ),
+                None,
+            )
+            continuation = set(self.config.trend_continuation_modules)
+            if regime_reading == "range" and continuation:
+                honest = [pair for pair in weighted if pair[0].module not in continuation]
+                if len(honest) != len(weighted):
+                    discounted = ", ".join(
+                        sorted(
+                            pair[0].module for pair in weighted if pair[0].module in continuation
+                        )
+                    )
+                    if not honest:
+                        return self._reject(
+                            ctx,
+                            signals,
+                            f"the regime classifier measures a range while the only firing "
+                            f"module(s) ({discounted}) assert a trend is continuing",
+                        )
+                    weighted = honest
+
         direction, agreeing, agreement, conflict = self._resolve_direction(weighted)
+        if discounted:
+            note = f"{discounted} discounted as trend-continuation in a measured range"
+            conflict = f"{conflict}; {note}" if conflict else note
         if len(agreeing) < self.config.minimum_directional_modules:
             return self._reject(ctx, signals, "too few independent directional modules")
         # A lone detector has to be sure of itself.
@@ -144,45 +209,6 @@ class ConfluenceEngine:
             return self._reject(
                 ctx, signals, f"directional agreement {agreement:.1%} below threshold"
             )
-
-        # Is the premise of this setup contradicted by a measurement?
-        #
-        # `market_regime` sorts the market into trend_up, trend_down, range,
-        # transition or extreme. It has always been computed, always been sent
-        # to the reviewer, and never read here — the check at the top of this
-        # method reads `volatility_regime`, which answers a different question.
-        #
-        # A trend-continuation module firing while the classifier measures a
-        # range is not weak evidence, it is evidence against. The reviewer said
-        # so three times in one session, once as "the regime module explicitly
-        # flags 'range' with low efficiency (0.08 H1, 0.11 H4) — this is chop,
-        # not a trend", and each time the account paid to hear it.
-        #
-        # Deliberately not a module count. The prompt tells the reviewer to
-        # ignore those and it correctly does: a zero from a module looking for
-        # something else is the absence of evidence. "range" is a positive
-        # finding. And only continuation setups are caught — a liquidity sweep
-        # is a range setup and belongs in a range.
-        if self.config.refuse_trend_continuation_in_range:
-            regime_reading = next(
-                (
-                    signal.details.get("regime")
-                    for signal in signals
-                    if signal.module == "market_regime"
-                ),
-                None,
-            )
-            continuation = set(self.config.trend_continuation_modules)
-            if regime_reading == "range" and all(
-                signal.module in continuation for signal, _ in agreeing
-            ):
-                firing = ", ".join(sorted(signal.module for signal, _ in agreeing))
-                return self._reject(
-                    ctx,
-                    signals,
-                    f"the regime classifier measures a range while the only firing "
-                    f"module(s) ({firing}) assert a trend is continuing",
-                )
 
         denominator = sum(weight for _, weight in agreeing)
         score = (
