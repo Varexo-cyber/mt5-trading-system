@@ -136,13 +136,37 @@ data:
   # the five-frame cycle measured 240s; watch the `cycle:` line after this and
   # drop M1 first if it becomes uncomfortable.
   timeframes: [W1, D1, H4, H1, M15, M5, M1]
+
+  # NIETS IN DIT SYSTEEM LEEST OOIT MEER DAN 400 BARS.
+  #
+  # Nagelopen over de hele repo, elke tail() en elke slice: het diepste venster
+  # dat bestaat is 400 — `_reachable_target`, `measure_target_reach`, de
+  # playbooks, de reviewpayload en de gap-teller van de liveliness-filter zitten
+  # daar allemaal op. Daaronder: `atr_percentile_lookback` 100,
+  # `lookback_bars` 200, `min_bars_required` 200. Er werden er 2000 opgehaald.
+  #
+  # Wat dat kostte, uit de cyclusregel van 14:42: 432/843 gescand in 118s met
+  # `slow MT5 calls` ervoor. M5 verliest zijn cache elke vijf minuten en een
+  # symbool komt bij 240 per cyclus ongeveer elke zeven minuten terug, dus die
+  # 2000 M5-bars gingen per symbool per ronde opnieuw over de lijn. Bij 185
+  # geanalyseerde symbolen is dat een half miljoen bars per cyclus voor een
+  # verbruik van 400.
+  #
+  # 600 en niet 400: dat laat 200 bars lucht boven het diepste venster, ruim
+  # genoeg voor een weekendgat of een halve handelsdag, en het blijft boven de
+  # `min_bars_required: 200` vloer.
+  #
+  # Dit is dezelfde redenering als `batch_size: 240` hierboven en het is waar de
+  # extra kansen vandaan komen: een cyclus die afmaakt levert per minuut meer
+  # bruikbare setups dan een cyclus die halverwege blijft hangen. Kijk na een
+  # herstart naar de seconden in de `cycle:` regel; dat is de hele test.
   bars:
     W1: 400
-    D1: 750
-    H4: 1500
-    H1: 2000
-    M15: 2000
-    M5: 2000
+    D1: 500
+    H4: 600
+    H1: 600
+    M15: 600
+    M5: 600
     # 300, niet 1200. M1 is de enige reeks die zijn cache elke cyclus verliest
     # - een minuutbar sluit elke minuut, en een cyclus duurt er ongeveer een -
     # dus dit is de enige regel in deze tabel die per cyclus 67 keer opnieuw

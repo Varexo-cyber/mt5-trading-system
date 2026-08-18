@@ -700,3 +700,62 @@ class TestABuyIsNotAllowedAtTheTopOfTheRange:
         )
 
         assert settings.analysis.entry_quality.directional_extreme_location > 0.70
+
+
+class TestNoBarIsFetchedThatNothingReads:
+    """The cycle was spending its time on data no reader ever looks at.
+
+    From a live cycle line: 432 of 843 symbols scanned in 118 seconds with a
+    `slow MT5 calls` warning in front of it, and one setup out of 132
+    analysable symbols. M5 loses its cache every five minutes and a symbol
+    comes round again roughly every seven at 240 per cycle, so 2,000 M5 bars
+    went over the wire per symbol per rotation — half a million bars a cycle
+    for a consumption of four hundred.
+
+    Four hundred is the deepest window that exists anywhere in this codebase:
+    `_reachable_target`, `measure_target_reach`, the playbooks, the review
+    payload and the liveliness gap counter all sit on `tail(400)`. Everything
+    else is smaller. This pins that relationship, because the failure mode is
+    silent — nobody notices a slow cycle the way they notice a wrong number.
+    """
+
+    #: The deepest `tail(...)` in the repository. Raise this only alongside the
+    #: reader that needs it, and raise the bar counts with it.
+    DEEPEST_WINDOW = 400
+
+    def _bars(self):  # type: ignore[no-untyped-def]
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+        return settings.data.bars
+
+    #: M1 and W1 run on their own documented budgets rather than this rule. M1
+    #: is read 30 bars deep by the adviser and 15 by the scalp, and it is the
+    #: one series that refetches every single cycle. W1 cannot reach 400 plus
+    #: room on most share CFDs at all — COFFEE offered 81 weekly bars — which
+    #: is why it has a `min_bars_by_timeframe` floor of 50 and is only ever
+    #: background bias.
+    OWN_BUDGET = ("M1", "W1")
+
+    def test_every_timeframe_carries_the_deepest_reader_plus_room(self) -> None:
+        """Enough for the deepest window with headroom for a weekend gap or a
+        half day, on the frames the 400-bar readers actually run on."""
+        for timeframe, count in self._bars().items():
+            if timeframe in self.OWN_BUDGET:
+                continue
+            assert count >= self.DEEPEST_WINDOW + 100, timeframe
+
+    def test_and_no_timeframe_carries_far_more_than_that(self) -> None:
+        """The regression this exists to catch. A bar fetched and never read is
+        pure cycle time, and cycle time is the only thing that decides whether
+        a five-minute setup is still there when the analysis reaches it."""
+        for timeframe, count in self._bars().items():
+            assert count <= 2 * self.DEEPEST_WINDOW, timeframe
+
+    def test_the_floor_the_data_manager_enforces_is_still_cleared(self) -> None:
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+        for timeframe, count in settings.data.bars.items():
+            assert count >= settings.data.minimum_bars_for(timeframe), timeframe
