@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from math import isfinite
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from analysis.confluence import ConfluenceEngine
+from analysis.confluence import ConfluenceEngine, TradeIdea
 from backtesting.engine import (
     BacktestOrder,
     BacktestResult,
@@ -66,7 +67,7 @@ class HistoricalContextReplay:
         self.history_bars = history_bars
         self.decision_stride_bars = decision_stride_bars
 
-    def orders(
+    def ideas(
         self,
         symbol: str,
         frames: dict[Timeframe, pd.DataFrame],
@@ -74,14 +75,30 @@ class HistoricalContextReplay:
         point: float,
         start: datetime,
         end: datetime,
-    ) -> list[BacktestOrder]:
+    ) -> Iterator[tuple[datetime, TradeIdea]]:
+        """Every verdict the engine reached, refusals included.
+
+        `orders` throws the refusals away, and the refusals are where 97.5% of
+        the live decisions go. Nothing could measure a change to an entry rule
+        except the live account, one confounded hour at a time; the whole point
+        of this is that a rule can be judged over months of history before a
+        cent is put behind it.
+
+        Refusals carry the score they reached, so "no module fired" and "the
+        modules fired and the threshold was out of reach" stay distinguishable
+        — which is exactly the question asked after a day with no trades.
+
+        The look-ahead safety lives here and only here. A timeframe's bar is
+        visible only once its own close time has passed, so a decision at 10:05
+        sees the M15 that closed at 10:00 and not the one still forming. Get
+        that wrong and every result downstream is a fiction.
+        """
         missing = set(REPLAY_TIMEFRAMES) - set(frames)
         if missing:
             raise ValueError(f"replay missing timeframes: {sorted(tf.value for tf in missing)}")
         decisions = frames[Timeframe.H1]
         closed_at = decisions.index + Timeframe.H1.duration
         eligible = decisions[(closed_at >= start) & (closed_at < end)]
-        orders: list[BacktestOrder] = []
         for sequence, opened_at in enumerate(eligible.index):
             if sequence % self.decision_stride_bars:
                 continue
@@ -109,9 +126,22 @@ class HistoricalContextReplay:
                 bid=mid - spread / 2,
                 ask=mid + spread / 2,
             )
-            idea = self.engine.evaluate(
+            yield decided_at, self.engine.evaluate(
                 MarketContext(symbol, decided_at, series, tick), TradingMode.BACKTEST
             )
+
+    def orders(
+        self,
+        symbol: str,
+        frames: dict[Timeframe, pd.DataFrame],
+        *,
+        point: float,
+        start: datetime,
+        end: datetime,
+    ) -> list[BacktestOrder]:
+        """The approved half of `ideas`, as executable orders."""
+        orders: list[BacktestOrder] = []
+        for decided_at, idea in self.ideas(symbol, frames, point=point, start=start, end=end):
             if not idea.approved or idea.direction is None:
                 continue
             active = tuple(
