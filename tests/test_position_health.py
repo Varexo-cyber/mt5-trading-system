@@ -230,7 +230,13 @@ def test_one_family_can_never_close_a_trade() -> None:
     cuts — a worse failure than holding a loser slightly too long.
     """
     fast, _ = deteriorating_bars()
-    health = assess_position(sign=LONG, r_now=-0.5, age_minutes=30, fast=fast, structure=flat())
+    # Inside the trajectory reader's arming level on purpose. At -0.5R this was
+    # never testing what it claimed: being that far offside arms a SECOND
+    # family, so a two-family reading was passing a one-family assertion, and
+    # it only passed because the trajectory weight was too small to carry it
+    # over the line. Raising that weight is what exposed it.
+    health = assess_position(sign=LONG, r_now=-0.20, age_minutes=30, fast=fast, structure=flat())
+    assert {signal.family for signal in health.signals} == {"drift"}
     assert health.action not in ("exit", "secure")
 
 
@@ -454,35 +460,59 @@ class TestBeingDownIsNeverAReasonToClose:
     arrived at fourteen, by which point it was -0.83R of a -0.99R worst case.
     The layer was not wrong; it was not allowed to speak.
 
-    But "this trade is down" must not become a reason to close it — that is the
-    ordinary condition of a trade that has not finished. So the weight is set so
-    the trajectory family CANNOT reach `broken` with any partner at full
-    strength: it can bring a warning forward to a stop tightening and it can
-    never bring one forward to an exit.
+    But "this trade is down" must not become a reason to close it BY ITSELF —
+    that is the ordinary condition of a trade that has not finished. The
+    safeguard is the corroboration rule, not the weight: a lone family's exit
+    is demoted to a stop tightening whatever it scores.
+
+    The weight was 0.30 and is 0.50, changed by the owner after watching trades
+    run from a manageable loss to the full stop with every reader watching and
+    none able to speak. What that buys is a second family reaching an exit
+    where it previously only tightened; what it does not touch is a trade in
+    profit, because this reader does not exist above -0.35R.
     """
 
     def test_it_cannot_close_a_trade_alone(self) -> None:
-        from analysis.position_health import BROKEN_AT, DETERIORATING_AT, HealthWeights
+        """Stated as behaviour, not as a number. The old form asserted the
+        weight was under `DETERIORATING_AT`, which conflated "cannot close"
+        with "cannot say anything" — and it is the corroboration rule, not the
+        weight, that stops a lone family closing a trade.
+        """
+        from analysis.position_health import BROKEN_AT, HealthWeights
 
-        assert HealthWeights().trajectory < DETERIORATING_AT
         assert HealthWeights().trajectory < BROKEN_AT
 
-    def test_only_a_broken_structure_lets_it_reach_an_exit(self) -> None:
-        """The one pairing that should close a trade at any age: the swing that
-        justified the position has broken AND the market has already taken real
-        money. Neither is a clock reading and neither waits for a bar to form,
-        so waiting adds nothing except the loss.
+        health = assess_position(
+            sign=LONG, r_now=-1.50, age_minutes=30, fast=flat(), structure=flat()
+        )
 
-        The noisy pairings stay short of it — being down while the tape drifts,
-        or while the quote widens, is a stop tightening and not an exit.
+        assert {signal.family for signal in health.signals} == {"trajectory"}
+        assert health.action not in ("exit", "secure")
+
+    def test_a_second_family_now_reaches_an_exit_and_not_only_a_tighten(self) -> None:
+        """The change the owner asked for, written as arithmetic.
+
+        `structure` + `trajectory` still closes a trade at any age: the swing
+        that justified the position has broken AND the market has already taken
+        real money. Neither is a clock reading and neither waits for a bar to
+        form, so waiting adds nothing except the loss.
+
+        `drift` and `liquidity` now join it. Before, being 0.60R down while
+        momentum ran against the trade scored 0.65 — `deteriorating`, which
+        tightens a stop and lets the trade continue to the full stop. That was
+        the case being lost, repeatedly.
+
+        `drift` + `liquidity` remains short of an exit, and should: neither of
+        them says the money is gone.
         """
         from analysis.position_health import BROKEN_AT, HealthWeights
 
         weights = HealthWeights()
 
         assert weights.trajectory + weights.structure >= BROKEN_AT
-        assert weights.trajectory + weights.drift < BROKEN_AT
-        assert weights.trajectory + weights.liquidity < BROKEN_AT
+        assert weights.trajectory + weights.drift >= BROKEN_AT
+        assert weights.trajectory + weights.liquidity >= BROKEN_AT
+        assert weights.drift + weights.liquidity < BROKEN_AT
 
     def test_a_trade_inside_its_own_noise_says_nothing(self) -> None:
         from analysis.position_health import adverse_excursion
@@ -498,14 +528,36 @@ class TestBeingDownIsNeverAReasonToClose:
         assert signal is not None
         assert signal.family == "trajectory"
 
-    def test_it_brings_a_chart_warning_forward_to_a_tighten(self) -> None:
-        """The whole point: at minute six the run reader is eligible and the
-        slope is not, so without this there is one family and nothing happens."""
+    def test_a_modest_offside_still_only_tightens(self) -> None:
+        """The lower rung survives. A trade just past the noise level with the
+        tape drifting is not a closed trade — it gets a smaller stop, which
+        costs nothing when the reading is wrong."""
+        fast, _ = deteriorating_bars()
+        health = assess_position(
+            sign=LONG, r_now=-0.40, age_minutes=30, fast=fast, structure=flat()
+        )
+
+        assert {signal.family for signal in health.signals} == {"drift", "trajectory"}
+        assert health.action == "tighten"
+
+    def test_materially_offside_with_the_tape_against_it_now_closes(self) -> None:
+        """The case the owner kept watching run to the full stop. Down 0.60R
+        with momentum turned scored 0.58 and tightened a stop; it scores 0.85
+        and gets out. On this account that is -1.93 EUR instead of -3.22."""
         fast, _ = deteriorating_bars()
         health = assess_position(
             sign=LONG, r_now=-0.60, age_minutes=30, fast=fast, structure=flat()
         )
 
-        assert {s.family for s in health.signals} == {"drift", "trajectory"}
-        assert health.action == "tighten"
+        assert {signal.family for signal in health.signals} == {"drift", "trajectory"}
+        assert health.verdict == "broken"
+        assert health.action == "exit"
+
+    def test_it_never_reaches_for_a_trade_that_is_winning(self) -> None:
+        """The reader does not exist above -0.35R, so no amount of weight on it
+        can shorten a winner. Worth pinning next to the change that raised it."""
+        fast, _ = deteriorating_bars()
+        health = assess_position(sign=LONG, r_now=0.30, age_minutes=30, fast=fast, structure=flat())
+
+        assert {signal.family for signal in health.signals} == {"drift"}
         assert health.action not in ("exit", "secure")
