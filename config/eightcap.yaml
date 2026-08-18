@@ -1257,6 +1257,23 @@ trade_management:
   supervision_loss_step_r: 0.25
   supervision_loss_step_equity_pct: 0.35
 
+  # Vier minuten stilstand in plaats van zes, op verzoek van de eigenaar.
+  #
+  # WAT DE ZES VERDEDIGDE: ongeveer een M5-bar plus bevestiging. Lang genoeg dat
+  # een gewone pullback binnen een lopende beweging hem niet raakt, kort genoeg
+  # om nog bij de top te zijn als hij vuurt. Vier is minder dan een hele M5-bar,
+  # dus dit gaat vaker vuren op een pauze die nog geen einde is.
+  #
+  # WAT DAT DRAAGLIJK MAAKT: sinds 18 augustus vraagt deze regel eerst de
+  # health-read. Een gezonde lezing verdubbelt het geduld, dus in de praktijk is
+  # het vier minuten als er iets mis is en acht als er niks mis is. De oude zes
+  # gold onvoorwaardelijk. Een nieuwe top zet de klok sowieso op nul, dus een
+  # trade die blijft werken kan hier nog steeds niet uit vallen.
+  #
+  # Terugdraaien is dit getal. `scorecard.py` heeft er een kolom voor: PEAK_STALL
+  # stond op een lift van -0,64R toen hij nog blind was, en die moet kantelen.
+  peak_stall_minutes: 4.0
+
   # Het leren van de bankdrempel staat UIT, en dat is op bewijs.
   #
   # `management_baselines` speelde tien gebankte trades na tegen hun eigen
