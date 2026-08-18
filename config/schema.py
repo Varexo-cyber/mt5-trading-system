@@ -1903,6 +1903,15 @@ class ConfluenceConfig(Base):
     #: geometry must never buy the same Claude answer twice.
     quick_events_bypass_broad_veto_memory: bool = True
     require_target_base_rate: bool = True
+    #: Judge the plan against the stop it will actually carry instead of an
+    #: unconditional reach rate that ignores the stop entirely. It matters
+    #: because `_widen_stop_for_costs` changes the plan after the engine
+    #: approved it: on a small account the stop is pushed out on nearly every
+    #: candidate, which lowers reward-to-risk and, at the very same time, makes
+    #: the position much harder to stop out. Only the first of those two ever
+    #: reached the gate, so widening — the thing that exists to make
+    #: small-account trades viable at all — could only count against a trade.
+    first_touch_target_test: bool = True
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
     #: counts up and down moves independently over the same windows, so it is
     #: not the probability of hitting the target before the stop and must not
