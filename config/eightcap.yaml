@@ -563,10 +563,36 @@ analysis:
     # weer het enige antwoord.
     score_threshold: 26.0
 
-    # Van 1.5 naar 1.2. De live funnel liet TARGET_RARELY_REACHED als grootste
-    # concrete late blokkade zien. Een 1.2R-doel past beter bij quick/intraday
-    # bewegingen en wordt eerder gebankt; de stop wordt hierdoor niet verbreed.
-    target_r_multiple: 1.2
+    # NAAR 3.0, EN DIT IS EEN PLAFOND OP EEN ZOEKTOCHT - GEEN DOEL.
+    #
+    # De redenering hieronder was: 1.2R wordt eerder geraakt dan 1.5R, dus meer
+    # trades. Dat klopt op zichzelf en mist de andere helft van de som. Een doel
+    # van 1.0-1.2R eist een winstpercentage van 49-54% om quitte te spelen, en
+    # `why_no_trades` over 12 uur laat zien wat deze markten werkelijk halen:
+    #
+    #   AUDCHF  haalt 1,00R eerst in 26%  -> 53% nodig
+    #   CADCHF  37%  -> 52% nodig
+    #   NZDCHF   6%  -> 52% nodig
+    #   AUDCAD   3%  -> 56% nodig
+    #
+    # Dat gat is niet te dichten met een dichterbij doel; een dichterbij doel
+    # MAAKT het gat. Bij 2,0R zakt de eis naar 36% en haalt CADCHF hem wel.
+    # Zo'n 11.800 weigeringen per 12 uur waren precies dit - "no target between
+    # 1.00R and 1.20R pays on this market" - en dat is de op een na grootste
+    # blokkade in de hele funnel.
+    #
+    # WAAROM 3,0 GEEN LOSSERE INSTELLING IS. `_reachable_target` kiest sinds 18
+    # augustus niet meer een vaste vermenigvuldiging maar zoekt de afstand met
+    # de hoogste GEMETEN verwachting: trefkans x (doel - kosten) - (1 - trefkans)
+    # x (1 + kosten), waarbij de trefkans first-touch is en per instrument uit de
+    # eigen bars komt. Een afstand met een niet-positieve verwachting kan niet
+    # gekozen worden. Dit getal is dus alleen de bovenkant van waar hij mag
+    # kijken, en die stond zo krap dat er in dat bereik bijna niets bestond dat
+    # betaalt.
+    #
+    # De stop wordt hier niet door verbreed en het risico per trade niet groter.
+    # Wat verandert is hoe ver het doel mag liggen als de markt dat waarmaakt.
+    target_r_multiple: 3.0
     # Houd analyse en position sizer op exact dezelfde 1.0R-vloer. Voorheen kon
     # de analyse tot 0.9R trimmen terwijl de sizer alles onder 1.1R alsnog
     # weigerde. Dat was een verborgen dubbele poort, geen extra marktkennis.

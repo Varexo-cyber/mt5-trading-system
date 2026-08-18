@@ -848,3 +848,53 @@ class TestTheNzdjpyShape:
         )
 
         assert idea.direction is not None
+
+
+class TestTheTargetBandHasToContainAPayableDistance:
+    """A closer target does not fix a reach problem — it creates one.
+
+    The band was 1.00R to 1.20R, which needs a 49-54% win rate to break even
+    once costs are counted. `why_no_trades` over twelve live hours shows what
+    these markets actually do: AUDCHF reaches 1.00R first 26% of the time,
+    CADCHF 37%, NZDCHF 6%, AUDCAD 3%. Roughly 11,800 refusals in that window
+    read "no target between 1.00R and 1.20R pays on this market" — the second
+    largest blockage in the entire funnel.
+
+    None of those gaps close by aiming nearer. At 2.0R the requirement falls to
+    36% and CADCHF clears it.
+
+    Raising the ceiling is not a loosening because the distance is CHOSEN by
+    measured expectancy, not set by the multiple: the search cannot pick a point
+    whose expectancy is non-positive. The ceiling only says how far it may look.
+    """
+
+    @staticmethod
+    def _band():  # type: ignore[no-untyped-def]
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        ).analysis.confluence
+
+    def test_the_band_reaches_a_realistic_win_rate(self) -> None:
+        """At the top of the band the required hit rate must be one these
+        markets actually produce, or the band cannot contain a trade."""
+        band = self._band()
+        needed = (1 + 0.05) / (1 + band.target_r_multiple - 0.05)
+
+        assert needed < 0.40, f"top of the band still needs {needed:.0%}"
+
+    def test_the_floor_is_untouched(self) -> None:
+        """Only the ceiling moved. The minimum still refuses a target so close
+        it cannot pay for its own spread."""
+        assert self._band().minimum_r_multiple >= 1.0
+
+    def test_a_wider_ceiling_cannot_buy_a_losing_target(self) -> None:
+        """The guarantee that makes this safe: expectancy decides, the ceiling
+        only bounds the search. A market that reaches nothing is still refused."""
+        idea = ConfluenceEngine(modules(), config(minimum_r_multiple=0.5)).evaluate(
+            context(step=0.00002), TradingMode.PAPER
+        )
+
+        assert not idea.approved
+        assert "pays on this market" in idea.reason
