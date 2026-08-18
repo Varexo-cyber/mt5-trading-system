@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -162,3 +163,103 @@ class TestSignals:
 def test_internal_lookback_must_be_smaller() -> None:
     with pytest.raises(ValueError, match="internal swing lookback"):
         MarketStructureConfig(internal_swing_lookback=3, external_swing_lookback=3)
+
+
+class TestTheVectorisedSwingSearchIsTheSameSearch:
+    """A third of the module backtest was four small numpy reductions per bar.
+
+    `find_swings` asked numpy for a max, a min and two equality counts on a
+    fresh slice for every pivot — around 4,800 reductions per decision across
+    five timeframes, and eighty-four minutes for twenty symbols over 180 days.
+    A measurement nobody will wait for does not get run, and this project spent
+    a day changing a live account on two or three trades at a time for exactly
+    that reason.
+
+    A centred rolling max is one strided view and one reduction. Faster is
+    worthless if it is also different, so the loop it replaced is kept here as
+    the reference and the two are compared field by field — including on the
+    shapes that break naive vectorisation: a frame exactly long enough for one
+    pivot, a flat series with no strict extreme, and a plateau where the
+    uniqueness test is the only thing separating a pivot from a shelf.
+    """
+
+    @staticmethod
+    def reference(df, lookback, scope):  # type: ignore[no-untyped-def]
+        """The implementation this replaced, kept verbatim."""
+        swings = []
+        highs = df["high"].to_numpy(dtype=float)
+        lows = df["low"].to_numpy(dtype=float)
+        index = df.index
+        for pivot in range(lookback, len(df) - lookback):
+            left, right = pivot - lookback, pivot + lookback + 1
+            high_window, low_window = highs[left:right], lows[left:right]
+            confirmed = pivot + lookback
+            if highs[pivot] == high_window.max() and (high_window == highs[pivot]).sum() == 1:
+                swings.append(
+                    SwingPoint(
+                        kind="high",
+                        scope=scope,
+                        index=pivot,
+                        confirmed_index=confirmed,
+                        when=index[pivot].to_pydatetime(),
+                        confirmed_at=index[confirmed].to_pydatetime(),
+                        price=float(highs[pivot]),
+                    )
+                )
+            if lows[pivot] == low_window.min() and (low_window == lows[pivot]).sum() == 1:
+                swings.append(
+                    SwingPoint(
+                        kind="low",
+                        scope=scope,
+                        index=pivot,
+                        confirmed_index=confirmed,
+                        when=index[pivot].to_pydatetime(),
+                        confirmed_at=index[confirmed].to_pydatetime(),
+                        price=float(lows[pivot]),
+                    )
+                )
+        return sorted(swings, key=lambda swing: (swing.index, swing.kind))
+
+    @pytest.mark.parametrize("lookback", [1, 2, 3, 5])
+    @pytest.mark.parametrize("seed", [1, 7, 19])
+    def test_a_random_walk_gives_identical_swings(self, lookback: int, seed: int) -> None:
+        rng = np.random.default_rng(seed)
+        closes = list(1.10 + np.cumsum(rng.normal(0, 0.0004, 260)))
+
+        data = frame(closes, Timeframe.H1)
+
+        assert find_swings(data, lookback, "external") == self.reference(data, lookback, "external")
+
+    def test_a_plateau_is_not_a_pivot(self) -> None:
+        """The uniqueness test is the whole difference between a pivot and a
+        shelf, and it is the part a rolling max alone would get wrong."""
+        data = frame([1.0, 2.0, 2.0, 1.0, 0.5], Timeframe.H1)
+
+        assert find_swings(data, 1, "external") == self.reference(data, 1, "external")
+
+    def test_a_flat_series_has_no_strict_extreme(self) -> None:
+        data = frame([1.0] * 20, Timeframe.H1)
+
+        assert find_swings(data, 2, "external") == []
+
+    @pytest.mark.parametrize("bars", [0, 1, 2, 3, 4, 5])
+    def test_the_short_frames_agree_too(self, bars: int) -> None:
+        """Exactly at the boundary is where the trim was wrong: a three-bar
+        frame with lookback 1 holds precisely one pivot, and dropping a window
+        threw it away."""
+        data = frame([1.0, 2.0, 1.0, 3.0, 1.0][:bars] or [1.0], Timeframe.H1)
+
+        assert find_swings(data, 1, "external") == self.reference(data, 1, "external")
+
+    def test_a_frame_without_dates_is_still_accepted(self) -> None:
+        """The position guard builds frames on a RangeIndex. Per-element access
+        tolerated that; a single vectorised `to_pydatetime` does not, and
+        refusing a frame the previous implementation accepted would be a
+        behaviour change smuggled in with a speedup."""
+        data = pd.DataFrame({"high": [1.0, 3.0, 1.0, 2.0, 1.0], "low": [0.5] * 5})
+
+        swings = find_swings(data, 1, "external")
+
+        # Two strict local highs at 3 and 2, both with a lower bar either side.
+        assert [swing.index for swing in swings if swing.kind == "high"] == [1, 3]
+        assert swings[0].when == 1

@@ -17,6 +17,7 @@ from datetime import datetime
 from itertools import pairwise
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 
 from config.schema import MarketStructureConfig
@@ -215,39 +216,82 @@ class MarketStructure:
 
 
 def find_swings(df: pd.DataFrame, lookback: int, scope: SwingScope) -> list[SwingPoint]:
-    """Find pivots whose full left and right windows are closed."""
-    swings: list[SwingPoint] = []
+    """Find pivots whose full left and right windows are closed.
+
+    A pivot high is the strict maximum of the window centred on it — strict
+    meaning it appears exactly once, so a flat double top is not two pivots.
+
+    VECTORISED, AND THAT IS NOT COSMETIC. Written as a Python loop this asked
+    numpy for four small reductions per bar: about 4,800 per decision, and at
+    two hundred H1 bars across five timeframes it was a third of the entire
+    module backtest. Eighty-four minutes for twenty symbols over 180 days, and
+    a measurement nobody will wait for is a measurement that does not get run —
+    which is how this project spent a day changing a live account on two or
+    three trades at a time.
+
+    A centred rolling max is one strided view and one reduction over an axis.
+    The uniqueness test rides on the same view. `test_market_structure` holds
+    the result identical to the loop it replaces, because a faster answer that
+    is a different answer is worse than the slow one.
+    """
     highs = df["high"].to_numpy(dtype=float)
     lows = df["low"].to_numpy(dtype=float)
+    span = 2 * lookback + 1
+    if len(df) <= 2 * lookback:
+        return []
+
+    # Pivot p is the centre of window p - lookback, and there are exactly as
+    # many windows as pivots: len - span + 1 == len - 2 * lookback. Trimming a
+    # window here dropped the only pivot of a three-bar frame, which is the
+    # case `test_pivot_is_visible_only_after_right_hand_confirmation` exists for.
+    windows_high = np.lib.stride_tricks.sliding_window_view(highs, span)
+    windows_low = np.lib.stride_tricks.sliding_window_view(lows, span)
+    centres = np.arange(lookback, len(df) - lookback)
+    centre_high = highs[centres]
+    centre_low = lows[centres]
+
+    is_high = (windows_high.max(axis=1) == centre_high) & (
+        (windows_high == centre_high[:, None]).sum(axis=1) == 1
+    )
+    is_low = (windows_low.min(axis=1) == centre_low) & (
+        (windows_low == centre_low[:, None]).sum(axis=1) == 1
+    )
+
+    # One vectorised conversion instead of boxing a pandas Timestamp per pivot
+    # — 126,000 of those calls in a 150-decision profile.
+    #
+    # A caller may hand this a frame with no dates at all: the position guard
+    # builds one on a RangeIndex, where the old per-element access was tolerated
+    # and this is not. Falling back rather than demanding a DatetimeIndex,
+    # because refusing a frame the previous implementation accepted would be a
+    # behaviour change smuggled in with a speedup.
     index = df.index
-    for pivot in range(lookback, len(df) - lookback):
-        left = pivot - lookback
-        right = pivot + lookback + 1
-        high_window = highs[left:right]
-        low_window = lows[left:right]
-        confirmed = pivot + lookback
-        if highs[pivot] == high_window.max() and (high_window == highs[pivot]).sum() == 1:
+    moments = index.to_pydatetime() if hasattr(index, "to_pydatetime") else list(index)
+    swings: list[SwingPoint] = []
+    for offset, pivot in enumerate(centres):
+        confirmed = int(pivot) + lookback
+        if is_high[offset]:
             swings.append(
                 SwingPoint(
                     kind="high",
                     scope=scope,
-                    index=pivot,
+                    index=int(pivot),
                     confirmed_index=confirmed,
-                    when=index[pivot].to_pydatetime(),
-                    confirmed_at=index[confirmed].to_pydatetime(),
-                    price=float(highs[pivot]),
+                    when=moments[pivot],
+                    confirmed_at=moments[confirmed],
+                    price=float(centre_high[offset]),
                 )
             )
-        if lows[pivot] == low_window.min() and (low_window == lows[pivot]).sum() == 1:
+        if is_low[offset]:
             swings.append(
                 SwingPoint(
                     kind="low",
                     scope=scope,
-                    index=pivot,
+                    index=int(pivot),
                     confirmed_index=confirmed,
-                    when=index[pivot].to_pydatetime(),
-                    confirmed_at=index[confirmed].to_pydatetime(),
-                    price=float(lows[pivot]),
+                    when=moments[pivot],
+                    confirmed_at=moments[confirmed],
+                    price=float(centre_low[offset]),
                 )
             )
     return sorted(swings, key=lambda swing: (swing.index, swing.kind))
