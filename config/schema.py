@@ -2170,6 +2170,24 @@ class ConfluenceConfig(Base):
     #: same law the runway check uses. Left unbounded the square law runs away
     #: and the window stops describing a trade anyone would sit in.
     max_cost_horizon_stretch: float = Field(default=4.0, ge=1.0, le=25.0)
+    #: Choose the target with the best expectancy PER BAR rather than per trade.
+    #:
+    #: Maximising per trade systematically prefers the far target, because a
+    #: bigger target needs a lower hit rate to pay. With `target_r_multiple` at
+    #: 3.0 the search kept choosing 3R, and 3R on an H1 plan is roughly nine
+    #: hours of travel under the square law — against eight or nine hours in an
+    #: entire session. 56 of 140 live setups in one six-hour window died on
+    #: INSUFFICIENT_RUNWAY: not refused on their merits, refused because the
+    #: target the search chose could not be reached before the day ended.
+    #:
+    #: A session has a deadline, so the quantity being maximised has to be
+    #: expectancy per unit of TIME. 1R reached inside an hour beats 3R needing
+    #: nine hours that do not exist, and the money is in the account either way.
+    #:
+    #: Still a search over distances with positive expectancy — this changes
+    #: which of the payable distances is chosen, never whether an unpayable one
+    #: can be.
+    prefer_sooner_targets: bool = True
     target_r_multiple: float = Field(default=2.0, ge=1.0, le=10.0)
     #: The target is also bounded by how far this instrument actually travels.
     #: `entry + 2R` is arithmetic and never asks whether the market goes there;

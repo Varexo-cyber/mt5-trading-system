@@ -74,11 +74,57 @@ def config(**overrides: object) -> ConfluenceConfig:
 
 def test_paper_builds_structural_trade_idea() -> None:
     idea = ConfluenceEngine(modules(), config()).evaluate(context(), TradingMode.PAPER)
+    band = config()
 
     assert idea.approved
     assert idea.direction is not None and idea.direction.name == "LONG"
     assert idea.stop_loss < idea.entry < idea.take_profit
-    assert (idea.take_profit - idea.entry) / (idea.entry - idea.stop_loss) == 2.0
+    # Inside the band rather than pinned to the ceiling. The search picks the
+    # payable distance with the best expectancy PER BAR, so the multiple it
+    # lands on is a property of the market and not of `target_r_multiple`.
+    achieved = (idea.take_profit - idea.entry) / (idea.entry - idea.stop_loss)
+    assert band.minimum_r_multiple - 1e-9 <= achieved <= band.target_r_multiple + 1e-9
+
+
+class TestTheTargetIsChosenForWhenItArrivesNotOnlyForHowBigItIs:
+    """Maximising expectancy per TRADE systematically prefers the far target,
+    because a bigger target needs a lower hit rate to pay. With the ceiling at
+    3.0 the search kept choosing 3R, and 3R on an H1 plan is about nine hours of
+    travel under the square law — against eight or nine in a whole session.
+
+    56 of 140 live setups in one six-hour window died on INSUFFICIENT_RUNWAY.
+    Not refused on their merits: refused because the target the search chose
+    could not be reached before the day ended. A session has a deadline, so the
+    quantity to maximise is expectancy per unit of time.
+    """
+
+    def test_the_nearer_payable_target_is_taken(self) -> None:
+        near = ConfluenceEngine(modules(), config()).evaluate(context(), TradingMode.PAPER)
+        far = ConfluenceEngine(modules(), config(prefer_sooner_targets=False)).evaluate(
+            context(), TradingMode.PAPER
+        )
+
+        assert near.approved and far.approved
+        near_r = (near.take_profit - near.entry) / (near.entry - near.stop_loss)
+        far_r = (far.take_profit - far.entry) / (far.entry - far.stop_loss)
+
+        assert near_r < far_r
+
+    def test_it_still_cannot_choose_an_unpayable_distance(self) -> None:
+        """This changes WHICH payable distance is chosen, never whether an
+        unpayable one can be. A market that reaches nothing is still refused."""
+        idea = ConfluenceEngine(modules(), config()).evaluate(
+            context(step=0.00002), TradingMode.PAPER
+        )
+
+        assert not idea.approved
+
+    def test_the_note_says_how_long_the_target_should_take(self) -> None:
+        """The operator reading the journal has to be able to see the trade-off
+        that was made, not only the multiple that came out of it."""
+        idea = ConfluenceEngine(modules(), config()).evaluate(context(), TradingMode.PAPER)
+
+        assert "bars" in idea.reason
 
 
 def test_a_target_the_market_never_reaches_is_trimmed_or_refused() -> None:
