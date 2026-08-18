@@ -99,17 +99,34 @@ class HistoricalContextReplay:
         decisions = frames[Timeframe.H1]
         closed_at = decisions.index + Timeframe.H1.duration
         eligible = decisions[(closed_at >= start) & (closed_at < end)]
+        # Close times per timeframe, computed once instead of per decision.
+        #
+        # The slice below used to be `frame[frame.index + duration <= decided_at]`,
+        # which builds a boolean mask over the WHOLE frame and copies the
+        # matching rows — every decision, every timeframe. Over 90 days the M5
+        # frame is around 26,000 rows, so a five-symbol run was doing hundreds
+        # of millions of row comparisons to find a cut point in a sorted index,
+        # and the tool built to make measurement cheap took long enough that
+        # nobody would run it twice.
+        #
+        # The index is sorted and never changes, so the cut point is a binary
+        # search and the window is a view.
+        close_times = {tf: frames[tf].index + tf.duration for tf in REPLAY_TIMEFRAMES}
         for sequence, opened_at in enumerate(eligible.index):
             if sequence % self.decision_stride_bars:
                 continue
             decided_at = (opened_at + Timeframe.H1.duration).to_pydatetime()
+            moment = pd.Timestamp(decided_at)
             series: dict[Timeframe, Series] = {}
             complete = True
             for timeframe in REPLAY_TIMEFRAMES:
-                frame = frames[timeframe]
-                available = frame[frame.index + timeframe.duration <= decided_at].tail(
-                    self.history_bars
-                )
+                # `side="right"` counts the bars whose close is at or before the
+                # decision, which is exactly what `<= decided_at` selected.
+                cut = int(close_times[timeframe].searchsorted(moment, side="right"))
+                if cut < 120:
+                    complete = False
+                    break
+                available = frames[timeframe].iloc[max(0, cut - self.history_bars) : cut]
                 if len(available) < 120:
                     complete = False
                     break
