@@ -981,3 +981,49 @@ class TestTheLoneFloorCanBeSetPerDetector:
         )
 
         assert settings.analysis.confluence.lone_module_minimum_confidence_by_module == {}
+
+
+class TestTrendMomentumIsOffLiveOnItsRecord:
+    """The first hard finding this account produced, acted on.
+
+    20 markets, 180 days, 163 closed trades: -0.365R a trade, -59.45R in total,
+    t = -4.01. Not a small sample and not bad luck — a detector that loses
+    money, and the one behind more proposals than any other.
+
+    It stays WEIGHTED so `scripts/backtest_modules.py` keeps measuring it. Only
+    the allowlist decides whether a module may trade live, which is exactly the
+    separation that makes a decision like this reversible on evidence rather
+    than on argument.
+    """
+
+    def _confluence(self):  # type: ignore[no-untyped-def]
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.confluence
+
+    def test_it_cannot_trade_live(self) -> None:
+        assert "trend_momentum" not in self._confluence().live_enabled_modules
+
+    def test_but_it_is_still_measured(self) -> None:
+        """Switching a module off and losing sight of it means never finding
+        out whether the decision was right."""
+        assert self._confluence().weights.get("trend_momentum", 0.0) > 0
+
+    def test_the_live_engine_zeroes_it_rather_than_dropping_the_setup(self) -> None:
+        """A setup that had trend_momentum AND another detector should survive
+        on the other one. Only the trades it carried alone disappear — 158 of
+        its 347 proposals, not all of them."""
+        from analysis.confluence import ConfluenceEngine
+        from config.schema import ConfluenceConfig
+
+        config = ConfluenceConfig(
+            live_enabled_modules=("liquidity_sweep",),
+            weights={"trend_momentum": 1.0, "liquidity_sweep": 0.8},
+        )
+        engine = ConfluenceEngine([], config)
+
+        assert "trend_momentum" in engine.config.weights
+        assert "trend_momentum" not in engine.config.live_enabled_modules
+        assert "liquidity_sweep" in engine.config.live_enabled_modules
