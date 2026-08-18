@@ -1929,6 +1929,26 @@ class ConfluenceConfig(Base):
     #: reached the gate, so widening — the thing that exists to make
     #: small-account trades viable at all — could only count against a trade.
     first_touch_target_test: bool = True
+    #: Let the analysis plan on the cost-implied stop instead of only the
+    #: chart's. OFF, and turned off by its own evidence rather than by taste.
+    #:
+    #: The argument for it was that 1,710 refusals in two live hours read "no
+    #: target between 1.00R and 3.00R pays on this market" and were measured
+    #: against a stop the runner was about to widen. One hour with it on, and
+    #: normalised per hour against the two hours before:
+    #:
+    #:     no target pays     855/h -> 881/h    +3%, did not move
+    #:     setups formed       52/h ->  37/h   -28%
+    #:     runway failures      6%  ->  16%   of the setups that did form
+    #:
+    #: The number it was built to reduce did not move, and the wider stop put
+    #: the target farther away, which the runway gate then refused. Two of
+    #: those three could be the hour of day; the flat one cannot be, and it is
+    #: the one the whole argument rested on.
+    #:
+    #: The code and its tests stay. Turning it back on means measuring it
+    #: against a clean baseline on the same session, not another guess.
+    plan_on_cost_floor: bool = False
     #: Percentage points demanded ABOVE break-even. Small on purpose: reach
     #: counts up and down moves independently over the same windows, so it is
     #: not the probability of hitting the target before the stop and must not

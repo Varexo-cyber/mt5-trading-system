@@ -5091,6 +5091,8 @@ class JarvisRunner:
         whose fee schedule cannot be read has not failed this test, it has not
         taken it.
         """
+        if not self.settings.analysis.confluence.plan_on_cost_floor:
+            return
         try:
             floor = self._cost_implied_min_stop(self.broker.spec(symbol))
         except (TradingSystemError, ValueError, KeyError):

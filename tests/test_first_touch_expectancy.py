@@ -282,19 +282,60 @@ class TestTheEnginePlansOnTheStopTheRunnerWillSend:
     """
 
     @staticmethod
-    def _runner():  # type: ignore[no-untyped-def]
+    def _runner(*, planning: bool = True):  # type: ignore[no-untyped-def]
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
         from core.instrument import InstrumentSpec
         from runner.service import JarvisRunner
         from tests.fakes.fake_mt5 import eurusd_spec
 
         runner = object.__new__(JarvisRunner)
-        runner.settings = load_settings(
+        settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        # The live overlay has this off on its own measured evidence; the
+        # mechanism is still tested, because turning it back on has to mean
+        # measuring it and not rediscovering it.
+        runner.settings = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={
+                        "confluence": settings.analysis.confluence.model_copy(
+                            update={"plan_on_cost_floor": planning}
+                        )
+                    }
+                )
+            }
         )
         spec = InstrumentSpec.from_mt5(eurusd_spec())
         runner.broker = type("_B", (), {"spec": staticmethod(lambda _s: spec)})()
         return runner, spec
+
+    def test_the_live_overlay_leaves_the_analysis_planning_as_it_was(self) -> None:
+        """One live hour: the refusal it was built to reduce did not move (855/h
+        to 881/h) while setups fell 52/h to 37/h and runway failures went from
+        6% to 16% of the setups that formed. Off until it can be measured
+        against a clean baseline."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.analysis.confluence.plan_on_cost_floor is False
+
+    def test_switched_off_the_engine_never_hears_about_the_floor(self) -> None:
+        from datetime import UTC, datetime
+
+        from core.types import MarketContext
+
+        runner, _ = self._runner(planning=False)
+        context = MarketContext(
+            symbol="EURUSD", now=datetime(2026, 8, 18, tzinfo=UTC), series={}, tick=None
+        )
+
+        runner._attach_cost_floor("EURUSD", context)
+
+        assert "min_stop_for_costs" not in context.meta
 
     def test_the_floor_is_the_distance_the_runner_would_have_widened_to(self) -> None:
         from analysis.confluence import TradeIdea
