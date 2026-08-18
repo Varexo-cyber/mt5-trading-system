@@ -511,13 +511,28 @@ class ConfluenceEngine:
             note = "planned" if distance >= planned else f"trimmed to {achieved_r:.2f}R"
             return entry + distance * int(direction), note
 
-        # Cost in R, from the live quote. Commission is not known here and is
-        # charged again by the sizer's own cost gate, so this is the optimistic
-        # half of the bill — deliberately, because the pessimistic half already
-        # has a gate of its own and counting it twice would refuse trades the
-        # sizer is about to accept.
+        # THE WHOLE BILL, IN R. The spread comes from the live quote;
+        # commission and slippage come from the runner, which is the only layer
+        # that knows the fee schedule.
+        #
+        # This counted the spread alone, on the reasoning that the sizer
+        # charges commission again later and counting it twice would refuse
+        # trades the sizer is about to accept. That holds at 1.0R, where
+        # commission is a small part of the reward. It breaks below it: at
+        # 0.6R the reward is 40% smaller and the commission is unchanged, so
+        # the estimate was most optimistic at exactly the distances the search
+        # is now allowed to consider. Choosing a short target on an optimistic
+        # cost is how "shrinking the target buys a high hit rate on trades that
+        # cannot pay for their own spread" actually happens.
+        #
+        # Zero when the runner did not supply it — a backtest, a unit test —
+        # which is the old behaviour and not a claim that the trade is free.
         spread = getattr(ctx.tick, "spread", 0.0) or 0.0
-        cost_r = (spread / risk) if risk > 0 else 0.0
+        try:
+            overhead = float(ctx.meta.get("round_trip_cost_price", 0.0))
+        except (AttributeError, TypeError, ValueError):
+            overhead = 0.0
+        cost_r = ((spread + max(overhead, 0.0)) / risk) if risk > 0 else 0.0
 
         best_r, best_reach, best_edge = 0.0, 0.0, 0.0
         step = 0.05

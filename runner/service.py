@@ -5098,21 +5098,65 @@ class JarvisRunner:
         return adverse <= config.confirmation_max_adverse_atr, adverse
 
     def _attach_cost_floor(self, symbol: str, context: MarketContext) -> None:
-        """Put the cost-implied minimum stop where the analysis can see it.
+        """Put what a round trip costs where the analysis can see it.
 
-        Silent on any failure. A missing spec means the engine plans exactly as
-        it did before, which is the old behaviour and not a refusal — a symbol
-        whose fee schedule cannot be read has not failed this test, it has not
-        taken it.
+        TWO NUMBERS, AND THE FIRST ONE IS NOT OPTIONAL.
+
+        `round_trip_cost_price` is commission and slippage expressed as a price
+        distance, and the target search needs it to be honest. That search
+        counted the spread and nothing else, on the reasoning that the sizer
+        charges commission again later and counting it twice would refuse
+        trades the sizer is about to accept. That reasoning holds at 1.0R,
+        where commission is a small part of the reward. It fails at 0.6R, where
+        the reward is 40% smaller and the commission is unchanged — which is
+        exactly the distance the owner wants to trade, so the estimate would
+        have been most optimistic precisely where it matters most.
+
+        `min_stop_for_costs` is the separate, measured-and-retracted experiment
+        behind `plan_on_cost_floor`, off by its own evidence.
+
+        Silent on any failure. A symbol whose fee schedule cannot be read plans
+        exactly as it did before, which is the old behaviour and not a refusal.
         """
-        if not self.settings.analysis.confluence.plan_on_cost_floor:
-            return
         try:
-            floor = self._cost_implied_min_stop(self.broker.spec(symbol))
+            spec = self.broker.spec(symbol)
         except (TradingSystemError, ValueError, KeyError):
             return
+        cost = self._round_trip_cost_price(spec)
+        if cost > 0:
+            context.meta["round_trip_cost_price"] = cost
+        if not self.settings.analysis.confluence.plan_on_cost_floor:
+            return
+        floor = self._cost_implied_min_stop(spec)
         if floor > 0:
             context.meta["min_stop_for_costs"] = floor
+
+    def _round_trip_cost_price(self, spec) -> float:  # type: ignore[no-untyped-def]
+        """Commission and slippage on one lot, as a distance in price.
+
+        The spread is deliberately NOT included: the caller reads that from the
+        live tick, which is more accurate than any average, and adding it here
+        would count it twice.
+
+        Zero when the question cannot be answered, so a caller treats it as "no
+        information" and not as "no cost".
+        """
+        if spec is None:
+            return 0.0
+        try:
+            per_price_unit = spec.money_per_lot(1.0)
+            cost_per_lot = self.settings.risk.commission_per_lot(
+                spec.asset_class.value
+            ) + spec.money_per_lot(
+                spec.pips_to_price(
+                    self.settings.risk.stop_slippage_pips.get(spec.asset_class.value, 0.0)
+                )
+            )
+        except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+            return 0.0
+        if per_price_unit <= 0 or cost_per_lot <= 0:
+            return 0.0
+        return float(cost_per_lot / per_price_unit)
 
     def _cost_implied_min_stop(self, spec) -> float:  # type: ignore[no-untyped-def]
         """The narrowest stop on which commission and slippage stay under the limit.

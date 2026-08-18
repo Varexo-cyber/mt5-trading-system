@@ -617,9 +617,43 @@ analysis:
     # De stop wordt hier niet door verbreed en het risico per trade niet groter.
     # Wat verandert is hoe ver het doel mag liggen als de markt dat waarmaakt.
     target_r_multiple: 3.0
-    # Houd analyse en position sizer op exact dezelfde 1.0R-vloer. Voorheen kon
-    # de analyse tot 0.9R trimmen terwijl de sizer alles onder 1.1R alsnog
-    # weigerde. Dat was een verborgen dubbele poort, geen extra marktkennis.
+    # DE GROOTSTE MUUR IN HET HELE SYSTEEM, en hij stond op 1.0.
+    #
+    # Gemeten over 90 dagen op vijf symbolen: `no target between 1.00R and
+    # 3.00R pays on this market` was met 2.138 weigeringen de nummer één reden
+    # dat er geen setup ontstond — meer dan alle lone-module weigeringen bij
+    # elkaar, en in beide takken van de A/B de grootste post.
+    #
+    # Dit is GEEN kwaliteitspoort. De zoeker kiest alleen een afstand met een
+    # positief gemeten first-touch verwachtingswaarde, dus deze vloer verlagen
+    # voegt kandidaten toe en kan het gekozen target nooit slechter maken. Wat
+    # hij deed was de vraag verbieden: een snelle trade die 0.6R pakt met een
+    # hoge trefkans bestond niet voor de engine. Bij 0.6R en 10% kosten is de
+    # break-even trefkans 69% — streng, en haalbaar voor een strakke scalp.
+    #
+    # TWEE DINGEN MOESTEN EERST WAAR ZIJN EN WAREN DAT ALLEBEI NIET.
+    #
+    # `risk.min_risk_reward` weigert één laag later alles onder zijn eigen
+    # waarde, dus deze in z'n eentje verlagen doet niets. Die staat nu ook op
+    # 0.60 en een validator op Settings weigert voortaan elke combinatie waarin
+    # ze uit elkaar lopen — precies de fout die de notitie hieronder al een keer
+    # beschrijft.
+    #
+    # En de verwachtingswaarde-zoeker telde alleen de spread, niet de commissie.
+    # Dat is verdedigbaar op 1.0R en fout daaronder: de opbrengst krimpt en de
+    # commissie niet, dus de schatting was het meest optimistisch op precies de
+    # afstanden die nu zijn toegestaan. De runner levert nu de volle rekening
+    # aan via `round_trip_cost_price`.
+    #
+    # EN TOCH STAAT HIJ OP 1.0, want de 20-symbolen meting kwam binnen terwijl
+    # dit werd geschreven en die zegt iets anders. Verlagen naar 0.60 levert
+    # +46% setups op (130 -> 190 over dezelfde bars), maar over 180 dagen en 20
+    # markten is GEEN ENKELE module positief — trend_momentum -0.365R per trade
+    # over 163 trades met t = -4.01, en liquidity_sweep klapte van +0.119R op 23
+    # trades naar -0.242R op 48. 46% meer setups uit detectoren die allemaal
+    # verliezen is 46% meer verlies.
+    #
+    # Eén regel, klaar om te zetten zodra een detector zijn plek verdient.
     minimum_r_multiple: 1.0
     # De bereiktest vraagt al om de rekenkundige break-even reach rate. De extra
     # vaste drie procentpunten waren een tweede veiligheidsmarge bovenop spread-
@@ -1248,6 +1282,20 @@ risk:
   # bijsnijden, maar deze laag weigerde daarna alles onder 1.1R. Op 1.0 blijft
   # minder dan de mogelijke stop verdienen verboden, terwijl een exact 1R-plan
   # niet langer door een latere laag wordt weggegooid.
+  # 0.60, in de pas met `analysis.confluence.minimum_r_multiple`. Een validator
+  # op Settings weigert nu elke combinatie waarin deze twee uit elkaar lopen, in
+  # plaats van dat ze met de hand gelijk worden gehouden — de notitie hierboven
+  # beschrijft precies wat er gebeurt als dat een keer misgaat, en met de hand
+  # gelijkhouden werkt tot de eerste keer dat iemand er één aanpast.
+  #
+  # Minder verdienen dan de stop kan kosten is hiermee toegestaan, en dat is
+  # bewust: 0.60R met een gemeten trefkans van 70% is een betere trade dan 1.00R
+  # die een derde van de tijd gehaald wordt. Welke van de twee het is, bepaalt
+  # de verwachtingswaarde-zoeker in de engine, niet dit getal.
+  #
+  # 1.0 en niet 0.60, omdat `analysis.confluence.minimum_r_multiple` op 1.0 is
+  # gebleven — zie de meting daar. De validator houdt de twee voortaan aan
+  # elkaar vast, dus wie de een verzet moet de ander meenemen.
   min_risk_reward: 1.0
   max_trades_per_day: 0
   max_trades_per_week: 0
