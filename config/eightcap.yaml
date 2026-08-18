@@ -648,10 +648,33 @@ analysis:
   # far more setups than the pattern logic does.
   playbooks:
     enabled: true
-    # The supplied 90-day matched-control test was negative. Keep these
-    # theories running as research/context, but do not let them create or veto
-    # a real-money order until new OOS evidence clears the promotion protocol.
-    live_execution_enabled: false
+    # AANGEZET OP UITDRUKKELIJK VERZOEK VAN DE EIGENAAR, 18 augustus.
+    #
+    # WAT HIER STOND EN WAAROM HET ERTOE DOET: "The supplied 90-day
+    # matched-control test was negative." Dat is echt bewijs tegen, en het is
+    # niet per playbook uitgesplitst - het oordeel gold de vijf samen. De
+    # eigenaar is hierop gewezen en heeft het herhaald: `range_fade` is precies
+    # de short die hij bij een afgewezen long in een range had willen hebben, en
+    # die kans laat hij niet liggen op een aggregaat.
+    #
+    # WAT DIT WEL EN NIET OPENZET. De playbookroute is niet de losse route, hij
+    # is de STRENGSTE in het systeem:
+    #
+    #   min_conviction            75,0   tegen 26,0 voor de engine
+    #   require_method_agreement  true   swing en playbook moeten het eens zijn
+    #   veto_on_conflict          true   twee theorieen tegen elkaar = wegblijven
+    #   max_spread_share_of_stop  0,15   tegen 0,35 in de sizer
+    #
+    # En daarna gelden sizing, marge, correlatie, sessie en elke filterpoort
+    # onveranderd. Wat dit toevoegt is een setup-soort, geen kortere weg.
+    #
+    # HOE DIT WORDT BEOORDEELD, en dat is de afspraak: `backtest_playbooks.py
+    # --days 180 --min-conviction 75` splitst het per theorie uit, en
+    # `scorecard.py` laat de gerealiseerde uitkomst per setup-familie zien.
+    # Staat `range_fade` negatief op echte bars, dan gaat die ene op false in
+    # plaats van deze schakelaar terug op false - de andere vier hoeven daar
+    # niet onder te lijden, en omgekeerd.
+    live_execution_enabled: true
     momentum_scalp: true
     range_fade: true
     # Two theories reading the same bars in opposite directions is a market
