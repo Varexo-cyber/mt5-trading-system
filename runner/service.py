@@ -76,6 +76,7 @@ from analysis.playbooks import (
     TrendPullback,
 )
 from analysis.target_reach import measure as measure_target_reach
+from analysis.target_reach import measure_first_touch
 from brain import EdgeCalibration, build_brain
 from config.schema import Settings
 from core.broker import Broker
@@ -2079,6 +2080,65 @@ class JarvisRunner:
             required_pct=min(100.0, verdict.required_pct + config.target_reach_margin_pct),
         )
 
+    def _target_survival(self, context: MarketContext, idea: TradeIdea):  # type: ignore[no-untyped-def]
+        """Expectancy of this plan measured against the stop it will carry.
+
+        Same windows and same horizon as `_target_reach`, one difference: each
+        window ends at the first bar that would have taken the stop, so a
+        window that fell a full R and only then rallied counts as the loss it
+        would have been.
+
+        This is the measurement the analysis engine already uses to CHOOSE the
+        target — `ConfluenceEngine._reachable_target` will not propose a
+        distance without positive first-touch expectancy. It was not being
+        re-asked here, and by here the plan is no longer the plan the engine
+        approved: `_widen_stop_for_costs` runs a few lines above and, on an
+        account this size, fires on nearly every candidate. Widening lowers
+        reward-to-risk AND makes the position much harder to stop out. The old
+        gate saw only the first half — an unconditional reach rate, unmoved by
+        the wider stop, tested against a break-even the wider stop had just
+        raised — so widening could only ever count against a trade.
+
+        Returns None whenever the question cannot be answered, so an instrument
+        without the history is judged on everything else exactly as before.
+        """
+        config = self.settings.analysis.confluence
+        if not config.first_touch_target_test or not config.require_target_base_rate:
+            return None
+        if idea.direction is None:
+            return None
+        risk = abs(idea.entry - idea.stop_loss)
+        reward = abs(idea.take_profit - idea.entry)
+        if risk <= 0 or reward <= 0:
+            return None
+        try:
+            planning = Timeframe.parse(idea.planning_timeframe)
+        except ValueError:
+            return None
+        series = context.series.get(planning)
+        if series is None or series.df is None or series.df.empty:
+            return None
+        minutes = max(1, int(planning.duration.total_seconds() / 60))
+        bars_ahead = max(1, math.ceil(idea.expected_horizon_minutes / minutes))
+        # The live spread, in units of the stop that will carry it. Widening
+        # the stop is exactly what makes this number small, and it belongs on
+        # the same side of the comparison as the reward-to-risk it paid for.
+        spread = context.tick.spread if context.tick else 0.0
+        verdict = measure_first_touch(
+            series.df.tail(400),
+            distance=reward,
+            risk=risk,
+            bars_ahead=bars_ahead,
+            long=idea.direction is Direction.LONG,
+            cost_r=max(0.0, spread / risk),
+        )
+        if verdict is None or not verdict.measured:
+            return None
+        return replace(
+            verdict,
+            required_pct=min(100.0, verdict.required_pct + config.target_reach_margin_pct),
+        )
+
     def _conviction_stake(self, state, idea: TradeIdea, advice: Advice) -> tuple[float, str]:
         """The risk percentage this setup has earned, and why.
 
@@ -2815,17 +2875,31 @@ class JarvisRunner:
         # AUDUSD at "37.0% up against 37.5% down, essentially a coin flip", and
         # AUDSGD proposed LONG at 38.1% up against 46.8% DOWN.
         reach = self._target_reach(context, idea)
+        # And the sharper version of the same question, asked against the stop
+        # this order will actually carry. `reach` counts every window in which
+        # price ever covered the distance, including the ones that first fell a
+        # full R — so it answers "which way does this instrument travel", not
+        # "does this plan pay". The plan owns a stop, and on this account that
+        # stop has usually just been widened; see `SurvivalVerdict`. When the
+        # history can answer it, it decides, and `reach` keeps the direction
+        # comparison, which is what it is actually good for.
+        survival = self._target_survival(context, idea)
+        payable = survival if survival is not None else reach
         horizon_advisories: list[dict[str, object]] = []
-        if reach is not None and not reach.clears_break_even:
-            if self._reach_failure_is_advisory(idea, reach):
+        if payable is not None and not payable.clears_break_even:
+            if self._reach_failure_is_advisory(idea, payable):
                 horizon_advisories.append(
                     {
-                        "type": "unconditional_target_reach_below_break_even",
+                        "type": (
+                            "first_touch_expectancy_negative"
+                            if survival is not None
+                            else "unconditional_target_reach_below_break_even"
+                        ),
                         "hard_gate": False,
-                        "detail": reach.describe(),
-                        "forward_pct": reach.forward_pct,
-                        "required_pct": reach.required_pct,
-                        "windows": reach.windows,
+                        "detail": payable.describe(),
+                        "forward_pct": payable.forward_pct,
+                        "required_pct": payable.required_pct,
+                        "windows": payable.windows,
                     }
                 )
             else:
@@ -2834,9 +2908,9 @@ class JarvisRunner:
                     symbol,
                     account.equity,
                     Reason.TARGET_RARELY_REACHED,
-                    reach.describe(),
+                    payable.describe(),
                     signals=list(idea.signals),
-                    extra={**filter_data, "target_reach_pct": reach.forward_pct},
+                    extra={**filter_data, "target_reach_pct": payable.forward_pct},
                     total_score=idea.score,
                 )
                 return False

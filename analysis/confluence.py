@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from analysis.target_reach import first_touch_runs
 from config.schema import ConfluenceConfig, HorizonProfileConfig
 from core.types import AnalysisModule, Direction, MarketContext, Signal, Timeframe, TradingMode
 
@@ -454,7 +455,7 @@ class ConfluenceEngine:
             return None, (
                 f"no target between {worst:.2f}R and {ceiling:.2f}R pays on this market: "
                 f"{worst:.2f}R is reached first {floor_hit:.0%} of the time against "
-                f"{(1.0 + cost_r) / (1.0 + worst - cost_r):.0%} needed to break even at "
+                f"{(1.0 + cost_r) / (1.0 + worst):.0%} needed to break even at "
                 f"a {cost_r:.0%}-of-risk spread"
             )
 
@@ -481,43 +482,22 @@ class ConfluenceEngine:
         it produces, and the overstatement is largest exactly where it matters —
         volatile markets that whip both ways.
 
-        This walks each window once, finds the first bar whose adverse extreme
-        would have taken the stop, and measures the favourable extreme only up
-        to that point. The result is a first-touch record: for any distance, the
-        share of windows that reached it while the trade was still alive.
+        The walk itself lives in `analysis.target_reach` because the runner
+        needs the same measurement one step later, against the stop the order
+        will actually carry rather than the one this engine proposed. Two
+        copies of a statistic that must agree is how the two gates came to
+        disagree in the first place.
 
-        None when the frame lacks the columns to do it, so the caller keeps its
-        previous behaviour rather than inventing a number.
+        None when the frame lacks the columns or the history to do it, so the
+        caller keeps its previous behaviour rather than inventing a number.
         """
-        if "high" not in frame.columns or "low" not in frame.columns or risk <= 0:
-            return None
-        highs = frame["high"].to_numpy()
-        lows = frame["low"].to_numpy()
-        windows = len(closes) - horizon
-        if windows <= 0:
-            return None
-        sign = int(direction)
-        favourable = highs if direction is Direction.LONG else lows
-        adverse = lows if direction is Direction.LONG else highs
-        reached = np.empty(windows, dtype=float)
-        for start in range(windows):
-            begin, end = start + 1, start + 1 + horizon
-            opened = closes[start]
-            stop_level = opened - risk * sign
-            adverse_slice = adverse[begin:end]
-            breached = (
-                adverse_slice <= stop_level
-                if direction is Direction.LONG
-                else adverse_slice >= stop_level
-            )
-            hit = int(np.argmax(breached)) if breached.any() else len(adverse_slice)
-            alive = favourable[begin : begin + hit] if hit else favourable[begin:begin]
-            if alive.size == 0:
-                reached[start] = 0.0
-                continue
-            best = alive.max() if direction is Direction.LONG else alive.min()
-            reached[start] = (best - opened) * sign
-        return reached
+        return first_touch_runs(
+            frame,
+            risk=risk,
+            bars_ahead=horizon,
+            long=direction is Direction.LONG,
+            closes=closes,
+        )
 
     def higher_timeframe_conflict(
         self,

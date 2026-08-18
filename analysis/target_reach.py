@@ -103,6 +103,151 @@ class ReachVerdict:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SurvivalVerdict:
+    """How often the target was reached WHILE THE TRADE WAS STILL ALIVE.
+
+    The difference from `ReachVerdict` is the stop. Reach counts a window as a
+    success whenever price ever covered the distance inside the horizon, even
+    if it first fell a full R and would have been closed long before the rally.
+    That is the right statistic for "which way does this instrument travel",
+    and the wrong one for "does this plan pay", because the plan owns a stop.
+
+    It matters most on this account because the stop it owns is not the stop
+    the analysis chose. `_widen_stop_for_costs` pushes the stop out so the
+    commission stops being the trade, and on a €160 account it fires on nearly
+    every candidate. Widening does two things at once: it lowers
+    reward-to-risk, and it makes the position far harder to stop out. The old
+    gate charged the first and never credited the second — it re-tested an
+    unconditional reach rate, unchanged by the wider stop, against a break-even
+    requirement the wider stop had just raised. Every widened trade was scored
+    on the cost of the widening and none of its benefit.
+    """
+
+    windows: int
+    forward_pct: float
+    required_pct: float
+    expected_r: float
+    reward_risk: float
+    cost_r: float
+
+    @property
+    def measured(self) -> bool:
+        return self.windows > 0
+
+    @property
+    def clears_break_even(self) -> bool:
+        """Positive measured expectancy, costs included.
+
+        Written as a comparison of rates rather than `expected_r > 0` so that
+        an operator margin added to `required_pct` actually bites. With no
+        margin the two forms are the same statement: solving `expected_r > 0`
+        for the hit rate is where `required_pct` comes from.
+        """
+        return self.forward_pct >= self.required_pct
+
+    def describe(self) -> str:
+        return (
+            f"this market reached the target before the {self.reward_risk:.2f}RR stop in "
+            f"{self.forward_pct:.1f}% of {self.windows} comparable windows; at a "
+            f"{self.cost_r:.0%}-of-risk round trip it needs {self.required_pct:.1f}% to "
+            f"break even, so one trade is worth {self.expected_r:+.2f}R"
+        )
+
+
+def first_touch_runs(
+    frame: pd.DataFrame,
+    *,
+    risk: float,
+    bars_ahead: int,
+    long: bool,
+    closes: np.ndarray | None = None,
+) -> np.ndarray | None:
+    """Per window: how far price ran our way BEFORE the stop would have hit.
+
+    Walks each window once, finds the first bar whose adverse extreme would
+    have taken a stop `risk` away from the opening close, and measures the
+    favourable extreme only up to that bar. The result is a first-touch record:
+    for any distance, the share of windows that reached it while the trade was
+    still alive.
+
+    `closes` may be supplied by a caller that already holds the array; it is
+    read from the frame otherwise.
+
+    None when the frame lacks the columns or the history to do it, so a caller
+    keeps its previous behaviour rather than inventing a number.
+    """
+    if frame is None or frame.empty or risk <= 0 or bars_ahead <= 0:
+        return None
+    if not {"high", "low"}.issubset(frame.columns):
+        return None
+    if closes is None:
+        if "close" not in frame.columns:
+            return None
+        closes = frame["close"].to_numpy(dtype=float)
+    windows = len(closes) - bars_ahead
+    if windows <= 0:
+        return None
+    highs = frame["high"].to_numpy(dtype=float)
+    lows = frame["low"].to_numpy(dtype=float)
+    sign = 1 if long else -1
+    favourable = highs if long else lows
+    adverse = lows if long else highs
+    reached = np.empty(windows, dtype=float)
+    for start in range(windows):
+        begin, end = start + 1, start + 1 + bars_ahead
+        opened = closes[start]
+        stop_level = opened - risk * sign
+        adverse_slice = adverse[begin:end]
+        breached = adverse_slice <= stop_level if long else adverse_slice >= stop_level
+        hit = int(np.argmax(breached)) if breached.any() else len(adverse_slice)
+        alive = favourable[begin : begin + hit]
+        if alive.size == 0:
+            reached[start] = 0.0
+            continue
+        best = alive.max() if long else alive.min()
+        reached[start] = (best - opened) * sign
+    return reached
+
+
+def measure_first_touch(
+    frame: pd.DataFrame,
+    *,
+    distance: float,
+    risk: float,
+    bars_ahead: int,
+    long: bool,
+    cost_r: float = 0.0,
+) -> SurvivalVerdict | None:
+    """Expectancy of this exact plan, measured against its own stop.
+
+    `distance` is where the target actually sits and `risk` is the stop the
+    order will actually carry — the widened one, when it was widened. The
+    reward-to-risk is derived from those two rather than passed in, so the
+    number tested is the number the broker will receive.
+
+    None when the history cannot answer, never a refusal on ignorance.
+    """
+    runs = first_touch_runs(frame, risk=risk, bars_ahead=bars_ahead, long=long)
+    if runs is None or runs.size == 0 or distance <= 0:
+        return None
+    reward_risk = distance / risk
+    hit = float((runs >= distance).mean())
+    # Expected R of one trade: a win pays the target less the round trip, a
+    # loss costs the stop plus the same round trip. Solving `edge > 0` for the
+    # hit rate gives `(1 + cost) / (1 + RR)`, which is the requirement quoted.
+    expected_r = hit * (reward_risk - cost_r) - (1.0 - hit) * (1.0 + cost_r)
+    required = 100.0 * (1.0 + cost_r) / (1.0 + reward_risk)
+    return SurvivalVerdict(
+        windows=int(runs.size),
+        forward_pct=100.0 * hit,
+        required_pct=min(100.0, required),
+        expected_r=expected_r,
+        reward_risk=reward_risk,
+        cost_r=cost_r,
+    )
+
+
 def break_even_rate(reward_risk: float) -> float:
     """The hit rate a plan needs to return zero, ignoring costs.
 
