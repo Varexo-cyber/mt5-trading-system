@@ -46,9 +46,13 @@ from analysis import (
     MarketObservation,
     MarketRegime,
     MarketStructure,
+    MeanReversion,
     OpportunityIntelligence,
+    Seasonality,
+    SessionBreakout,
     TrendMomentum,
     VolatilityRegime,
+    VolatilitySqueeze,
     apply_cross_market_context,
     assess_entry_quality,
     assess_opportunity,
@@ -400,6 +404,16 @@ class JarvisRunner:
                 ImpulseBreak(self.settings.analysis.impulse_break),
                 EmaPullbackResume(self.settings.analysis.ema_pullback_resume),
                 M1MicroBreakout(self.settings.analysis.m1_micro_breakout),
+                # Constructed but not on `live_enabled_modules`, so live mode
+                # zeroes their weight and they cannot move a trade. They are
+                # here so the module backtest measures the same eleven readers
+                # the account runs, rather than a different set assembled in a
+                # script — which is how two copies of a thing that must agree
+                # start to disagree.
+                VolatilitySqueeze(self.settings.analysis.volatility_squeeze),
+                MeanReversion(self.settings.analysis.mean_reversion),
+                SessionBreakout(self.settings.analysis.session_breakout),
+                Seasonality(self.settings.analysis.seasonality),
             ],
             self.settings.analysis.confluence,
         )

@@ -487,6 +487,31 @@ analysis:
       ema_pullback_resume: 0.55
       m1_micro_breakout: 0.55
 
+      # FOUR NEW FAMILIES, WEIGHTED SO THEY CAN BE MEASURED AND NOT SO THEY CAN
+      # TRADE. A positive weight is what makes a module count in a BACKTEST;
+      # `live_enabled_modules` is a separate allowlist and none of these four is
+      # on it, so on the live account they are computed, logged and ignored.
+      #
+      # They exist because the eight modules above all read the same price
+      # series in a different way — a trend, a cross, a break, a drift, a
+      # resumed pullback, a micro-break. They fire together and, measured over
+      # 180 days, they lose together: `trend_momentum` significantly so at
+      # -0.382R a trade over 62 of them, t = -3.26. A ninth reader of the same
+      # kind would have been a ninth correlated loser.
+      #
+      # Each of these looks at something the eight do not: how compressed the
+      # range is against its own history, how far price is from its own mean,
+      # what hour of the day it is, and what weekday it is. Whether any is
+      # worth anything is a question for `scripts/backtest_modules.py`, and its
+      # answer is what decides whether they ever reach the allowlist.
+      volatility_squeeze: 0.6
+      mean_reversion: 0.6
+      session_breakout: 0.5
+      # Lowest in the table, and its confidence ceiling sits under the 0.65 a
+      # lone module needs, so it can only ever tip a setup two readers already
+      # like. A weekday lean is background, never a trade.
+      seasonality: 0.25
+
   # Direction and entry price are separate decisions. These ATR-normalised
   # limits stop the market-order path from buying the end of an impulse or
   # selling after a vertical drop. WAIT is temporary: the symbol is analysed

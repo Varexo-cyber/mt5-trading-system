@@ -1381,6 +1381,164 @@ class EmaPullbackResumeConfig(Base):
         return self
 
 
+class VolatilitySqueezeConfig(Base):
+    """Range contracts to an extreme, then breaks out of its own compression.
+
+    `volatility_regime` already measures this and only ever reports it as
+    CONTEXT — it scores no direction and can therefore never produce a setup.
+    So the one thing in the system that knows a market is coiled has no way to
+    say "and it has just uncoiled, that way".
+
+    Deliberately hard to satisfy. The compression has to be a genuine extreme
+    against the instrument's own history, not merely "quiet today", and the
+    expansion bar has to be large against the compression rather than against
+    the ordinary range — otherwise every first bar of a London session
+    qualifies.
+    """
+
+    enabled: bool = True
+    timeframe: str = "M15"
+    #: Bars whose range defines "compressed right now".
+    compression_bars: int = Field(default=12, ge=4, le=200)
+    #: History the compression is judged against. A quiet hour means nothing
+    #: without knowing what this instrument's quiet usually looks like.
+    percentile_lookback: int = Field(default=200, ge=50, le=1000)
+    #: The compression must sit in the lowest N% of that history.
+    compression_percentile: float = Field(default=0.25, ge=0.01, le=0.60)
+    #: The breakout bar's range, as a multiple of the compressed range. Below
+    #: this it is not an expansion, it is the next quiet bar.
+    expansion_multiple: float = Field(default=1.8, ge=1.0, le=10.0)
+    #: The close must finish this far through the compression's edge, in units
+    #: of the compressed range, so a wick through the boundary is not a break.
+    breakout_close_share: float = Field(default=0.25, ge=0.0, le=2.0)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    #: Stop goes the other side of the compression, plus this much ATR.
+    invalidation_buffer_atr: float = Field(default=0.25, ge=0.0, le=2.0)
+    score: float = Field(default=55.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.50, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+    #: Confidence added per extra multiple of expansion beyond the floor.
+    expansion_confidence_scale: float = Field(default=0.10, ge=0.0, le=1.0)
+
+
+class MeanReversionConfig(Base):
+    """A statistical extreme that has stopped extending — faded, not followed.
+
+    Every directional module in this system is a continuation module in some
+    form: a trend, a cross, a break, a drift, a resumed pullback. The single
+    exception is `liquidity_sweep`, and over 180 days it is the only one that
+    is not negative. That is a hint and not a proof, and the way to find out is
+    to have a second reversion reader rather than a ninth continuation one.
+
+    Distinct from the `range_fade` playbook, which needs an identified range
+    with touched edges. This asks a purely statistical question: how far is
+    price from its own mean, in its own standard deviations, and has the move
+    stopped going.
+
+    The stall requirement is what stops it being a knife-catcher. An extreme
+    that is still extending is a trend, and fading a trend because it has gone
+    far is the most expensive mistake in this family.
+    """
+
+    enabled: bool = True
+    timeframe: str = "M15"
+    lookback: int = Field(default=48, ge=10, le=500)
+    #: Distance from the mean, in standard deviations, before it is extreme.
+    entry_z: float = Field(default=2.2, ge=1.0, le=6.0)
+    #: How far price must have come off the extreme before the move counts as
+    #: stalled, in ATR. Zero would fade anything far from the mean, including a
+    #: market still accelerating away.
+    #:
+    #: In ATR and not as a share of the extreme bar's own range, which is what
+    #: this was first written as and which a test caught. A thin final bar makes
+    #: that share meaningless: a bar spanning a tenth of an ATR whose close sits
+    #: halfway down it reads as "50% retraced" while price has come off the high
+    #: by a twentieth of an ATR — nothing at all. The module would have faded
+    #: markets that were still running, which is the one mistake this family
+    #: cannot afford.
+    stall_retrace_atr: float = Field(default=0.35, ge=0.0, le=3.0)
+    #: How recently the extreme printed. An extreme six bars ago that nothing
+    #: has faded is a market that has re-based, not a stretched one.
+    max_bars_since_extreme: int = Field(default=3, ge=1, le=20)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    #: Stop beyond the extreme itself, plus this much ATR.
+    invalidation_buffer_atr: float = Field(default=0.35, ge=0.0, le=3.0)
+    score: float = Field(default=50.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+    #: Confidence added per standard deviation beyond the entry threshold.
+    stretch_confidence_scale: float = Field(default=0.12, ge=0.0, le=1.0)
+
+
+class SessionBreakoutConfig(Base):
+    """The quiet session's range, broken when the busy one opens.
+
+    Sessions exist in this system only as a way to REFUSE trades: a blackout, a
+    wind-down, an evening flat. The fact that a market builds a range overnight
+    and resolves it when London arrives has never been available as a reason to
+    take one.
+
+    Measured in the broker's own clock, because that is what the bars are
+    stamped in, and the window is configured rather than inferred — a server
+    three hours off UTC would otherwise silently move every session by three
+    hours and nothing would look wrong.
+    """
+
+    enabled: bool = True
+    timeframe: str = "M15"
+    #: The window whose high and low form the range, as server-clock hours.
+    range_start_hour: int = Field(default=0, ge=0, le=23)
+    range_end_hour: int = Field(default=7, ge=0, le=23)
+    #: How long after the range closes a break still counts as the session
+    #: resolving it, rather than as an unrelated afternoon move.
+    breakout_window_hours: float = Field(default=4.0, ge=0.5, le=12.0)
+    #: The range must be at least this wide in ATR — a five-pip overnight range
+    #: is a dead market, and breaking it means nothing.
+    minimum_range_atr: float = Field(default=0.75, ge=0.0, le=10.0)
+    #: ...and at most this wide. A range larger than the day's usual travel has
+    #: already had its move; breaking it late is chasing.
+    maximum_range_atr: float = Field(default=4.0, ge=0.5, le=20.0)
+    #: Close beyond the edge by this share of the range, so a wick is not a break.
+    breakout_close_share: float = Field(default=0.10, ge=0.0, le=1.0)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    score: float = Field(default=50.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+
+class SeasonalityConfig(Base):
+    """This instrument's own record on this weekday, not folklore.
+
+    "Sell in May", "Monday reversal", "turn of the month" are stories. What is
+    measurable is whether THIS symbol, over the daily history the broker
+    actually carries, has a return on this weekday that is distinguishable from
+    zero given its own noise.
+
+    So it is written as a t-test and not as a table of beliefs. The sample floor
+    and the t-threshold are the whole module: below them it returns neutral,
+    which on most instruments and most days is what it will do.
+
+    Weakest score and lowest confidence ceiling of any module here, on purpose.
+    A weekday bias is a background lean, never a reason to take a trade by
+    itself — and the lone-module floor already refuses it in that role.
+    """
+
+    enabled: bool = True
+    timeframe: str = "D1"
+    #: Daily bars considered. Two years of weekdays is roughly 100 samples per
+    #: weekday, which is the least that makes a t-statistic worth printing.
+    lookback_days: int = Field(default=500, ge=100, le=2000)
+    #: Fewest observations of this weekday before the module will say anything.
+    minimum_samples: int = Field(default=60, ge=20, le=500)
+    #: How far from zero the mean return must be, in standard errors.
+    minimum_t: float = Field(default=2.0, ge=1.0, le=6.0)
+    score: float = Field(default=25.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.30, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    #: Confidence added per standard error beyond the threshold.
+    significance_confidence_scale: float = Field(default=0.08, ge=0.0, le=1.0)
+
+
 class M1MicroBreakoutConfig(Base):
     """A discrete closed-M1 range break aligned with M5 structure."""
 
@@ -2172,6 +2330,10 @@ class AnalysisConfig(Base):
     impulse_break: ImpulseBreakConfig = ImpulseBreakConfig()
     ema_pullback_resume: EmaPullbackResumeConfig = EmaPullbackResumeConfig()
     m1_micro_breakout: M1MicroBreakoutConfig = M1MicroBreakoutConfig()
+    volatility_squeeze: VolatilitySqueezeConfig = VolatilitySqueezeConfig()
+    mean_reversion: MeanReversionConfig = MeanReversionConfig()
+    session_breakout: SessionBreakoutConfig = SessionBreakoutConfig()
+    seasonality: SeasonalityConfig = SeasonalityConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
