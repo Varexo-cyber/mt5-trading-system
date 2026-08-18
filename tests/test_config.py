@@ -92,24 +92,19 @@ class TestShippedConfig:
         assert settings.scanner.priority_spread_weight > 0
         assert not settings.ai.market_scout.enabled
         assert settings.analysis.playbooks.enabled
-        # Switched on at the owner's explicit instruction. The record it
-        # overrides is kept in the overlay: a supplied 90-day matched-control
-        # test was negative across the five theories together, never split per
-        # theory. `range_fade` is the short this account wanted at the top of a
-        # measured range and the owner is not leaving it on an aggregate.
-        assert settings.analysis.playbooks.live_execution_enabled
-        # What it does NOT open up. The playbook route is the strictest entry
-        # path in the system, not a shortcut around the ordinary one, and these
-        # four are what make that true.
-        assert settings.analysis.playbooks.min_conviction >= 75.0
-        assert settings.analysis.playbooks.min_conviction > (
-            settings.analysis.confluence.score_threshold
-        )
-        assert settings.analysis.playbooks.require_method_agreement
-        assert settings.analysis.playbooks.veto_on_conflict
-        assert settings.analysis.playbooks.max_spread_share_of_stop <= (
-            settings.risk.max_cost_share_of_risk
-        )
+        # Switched on at the owner's request on 18 August and switched back off
+        # the same day, on a measurement rather than an argument.
+        # `backtest_playbooks.py --days 180 --min-conviction 75` over four
+        # majors: momentum_scalp -172.15R over 307 trades, range_fade -156.32R
+        # over 898, range_break -76.28R over 214. Against a coin flip taking the
+        # same moments, stops and targets, not one of them won.
+        assert not settings.analysis.playbooks.live_execution_enabled
+        # And the three with a real sample are off as theories, not merely as
+        # executors: a coin voting alongside is not corroboration, so they no
+        # longer weigh in as context or veto either.
+        assert not settings.analysis.playbooks.momentum_scalp
+        assert not settings.analysis.playbooks.range_fade
+        assert not settings.analysis.playbooks.range_break
 
     def test_eightcap_overlay_temporarily_disables_the_rio_bridge(self) -> None:
         overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"
