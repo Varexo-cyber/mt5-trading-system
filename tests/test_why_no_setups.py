@@ -90,3 +90,55 @@ class TestTheOverrideMeasuresWhatItSays:
     def test_a_malformed_pair_stops_the_run(self) -> None:
         with pytest.raises(SystemExit):
             apply_overrides(settings(), ["lone_module_minimum_confidence"])
+
+
+class TestThePerDetectorFloor:
+    """One floor for eight detectors was letting both the best and the worst
+    through together, or holding both back. Dropping the global value from 0.65
+    to 0.55 more than doubles setups (71 -> 153 over identical bars), and of the
+    ~1,174 refusals it releases, 473 are `fast_ema_cross` and 414 are
+    `liquidity_sweep` — the worst and the best records in the module backtest.
+    """
+
+    def test_the_table_is_empty_so_nothing_changes_yet(self) -> None:
+        """An entry is a claim that a detector is trustworthy alone, and only a
+        measurement can support one. Until then the global value governs."""
+        confluence = settings().analysis.confluence
+
+        assert confluence.lone_module_minimum_confidence_by_module == {}
+        assert confluence.lone_floor_for("liquidity_sweep") == (
+            confluence.lone_module_minimum_confidence
+        )
+
+    def test_an_override_applies_to_that_detector_alone(self) -> None:
+        changed = apply_overrides(
+            settings(),
+            ["lone_module_minimum_confidence_by_module=liquidity_sweep:0.55"],
+        ).analysis.confluence
+
+        assert changed.lone_floor_for("liquidity_sweep") == 0.55
+        assert changed.lone_floor_for("fast_ema_cross") == 0.65
+
+    def test_several_detectors_can_be_set_at_once(self) -> None:
+        changed = apply_overrides(
+            settings(),
+            ["lone_module_minimum_confidence_by_module=liquidity_sweep:0.55,impulse_break:0.75"],
+        ).analysis.confluence
+
+        assert changed.lone_floor_for("liquidity_sweep") == 0.55
+        assert changed.lone_floor_for("impulse_break") == 0.75
+        assert changed.lone_floor_for("trend_momentum") == 0.65
+
+    def test_a_misspelled_detector_stops_the_run(self) -> None:
+        """The failure this whole tool exists to avoid: measuring a change that
+        was never applied and reporting "no difference"."""
+        with pytest.raises(SystemExit):
+            apply_overrides(
+                settings(), ["lone_module_minimum_confidence_by_module=liquidty_sweep:0.55"]
+            )
+
+    def test_a_malformed_entry_stops_the_run(self) -> None:
+        with pytest.raises(SystemExit):
+            apply_overrides(
+                settings(), ["lone_module_minimum_confidence_by_module=liquidity_sweep"]
+            )

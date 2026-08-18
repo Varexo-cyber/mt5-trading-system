@@ -898,3 +898,62 @@ class TestTheTargetBandHasToContainAPayableDistance:
 
         assert not idea.approved
         assert "pays on this market" in idea.reason
+
+
+class TestTheLoneFloorCanBeSetPerDetector:
+    """A single floor could let `fast_ema_cross` and `liquidity_sweep` through
+    together or hold both back, and in the module backtest those two hold the
+    worst and the best records. This is the mechanism that separates them; the
+    values that go in it have to be earned by measurement.
+    """
+
+    @staticmethod
+    def _engine(floors: dict[str, float] | None = None):  # type: ignore[no-untyped-def]
+        from analysis.confluence import ConfluenceEngine
+        from config.schema import ConfluenceConfig
+
+        return ConfluenceEngine(
+            [],
+            ConfluenceConfig(
+                lone_module_minimum_confidence=0.65,
+                lone_module_minimum_confidence_by_module=floors or {},
+            ),
+        )
+
+    def test_an_empty_table_is_the_old_behaviour_exactly(self) -> None:
+        config = self._engine().config
+
+        for module in ("liquidity_sweep", "fast_ema_cross", "anything_at_all"):
+            assert config.lone_floor_for(module) == 0.65
+
+    def test_one_detector_can_be_released_without_the_others(self) -> None:
+        config = self._engine({"liquidity_sweep": 0.55}).config
+
+        assert config.lone_floor_for("liquidity_sweep") == 0.55
+        assert config.lone_floor_for("fast_ema_cross") == 0.65
+
+    def test_one_detector_can_also_be_held_to_a_higher_bar(self) -> None:
+        """The table works in both directions. `fast_ema_cross` measured -1.211R
+        a trade where it was present; if that survives a larger sample, raising
+        its own floor is the targeted response."""
+        config = self._engine({"fast_ema_cross": 0.85}).config
+
+        assert config.lone_floor_for("fast_ema_cross") == 0.85
+        assert config.lone_floor_for("liquidity_sweep") == 0.65
+
+    def test_a_floor_outside_zero_to_one_is_refused(self) -> None:
+        import pytest as _pytest
+
+        from config.schema import ConfluenceConfig
+
+        with _pytest.raises(ValueError, match="between 0 and 1"):
+            ConfluenceConfig(lone_module_minimum_confidence_by_module={"trend_momentum": 1.4})
+
+    def test_the_live_overlay_ships_the_table_empty(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.analysis.confluence.lone_module_minimum_confidence_by_module == {}

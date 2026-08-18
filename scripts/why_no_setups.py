@@ -101,6 +101,27 @@ def apply_overrides(settings, pairs: list[str]):  # type: ignore[no-untyped-def]
             updates[key] = int(raw)
         elif isinstance(current, float):
             updates[key] = float(raw)
+        elif isinstance(current, dict):
+            # `module:value` pairs, comma separated, merged onto whatever the
+            # config already holds:
+            #
+            #     --set lone_module_minimum_confidence_by_module=liquidity_sweep:0.55
+            #
+            # The module name is checked against the weights table, because the
+            # failure this whole tool exists to avoid is measuring a change
+            # that was never applied and reporting "no difference". A typo in a
+            # detector name would do exactly that, silently.
+            merged = dict(current)
+            for item in raw.split(","):
+                if ":" not in item:
+                    raise SystemExit(f"--set {key} expects module:value, got {item!r}")
+                module, number = item.split(":", 1)
+                module = module.strip()
+                if module not in confluence.weights:
+                    known = ", ".join(sorted(confluence.weights))
+                    raise SystemExit(f"unknown detector {module!r}; known: {known}")
+                merged[module] = float(number)
+            updates[key] = merged
         else:
             updates[key] = raw
     return settings.model_copy(

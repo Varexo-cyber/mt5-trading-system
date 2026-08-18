@@ -1952,6 +1952,30 @@ class ConfluenceConfig(Base):
     #:
     #: Only consulted when exactly one module agrees. Zero disables it.
     lone_module_minimum_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    #: Per-detector overrides of that floor. EMPTY, so the single value above
+    #: still governs everything and nothing changes until a detector earns an
+    #: entry here.
+    #:
+    #: One floor for eight detectors was a blunt instrument. Measured offline
+    #: over 90 days on five symbols, dropping the global floor from 0.65 to
+    #: 0.55 more than doubles the setups formed — 71 to 153 over identical
+    #: bars. But of the roughly 1,174 refusals it releases, 473 are
+    #: `fast_ema_cross` and 414 are `liquidity_sweep`, and in the module
+    #: backtest those two hold the worst and the best records respectively:
+    #: -1.211R a trade where fast_ema_cross was present, +0.119R where
+    #: liquidity_sweep was. A single number cannot let one through and hold the
+    #: other back, so it was letting both or neither.
+    #:
+    #: EARNED MEANS A NUMBER. An entry here is a claim that a specific detector
+    #: is trustworthy on its own, and the only thing that can support it is
+    #: `scripts/backtest_modules.py` with enough trades to matter —
+    #: liquidity_sweep's own t is 0.59 on 21 lone trades, which is noise, and it
+    #: needs around 268 to establish itself. Test a candidate value offline
+    #: first:
+    #:
+    #:     python scripts/why_no_setups.py --days 90 \
+    #:         --set lone_module_minimum_confidence_by_module=liquidity_sweep:0.55
+    lone_module_minimum_confidence_by_module: dict[str, float] = Field(default_factory=dict)
     minimum_agreement_ratio: float = Field(default=0.60, ge=0.5, le=1.0)
     #: Refuse a target this market does not actually reach often enough for the
     #: plan's own reward-to-risk to break even.
@@ -2316,6 +2340,24 @@ class ConfluenceConfig(Base):
         if not any(weight > 0 for weight in value.values()):
             raise ValueError("at least one analysis weight must be positive")
         return value
+
+    @field_validator("lone_module_minimum_confidence_by_module")
+    @classmethod
+    def _lone_floors_are_bounded(cls, value: dict[str, float]) -> dict[str, float]:
+        if any(floor < 0.0 or floor > 1.0 for floor in value.values()):
+            raise ValueError("lone-module floors must be between 0 and 1")
+        return value
+
+    def lone_floor_for(self, module: str) -> float:
+        """The confidence a lone `module` needs, per-detector or global.
+
+        A detector with no entry gets the single global value, which is how
+        every detector behaves until one has earned an override — so the empty
+        table is exactly the old behaviour and not a special case of it.
+        """
+        return self.lone_module_minimum_confidence_by_module.get(
+            module, self.lone_module_minimum_confidence
+        )
 
 
 class AnalysisConfig(Base):

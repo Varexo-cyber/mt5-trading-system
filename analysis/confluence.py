@@ -212,7 +212,21 @@ class ConfluenceEngine:
         # modules would also refuse a single detector reading 0.90, which is the
         # strongest single piece of evidence this engine can produce, and would
         # cost far more setups than the one failure mode being removed.
-        lone_floor = self.config.lone_module_minimum_confidence
+        #
+        # ONE FLOOR FOR EIGHT DETECTORS WAS A BLUNT INSTRUMENT. Measured over 90
+        # days on five symbols, dropping it from 0.65 to 0.55 more than doubles
+        # the setups formed, 71 to 153. But of the ~1,174 refusals it releases,
+        # 473 are `fast_ema_cross` and 414 are `liquidity_sweep` — and those two
+        # have the worst and the best records in the module backtest
+        # respectively. A single number cannot let one through and hold the
+        # other, so it was doing both or neither.
+        #
+        # The per-module table is empty by default and the global value applies
+        # to everything, so this changes nothing until a detector has earned an
+        # entry. Earned means a number from `scripts/backtest_modules.py`, not
+        # an argument.
+        solo_module = agreeing[0][0].module if len(agreeing) == 1 else ""
+        lone_floor = self.config.lone_floor_for(solo_module)
         if len(agreeing) == 1 and lone_floor > 0:
             solo = agreeing[0][0]
             if solo.confidence < lone_floor:
