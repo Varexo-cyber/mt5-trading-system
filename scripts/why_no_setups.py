@@ -40,6 +40,7 @@ import sys
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -111,14 +112,21 @@ def apply_overrides(settings, pairs: list[str]):  # type: ignore[no-untyped-def]
     )
 
 
-def run(settings, catalogue, stride: int):  # type: ignore[no-untyped-def]
-    """Setups formed and the shape of every refusal, over the supplied bars."""
+def run(settings, catalogue, stride: int, label: str = ""):  # type: ignore[no-untyped-def]
+    """Setups formed and the shape of every refusal, over the supplied bars.
+
+    Prints per symbol as it goes. The loading phase reported progress and this
+    one did not, so the run went silent for minutes at the exact point where it
+    was doing the work — which reads as a hang, not as patience.
+    """
     replay = HistoricalContextReplay(build_engine(settings), decision_stride_bars=stride)
     setups = 0
     decisions = 0
     refusals: Counter[str] = Counter()
     scored: list[float] = []
     for symbol, frames, point, start, end in catalogue:
+        started = perf_counter()
+        before = setups
         for _decided_at, idea in replay.ideas(symbol, frames, point=point, start=start, end=end):
             decisions += 1
             if idea.approved:
@@ -127,6 +135,10 @@ def run(settings, catalogue, stride: int):  # type: ignore[no-untyped-def]
             refusals[shape_of(idea.reason)] += 1
             if idea.score > 0:
                 scored.append(idea.score)
+        print(
+            f"    {label}{symbol}: {setups - before} setups  " f"({perf_counter() - started:.0f}s)",
+            flush=True,
+        )
     return setups, decisions, refusals, scored
 
 
@@ -205,12 +217,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     threshold = settings.analysis.confluence.score_threshold
+    print("\n  measuring as configured …", flush=True)
     live = run(settings, catalogue, args.stride)
     print(render("AS THE ACCOUNT IS CONFIGURED NOW", *live, args.days, threshold))
 
     if args.overrides:
         changed = apply_overrides(settings, args.overrides)
-        variant = run(changed, catalogue, args.stride)
+        print("\n  measuring the variant over the same bars …", flush=True)
+        variant = run(changed, catalogue, args.stride, label="variant ")
         print(
             render(
                 "WITH " + ", ".join(args.overrides),
