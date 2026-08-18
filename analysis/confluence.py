@@ -534,7 +534,17 @@ class ConfluenceEngine:
             overhead = 0.0
         cost_r = ((spread + max(overhead, 0.0)) / risk) if risk > 0 else 0.0
 
-        best_r, best_reach, best_edge = 0.0, 0.0, 0.0
+        # HOW LONG A DISTANCE TAKES, so the search can prefer sooner over bigger.
+        #
+        # Price does not travel in a straight line: covering d takes (d/speed)^2
+        # bars, the same square law the runway check uses. Typical absolute
+        # bar-to-bar movement is the speed; it needs no ATR machinery and it is
+        # measured on the frame already in hand.
+        moves = np.abs(np.diff(closes))
+        per_bar = float(moves.mean()) if moves.size else 0.0
+
+        best_r, best_reach, best_edge, best_bars = 0.0, 0.0, 0.0, 0.0
+        best_rate = 0.0
         step = 0.05
         candidate = config.minimum_r_multiple
         ceiling = max(config.target_r_multiple, config.minimum_r_multiple)
@@ -543,8 +553,26 @@ class ConfluenceEngine:
             # Expected R of one trade at this distance: win pays the target less
             # the round trip, a loss costs the stop plus the same round trip.
             edge = hit * (candidate - cost_r) - (1.0 - hit) * (1.0 + cost_r)
-            if edge > best_edge:
+            # EXPECTANCY PER BAR, NOT PER TRADE, and the difference decides
+            # whether this account trades at all.
+            #
+            # Maximising edge per trade systematically prefers the far target,
+            # because a bigger target needs a lower hit rate to pay. With
+            # `target_r_multiple` at 3.0 the search kept choosing 3R — and 3R on
+            # an H1 plan is about nine hours of travel under the square law,
+            # against eight or nine hours in a whole session. 56 of 140 live
+            # setups died on INSUFFICIENT_RUNWAY: not refused on their merits,
+            # refused because the target the search picked could not be reached
+            # before the day ended.
+            #
+            # A session has a deadline, so what matters is expectancy per unit
+            # of TIME. 1R reached in an hour beats 3R that needs nine hours you
+            # do not have, and the money is in the account either way.
+            bars_needed = (candidate * risk / per_bar) ** 2 if per_bar > 0 else 1.0
+            rate = edge / max(bars_needed, 1e-9) if config.prefer_sooner_targets else edge
+            if edge > 0 and rate > best_rate:
                 best_r, best_reach, best_edge = candidate, hit, edge
+                best_bars, best_rate = bars_needed, rate
             candidate += step
 
         if best_edge <= 0.0:
@@ -561,6 +589,7 @@ class ConfluenceEngine:
         note = (
             f"{best_r:.2f}R, reached first {best_reach:.0%} of the time here "
             f"for {best_edge:+.2f}R expected"
+            + (f" in about {best_bars:.0f} bars" if best_bars else "")
         )
         return entry + distance * int(direction), note
 
