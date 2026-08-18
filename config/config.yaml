@@ -106,7 +106,13 @@ risk:
   weekly_loss_limit_pct: 6.0
   max_drawdown_circuit_breaker_pct: 15.0
 
-  min_risk_reward: 2.0
+  # 1.0, in de pas met `analysis.confluence.minimum_r_multiple`. Op 2.0 stond
+  # deze BOVEN de analysevloer, en een validator op Settings vindt dat nu een
+  # fout: elk target dat de engine tussen 1R en 2R mocht plannen werd gebouwd,
+  # gemeten, gescoord, gesized en daarna geweigerd als RR_BELOW_MINIMUM. De
+  # live overlay had de twee al met de hand gelijkgetrokken en opgeschreven
+  # waarom; deze basis niet, en niets zei het.
+  min_risk_reward: 1.0
 
   # Anti-martingale: risk goes DOWN after losses, never up.
   losing_streak_threshold: 3

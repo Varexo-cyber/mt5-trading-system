@@ -884,10 +884,34 @@ class TestTheTargetBandHasToContainAPayableDistance:
 
         assert needed < 0.40, f"top of the band still needs {needed:.0%}"
 
-    def test_the_floor_is_untouched(self) -> None:
-        """Only the ceiling moved. The minimum still refuses a target so close
-        it cannot pay for its own spread."""
+    def test_the_floor_is_held_at_a_full_r_on_the_evidence(self) -> None:
+        """The floor was going to 0.60 and the measurement stopped it.
+
+        `no target between 1.00R and 3.00R pays` is the single largest reason no
+        setup forms, and dropping the floor to 0.60 is worth +46% setups over
+        identical bars — 130 to 190. It stays at 1.0 anyway, because over 180
+        days and 20 markets not one detector is positive: trend_momentum at
+        -0.365R a trade over 163 trades, t = -4.01, and liquidity_sweep flipped
+        from +0.119R on 23 trades to -0.242R on 48. More setups out of detectors
+        that all lose is more losing.
+
+        Written as a test rather than only as a config comment because the
+        argument for 0.60 is good and will be made again.
+        """
         assert self._band().minimum_r_multiple >= 1.0
+
+    def test_the_sizer_will_not_refuse_what_the_analysis_may_plan(self) -> None:
+        """Two floors that must agree, and they did not: `min_risk_reward` sat
+        at 2.0 above a 1.0 analysis floor in the base config, so every target
+        planned between them was built, measured, scored, sized and thrown
+        away. A validator on Settings refuses that combination now."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        for overlay in (None, DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"):
+            settings = load_settings(overlay=overlay, env_overrides=False)
+            assert (
+                settings.risk.min_risk_reward <= settings.analysis.confluence.minimum_r_multiple
+            ), overlay
 
     def test_a_wider_ceiling_cannot_buy_a_losing_target(self) -> None:
         """The guarantee that makes this safe: expectancy decides, the ceiling

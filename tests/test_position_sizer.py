@@ -294,6 +294,22 @@ class TestStopValidation:
         assert result.reason is Reason.SYMBOL_NOT_TRADABLE
 
 
+def at_two_r(sizer: PositionSizer) -> PositionSizer:
+    """A sizer whose reward-to-risk floor is pinned at 2.0.
+
+    The tests below are about the RR gate and its one-broker-point tolerance,
+    not about what the floor happens to be set to. They read the live default
+    and broke when `min_risk_reward` moved from 2.0 to 1.0 — a change made
+    because 2.0 sat ABOVE the analysis floor, so every target planned between
+    1R and 2R was built, sized and then thrown away. That is a different
+    subject, and these tests should not be the thing that notices it.
+    """
+    settings = sizer.settings.model_copy(
+        update={"risk": sizer.settings.risk.model_copy(update={"min_risk_reward": 2.0})}
+    )
+    return PositionSizer(settings)
+
+
 class TestModeCeilings:
     def test_stop_wider_than_the_mode_allows(
         self, tmp_path: Path, raw: dict[str, Any], eurusd: InstrumentSpec
@@ -314,7 +330,7 @@ class TestModeCeilings:
     def test_reward_risk_below_minimum_is_refused(
         self, sizer: PositionSizer, eurusd: InstrumentSpec
     ) -> None:
-        result = sizer.size(
+        result = at_two_r(sizer).size(
             spec=eurusd,
             equity=10_000.0,
             direction=Direction.LONG,
@@ -358,7 +374,12 @@ class TestModeCeilings:
     def test_more_than_one_broker_point_below_rr_boundary_is_refused(
         self, sizer: PositionSizer, eurusd: InstrumentSpec
     ) -> None:
-        result = sizer.size(
+        """Held to the sizer's OWN threshold rather than to whatever the
+        default happens to be. These two cases are about the point-tolerance
+        boundary, and they broke when `min_risk_reward` moved from 2.0 to 1.0
+        to stop sitting above the analysis floor — which is a different subject
+        entirely."""
+        result = at_two_r(sizer).size(
             spec=eurusd,
             equity=10_000.0,
             direction=Direction.LONG,

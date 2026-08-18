@@ -521,7 +521,22 @@ class RiskConfig(Base):
     #: escaped by trading well is not a throttle, it is a stop.
     posture_throttle: bool = True
 
-    min_risk_reward: float = Field(default=2.0, ge=1.0)
+    #: The floor was `ge=1.0`, which made "never earn less than the stop can
+    #: cost" a law of the config rather than a choice. It is a reasonable
+    #: default and it is not arithmetic: a 0.60R target with a measured 70%
+    #: first-touch hit rate is a better trade than a 1.00R target reached a
+    #: third of the time, and the engine's expectancy search is what decides
+    #: which is which. The bound now permits the question; `Settings._coherent`
+    #: keeps this in step with `analysis.confluence.minimum_r_multiple` so the
+    #: two cannot drift apart the way they did before.
+    #:
+    #: The default drops from 2.0 to 1.0 because that validator found the pair
+    #: had never agreed: 2.0 sat above a 1.0 analysis floor, so every target the
+    #: engine planned between 1R and 2R was built, measured, scored, sized and
+    #: then refused as RR_BELOW_MINIMUM. The live overlay had already aligned
+    #: the two by hand and recorded why; the defaults had not, and nothing said
+    #: so.
+    min_risk_reward: float = Field(default=1.0, ge=0.3)
 
     #: Anti-martingale: halve risk after a losing streak, restore on a win.
     losing_streak_threshold: int = Field(default=3, ge=2, le=10)
@@ -2164,10 +2179,33 @@ class ConfluenceConfig(Base):
     #: Percentile of favourable excursion over that horizon. Not the maximum —
     #: one violent week should not set the expectation for every trade.
     target_reach_quantile: float = Field(default=0.70, ge=0.5, le=0.99)
-    #: Below this, the setup is rejected instead of sized down. Shrinking the
-    #: target indefinitely buys a high hit rate with trades that cannot pay for
-    #: their own spread.
-    minimum_r_multiple: float = Field(default=1.0, ge=0.5, le=5.0)
+    #: The shortest target the search may CONSIDER. Not a quality gate: the
+    #: search only ever picks a distance with positive measured first-touch
+    #: expectancy, so lowering this adds candidates and cannot make the chosen
+    #: target worse. What it does is stop the engine refusing a market outright
+    #: because nothing between 1.00R and 3.00R paid — the single largest
+    #: refusal in the system, 2,138 of them over 90 days on five symbols, ahead
+    #: of every lone-module refusal combined.
+    #:
+    #: 0.60, down from 1.00, so a quick trade with a high hit rate is allowed
+    #: to exist. At 0.60R with a 10% round trip the break-even hit rate is 69%,
+    #: which is demanding and reachable; at 1.00R the engine was not permitted
+    #: to ask the question at all.
+    #:
+    #: TWO THINGS HAD TO BE TRUE FIRST and neither was.
+    #:
+    #: `risk.min_risk_reward` refuses anything below it one layer later, so
+    #: lowering this alone changes nothing and the two drifting apart is a
+    #: documented past failure — confluence trimmed to 0.9R while the sizer
+    #: refused everything under 1.1R. A validator on RiskConfig now refuses that
+    #: combination outright rather than leaving it to be rediscovered.
+    #:
+    #: And the expectancy search counted only the spread, treating commission as
+    #: the sizer's problem. That is defensible at 1.00R and wrong below it: the
+    #: reward shrinks while the commission does not, so the estimate was most
+    #: optimistic exactly where this floor now allows the search to go. The
+    #: runner supplies the full round trip through `round_trip_cost_price`.
+    minimum_r_multiple: float = Field(default=1.0, ge=0.3, le=5.0)
     atr_stop_multiple: float = Field(default=1.5, gt=0.0, le=10.0)
     #: Floor on the stop distance, as a multiple of H1 ATR.
     #:
@@ -3220,6 +3258,33 @@ class Settings(Base):
             raise ValueError(f"`modes` has no entry for the active mode {mode!r}")
         if mode not in self.instruments.whitelist:
             raise ValueError(f"`instruments.whitelist` has no entry for mode {mode!r}")
+        return self
+
+    @model_validator(mode="after")
+    def _the_two_target_floors_agree(self) -> Settings:
+        """The analysis may not plan a target the sizer will refuse.
+
+        `analysis.confluence.minimum_r_multiple` is the shortest distance the
+        target search may consider; `risk.min_risk_reward` refuses anything
+        under it one layer later. When the first is below the second, every
+        target chosen in the gap is built, measured, scored, sized and then
+        thrown away as RR_BELOW_MINIMUM.
+
+        That is not hypothetical. It shipped once already — the overlay note on
+        `min_risk_reward` records confluence trimming to 0.9R while the sizer
+        refused everything under 1.1R — and the fix was to align the two by
+        hand, which is a fix that survives exactly until somebody edits one of
+        them. Two numbers that must agree and are only kept in step by memory
+        will come apart again.
+        """
+        floor = self.analysis.confluence.minimum_r_multiple
+        if self.risk.min_risk_reward > floor:
+            raise ValueError(
+                f"risk.min_risk_reward ({self.risk.min_risk_reward}) is above "
+                f"analysis.confluence.minimum_r_multiple ({floor}): every target the "
+                f"analysis is allowed to plan between them would be sized and then "
+                f"refused as RR_BELOW_MINIMUM. Move both or neither."
+            )
         return self
 
     @model_validator(mode="after")
