@@ -73,8 +73,12 @@ from analysis import (
     M1MicroBreakout,
     MarketRegime,
     MarketStructure,
+    MeanReversion,
+    Seasonality,
+    SessionBreakout,
     TrendMomentum,
     VolatilityRegime,
+    VolatilitySqueeze,
 )
 from backtesting.engine import BacktestOrder, PessimisticBacktester
 from backtesting.playbook_replay import (
@@ -106,6 +110,10 @@ def build_engine(settings):  # type: ignore[no-untyped-def]
             ImpulseBreak(settings.analysis.impulse_break),
             EmaPullbackResume(settings.analysis.ema_pullback_resume),
             M1MicroBreakout(settings.analysis.m1_micro_breakout),
+            VolatilitySqueeze(settings.analysis.volatility_squeeze),
+            MeanReversion(settings.analysis.mean_reversion),
+            SessionBreakout(settings.analysis.session_breakout),
+            Seasonality(settings.analysis.seasonality),
         ],
         settings.analysis.confluence,
     )

@@ -24,7 +24,11 @@ from analysis.market_intelligence import (
 )
 from analysis.market_regime import MarketRegime
 from analysis.market_structure import MarketStructure
+from analysis.mean_reversion import MeanReversion
 from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, VolatilityRegime
+from analysis.seasonality import Seasonality
+from analysis.session_breakout import SessionBreakout
+from analysis.volatility_squeeze import VolatilitySqueeze
 
 __all__ = [
     "ConfluenceEngine",
@@ -40,11 +44,15 @@ __all__ = [
     "MarketObservation",
     "MarketRegime",
     "MarketStructure",
+    "MeanReversion",
     "OpportunityIntelligence",
     "ReviewDriftAssessment",
+    "Seasonality",
+    "SessionBreakout",
     "TradeIdea",
     "TrendMomentum",
     "VolatilityRegime",
+    "VolatilitySqueeze",
     "apply_cross_market_context",
     "assess_entry_quality",
     "assess_opportunity",
