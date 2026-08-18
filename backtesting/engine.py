@@ -48,6 +48,18 @@ class BacktestOrder:
     score: float = 0.0
     confidence: float = 0.0
     modules: tuple[str, ...] = ()
+    #: The broker's own recorded spread at the deciding bar, in price units.
+    #:
+    #: Both replays already computed this to build a tick and then threw it
+    #: away, so every backtest this project has ever run was filled at the mid
+    #: on both sides — a round trip that crosses no spread at all. On the stop
+    #: widths this account trades that is not a rounding error: at 7 pips on
+    #: EURUSD a 0.8-pip spread is 0.11R, against the 0.16R the backtester was
+    #: charging in total.
+    #:
+    #: Zero for an order built by hand, which is the old behaviour and honest
+    #: about being a lower bound.
+    spread: float = 0.0
 
     @property
     def risk(self) -> float:
@@ -187,8 +199,12 @@ class PessimisticBacktester:
 
         exit_price = self._worse_exit(order.direction, exit_price)
         gross_r = (exit_price - entry) * int(order.direction) / order.risk
+        # Commission, and the spread the round trip actually crosses. The
+        # spread is counted ONCE: a long is filled at the ask and closed at the
+        # bid, which is one crossing, and `risk.PositionSizer._cost_share`
+        # measures it the same way.
         notional_cost = order.entry * (self.assumptions.round_trip_commission_bps / 10_000.0)
-        costs_r = notional_cost / order.risk
+        costs_r = (notional_cost + max(order.spread, 0.0)) / order.risk
         return BacktestTrade(
             order,
             entered_at,
