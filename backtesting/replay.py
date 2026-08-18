@@ -75,7 +75,7 @@ class HistoricalContextReplay:
         point: float,
         start: datetime,
         end: datetime,
-    ) -> Iterator[tuple[datetime, TradeIdea]]:
+    ) -> Iterator[tuple[datetime, float, TradeIdea]]:
         """Every verdict the engine reached, refusals included.
 
         `orders` throws the refusals away, and the refusals are where 97.5% of
@@ -143,7 +143,7 @@ class HistoricalContextReplay:
                 bid=mid - spread / 2,
                 ask=mid + spread / 2,
             )
-            yield decided_at, self.engine.evaluate(
+            yield decided_at, spread, self.engine.evaluate(
                 MarketContext(symbol, decided_at, series, tick), TradingMode.BACKTEST
             )
 
@@ -158,7 +158,9 @@ class HistoricalContextReplay:
     ) -> list[BacktestOrder]:
         """The approved half of `ideas`, as executable orders."""
         orders: list[BacktestOrder] = []
-        for decided_at, idea in self.ideas(symbol, frames, point=point, start=start, end=end):
+        for decided_at, spread, idea in self.ideas(
+            symbol, frames, point=point, start=start, end=end
+        ):
             if not idea.approved or idea.direction is None:
                 continue
             active = tuple(
@@ -180,6 +182,7 @@ class HistoricalContextReplay:
                     score=idea.score,
                     confidence=idea.confidence,
                     modules=active,
+                    spread=spread,
                 )
             )
         return orders

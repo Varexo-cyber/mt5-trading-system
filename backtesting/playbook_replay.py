@@ -143,6 +143,9 @@ class PlaybookReplay:
                     # The engine's `modules` field carries whatever produced the
                     # order, so the per-theory split below is free.
                     modules=(play.playbook,),
+                    # Read back off the tick `_context` already built from
+                    # the broker's own recorded spread for that bar.
+                    spread=context.tick.spread if context.tick else 0.0,
                 )
             )
         return orders
@@ -525,8 +528,11 @@ def render(evidence: list[PlaybookEvidence], *, window: str = "") -> str:
     if thin:
         lines.append(f"  Too few trades to read: {', '.join(thin)}. Widen the window.")
     lines.append("")
-    lines.append("  Costs: the backtester applies spread and slippage; commission is not")
-    lines.append("  in these numbers, so subtract roughly 0.03R to 0.11R per trade at this")
-    lines.append("  account's stop widths before believing a thin positive.")
+    lines.append("  Costs: commission, exit slippage AND the broker's own recorded spread")
+    lines.append("  are all in these numbers. The spread was missing until it was noticed")
+    lines.append("  that both replays computed it to build a tick and then dropped it — at")
+    lines.append("  this account's stop widths that is around 0.11R a trade, against the")
+    lines.append("  0.16R the backtester was charging in total. Entry slippage is charged at")
+    lines.append("  zero because it was measured at zero on live fills.")
     lines.append("")
     return "\n".join(lines)

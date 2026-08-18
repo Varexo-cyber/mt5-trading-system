@@ -195,11 +195,21 @@ def test_a_thin_sample_is_not_read_as_a_verdict(frames) -> None:  # type: ignore
     assert "Negative over a real sample" not in printed
 
 
-def test_the_missing_commission_is_stated(frames) -> None:  # type: ignore[no-untyped-def]
-    """A thin positive that ignores commission is not a positive."""
+def test_the_costs_actually_charged_are_stated() -> None:
+    """The note said the backtester applied the spread and not the commission.
+
+    It was the wrong way round in both halves. Commission and exit slippage
+    were charged; the SPREAD was not charged at all, because both replays
+    computed it to build a tick and then dropped it. At this account's stop
+    widths that missing term is around 0.11R a trade against the 0.16R being
+    charged in total — so every backtest ever run here was filled at the mid on
+    both sides, and a reader following this note would have subtracted the
+    wrong cost from the wrong side.
+    """
     printed = render([PlaybookEvidence("range_fade", 900, 200, 4.0, 0.5, 0.02, 3.0)])
 
-    assert "commission is not" in printed
+    assert "spread" in printed
+    assert "commission is not" not in printed
 
 
 def test_an_empty_run_says_so() -> None:
