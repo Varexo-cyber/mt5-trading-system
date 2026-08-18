@@ -144,6 +144,7 @@ class ConfluenceEngine:
         # after them let a setup clear the lone-module floor on a module that
         # was about to be discounted.
         discounted = ""
+        discounted_regime = ""
         if self.config.refuse_trend_continuation_in_range:
             regime_reading = next(
                 (
@@ -154,7 +155,18 @@ class ConfluenceEngine:
                 None,
             )
             continuation = set(self.config.trend_continuation_modules)
-            if regime_reading == "range" and continuation:
+            # `transition` counts too, and it is the sharper objection of the
+            # two. `range` means both timeframes are quiet over a long window,
+            # so an hour of clean travel inside it is ordinary. `transition` is
+            # the classifier's leftover branch and what it MEANS is that the two
+            # timeframes disagree — which is precisely what a continuation claim
+            # denies.
+            #
+            # Every loser opened and read on 17-18 August was in one of the two.
+            # Six of six, not one in a trend: HK50, XAUJPY, EURAUD and NDX100 in
+            # `transition`, UK100 and NZDJPY in `range`.
+            contradicted = set(self.config.continuation_contradicting_regimes)
+            if regime_reading in contradicted and continuation:
                 honest = [pair for pair in weighted if pair[0].module not in continuation]
                 if len(honest) != len(weighted):
                     discounted = ", ".join(
@@ -166,14 +178,19 @@ class ConfluenceEngine:
                         return self._reject(
                             ctx,
                             signals,
-                            f"the regime classifier measures a range while the only firing "
-                            f"module(s) ({discounted}) assert a trend is continuing",
+                            f"the regime classifier measures a {regime_reading} while the "
+                            f"only firing module(s) ({discounted}) assert a trend is "
+                            f"continuing",
                         )
+                    discounted_regime = str(regime_reading)
                     weighted = honest
 
         direction, agreeing, agreement, conflict = self._resolve_direction(weighted)
         if discounted:
-            note = f"{discounted} discounted as trend-continuation in a measured range"
+            note = (
+                f"{discounted} discounted as trend-continuation in a measured "
+                f"{discounted_regime}"
+            )
             conflict = f"{conflict}; {note}" if conflict else note
         if len(agreeing) < self.config.minimum_directional_modules:
             return self._reject(ctx, signals, "too few independent directional modules")

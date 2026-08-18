@@ -351,9 +351,31 @@ class TestATrendPremiseContradictedByAMeasuredRange:
         assert idea.direction is None
         assert "only detector pointing this way" in idea.reason
 
-    def test_an_unclassified_regime_changes_nothing(self) -> None:
-        """transition, or no regime module at all: no measurement, no veto."""
+    def test_a_transition_contradicts_a_continuation_claim_too(self) -> None:
+        """`transition` was read as "no measurement, no veto", and it is the
+        sharper of the two objections.
+
+        It is the classifier's leftover branch — not extreme, not a trend, not
+        a range — and what it MEANS is that the two timeframes do not agree.
+        `trend_momentum` INFERS a trend from EMA alignment across exactly those
+        frames, so a transition contradicts it directly.
+
+        EURAUD said it out loud on 18 August. `trend_momentum` at -65, its own
+        detail reading "H1 EMA/momentum bearish with H4 neutral — unconfirmed
+        by the bias timeframe", counted at full strength in a transition. The
+        module named the condition and nothing read it.
+        """
         self.with_modules(self.trend(), self.regime("transition"))
+
+        idea = self.engine().evaluate(context(), TradingMode.PAPER)
+
+        assert idea.direction is None
+        assert "measures a transition" in idea.reason
+
+    def test_a_trend_regime_still_supports_a_continuation_claim(self) -> None:
+        """Only the two readings that say "there is no trend here" contradict.
+        `extreme` is already refused outright at the top of `evaluate`."""
+        self.with_modules(self.trend(), self.regime("trend_up"))
 
         assert self.engine().evaluate(context(), TradingMode.PAPER).direction is not None
 
