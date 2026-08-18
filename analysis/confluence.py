@@ -297,25 +297,27 @@ class ConfluenceEngine:
             # the wider stop then prices the trade out of the account, the sizer
             # says so — which is the honest answer, and a far better one than
             # shrinking the stop until the arithmetic fits.
-            floor = max(atr * self.config.min_stop_atr, self._cost_floor(ctx))
+            floor = atr * self.config.min_stop_atr
             if abs(entry - stop) < floor:
                 stop = entry - floor * int(direction)
         else:
             stop = entry - atr * self.config.atr_stop_multiple * int(direction)
-            # The ATR branch had no floor at all, on the reasoning that a
-            # multiple of ATR is wide by construction. That holds against noise
-            # and not against a fee schedule: on a quiet instrument a quarter
-            # ATR is two pips, and two pips is a stop the runner is about to
-            # widen anyway.
-            cost_floor = self._cost_floor(ctx)
-            if abs(entry - stop) < cost_floor:
-                stop = entry - cost_floor * int(direction)
+        # The stop the chart asked for, before the fee schedule gets a say. It
+        # is kept because the two are measured over different amounts of time
+        # and the difference between them is what says how much.
+        natural_risk = abs(entry - stop)
+        cost_floor = self._cost_floor(ctx)
+        if natural_risk < cost_floor:
+            stop = entry - cost_floor * int(direction)
         risk = abs(entry - stop)
         if risk <= 0:
             return self._reject(
                 ctx, signals, "could not construct a positive stop distance", score, confidence
             )
-        target, target_note = self._reachable_target(ctx, entry, risk, direction, profile=profile)
+        horizon_bars = self._horizon_bars(risk, natural_risk, profile)
+        target, target_note = self._reachable_target(
+            ctx, entry, risk, direction, profile=profile, horizon=horizon_bars
+        )
         if target is None:
             return self._reject(ctx, signals, target_note, score, confidence)
         return TradeIdea(
@@ -341,10 +343,46 @@ class ConfluenceEngine:
             setup_family=setup_family,
             horizon=horizon,
             planning_timeframe=planning_timeframe.value,
+            # The same horizon the target was measured over, not the profile's
+            # nominal one. Everything downstream derives its window from this
+            # number — the runner's reach gate, its survival gate and its
+            # runway check all divide it by the planning timeframe — so a
+            # target measured over one span and judged over another is the
+            # disagreement this whole line of work keeps running into.
             expected_horizon_minutes=int(
-                planning_timeframe.duration.total_seconds() / 60 * profile.target_horizon_bars
+                planning_timeframe.duration.total_seconds() / 60 * horizon_bars
             ),
         )
+
+    def _horizon_bars(
+        self, risk: float, natural_risk: float, profile: HorizonProfileConfig | None
+    ) -> int:
+        """Bars to allow the target, once the fee schedule has moved the stop.
+
+        THE BUG THIS FIXES WAS MINE AND IT RAN LIVE. Flooring the stop at what
+        the costs demand makes 1R a longer distance — on a quiet instrument a
+        two-pip stop becomes seven — while the window it had to be covered in
+        stayed at the profile's nominal bars. Measured on a synthetic walk at
+        0.0002 per bar, the same market that cleared at +0.21R expected with
+        the chart's own stop was REFUSED outright at the cost floor: nothing
+        between 1.00R and 3.00R was reached even once in twenty-four bars.
+        A change made to produce more setups was producing fewer.
+
+        Price does not travel in a straight line, so covering a distance d
+        takes `(d / ATR)^2` bars and not `d / ATR` — the same square law the
+        runner's runway check already uses, and the reason a stop 3.4x wider
+        needs eleven times the time rather than three.
+
+        Capped, because the square law grows fast and an unbounded window stops
+        describing the trade anyone would actually sit in — and bounded by the
+        profile again, so a chart whose own stop already clears the costs is
+        measured over exactly the bars it always was.
+        """
+        base = profile.target_horizon_bars if profile else self.config.target_horizon_bars
+        if natural_risk <= 0 or risk <= natural_risk:
+            return base
+        stretch = min((risk / natural_risk) ** 2, self.config.max_cost_horizon_stretch)
+        return max(base, int(base * stretch))
 
     @staticmethod
     def _cost_floor(ctx: MarketContext) -> float:
@@ -373,6 +411,7 @@ class ConfluenceEngine:
         direction: Direction,
         *,
         profile: HorizonProfileConfig | None = None,
+        horizon: int | None = None,
     ) -> tuple[float | None, str]:
         """Place the target where this market actually goes, not where R says.
 
@@ -396,7 +435,10 @@ class ConfluenceEngine:
         planning_timeframe = (
             Timeframe.parse(profile.planning_timeframe) if profile else Timeframe.H1
         )
-        horizon = profile.target_horizon_bars if profile else config.target_horizon_bars
+        # `horizon` overrides the profile when the caller has already worked out
+        # how long this particular stop needs; see `_horizon_bars`.
+        if horizon is None:
+            horizon = profile.target_horizon_bars if profile else config.target_horizon_bars
         signal = ctx.series.get(planning_timeframe)
         if signal is None or len(signal.df) < horizon * 3:
             return entry + planned * int(direction), "no history to bound the target"
