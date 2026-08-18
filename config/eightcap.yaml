@@ -705,7 +705,23 @@ analysis:
     # EMA sluiten. Daarboven: geregistreerd als continuation-module dus de
     # range-poort weigert hem in chop, en geclassificeerd als intraday zodat
     # hij een M15-plan krijgt en geen swing-doel van 24 uur.
-    live_enabled_modules: [market_structure, trend_momentum, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout]
+    # `trend_momentum` ERAF, op de eerste harde meting die dit account heeft
+    # opgeleverd. 20 markten, 180 dagen, 163 gesloten trades: -0.365R per trade,
+    # -59.45R totaal, t = -4.01. Dat is geen pech en geen kleine steekproef, dat
+    # is een detector die geld verliest.
+    #
+    # Hij zat achter 347 van de voorstellen, meer dan elke andere module, dus
+    # dit kost trades. Het kost er minder dan het lijkt: 158 van die 347 waren
+    # trend_momentum ALLEEN — die verdwijnen — en de overige 189 hadden ook een
+    # andere detector en kunnen blijven bestaan. Wat 180 dagen van die trades
+    # kostten, bij ongeveer EUR 3 risico per stuk: rond de EUR 178, ofwel een
+    # euro per dag op een account van EUR 161.
+    #
+    # De WEIGHT blijft staan. Alleen deze allowlist bepaalt of een module live
+    # mag handelen; het gewicht is wat de backtest hem laat meten. Zo blijft
+    # `scripts/backtest_modules.py` hem volgen, en als het beeld op meer data
+    # draait staat hij met één woord weer op deze regel.
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout]
 
     # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
     # documented as a quick entry but classified as intraday, so a fresh M5
