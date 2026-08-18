@@ -1947,6 +1947,12 @@ class ConfluenceConfig(Base):
     #: evidence. The measured standard error is used when it is larger than
     #: this, so a thin sample cannot slip past on a fixed number.
     direction_advantage_tolerance_pct: float = Field(default=5.0, ge=0.0, le=40.0)
+    #: Ceiling on how far the target-reach window stretches when the fee
+    #: schedule floors the stop wider than the chart asked for. A wider stop
+    #: makes 1R a longer distance, and distance costs TIME as its square — the
+    #: same law the runway check uses. Left unbounded the square law runs away
+    #: and the window stops describing a trade anyone would sit in.
+    max_cost_horizon_stretch: float = Field(default=4.0, ge=1.0, le=25.0)
     target_r_multiple: float = Field(default=2.0, ge=1.0, le=10.0)
     #: The target is also bounded by how far this instrument actually travels.
     #: `entry + 2R` is arithmetic and never asks whether the market goes there;

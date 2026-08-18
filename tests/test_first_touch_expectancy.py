@@ -421,6 +421,90 @@ class TestTheEnginePlansOnTheStopTheRunnerWillSend:
         assert ConfluenceEngine._cost_floor(rubbish) == 0.0
 
 
+class TestAWiderStopIsGivenTheTimeItNeeds:
+    """The regression that shipped, and it made things worse rather than better.
+
+    Flooring the stop at what the costs demand makes 1R a longer distance — on
+    a quiet instrument a two-pip stop becomes seven — while the window it had
+    to be covered in stayed at the profile's nominal bars. On a synthetic walk
+    at 0.0002 per bar, the same market that cleared at +0.21R expected with the
+    chart's own stop was refused outright at the cost floor: nothing between
+    1.00R and 3.00R was reached even once in twenty-four bars.
+
+    Price does not travel in a straight line, so covering a distance takes its
+    square in time. The runway check has used that law all along.
+    """
+
+    @staticmethod
+    def _engine():  # type: ignore[no-untyped-def]
+        from analysis.confluence import ConfluenceEngine
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        return ConfluenceEngine([], settings.analysis.confluence)
+
+    def test_a_stop_the_chart_chose_is_measured_over_the_bars_it_always_was(self) -> None:
+        engine = self._engine()
+        base = engine.config.target_horizon_bars
+
+        assert engine._horizon_bars(0.0010, 0.0010, None) == base
+        assert engine._horizon_bars(0.0008, 0.0010, None) == base
+
+    def test_the_window_grows_with_the_square_of_the_widening(self) -> None:
+        engine = self._engine()
+        base = engine.config.target_horizon_bars
+
+        assert engine._horizon_bars(0.0020, 0.0010, None) == base * 4
+
+    def test_the_square_law_is_capped_before_it_runs_away(self) -> None:
+        """A ten-fold widening asks for a hundred times the window, which stops
+        describing a trade anyone would sit in."""
+        engine = self._engine()
+        base = engine.config.target_horizon_bars
+
+        assert engine._horizon_bars(0.0100, 0.0010, None) == int(
+            base * engine.config.max_cost_horizon_stretch
+        )
+
+    def test_a_missing_natural_stop_changes_nothing(self) -> None:
+        engine = self._engine()
+
+        assert engine._horizon_bars(0.0020, 0.0, None) == engine.config.target_horizon_bars
+
+    def test_the_quiet_market_that_regressed_is_payable_again(self) -> None:
+        """The measurement itself, on the walk that caught it. At the cost floor
+        over the nominal window nothing pays; over the window the square law
+        asks for, it does."""
+        # Tight wicks on purpose: a quiet instrument, which is where the cost
+        # floor is the largest multiple of the stop the chart wanted.
+        rng = np.random.default_rng(3)
+        close = 1.10 + np.cumsum(rng.normal(0.0, 0.0002, 500))
+        frame = pd.DataFrame(
+            {"open": close, "high": close + 0.00005, "low": close - 0.00005, "close": close}
+        )
+        floored, natural = 0.00068, 0.00020
+
+        def best_edge(bars: int) -> float:
+            runs = first_touch_runs(frame, risk=floored, bars_ahead=bars, long=True)
+            assert runs is not None
+            cost_r = 0.00006 / floored
+            edges = [
+                float((runs >= r * floored).mean()) * (r - cost_r)
+                - (1.0 - float((runs >= r * floored).mean())) * (1.0 + cost_r)
+                for r in np.arange(1.0, 3.001, 0.05)
+            ]
+            return max(edges)
+
+        engine = self._engine()
+        stretched = engine._horizon_bars(floored, natural, None)
+
+        assert stretched > engine.config.target_horizon_bars
+        assert best_edge(engine.config.target_horizon_bars) <= 0.0
+        assert best_edge(stretched) > 0.0
+
+
 class TestTheEngineAndTheRunnerMeasureTheSameThing:
     def test_the_confluence_engine_delegates_to_the_shared_walk(self) -> None:
         """Two implementations of one statistic is the bug underneath the bug."""
