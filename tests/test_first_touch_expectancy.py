@@ -266,6 +266,161 @@ class TestTheRunnerAsksItOfTheStopItWillSend:
         assert runner._target_survival(empty, self._idea(0.0010, entry, entry + 0.0020)) is None
 
 
+class TestTheEnginePlansOnTheStopTheRunnerWillSend:
+    """The same fix one step earlier, and the larger half of it.
+
+    `_widen_stop_for_costs` fires on nearly every candidate on this account, so
+    the analysis was choosing a target, measuring how often it is reached and
+    computing an expectancy — all against a stop it was about to be told was
+    too narrow to trade. 1,710 refusals in two live hours read "no target
+    between 1.00R and 3.00R pays on this market" and were measured against a
+    stop the broker would never have received.
+
+    Nothing about the order changes: the runner widens to this same distance a
+    few steps later either way, so the executed stop, the risk and the lot size
+    are identical.
+    """
+
+    @staticmethod
+    def _runner():  # type: ignore[no-untyped-def]
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.instrument import InstrumentSpec
+        from runner.service import JarvisRunner
+        from tests.fakes.fake_mt5 import eurusd_spec
+
+        runner = object.__new__(JarvisRunner)
+        runner.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        spec = InstrumentSpec.from_mt5(eurusd_spec())
+        runner.broker = type("_B", (), {"spec": staticmethod(lambda _s: spec)})()
+        return runner, spec
+
+    def test_the_floor_is_the_distance_the_runner_would_have_widened_to(self) -> None:
+        from analysis.confluence import TradeIdea
+        from core.types import Direction
+
+        runner, spec = self._runner()
+        floor = runner._cost_implied_min_stop(spec)
+        assert floor > 0
+
+        # A stop far under the floor, put through the widening the runner does.
+        idea = TradeIdea(
+            symbol="EURUSD",
+            approved=True,
+            direction=Direction.LONG,
+            score=44.0,
+            confidence=0.8,
+            entry=1.1000,
+            stop_loss=1.1000 - floor / 10.0,
+            take_profit=1.1050,
+            reason="test",
+            signals=(),
+        )
+
+        widened = runner._widen_stop_for_costs(idea, spec)
+
+        # To the tick, because the stop is normalised onto the broker's price
+        # grid on the way out.
+        distance = widened.entry - widened.stop_loss
+        assert distance == pytest.approx(floor, abs=spec.tick_size)
+
+        # And the point of the exercise: the gate that refused the trade now
+        # passes it. `_COST_MARGIN` exists so one tick of rounding cannot land
+        # the stop a hair inside the boundary and lose to the very rule the
+        # widening is there to satisfy.
+        from risk.position_sizer import PositionSizer
+
+        sizer = PositionSizer(runner.settings)
+        commission = runner.settings.risk.commission_per_lot(spec.asset_class.value)
+        assert (
+            sizer._cost_share(spec, distance, commission)
+            <= runner.settings.risk.max_cost_share_of_risk
+        )
+
+    def test_a_stop_already_wide_enough_is_left_alone(self) -> None:
+        """The floor is a floor. It must never pull a structural stop inwards,
+        and it must not move one that already clears the costs."""
+        from analysis.confluence import TradeIdea
+        from core.types import Direction
+
+        runner, spec = self._runner()
+        idea = TradeIdea(
+            symbol="EURUSD",
+            approved=True,
+            direction=Direction.LONG,
+            score=44.0,
+            confidence=0.8,
+            entry=1.1000,
+            stop_loss=1.0950,
+            take_profit=1.1100,
+            reason="test",
+            signals=(),
+        )
+
+        assert runner._widen_stop_for_costs(idea, spec).stop_loss == idea.stop_loss
+
+    def test_the_engine_is_handed_the_floor_before_it_evaluates(self) -> None:
+        from datetime import UTC, datetime
+
+        from core.types import MarketContext
+
+        runner, spec = self._runner()
+        context = MarketContext(
+            symbol="EURUSD", now=datetime(2026, 8, 18, tzinfo=UTC), series={}, tick=None
+        )
+
+        runner._attach_cost_floor("EURUSD", context)
+
+        assert context.meta["min_stop_for_costs"] == pytest.approx(
+            runner._cost_implied_min_stop(spec)
+        )
+
+    def test_a_symbol_whose_spec_cannot_be_read_plans_exactly_as_before(self) -> None:
+        """Not a refusal on ignorance, and not a floor of nothing either — the
+        key must be absent so the engine takes its old path."""
+        from datetime import UTC, datetime
+
+        from core.errors import TradingSystemError
+        from core.types import MarketContext
+
+        runner, _ = self._runner()
+
+        def boom(_symbol: str) -> None:
+            raise TradingSystemError("no spec")
+
+        runner.broker = type("_B", (), {"spec": staticmethod(boom)})()
+        context = MarketContext(
+            symbol="EURUSD", now=datetime(2026, 8, 18, tzinfo=UTC), series={}, tick=None
+        )
+
+        runner._attach_cost_floor("EURUSD", context)
+
+        assert "min_stop_for_costs" not in context.meta
+
+    def test_the_engine_reads_it_defensively(self) -> None:
+        """A backtest, a unit test and any caller that never set it must get
+        zero rather than an exception."""
+        from datetime import UTC, datetime
+
+        from analysis.confluence import ConfluenceEngine
+        from core.types import MarketContext
+
+        bare = MarketContext(
+            symbol="EURUSD", now=datetime(2026, 8, 18, tzinfo=UTC), series={}, tick=None
+        )
+        rubbish = MarketContext(
+            symbol="EURUSD",
+            now=datetime(2026, 8, 18, tzinfo=UTC),
+            series={},
+            tick=None,
+            meta={"min_stop_for_costs": "wide-ish"},
+        )
+
+        assert ConfluenceEngine._cost_floor(bare) == 0.0
+        assert ConfluenceEngine._cost_floor(rubbish) == 0.0
+
+
 class TestTheEngineAndTheRunnerMeasureTheSameThing:
     def test_the_confluence_engine_delegates_to_the_shared_walk(self) -> None:
         """Two implementations of one statistic is the bug underneath the bug."""

@@ -234,12 +234,21 @@ def assess_review_drift(
 
     signed = (executable_entry - reviewed_entry) * int(direction) / reference
     drift = abs(signed)
-    if drift > config.max_review_price_drift_atr:
-        side = "with" if signed > 0 else "against"
+    # The two halves are not the same event and no longer share a limit. Price
+    # running ON in the proposed direction means paying more than the price
+    # that was approved — chasing, and held to the tight number. Price coming
+    # BACK means a better fill and a shorter stop distance; what it might also
+    # mean is a level that is failing, and that question belongs to the two
+    # adverse-travel gates that were built for it and sit at 1.00 ATR. This one
+    # was answering it first, at a quarter of that, on an absolute value.
+    chasing = signed > 0
+    limit = config.max_review_price_drift_atr if chasing else config.max_review_pullback_drift_atr
+    if drift > limit:
+        side = "with" if chasing else "against"
         return ReviewDriftAssessment(
             EntryTimingDecision.WAIT_RETEST,
             f"price moved {drift:.2f} ATR {side} the {direction.name} during review, above "
-            f"the {config.max_review_price_drift_atr:.2f} ATR binding limit; analyse the "
+            f"the {limit:.2f} ATR binding limit; analyse the "
             "new price next cycle instead of chasing it",
             round(drift, 3),
             round(signed, 3),
