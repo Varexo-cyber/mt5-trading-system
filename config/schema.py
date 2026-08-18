@@ -1684,7 +1684,24 @@ class EntryQualityConfig(Base):
     max_last_bar_adverse_atr: float = Field(default=0.20, ge=0.0, le=2.0)
     #: The AI reviewed one exact price shape. More drift than this invalidates
     #: that review; it never becomes permission to chase the new price.
+    #:
+    #: This is the CHASING half: price ran on in the proposed direction, so the
+    #: fill is worse than the one that was approved and the reward-to-risk with
+    #: it. Staying tight here is the whole point of the gate.
     max_review_price_drift_atr: float = Field(default=0.25, gt=0.0, le=2.0)
+    #: The other half, which used to share the number above because the gate
+    #: took an absolute value. Price moving AGAINST the direction during the
+    #: review does not make the fill worse — it makes it better, and tightens
+    #: the stop distance the order will carry.
+    #:
+    #: What it can mean is that the level is failing, and that question already
+    #: has two owners: `entry_timing_max_adverse_atr` and
+    #: `confirmation_max_adverse_atr`, both deliberately set to 1.00 ATR on
+    #: measured evidence after half an ATR was found to be ordinary breathing
+    #: on a fast chart. A third, stricter opinion standing in front of both of
+    #: them answered a question it was not built for. Live: two of the three
+    #: setups that survived every other gate in a two-hour window died here.
+    max_review_pullback_drift_atr: float = Field(default=1.00, gt=0.0, le=3.0)
     max_review_latency_seconds: float = Field(default=45.0, gt=1.0, le=300.0)
     #: A breakout is expected to sit farther from its short EMA than a swing
     #: entry. This multiplier only relaxes the three chase thresholds for a

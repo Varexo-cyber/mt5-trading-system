@@ -111,6 +111,49 @@ def test_review_price_is_bound_in_atr_not_raw_dollars() -> None:
     assert stale.decision is EntryTimingDecision.WAIT_RETEST
 
 
+def test_a_better_fill_is_not_the_same_event_as_a_worse_one() -> None:
+    """The gate took an absolute value, so it refused a discount as readily as
+    a chase. For a LONG, price coming back means buying cheaper and carrying a
+    shorter stop — the approval it binds is not invalidated by the fill
+    improving. Whether the LEVEL is failing is a different question, owned by
+    `entry_timing_max_adverse_atr` and `confirmation_max_adverse_atr`, both at
+    1.00 ATR on measured evidence; this one was answering it first, at 0.25.
+
+    Live: two of the three setups that survived every other gate in a two-hour
+    window died here.
+    """
+    market = context(quiet_history())
+
+    chased = assess_review_drift(market, Direction.LONG, 100.0, 100.5, 20.0, config())
+    discounted = assess_review_drift(market, Direction.LONG, 100.0, 99.5, 20.0, config())
+
+    assert chased.decision is EntryTimingDecision.WAIT_RETEST
+    assert discounted.decision is EntryTimingDecision.ENTER_NOW
+
+
+def test_a_short_reads_the_two_sides_the_other_way_round() -> None:
+    """A sign error here is invisible in production and costs every trade, so
+    the mirror case is pinned rather than assumed."""
+    market = context(quiet_history())
+
+    chased = assess_review_drift(market, Direction.SHORT, 100.0, 99.5, 20.0, config())
+    discounted = assess_review_drift(market, Direction.SHORT, 100.0, 100.5, 20.0, config())
+
+    assert chased.decision is EntryTimingDecision.WAIT_RETEST
+    assert discounted.decision is EntryTimingDecision.ENTER_NOW
+
+
+def test_a_collapse_during_the_review_is_still_refused() -> None:
+    """Loosening the pullback side is not removing it. Past the adverse-travel
+    limit the level has stopped being the level that was approved."""
+    market = context(quiet_history())
+
+    verdict = assess_review_drift(market, Direction.LONG, 100.0, 96.0, 20.0, config())
+
+    assert verdict.decision is EntryTimingDecision.WAIT_RETEST
+    assert "against the LONG" in verdict.detail
+
+
 def test_slow_ai_response_never_becomes_permission_to_trade_old_analysis() -> None:
     closes = quiet_history()
     verdict = assess_review_drift(context(closes), Direction.LONG, 100.0, 100.0, 46.0, config())

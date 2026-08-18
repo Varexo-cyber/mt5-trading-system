@@ -297,11 +297,19 @@ class ConfluenceEngine:
             # the wider stop then prices the trade out of the account, the sizer
             # says so — which is the honest answer, and a far better one than
             # shrinking the stop until the arithmetic fits.
-            floor = atr * self.config.min_stop_atr
+            floor = max(atr * self.config.min_stop_atr, self._cost_floor(ctx))
             if abs(entry - stop) < floor:
                 stop = entry - floor * int(direction)
         else:
             stop = entry - atr * self.config.atr_stop_multiple * int(direction)
+            # The ATR branch had no floor at all, on the reasoning that a
+            # multiple of ATR is wide by construction. That holds against noise
+            # and not against a fee schedule: on a quiet instrument a quarter
+            # ATR is two pips, and two pips is a stop the runner is about to
+            # widen anyway.
+            cost_floor = self._cost_floor(ctx)
+            if abs(entry - stop) < cost_floor:
+                stop = entry - cost_floor * int(direction)
         risk = abs(entry - stop)
         if risk <= 0:
             return self._reject(
@@ -337,6 +345,25 @@ class ConfluenceEngine:
                 planning_timeframe.duration.total_seconds() / 60 * profile.target_horizon_bars
             ),
         )
+
+    @staticmethod
+    def _cost_floor(ctx: MarketContext) -> float:
+        """The narrowest stop this instrument's costs allow, or zero.
+
+        Supplied by the runner, which is the only layer that knows the broker's
+        fee schedule, and read defensively: an engine running in a backtest or
+        a unit test gets zero and plans exactly as it always did.
+
+        It belongs here rather than only at execution because a stop that is
+        going to be widened invalidates everything downstream of it — the
+        target distance, how often that distance is reached, and the expectancy
+        that decides whether the setup exists at all.
+        """
+        try:
+            value = float(ctx.meta.get("min_stop_for_costs", 0.0))
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+        return value if value > 0 else 0.0
 
     def _reachable_target(
         self,

@@ -2519,6 +2519,20 @@ class JarvisRunner:
             return None
         try:
             context = self.data.get_context(symbol, force_refresh=True)
+            # Tell the engine what the stop is going to be before it plans
+            # around it. `_widen_stop_for_costs` runs on nearly every candidate
+            # on an account this size, so the analysis was choosing a target,
+            # measuring how often that target is reached, and computing an
+            # expectancy — all against a stop it was about to be told was too
+            # narrow to trade. 1,710 refusals in two live hours read "no target
+            # between 1.00R and 3.00R pays on this market", and they were
+            # measured against a stop the broker would never have received.
+            #
+            # Nothing about the order changes: the runner widens to this same
+            # distance a few steps later either way, so the executed stop, the
+            # risk and the lot size are identical. What changes is that the
+            # target and the reach measurement are now about that trade.
+            self._attach_cost_floor(symbol, context)
             idea = self.engine.evaluate(context, self.settings.mode)
             self._cycle_contexts[symbol] = context
             # The scan reads every symbol anyway, including the ones we are
@@ -5069,6 +5083,57 @@ class JarvisRunner:
         adverse = -travelled * int(idea.direction) / reference
         return adverse <= config.confirmation_max_adverse_atr, adverse
 
+    def _attach_cost_floor(self, symbol: str, context: MarketContext) -> None:
+        """Put the cost-implied minimum stop where the analysis can see it.
+
+        Silent on any failure. A missing spec means the engine plans exactly as
+        it did before, which is the old behaviour and not a refusal — a symbol
+        whose fee schedule cannot be read has not failed this test, it has not
+        taken it.
+        """
+        try:
+            floor = self._cost_implied_min_stop(self.broker.spec(symbol))
+        except (TradingSystemError, ValueError, KeyError):
+            return
+        if floor > 0:
+            context.meta["min_stop_for_costs"] = floor
+
+    def _cost_implied_min_stop(self, spec) -> float:  # type: ignore[no-untyped-def]
+        """The narrowest stop on which commission and slippage stay under the limit.
+
+        A property of the instrument and the fee schedule, not of any one
+        setup: cost per lot is fixed and price risk per lot is linear in the
+        stop, so the distance at which their ratio equals the limit is solved
+        rather than stepped towards.
+
+        And then a hair past it. Aiming at exactly the limit leaves the gate
+        re-testing `cost > limit` on a number that has since been through a
+        price normalisation and a float division, and it loses: a nine-pip stop
+        arrived back as 8.99999 pips and was refused by the very rule the
+        widening exists to satisfy.
+
+        Zero when the question does not apply — no limit configured, or a spec
+        that cannot price a lot — so every caller treats it as "no floor" and
+        not as "a floor of nothing".
+        """
+        limit = self.settings.risk.max_cost_share_of_risk
+        if limit <= 0 or spec is None:
+            return 0.0
+        try:
+            per_price_unit = spec.money_per_lot(1.0)
+            cost_per_lot = self.settings.risk.commission_per_lot(
+                spec.asset_class.value
+            ) + spec.money_per_lot(
+                spec.pips_to_price(
+                    self.settings.risk.stop_slippage_pips.get(spec.asset_class.value, 0.0)
+                )
+            )
+        except (AttributeError, TypeError, ValueError, ZeroDivisionError):
+            return 0.0
+        if per_price_unit <= 0 or cost_per_lot <= 0:
+            return 0.0
+        return float(cost_per_lot / (limit * _COST_MARGIN) / per_price_unit)
+
     def _widen_stop_for_costs(self, idea: TradeIdea, spec) -> TradeIdea:  # type: ignore[no-untyped-def]
         """Push the stop out until commission and slippage are a small part of it.
 
@@ -5102,13 +5167,9 @@ class JarvisRunner:
         # stop arrived back as 8.99999 pips and was refused by the very rule
         # the widening exists to satisfy. Widening that fails to clear the gate
         # is worse than not widening, because it moves the stop as well.
-        cost_per_lot = commission + spec.money_per_lot(
-            spec.pips_to_price(
-                self.settings.risk.stop_slippage_pips.get(spec.asset_class.value, 0.0)
-            )
-        )
-        per_price_unit = spec.money_per_lot(risk) / risk
-        needed = cost_per_lot / (limit * _COST_MARGIN) / per_price_unit
+        needed = self._cost_implied_min_stop(spec)
+        if needed <= 0:
+            return idea
         widened = idea.entry - needed * int(idea.direction)
 
         log.info(
