@@ -160,10 +160,30 @@ data:
   # extra kansen vandaan komen: een cyclus die afmaakt levert per minuut meer
   # bruikbare setups dan een cyclus die halverwege blijft hangen. Kijk na een
   # herstart naar de seconden in de `cycle:` regel; dat is de hele test.
+  # H4 STAAT WEER OP 1500 EN DAT IS EEN TERUGDRAAI VAN MIJN EIGEN FOUT.
+  #
+  # Met H4 op 600 bars sloeg de gap-controle om: elk beursgenoteerd symbool
+  # rapporteerde `H4: 30 bars missing inside trading weeks (5.0% of the window,
+  # limit 5.0%)` en ging in quarantaine. Dertig ontbrekende bars is bij 600 het
+  # getal waar de 5%-limiet precies ligt (5.0083% tegen 5.0000%); bij 1500 is
+  # datzelfde aantal 2.0% en ruim binnen.
+  #
+  # Wat het kostte, gemeten over zes live uren:
+  #
+  #     DATA_QUARANTINED    74 van  8.620 =  0.9%   (H4 1500, vanochtend)
+  #     DATA_QUARANTINED 11.430 van 25.373 = 45.0%  (H4  600, daarna)
+  #
+  # Bijna de halve catalogus, weggegooid door een verandering die de cyclus
+  # sneller moest maken. T, GOOGL, MDT, JNJ, VZ, XOM, AMZN — allemaal met
+  # dezelfde regel en allemaal H4.
+  #
+  # De snelheidswinst zit sowieso niet hier: H4 wordt maar eens per vier uur
+  # opnieuw opgehaald. M5 verliest zijn cache elke vijf minuten en dat is waar
+  # de 425.000 bars per cyclus vandaan kwamen. Die blijven op 600.
   bars:
     W1: 400
     D1: 500
-    H4: 600
+    H4: 1500
     H1: 600
     M15: 600
     M5: 600

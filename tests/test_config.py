@@ -745,12 +745,41 @@ class TestNoBarIsFetchedThatNothingReads:
                 continue
             assert count >= self.DEEPEST_WINDOW + 100, timeframe
 
+    #: H4 is exempt from the ceiling below, and the reason is the whole point of
+    #: this class getting a second look.
+    #:
+    #: "Nothing reads more than 400 bars" was true of the ANALYSIS and false of
+    #: the system. `DataManager._missing_bars` reads the window too, and it is
+    #: not looking for a value — it is deciding whether a gap recurs often
+    #: enough to be the instrument's schedule rather than a hole in the feed.
+    #: That judgement needs a long window, and shortening H4 to 600 flipped it:
+    #: every exchange-traded symbol came back with "30 bars missing (5.0% of the
+    #: window, limit 5.0%)", because 30 is exactly where the 5% limit falls at
+    #: 600 bars and is 2.0% at 1500.
+    #:
+    #: It quarantined 45% of the catalogue — 11,430 of 25,373 decisions in six
+    #: live hours, against 0.9% before — and it cost nothing to fix, because H4
+    #: refetches once every four hours. The cycle time was never there.
+    JUDGED_ON_THE_WHOLE_WINDOW = ("H4",)
+
     def test_and_no_timeframe_carries_far_more_than_that(self) -> None:
         """The regression this exists to catch. A bar fetched and never read is
         pure cycle time, and cycle time is the only thing that decides whether
         a five-minute setup is still there when the analysis reaches it."""
         for timeframe, count in self._bars().items():
+            if timeframe in self.JUDGED_ON_THE_WHOLE_WINDOW:
+                continue
             assert count <= 2 * self.DEEPEST_WINDOW, timeframe
+
+    def test_the_frames_the_gap_check_judges_keep_a_long_window(self) -> None:
+        """The other half, so the saving is never reclaimed from the frame that
+        cannot afford it. A short window does not make the gap check stricter in
+        any meaningful sense — it makes the same number of missing bars a larger
+        share of a smaller denominator."""
+        bars = self._bars()
+
+        for timeframe in self.JUDGED_ON_THE_WHOLE_WINDOW:
+            assert bars[timeframe] >= 1200, timeframe
 
     def test_the_floor_the_data_manager_enforces_is_still_cleared(self) -> None:
         settings = load_settings(
