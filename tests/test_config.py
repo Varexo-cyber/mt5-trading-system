@@ -98,13 +98,21 @@ class TestShippedConfig:
         # majors: momentum_scalp -172.15R over 307 trades, range_fade -156.32R
         # over 898, range_break -76.28R over 214. Against a coin flip taking the
         # same moments, stops and targets, not one of them won.
-        assert not settings.analysis.playbooks.live_execution_enabled
-        # And the three with a real sample are off as theories, not merely as
-        # executors: a coin voting alongside is not corroboration, so they no
-        # longer weigh in as context or veto either.
+        # `range_fade` is back on at the owner's instruction after he read the
+        # backtest himself: 898 trades, -156.32R, and +0.082R against a coin
+        # flip taking the same moments and stops, which is inside chance.
+        assert settings.analysis.playbooks.live_execution_enabled
+        assert settings.analysis.playbooks.range_fade
+        # The two that were WORSE than the coin stay off. Nothing was asked for
+        # them and there is nothing to say for them.
         assert not settings.analysis.playbooks.momentum_scalp
-        assert not settings.analysis.playbooks.range_fade
         assert not settings.analysis.playbooks.range_break
+        # And the route stays the strictest one in the system, which is what
+        # keeps this a setup type rather than a shortcut.
+        assert settings.analysis.playbooks.min_conviction > (
+            settings.analysis.confluence.score_threshold
+        )
+        assert settings.analysis.playbooks.require_method_agreement
 
     def test_eightcap_overlay_temporarily_disables_the_rio_bridge(self) -> None:
         overlay = DEFAULT_CONFIG_PATH.parent / "eightcap.yaml"

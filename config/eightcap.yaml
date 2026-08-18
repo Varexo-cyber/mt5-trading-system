@@ -678,12 +678,29 @@ analysis:
     # `range_fade` was degene waar het om ging: de short aan de bovenkant van
     # een range die dit account bij NZDJPY had willen hebben. Die ene trade zou
     # goed geweest zijn. 898 ervan zijn dat niet.
-    live_execution_enabled: false
+    # DERDE RONDE. `range_fade` gaat weer aan, na de backtest en met de
+    # eigenaar die hem gezien heeft. Zijn woorden: "ik wil meer kaarspatronen".
+    #
+    # Wat hij daarmee koopt, uit zijn eigen meting van 180 dagen over vier
+    # majors: 898 trades, -156,32R, -0,174R per trade, worst drawdown 94,41R.
+    # Op dit account (1R ~ EUR 6,50) is dat ruwweg EUR 1.000 over een half jaar,
+    # ongeveer EUR 5,50 per dag. En tegen een muntworp die dezelfde momenten,
+    # stops en targets nam won hij met +0,082R per trade, wat binnen de ruis
+    # valt - de patroonregels voegden niets toe aan het kiezen van de richting.
+    #
+    # Dat is geen randgeval en het is opgeschreven zodat niemand later denkt dat
+    # het over het hoofd gezien is. Het is een beslissing van de eigenaar op
+    # cijfers die hij zelf heeft opgehaald.
+    #
+    # `momentum_scalp` en `range_break` blijven uit: -0,561R en -0,356R per
+    # trade, en allebei SLECHTER dan de munt in plaats van er binnen de ruis
+    # naast. Daar is niets voor gevraagd en niets voor te zeggen.
+    live_execution_enabled: true
     # De drie met een gemeten negatieve steekproef gaan uit als theorie, niet
     # alleen als uitvoerder: ze wegen nu ook niet meer mee als context of veto,
     # want een munt die meestemt is geen bevestiging.
     momentum_scalp: false
-    range_fade: false
+    range_fade: true
     range_break: false
     # Two theories reading the same bars in opposite directions is a market
     # with no edge, not a close call to settle by score. Stand aside.
