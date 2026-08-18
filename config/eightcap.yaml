@@ -648,35 +648,43 @@ analysis:
   # far more setups than the pattern logic does.
   playbooks:
     enabled: true
-    # AANGEZET OP UITDRUKKELIJK VERZOEK VAN DE EIGENAAR, 18 augustus.
+    # WEER UIT, EN NU OP EEN METING IN PLAATS VAN OP EEN ARGUMENT.
     #
-    # WAT HIER STOND EN WAAROM HET ERTOE DOET: "The supplied 90-day
-    # matched-control test was negative." Dat is echt bewijs tegen, en het is
-    # niet per playbook uitgesplitst - het oordeel gold de vijf samen. De
-    # eigenaar is hierop gewezen en heeft het herhaald: `range_fade` is precies
-    # de short die hij bij een afgewezen long in een range had willen hebben, en
-    # die kans laat hij niet liggen op een aggregaat.
+    # Aangezet op 18 augustus op uitdrukkelijk verzoek. `backtest_playbooks.py
+    # --days 180 --min-conviction 75` is daarna gedraaid over vier majors en
+    # geeft dit, op de live conviction-drempel:
     #
-    # WAT DIT WEL EN NIET OPENZET. De playbookroute is niet de losse route, hij
-    # is de STRENGSTE in het systeem:
+    #   momentum_scalp   307 trades  -172,15R  -0,561R/trade  worst dd 52,1R
+    #   range_fade       898 trades  -156,32R  -0,174R/trade  worst dd 94,4R
+    #   range_break      214 trades   -76,28R  -0,356R/trade  worst dd 33,9R
+    #   trend_pullback     2 trades    +4,66R                 te weinig
     #
-    #   min_conviction            75,0   tegen 26,0 voor de engine
-    #   require_method_agreement  true   swing en playbook moeten het eens zijn
-    #   veto_on_conflict          true   twee theorieen tegen elkaar = wegblijven
-    #   max_spread_share_of_stop  0,15   tegen 0,35 in de sizer
+    # Dat is geen randgeval. 898 trades is een echte steekproef en op dit
+    # account (1R ~ EUR 6,50) staat -405R samen voor ongeveer EUR 2.600 over een
+    # half jaar - zo'n EUR 15 per dag op een rekening van EUR 160.
     #
-    # En daarna gelden sizing, marge, correlatie, sessie en elke filterpoort
-    # onveranderd. Wat dit toevoegt is een setup-soort, geen kortere weg.
+    # En de tweede tabel is vernietigender dan de eerste. Elke theorie is
+    # vergeleken met een muntworp die dezelfde momenten, symbolen, stops en
+    # targets nam en alleen de richting gokte:
     #
-    # HOE DIT WORDT BEOORDEELD, en dat is de afspraak: `backtest_playbooks.py
-    # --days 180 --min-conviction 75` splitst het per theorie uit, en
-    # `scorecard.py` laat de gerealiseerde uitkomst per setup-familie zien.
-    # Staat `range_fade` negatief op echte bars, dan gaat die ene op false in
-    # plaats van deze schakelaar terug op false - de andere vier hoeven daar
-    # niet onder te lijden, en omgekeerd.
-    live_execution_enabled: true
-    momentum_scalp: true
-    range_fade: true
+    #   momentum_scalp  -0,186R slechter dan de munt
+    #   range_break     -0,095R slechter
+    #   range_fade      +0,082R beter, en dat valt binnen de ruis
+    #
+    # Geen enkele theorie versloeg gokken. De patroonregels erin - de
+    # compressie, de ondiepe pullback, de driemaal geteste rand, de
+    # afwijzingswick - voegen niets toe aan een munt.
+    #
+    # `range_fade` was degene waar het om ging: de short aan de bovenkant van
+    # een range die dit account bij NZDJPY had willen hebben. Die ene trade zou
+    # goed geweest zijn. 898 ervan zijn dat niet.
+    live_execution_enabled: false
+    # De drie met een gemeten negatieve steekproef gaan uit als theorie, niet
+    # alleen als uitvoerder: ze wegen nu ook niet meer mee als context of veto,
+    # want een munt die meestemt is geen bevestiging.
+    momentum_scalp: false
+    range_fade: false
+    range_break: false
     # Two theories reading the same bars in opposite directions is a market
     # with no edge, not a close call to settle by score. Stand aside.
     veto_on_conflict: true
