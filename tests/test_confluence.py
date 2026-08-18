@@ -314,12 +314,42 @@ class TestATrendPremiseContradictedByAMeasuredRange:
 
         assert "measures a range" not in idea.reason
 
-    def test_a_trend_module_corroborated_by_a_range_module_survives(self) -> None:
-        """The rule is "the ONLY firing modules assert a trend". A sweep firing
-        alongside means something did agree with the range."""
+    def test_company_no_longer_rescues_a_contradicted_trend_module(self) -> None:
+        """The old rule was "the ONLY firing modules assert a trend", so any
+        other detector joining in switched the check off completely.
+
+        NZDJPY LONG, 18 August, is what that bought. Regime `range`. Two modules
+        agreed: `trend_momentum` at +65 — describing itself as "H1 bullish with
+        H4 neutral, unconfirmed by the bias timeframe" — and `impulse_break` at
+        +60, which is not on the continuation list. `all(...)` was therefore
+        False, the check never ran, and 3.83% of the account went long into a
+        measured range. It never printed a positive tick.
+
+        The range does not go away because a second module is standing next to
+        it. The contradicted CONTRIBUTION is dropped and everything downstream
+        judges what is left — which is the sweep, on its own, here.
+        """
         self.with_modules(self.trend(), self.sweep(), self.regime("range"))
 
-        assert self.engine().evaluate(context(), TradingMode.PAPER).direction is not None
+        idea = self.engine().evaluate(context(), TradingMode.PAPER)
+
+        # Not refused BY this gate — the sweep's premise is not contradicted —
+        # but no longer carried by the module that was.
+        assert "measures a range" not in idea.reason
+        assert "trend_momentum" not in idea.reason
+
+    def test_the_setup_dies_when_only_the_contradicted_module_was_holding_it(self) -> None:
+        """The live shape, reduced: drop what the regime disagrees with and see
+        whether anything is actually left. Here the survivor is a lone detector
+        under the confidence a lone detector needs, so the trade is refused by a
+        rule that already existed rather than by a new one."""
+        unsure = StubModule(Signal("liquidity_sweep", 70, 0.50, invalidation_price=1.1050))
+        self.with_modules(self.trend(), unsure, self.regime("range"))
+
+        idea = self.engine().evaluate(context(), TradingMode.PAPER)
+
+        assert idea.direction is None
+        assert "only detector pointing this way" in idea.reason
 
     def test_an_unclassified_regime_changes_nothing(self) -> None:
         """transition, or no regime module at all: no measurement, no veto."""
@@ -728,3 +758,71 @@ class TestTheTargetGoesWhereItPays:
             )
             is None
         )
+
+
+class TestTheNzdjpyShape:
+    """The live trade that showed the hole, reproduced end to end.
+
+    NZDJPY LONG at 01:19 on 18 August. Regime `range`. `trend_momentum` at +65
+    with confidence 0.68, its own detail reading "H1 EMA/momentum bullish with
+    H4 neutral — unconfirmed by the bias timeframe". `impulse_break` at +60 with
+    confidence 0.63. Score 41.5 against a 26.0 bar, 3.83% of the account, and it
+    never printed a positive tick: best +0.00R, worst -0.36R, out at -0.33R.
+
+    Two things let it through and both are fixed here. The range check tested
+    `all(...)` over the agreeing modules, so `impulse_break` standing alongside
+    switched it off entirely. And the check ran after the lone-module floor, so
+    even discounting `trend_momentum` afterwards would have been too late.
+    """
+
+    @staticmethod
+    def _engine():  # type: ignore[no-untyped-def]
+        config = ConfluenceConfig(
+            score_threshold=26.0,
+            minimum_directional_modules=1,
+            lone_module_minimum_confidence=0.65,
+            trend_continuation_modules=("trend_momentum",),
+            weights={"trend_momentum": 1.0, "impulse_break": 1.0, "market_regime": 0.0},
+        )
+        modules = [
+            StubModule(Signal("trend_momentum", 65, 0.68, invalidation_price=1.1050)),
+            StubModule(Signal("impulse_break", 60, 0.63, invalidation_price=1.1050)),
+            StubModule(Signal("market_regime", 0.0, 1.0, "regime", details={"regime": "range"})),
+        ]
+        return ConfluenceEngine(modules, config)  # type: ignore[arg-type]
+
+    def test_it_is_refused_now(self) -> None:
+        idea = self._engine().evaluate(context(), TradingMode.PAPER)
+
+        assert idea.direction is None
+
+    def test_and_the_refusal_names_the_survivor_not_the_regime(self) -> None:
+        """Dropping the contradicted contribution leaves `impulse_break` alone
+        at 0.63, under the 0.65 a lone detector needs. The trade dies on a rule
+        that already existed, which is the point: the regime check only had to
+        stop counting evidence it disagrees with."""
+        idea = self._engine().evaluate(context(), TradingMode.PAPER)
+
+        assert "impulse_break is the only detector" in idea.reason
+        assert "0.63" in idea.reason
+
+    def test_the_same_two_modules_are_fine_outside_a_range(self) -> None:
+        """The regime is doing the work, not a new dislike of these modules."""
+        config = ConfluenceConfig(
+            score_threshold=26.0,
+            minimum_directional_modules=1,
+            lone_module_minimum_confidence=0.65,
+            trend_continuation_modules=("trend_momentum",),
+            weights={"trend_momentum": 1.0, "impulse_break": 1.0, "market_regime": 0.0},
+        )
+        modules = [
+            StubModule(Signal("trend_momentum", 65, 0.68, invalidation_price=1.1050)),
+            StubModule(Signal("impulse_break", 60, 0.63, invalidation_price=1.1050)),
+            StubModule(Signal("market_regime", 0.0, 1.0, "regime", details={"regime": "trend_up"})),
+        ]
+
+        idea = ConfluenceEngine(modules, config).evaluate(  # type: ignore[arg-type]
+            context(), TradingMode.PAPER
+        )
+
+        assert idea.direction is not None
