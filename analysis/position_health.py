@@ -168,17 +168,43 @@ class HealthWeights:
     #: something is wrong can be acted on at minute six instead of minute
     #: twelve.
     #:
-    #: 0.30 and not 0.28, so that `structure` + `trajectory` lands exactly on
-    #: BROKEN_AT. That pair is the one combination that should be able to close
-    #: a trade at any age, including inside the first two minutes: the swing
-    #: that justified the position has broken AND the market has already taken
-    #: real money. Neither is a clock reading and neither needs a bar to form,
-    #: so waiting adds nothing except the loss.
+    #: `structure` + `trajectory` has to land on BROKEN_AT: that pair should be
+    #: able to close a trade at any age, including inside the first two
+    #: minutes, because the swing that justified the position has broken AND
+    #: the market has already taken real money. Neither is a clock reading and
+    #: neither needs a bar to form, so waiting adds nothing except the loss.
     #:
-    #: Every other pairing still falls short — drift 0.65, liquidity 0.60 — and
-    #: alone it is 0.30 against a 0.45 `deteriorating` floor, so "this trade is
-    #: down" on its own remains a hold.
-    trajectory: float = 0.30
+    #: 0.50, raised from 0.30 by the owner after watching trades run from a
+    #: manageable loss to the full stop with every reader watching and none
+    #: able to speak. At 0.30 the arithmetic was the whole story: a trade 0.60R
+    #: offside with momentum turned against it scored 0.58 — `deteriorating`,
+    #: which tightens a stop and lets the trade continue, and it usually
+    #: continued to -1.00R. On this account that is -1.93 against -3.22 EUR,
+    #: every time it happens.
+    #:
+    #: The claim above that any two families reach BROKEN_AT was only ever true
+    #: of pairs containing `structure`: drift+trajectory made 0.65 and
+    #: liquidity+trajectory 0.60, both well short. At 0.50 two of those three
+    #: finally do what this class says they do — trajectory+drift 0.85,
+    #: trajectory+liquidity 0.80 — and drift+liquidity at 0.65 remains the one
+    #: that does not.
+    #:
+    #: WHAT IT STILL CANNOT DO, and this is the safeguard that matters. Alone
+    #: it reaches 0.50, under the 0.75 an exit needs, and the corroboration
+    #: rule demotes a lone family's exit to a stop tightening regardless. So
+    #: "this trade is down" never closes a trade by itself. It now earns a
+    #: tighter stop from about -0.55R instead of earning nothing at all.
+    #:
+    #: It also cannot touch a winner. `adverse_excursion` returns None above
+    #: -0.35R, so this reader does not exist while a trade is in profit.
+    #:
+    #: WHY THIS EXIT AND NOT ANOTHER. Measured exit lift on this account is
+    #: negative nearly everywhere — SESSION_DECAY -0.99R, SPREAD_SQUEEZE
+    #: -0.39R, BROKER_SL -0.12R. HEALTH_EXIT is the only one that is positive:
+    #: +0.67R on its single firing, taking -0.33R where holding gave -1.00R.
+    #: Firing more is worth trying on the one rule with evidence behind it, and
+    #: on none of the others.
+    trajectory: float = 0.50
 
     def of(self, family: Family) -> float:
         return {
