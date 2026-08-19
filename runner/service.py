@@ -2119,22 +2119,36 @@ class JarvisRunner:
         config = self.settings.analysis.confluence
         if not config.first_touch_target_test or not config.require_target_base_rate:
             return None
-        # AND ONLY WHEN THE ENGINE PLANNED THE SAME TRADE.
+        # THIS WAS SILENCED, AND THE REASON HAS BEEN ANSWERED.
         #
-        # This gate judges the plan against the stop the order will carry, and
-        # `_widen_stop_for_costs` runs a few lines above it. With
-        # `plan_on_cost_floor` off, the engine chose its target against the
-        # NARROW stop and this then re-measures the WIDE one — so a target the
-        # analysis proved payable is refused on geometry the analysis never
-        # saw. That is not a stricter test, it is a test of a plan nobody
-        # designed, and it cost 69 of 140 live setups in six hours.
+        # It used to return None unless `plan_on_cost_floor` was on. The
+        # argument was that the engine chooses its target against the NARROW
+        # stop while `_widen_stop_for_costs` runs a few lines above this, so
+        # re-measuring the WIDE one refused a plan on geometry the analysis
+        # never saw — 69 of 140 live setups in six hours.
         #
-        # Either both halves see the widened stop or neither does. The engine
-        # side is off by its own measurement, so this one goes with it and the
-        # unconditional reading decides the break-even branch, exactly as it
-        # did before either existed.
-        if not config.plan_on_cost_floor:
-            return None
+        # That was true of the arithmetic as it stood, and the arithmetic was
+        # the problem. Widening does two things at once: it lowers
+        # reward-to-risk AND it makes the position far harder to stop out. The
+        # old form could only see the first, because it priced two outcomes and
+        # counted every unresolved window as a stop-out. Now that stop-outs are
+        # counted directly, a wider stop earns its credit. Measured on one
+        # market, target fixed, stop widened in four steps:
+        #
+        #     stop     RR    unconditional      first-touch, corrected
+        #     1x     0.75    73.0% / 57.1% ok   86.1% resolved  +0.30R ok
+        #     1.5x   0.50    73.0% / 66.7% ok   97.0% resolved  +0.20R ok
+        #     2x     0.38    73.0% / 72.7% ok  100.0% resolved  +0.13R ok
+        #     3x     0.25    73.0% / 80.0% NO  100.0% resolved  +0.05R ok
+        #
+        # The unconditional reading is FROZEN at 73.0% down the whole column:
+        # it does not know the stop exists, so widening can only ever count
+        # against a trade. That is the reading currently deciding the
+        # break-even branch, and it refused 48 of 58 live setups in eighteen
+        # minutes while the plans it judged had a positive measured expectancy.
+        #
+        # `plan_on_cost_floor` stays off; it was falsified on its own evidence
+        # and this does not depend on it.
         if idea.direction is None:
             return None
         risk = abs(idea.entry - idea.stop_loss)
