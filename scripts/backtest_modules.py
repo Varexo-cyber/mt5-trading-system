@@ -274,6 +274,28 @@ def main(argv: list[str] | None = None) -> int:
 
     backtester = PessimisticBacktester()
 
+    # SAY WHAT WAS CHARGED. A table of R-multiples means nothing without it, and
+    # this run has already been read twice without anyone being able to tell:
+    # the spread was silently missing until it was noticed that both replays
+    # computed it to build a tick and then dropped it, so two tables produced
+    # hours apart were not comparable and nothing on either said so.
+    assumptions = backtester.assumptions
+    charged = [
+        f"commission {assumptions.round_trip_commission_bps:.2f} bps",
+        f"exit slippage {assumptions.exit_slippage_bps:.2f} bps",
+        f"entry slippage {assumptions.entry_slippage_bps:.2f} bps",
+    ]
+    with_spread = sum(1 for order in everything if order.spread > 0)
+    print(
+        f"\n  Costs charged: {', '.join(charged)}, and the broker's own recorded "
+        f"spread on {with_spread:,} of {len(everything):,} proposals."
+    )
+    if with_spread < len(everything):
+        print(
+            "  Proposals without a recorded spread are filled at the mid on both "
+            "sides,\n  so their rows are a LOWER BOUND on what the round trip cost."
+        )
+
     present: dict[str, list[BacktestOrder]] = defaultdict(list)
     alone: dict[str, list[BacktestOrder]] = defaultdict(list)
     for order in everything:

@@ -511,7 +511,24 @@ analysis:
       # worth anything is a question for `scripts/backtest_modules.py`, and its
       # answer is what decides whether they ever reach the allowlist.
       volatility_squeeze: 0.6
-      mean_reversion: 0.6
+      # `mean_reversion` OP NUL, vier uur na het bouwen, op zijn eigen meting.
+      #
+      # 20 markten, 180 dagen: 194 trades, -0.193R per trade, -37.53R totaal,
+      # t = -2.45. Na trend_momentum de grootste verliezer in de tabel.
+      #
+      # De redenering waarop hij gebouwd is klopte niet. Ik zag `liquidity_sweep`
+      # op +0.119R over 23 trades en noemde de omkeer-familie "de enige die niet
+      # verliest". Op 91 trades staat liquidity_sweep nu op -0.139R. Die hint was
+      # ruis, en de module die erop gebouwd is verliest geld.
+      #
+      # Nul en niet verwijderd: de code, de hypothese en de tests blijven staan,
+      # zodat een latere meting hem kan terughalen in plaats van dat iemand hem
+      # opnieuw moet bedenken.
+      mean_reversion: 0.0
+      # De enige die iets oplevert: 33 trades, 52% raak, +0.145R per trade. Nog
+      # geen bewijs — t = 0.76 en hij heeft er 232 nodig — maar het is de beste
+      # regel in de tabel en de enige familie die naar iets kijkt wat de andere
+      # acht niet zien: hoe laat het is.
       session_breakout: 0.5
       # Lowest in the table, and its confidence ceiling sits under the 0.65 a
       # lone module needs, so it can only ever tip a setup two readers already
