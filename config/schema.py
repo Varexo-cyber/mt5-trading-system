@@ -2126,6 +2126,38 @@ class ConfluenceConfig(Base):
     #: reached the gate, so widening — the thing that exists to make
     #: small-account trades viable at all — could only count against a trade.
     first_touch_target_test: bool = True
+    #: Fewest windows that must have RESOLVED — reached the target or taken the
+    #: stop — before a distance may be chosen on its measured rate.
+    #:
+    #: The break-even test is applied to the resolved windows, which is the
+    #: population it was derived for, and that population shrinks fast as the
+    #: distance grows. On a 3,000-bar series a 3R target resolves 36 windows
+    #: out of 2,976: a rate read off 36 samples carries an error bar wide
+    #: enough to clear any requirement by luck, and the trade it admits is one
+    #: whose target is touched half a percent of the time.
+    #:
+    #: 30, and deliberately low, because it is a backstop and not the gate.
+    #: Capping the credit on an expired window at zero already refuses these
+    #: distances on their own arithmetic: on a strongly trending series the
+    #: expectancy crosses zero at 2.4R with 227 windows still resolving, and is
+    #: -0.15R by the time only 36 do. This catches the freak reading the
+    #: arithmetic happens to like, nothing more. A higher figure starts
+    #: refusing markets for having a short history rather than a bad edge.
+    #: Zero switches the sample floor off entirely.
+    target_minimum_resolved_windows: int = Field(default=30, ge=0, le=100_000)
+    #: How far above `risk.min_risk_reward` the target search must start.
+    #:
+    #: THE TWO FLOORS BEING EQUAL IS A COIN FLIP, AND IT RAN LIVE. The search
+    #: lands on its own floor on essentially every market, so with both numbers
+    #: at 0.60 every plan arrives at the sizer at exactly 0.60R — and the quote
+    #: moves between the two. NDX100 SHORT, 19 August: approved, reviewed, then
+    #: `RR_BELOW_MINIMUM: reward:risk is 1:0.52, below the required 1:0.60`.
+    #: Nothing was wrong with the setup. It was planned with no room.
+    #:
+    #: 0.15 means a plan can lose a seventh of its reward to a moved quote and
+    #: still be sized. Zero restores the old knife edge and is allowed only so
+    #: the behaviour stays expressible.
+    target_planning_margin: float = Field(default=0.15, ge=0.0, le=2.0)
     #: Let the analysis plan on the cost-implied stop instead of only the
     #: chart's. OFF, and turned off by its own evidence rather than by taste.
     #:
@@ -2223,7 +2255,7 @@ class ConfluenceConfig(Base):
     #: reward shrinks while the commission does not, so the estimate was most
     #: optimistic exactly where this floor now allows the search to go. The
     #: runner supplies the full round trip through `round_trip_cost_price`.
-    minimum_r_multiple: float = Field(default=1.0, ge=0.3, le=5.0)
+    minimum_r_multiple: float = Field(default=1.15, ge=0.3, le=5.0)
     atr_stop_multiple: float = Field(default=1.5, gt=0.0, le=10.0)
     #: Floor on the stop distance, as a multiple of H1 ATR.
     #:
@@ -3318,12 +3350,18 @@ class Settings(Base):
         will come apart again.
         """
         floor = self.analysis.confluence.minimum_r_multiple
-        if self.risk.min_risk_reward > floor:
+        margin = self.analysis.confluence.target_planning_margin
+        needed = self.risk.min_risk_reward * (1.0 + margin)
+        if floor + 1e-9 < needed:
             raise ValueError(
-                f"risk.min_risk_reward ({self.risk.min_risk_reward}) is above "
-                f"analysis.confluence.minimum_r_multiple ({floor}): every target the "
-                f"analysis is allowed to plan between them would be sized and then "
-                f"refused as RR_BELOW_MINIMUM. Move both or neither."
+                f"analysis.confluence.minimum_r_multiple ({floor}) leaves no room above "
+                f"risk.min_risk_reward ({self.risk.min_risk_reward}): the target search "
+                f"lands on its own floor on nearly every market, so a plan built at "
+                f"{floor}R reaches the sizer with nothing to spare and any adverse tick "
+                f"between the two refuses it as RR_BELOW_MINIMUM. With a "
+                f"{margin:.0%} planning margin the floor must be at least {needed:.2f}. "
+                f"Raise it, lower risk.min_risk_reward, or set "
+                f"analysis.confluence.target_planning_margin to 0 to accept the knife edge."
             )
         return self
 

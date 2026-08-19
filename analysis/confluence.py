@@ -586,7 +586,11 @@ class ConfluenceEngine:
             # So the classic break-even rate is still enforced, on the
             # population it was derived for: the windows that actually resolved
             # one way or the other.
-            if not odds.target_is_the_exit(reward_risk=candidate, cost_r=cost_r):
+            if not odds.target_is_the_exit(
+                reward_risk=candidate,
+                cost_r=cost_r,
+                minimum_resolved=config.target_minimum_resolved_windows,
+            ):
                 candidate += step
                 continue
             # EXPECTANCY PER BAR, NOT PER TRADE, and the difference decides

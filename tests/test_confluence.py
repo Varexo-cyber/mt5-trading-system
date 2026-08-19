@@ -477,9 +477,13 @@ class TestHorizonsDoNotOutvoteEachOther:
         """
         base = context()
         index = pd.date_range("2026-01-01", periods=200, freq="15min", tz=UTC)
-        # Fast enough that a twelve-bar target clears the stop, otherwise the
+        # Fast enough that the target clears the stop with ROOM, otherwise the
         # setup dies on target reachability instead of on the thing under test.
-        step = 0.0003 if falling else -0.0003
+        # It was 0.0003, which covered exactly 1.00R inside the horizon and
+        # nothing beyond it, so lifting the planning floor by a tenth of an R
+        # broke four tests about the vote. A fixture tuned to a boundary tests
+        # the boundary, whatever its docstring says.
+        step = 0.0006 if falling else -0.0006
         close = pd.Series([1.1100 + (199 - i) * step for i in range(200)], index=index)
         frame = pd.DataFrame(
             {
@@ -934,11 +938,15 @@ class TestTheTargetBandHasToContainAPayableDistance:
 
     @staticmethod
     def _band():  # type: ignore[no-untyped-def]
+        return TestTheTargetBandHasToContainAPayableDistance._settings().analysis.confluence
+
+    @staticmethod
+    def _settings():  # type: ignore[no-untyped-def]
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
         return load_settings(
             overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
-        ).analysis.confluence
+        )
 
     def test_the_band_reaches_a_realistic_win_rate(self) -> None:
         """At the top of the band the required hit rate must be one these
@@ -968,11 +976,23 @@ class TestTheTargetBandHasToContainAPayableDistance:
 
         `scorecard --days 3` is the check. Trades dying on costs rather than on
         the market is the prediction coming true, and it is one line back.
+
+        0.75 RATHER THAN 0.60, and the difference is not a change of mind about
+        the risk above — the EXECUTION floor is still the 0.60 he approved. The
+        planning floor has to sit above it. The search lands on its own floor
+        on nearly every market, so with both numbers at 0.60 every plan reached
+        the sizer at exactly 0.60R with nothing to spare, and the quote moves in
+        between: NDX100 SHORT on 19 August was approved, reviewed, and then
+        refused as `RR_BELOW_MINIMUM: reward:risk is 1:0.52`.
         """
         band = self._band()
 
-        assert band.minimum_r_multiple == 0.60
+        assert band.minimum_r_multiple == 0.75
         assert band.minimum_r_multiple < 1.0
+        # The floor the owner set is the one the SIZER enforces, and it is
+        # untouched. This is headroom above it, not a stricter policy.
+        assert self._settings().risk.min_risk_reward == 0.60
+        assert band.minimum_r_multiple >= 0.60 * (1.0 + band.target_planning_margin)
 
     def test_the_sizer_will_not_refuse_what_the_analysis_may_plan(self) -> None:
         """Two floors that must agree, and they did not: `min_risk_reward` sat
