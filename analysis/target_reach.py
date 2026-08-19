@@ -124,8 +124,18 @@ class SurvivalVerdict:
     on the cost of the widening and none of its benefit.
     """
 
+    #: Every window the history could supply.
     windows: int
+    #: Of those, the ones that ended at the target or at the stop. The rest
+    #: expired with neither touched, and pricing those as stop-outs is the
+    #: error this gate was making.
+    resolved_windows: int
+    #: Share of the RESOLVED windows that reached the target first. This is the
+    #: population `required_pct` was derived for.
     forward_pct: float
+    #: Share of ALL windows that reached it — the looser reading, kept because
+    #: it is what an operator means by "how often does this actually happen".
+    reach_pct: float
     required_pct: float
     expected_r: float
     reward_risk: float
@@ -147,29 +157,121 @@ class SurvivalVerdict:
         return self.forward_pct >= self.required_pct
 
     def describe(self) -> str:
+        expired = self.windows - self.resolved_windows
         return (
             f"this market reached the target before the {self.reward_risk:.2f}RR stop in "
-            f"{self.forward_pct:.1f}% of {self.windows} comparable windows; at a "
+            f"{self.forward_pct:.1f}% of the {self.resolved_windows} windows that resolved "
+            f"({expired} of {self.windows} expired with neither touched); at a "
             f"{self.cost_r:.0%}-of-risk round trip it needs {self.required_pct:.1f}% to "
             f"break even, so one trade is worth {self.expected_r:+.2f}R"
         )
 
 
-def first_touch_runs(
+@dataclass(frozen=True, slots=True)
+class TargetOdds:
+    """One distance, priced — and whether the target is the exit or decoration.
+
+    `expected_r` prices all three outcomes. `resolved_reach` asks a narrower
+    question: OF THE WINDOWS THAT ENDED ONE WAY OR THE OTHER, how often did
+    this market go our way? That is the population the classic break-even rate
+    `(1 + cost) / (1 + RR)` was derived for, and applying it to the whole
+    sample — expired windows included — is the error that made every target
+    look unpayable.
+
+    Both tests are needed, and they catch different things. A distance the
+    market reaches once a month can still show a positive `expected_r` on
+    drift alone: every window expires a little in front, nothing is ever
+    stopped, and the target is never touched. That is not a plan, because the
+    system exits at the target or the stop and neither arrives.
+    `resolved_windows` at zero says exactly that, in a number.
+    """
+
+    expected_r: float
+    reach: float
+    resolved_reach: float
+    resolved_windows: int
+
+    def target_is_the_exit(self, *, reward_risk: float, cost_r: float) -> bool:
+        """Does the target carry the trade, on the windows that resolved?"""
+        if self.resolved_windows <= 0 or reward_risk <= 0:
+            return False
+        return self.resolved_reach >= (1.0 + cost_r) / (1.0 + reward_risk)
+
+
+@dataclass(frozen=True, slots=True)
+class FirstTouchOutcomes:
+    """What became of each window, in three kinds and not two.
+
+    THE BUG THIS EXISTS TO KILL WAS MINE AND IT RAN LIVE. A favourable-run
+    array alone cannot tell a window that was stopped out from one where price
+    drifted sideways until the horizon expired, so a caller holding only that
+    array has to treat both as a full stop-out.
+
+    Measured on a synthetic walk carrying a real edge, at a 1R target 46% of
+    windows expire unresolved. Charging each of them -1R subtracts about half
+    an R of pure fiction from every evaluation: the same market reads -0.15R,
+    and is refused, where the truth is +0.31R. Four of five live setups died at
+    that gate in a measured window, and the arithmetic is why.
+
+    So the three outcomes stay apart, and the third is MEASURED rather than
+    assumed. `settle_r` is where price actually stood at the end of an
+    unresolved window, in units of risk, signed in the trade's favour. Calling
+    it flat would be a guess with the bars already in hand.
+    """
+
+    #: Best favourable excursion before the stop would have closed it, in price.
+    run: np.ndarray
+    #: True where the stop would have been taken inside the horizon.
+    stopped: np.ndarray
+    #: Signed R at the last bar, for windows that resolved neither way. Zero
+    #: elsewhere, so it is only meaningful read together with the other two.
+    settle_r: np.ndarray
+
+    @property
+    def windows(self) -> int:
+        return int(self.run.size)
+
+    def expectancy_r(self, *, distance: float, risk: float, cost_r: float) -> TargetOdds:
+        """What one trade at this distance is worth, and how it got there.
+
+        Every window is scored as what it was. Reaching the target pays the
+        target less the round trip; being stopped costs the stop plus the same
+        round trip; expiring costs the round trip plus wherever price actually
+        ended — small more often than not, sometimes favourable, and never the
+        whole stop the two-outcome form charged it.
+        """
+        if risk <= 0 or self.run.size == 0 or distance <= 0:
+            return TargetOdds(0.0, 0.0, 0.0, 0)
+        won = self.run >= distance
+        lost = self.stopped & ~won
+        payoff = np.where(
+            won,
+            distance / risk - cost_r,
+            np.where(lost, -(1.0 + cost_r), self.settle_r - cost_r),
+        )
+        resolved = int(won.sum() + lost.sum())
+        return TargetOdds(
+            expected_r=float(payoff.mean()),
+            reach=float(won.mean()),
+            resolved_reach=float(won.sum() / resolved) if resolved else 0.0,
+            resolved_windows=resolved,
+        )
+
+
+def first_touch_outcomes(
     frame: pd.DataFrame,
     *,
     risk: float,
     bars_ahead: int,
     long: bool,
     closes: np.ndarray | None = None,
-) -> np.ndarray | None:
-    """Per window: how far price ran our way BEFORE the stop would have hit.
+) -> FirstTouchOutcomes | None:
+    """Walk each window once and record which of the three ways it ended.
 
-    Walks each window once, finds the first bar whose adverse extreme would
-    have taken a stop `risk` away from the opening close, and measures the
-    favourable extreme only up to that bar. The result is a first-touch record:
-    for any distance, the share of windows that reached it while the trade was
-    still alive.
+    Finds the first bar whose adverse extreme would have taken a stop `risk`
+    away from the opening close, measures the favourable extreme only up to
+    that bar, and — when the stop was never touched — records where price
+    stood at the horizon.
 
     `closes` may be supplied by a caller that already holds the array; it is
     read from the frame otherwise.
@@ -193,21 +295,47 @@ def first_touch_runs(
     sign = 1 if long else -1
     favourable = highs if long else lows
     adverse = lows if long else highs
-    reached = np.empty(windows, dtype=float)
+    reached = np.zeros(windows, dtype=float)
+    stopped = np.zeros(windows, dtype=bool)
+    settle = np.zeros(windows, dtype=float)
     for start in range(windows):
         begin, end = start + 1, start + 1 + bars_ahead
         opened = closes[start]
         stop_level = opened - risk * sign
         adverse_slice = adverse[begin:end]
         breached = adverse_slice <= stop_level if long else adverse_slice >= stop_level
-        hit = int(np.argmax(breached)) if breached.any() else len(adverse_slice)
+        was_stopped = bool(breached.any())
+        stopped[start] = was_stopped
+        hit = int(np.argmax(breached)) if was_stopped else len(adverse_slice)
         alive = favourable[begin : begin + hit]
-        if alive.size == 0:
-            reached[start] = 0.0
-            continue
-        best = alive.max() if long else alive.min()
-        reached[start] = (best - opened) * sign
-    return reached
+        if alive.size:
+            best = alive.max() if long else alive.min()
+            reached[start] = (best - opened) * sign
+        if not was_stopped:
+            settle[start] = (closes[end - 1] - opened) * sign / risk
+    return FirstTouchOutcomes(reached, stopped, settle)
+
+
+def first_touch_runs(
+    frame: pd.DataFrame,
+    *,
+    risk: float,
+    bars_ahead: int,
+    long: bool,
+    closes: np.ndarray | None = None,
+) -> np.ndarray | None:
+    """Per window: how far price ran our way BEFORE the stop would have hit.
+
+    The favourable-excursion half of `first_touch_outcomes`, kept because that
+    is all several callers need. Anything deciding whether a plan PAYS wants
+    the outcomes instead: this array cannot tell a stop-out from a window that
+    merely ran out of time, and treating those two alike is what refused a
+    market worth +0.31R as though it were worth -0.15R.
+    """
+    outcomes = first_touch_outcomes(
+        frame, risk=risk, bars_ahead=bars_ahead, long=long, closes=closes
+    )
+    return None if outcomes is None else outcomes.run
 
 
 def measure_first_touch(
@@ -228,21 +356,33 @@ def measure_first_touch(
 
     None when the history cannot answer, never a refusal on ignorance.
     """
-    runs = first_touch_runs(frame, risk=risk, bars_ahead=bars_ahead, long=long)
-    if runs is None or runs.size == 0 or distance <= 0:
+    outcomes = first_touch_outcomes(frame, risk=risk, bars_ahead=bars_ahead, long=long)
+    if outcomes is None or outcomes.windows == 0 or distance <= 0:
         return None
     reward_risk = distance / risk
-    hit = float((runs >= distance).mean())
-    # Expected R of one trade: a win pays the target less the round trip, a
-    # loss costs the stop plus the same round trip. Solving `edge > 0` for the
-    # hit rate gives `(1 + cost) / (1 + RR)`, which is the requirement quoted.
-    expected_r = hit * (reward_risk - cost_r) - (1.0 - hit) * (1.0 + cost_r)
+    odds = outcomes.expectancy_r(distance=distance, risk=risk, cost_r=cost_r)
+    # THE SAME TWO-OUTCOME ERROR LIVED HERE, and this is the gate that kills
+    # setups after the engine has approved them: four of five in a measured
+    # live window died on TARGET_RARELY_REACHED.
+    #
+    # `(1 + cost) / (1 + RR)` is the hit rate that solves `edge > 0` for a
+    # trade with exactly two endings. Testing it against a share measured over
+    # ALL windows — most of which end with neither the target nor the stop
+    # touched — compares a rate to a requirement built for a different
+    # denominator. At a 1R target on a market with a real edge that reads 50%
+    # against 58% needed, and refuses a plan worth +0.42R a trade.
+    #
+    # So the requirement is unchanged and the rate is measured on the windows
+    # it was derived for: the ones that resolved. `expected_r` prices all
+    # three endings, the expired ones at where price actually stood.
     required = 100.0 * (1.0 + cost_r) / (1.0 + reward_risk)
     return SurvivalVerdict(
-        windows=int(runs.size),
-        forward_pct=100.0 * hit,
+        windows=int(outcomes.windows),
+        resolved_windows=odds.resolved_windows,
+        forward_pct=100.0 * odds.resolved_reach,
+        reach_pct=100.0 * odds.reach,
         required_pct=min(100.0, required),
-        expected_r=expected_r,
+        expected_r=odds.expected_r,
         reward_risk=reward_risk,
         cost_r=cost_r,
     )

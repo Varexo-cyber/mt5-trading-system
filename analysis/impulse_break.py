@@ -130,8 +130,8 @@ class ImpulseBreak:
         extreme = float(bar["close"])
         if len(after):
             extreme = float(after["close"].max() if side > 0 else after["close"].min())
-            extreme = max(extreme, float(bar["close"])) if side > 0 else min(
-                extreme, float(bar["close"])
+            extreme = (
+                max(extreme, float(bar["close"])) if side > 0 else min(extreme, float(bar["close"]))
             )
         travelled = (extreme - origin) * side
         if travelled <= 0:

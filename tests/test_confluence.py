@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import numpy as np
 import pandas as pd
 
 from analysis.confluence import ConfluenceEngine
@@ -28,12 +29,25 @@ class StubModule:
         return self.signal
 
 
-def context(step: float = 0.0006) -> MarketContext:
+def context(step: float = 0.0006, noise: float = 0.0, bars: int = 100) -> MarketContext:
     """A rising H1 series. `step` is the move per bar, which decides whether a
-    2R target is reachable — the engine now bounds the target by what this
-    market actually travels, so the fixture has to have a speed."""
-    index = pd.date_range("2026-01-01", periods=100, freq="1h", tz=UTC)
-    close = pd.Series([1.10 + i * step for i in range(100)], index=index)
+    2R target is reachable — the engine bounds the target by what this market
+    actually travels, so the fixture has to have a speed.
+
+    `noise` is what a REFUSAL test needs, and a straight line cannot supply it.
+    With no noise the series never retraces, so the stop is never touched and
+    every window ends a little in front. Correctly priced, that market is
+    profitable at a small target, and it was only ever refused because the
+    search charged a full stop-out to windows the stop never came near. A
+    market that genuinely does not pay has to be able to take the stop, and a
+    fixed sawtooth will not do either — a perfectly regular oscillation is
+    perfectly predictable and therefore also profitable. So: a seeded random
+    walk, deterministic across runs and edgeless by construction.
+    """
+    index = pd.date_range("2026-01-01", periods=bars, freq="1h", tz=UTC)
+    drift = np.arange(bars, dtype=float) * step
+    wander = np.cumsum(np.random.default_rng(4).normal(0.0, noise, bars)) if noise > 0 else 0.0
+    close = pd.Series(1.10 + drift + wander, index=index)
     frame = pd.DataFrame(
         {
             "open": close - 0.00005,
@@ -138,10 +152,11 @@ def test_a_target_the_market_never_reaches_is_trimmed_or_refused() -> None:
     slow = ConfluenceEngine(modules(), config()).evaluate(context(step=0.00002), TradingMode.PAPER)
 
     assert not slow.approved
-    # The refusal now names the measurement instead of a floor: how often this
-    # market reaches the distance FIRST, against what it must reach to pay.
+    # The refusal names the measurement instead of a floor, and names all three
+    # outcomes: what share of the windows that RESOLVED went our way, how many
+    # simply expired, and what one trade is therefore worth.
     assert "pays on this market" in slow.reason
-    assert "break even" in slow.reason
+    assert "resolved" in slow.reason and "expired" in slow.reason
 
 
 def test_a_trimmed_target_still_clears_the_minimum() -> None:
@@ -777,7 +792,7 @@ class TestTheTargetGoesWhereItPays:
 
         assert not idea.approved
         assert "pays on this market" in idea.reason
-        assert "break even" in idea.reason
+        assert "resolved" in idea.reason and "expired" in idea.reason
 
     def test_the_reach_is_first_touch_and_not_the_favourable_excursion(self) -> None:
         """The measurement that makes this honest rather than merely different.
@@ -803,13 +818,16 @@ class TestTheTargetGoesWhereItPays:
         )
         closes = np.array([100.0, 100.2, 100.1, 105.0, 105.0])
 
-        reached = ConfluenceEngine._first_touch_reach(
+        outcomes = ConfluenceEngine._first_touch_outcomes(
             frame, closes, Direction.LONG, risk=1.0, horizon=4
         )
 
-        assert reached is not None
+        assert outcomes is not None
         # Without the stop the answer would be 5.0. The trade was dead first.
-        assert reached[0] < 1.0
+        assert outcomes.run[0] < 1.0
+        # And the window is recorded as STOPPED, not merely as "did not reach".
+        # Pricing those two alike is what refused every payable target.
+        assert bool(outcomes.stopped[0])
 
     def test_a_frame_without_highs_falls_back_rather_than_inventing(self) -> None:
         import numpy as np
@@ -821,7 +839,7 @@ class TestTheTargetGoesWhereItPays:
         bare = pd.DataFrame({"close": [1.0, 2.0, 3.0]})
 
         assert (
-            ConfluenceEngine._first_touch_reach(
+            ConfluenceEngine._first_touch_outcomes(
                 bare, np.array([1.0, 2.0, 3.0]), Direction.LONG, risk=1.0, horizon=1
             )
             is None

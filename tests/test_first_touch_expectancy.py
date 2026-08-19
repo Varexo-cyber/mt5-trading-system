@@ -28,7 +28,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analysis.target_reach import first_touch_runs, measure, measure_first_touch
+from analysis.target_reach import (
+    first_touch_outcomes,
+    first_touch_runs,
+    measure,
+    measure_first_touch,
+)
 
 
 def bars(highs: list[float], lows: list[float], closes: list[float]) -> pd.DataFrame:
@@ -589,8 +594,108 @@ class TestTheEngineAndTheRunnerMeasureTheSameThing:
         frame = walk()
         closes = frame["close"].to_numpy()
 
-        mine = ConfluenceEngine._first_touch_reach(frame, closes, Direction.SHORT, 0.0010, 24)
+        mine = ConfluenceEngine._first_touch_outcomes(frame, closes, Direction.SHORT, 0.0010, 24)
         theirs = first_touch_runs(frame, risk=0.0010, bars_ahead=24, long=False)
 
         assert mine is not None and theirs is not None
-        assert np.array_equal(mine, theirs)
+        assert np.array_equal(mine.run, theirs)
+        # The excursion is the half of the record `first_touch_runs` exposes;
+        # the engine needs the other half too, because a window that expired
+        # unresolved is not a stop-out and must not be priced as one.
+        assert mine.stopped.shape == mine.run.shape
+        assert mine.settle_r.shape == mine.run.shape
+
+
+class TestAWindowThatExpiredIsNotAStopOut:
+    """The arithmetic error that produced a day with no trades at all.
+
+    The search priced two outcomes where there are three:
+
+        edge = hit * (RR - cost) - (1 - hit) * (1 + cost)
+
+    Everything short of the target was charged a full stop, including every
+    window in which price drifted sideways and the horizon expired without the
+    stop ever being touched. The expired share grows with the target and with a
+    short horizon, so the penalty was largest exactly where this account lives.
+    """
+
+    @staticmethod
+    def _market(drift: float, seed: int = 7, bars: int = 4000, sigma: float = 0.0004):
+        rng = np.random.default_rng(seed)
+        close = 1.10 + np.cumsum(rng.normal(drift, sigma, bars))
+        wick = np.abs(rng.normal(0.0, sigma * 0.6, bars))
+        return pd.DataFrame({"close": close, "high": close + wick, "low": close - wick})
+
+    def _outcomes(self, drift: float):
+        frame = self._market(drift)
+        risk = float(np.abs(np.diff(frame["close"].to_numpy())).mean()) * 8
+        return first_touch_outcomes(frame, risk=risk, bars_ahead=24, long=True), risk
+
+    def test_the_three_outcomes_add_up_to_every_window(self) -> None:
+        outcomes, risk = self._outcomes(0.0)
+        won = outcomes.run >= 1.0 * risk
+        lost = outcomes.stopped & ~won
+        expired = ~outcomes.stopped & ~won
+
+        assert int(won.sum() + lost.sum() + expired.sum()) == outcomes.windows
+        # The point of the whole change: expiring is the COMMON case at 1R.
+        assert expired.mean() > 0.4
+
+    def test_a_market_with_a_real_edge_is_no_longer_refused(self) -> None:
+        outcomes, risk = self._outcomes(0.00008)
+        odds = outcomes.expectancy_r(distance=1.0 * risk, risk=risk, cost_r=0.15)
+        two_outcome = odds.reach * (1.0 - 0.15) - (1.0 - odds.reach) * 1.15
+
+        assert two_outcome < 0.0  # what the old form said: refuse
+        assert odds.expected_r > 0.0  # what the windows actually did
+        assert odds.target_is_the_exit(reward_risk=1.0, cost_r=0.15)
+
+    def test_a_coin_flip_stays_refused_at_every_distance(self) -> None:
+        """The check that matters. Pricing expired windows honestly must not
+        conjure an edge out of a market that has none."""
+        outcomes, risk = self._outcomes(0.0)
+
+        for reward_risk in (0.6, 1.0, 1.5, 2.0, 3.0):
+            odds = outcomes.expectancy_r(distance=reward_risk * risk, risk=risk, cost_r=0.15)
+            assert odds.expected_r < 0.0, reward_risk
+
+    def test_trading_into_the_trend_the_wrong_way_stays_refused(self) -> None:
+        outcomes, risk = self._outcomes(-0.00008)
+
+        for reward_risk in (0.6, 1.0, 2.0):
+            odds = outcomes.expectancy_r(distance=reward_risk * risk, risk=risk, cost_r=0.15)
+            assert odds.expected_r < 0.0, reward_risk
+
+    def test_a_target_the_market_never_touches_is_not_an_exit(self) -> None:
+        """Drift alone can make expectancy positive with a reach of zero.
+
+        Every window ends a little in front, nothing is ever stopped, and the
+        distance is never covered. The trade would sit there: this system
+        leaves at the target or the stop, and neither arrives. The break-even
+        rate is still enforced, on the windows that actually resolved.
+        """
+        close = 1.10 + np.arange(600, dtype=float) * 0.00002
+        frame = pd.DataFrame({"close": close, "high": close, "low": close})
+        outcomes = first_touch_outcomes(frame, risk=0.005, bars_ahead=24, long=True)
+
+        assert outcomes is not None
+        odds = outcomes.expectancy_r(distance=0.005, risk=0.005, cost_r=0.0)
+
+        assert odds.reach == 0.0
+        assert odds.resolved_windows == 0
+        assert odds.expected_r > 0.0  # the drift is real …
+        assert not odds.target_is_the_exit(reward_risk=1.0, cost_r=0.0)  # … the plan is not
+
+    def test_the_break_even_rate_is_applied_to_the_resolved_windows(self) -> None:
+        """`(1 + cost) / (1 + RR)` was derived for a two-outcome trade.
+
+        Applying it to a sample that is mostly unresolved windows is what made
+        every target look unpayable; applying it to the resolved ones is what
+        it was always for.
+        """
+        outcomes, risk = self._outcomes(0.00008)
+        odds = outcomes.expectancy_r(distance=1.5 * risk, risk=risk, cost_r=0.15)
+
+        assert odds.reach < 0.46  # against the whole sample: fails break-even
+        assert odds.resolved_reach > 0.46  # against the resolved ones: clears it
+        assert odds.target_is_the_exit(reward_risk=1.5, cost_r=0.15)

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from analysis.target_reach import first_touch_runs
+from analysis.target_reach import FirstTouchOutcomes, first_touch_outcomes
 from config.schema import ConfluenceConfig, HorizonProfileConfig
 from core.types import AnalysisModule, Direction, MarketContext, Signal, Timeframe, TradingMode
 
@@ -498,8 +498,8 @@ class ConfluenceEngine:
         # not a loosening: the search below can only ever choose a distance with
         # a positive measured expectancy, and there are distances a fixed
         # multiple refuses that clear that bar comfortably.
-        reach = self._first_touch_reach(frame, closes, direction, risk, horizon)
-        if reach is None:
+        outcomes = self._first_touch_outcomes(frame, closes, direction, risk, horizon)
+        if outcomes is None:
             distance = min(planned, typical)
             achieved_r = distance / risk
             if achieved_r < config.minimum_r_multiple:
@@ -549,10 +549,46 @@ class ConfluenceEngine:
         candidate = config.minimum_r_multiple
         ceiling = max(config.target_r_multiple, config.minimum_r_multiple)
         while candidate <= ceiling + 1e-9:
-            hit = float((reach >= candidate * risk).mean())
-            # Expected R of one trade at this distance: win pays the target less
-            # the round trip, a loss costs the stop plus the same round trip.
-            edge = hit * (candidate - cost_r) - (1.0 - hit) * (1.0 + cost_r)
+            # Expected R of one trade at this distance, scoring each window as
+            # what it was.
+            #
+            # THIS LINE USED TO READ, AND IT WAS WRONG:
+            #
+            #     edge = hit * (candidate - cost_r) - (1 - hit) * (1 + cost_r)
+            #
+            # Two outcomes where there are three. Everything that did not reach
+            # the target was charged the full stop, including every window in
+            # which price drifted sideways and the horizon simply expired
+            # without the stop ever being touched.
+            #
+            # That is not a rounding error. On a synthetic walk carrying a real
+            # edge, 46% of windows expire at a 1R target, and charging them
+            # -1.15R each subtracts about half an R from every evaluation: the
+            # market reads -0.15R and is refused where the truth is +0.31R. It
+            # is also worst exactly where this account lives, because the
+            # expired share grows with the target and with a short horizon.
+            #
+            # It does NOT manufacture edge. On a driftless walk the corrected
+            # form is still negative at every distance from 0.6R to 3.0R
+            # (-0.13R to -0.39R), which is the check that matters: a coin flip
+            # must stay refused.
+            odds = outcomes.expectancy_r(distance=candidate * risk, risk=risk, cost_r=cost_r)
+            edge, hit = odds.expected_r, odds.reach
+            # AND THE TARGET HAS TO BE THE EXIT, not decoration.
+            #
+            # Pricing expired windows honestly opens a hole the two-outcome
+            # form did not have: on a market that only drifts, every window
+            # ends a little in front, nothing is ever stopped, and the distance
+            # is never touched. Expectancy comes out positive with a reach of
+            # zero. That is not a plan — this system leaves at the target or at
+            # the stop, and on such a market neither ever arrives.
+            #
+            # So the classic break-even rate is still enforced, on the
+            # population it was derived for: the windows that actually resolved
+            # one way or the other.
+            if not odds.target_is_the_exit(reward_risk=candidate, cost_r=cost_r):
+                candidate += step
+                continue
             # EXPECTANCY PER BAR, NOT PER TRADE, and the difference decides
             # whether this account trades at all.
             #
@@ -577,12 +613,13 @@ class ConfluenceEngine:
 
         if best_edge <= 0.0:
             worst = config.minimum_r_multiple
-            floor_hit = float((reach >= worst * risk).mean())
+            floor = outcomes.expectancy_r(distance=worst * risk, risk=risk, cost_r=cost_r)
+            expired = 1.0 - float(floor.resolved_windows) / max(outcomes.windows, 1)
             return None, (
                 f"no target between {worst:.2f}R and {ceiling:.2f}R pays on this market: "
-                f"{worst:.2f}R is reached first {floor_hit:.0%} of the time against "
-                f"{(1.0 + cost_r) / (1.0 + worst):.0%} needed to break even at "
-                f"a {cost_r:.0%}-of-risk spread"
+                f"at {worst:.2f}R it goes our way {floor.resolved_reach:.0%} of the "
+                f"{floor.resolved_windows} windows that resolved ({expired:.0%} expired), "
+                f"worth {floor.expected_r:+.2f}R a trade at a {cost_r:.0%}-of-risk round trip"
             )
 
         distance = best_r * risk
@@ -594,20 +631,25 @@ class ConfluenceEngine:
         return entry + distance * int(direction), note
 
     @staticmethod
-    def _first_touch_reach(
+    def _first_touch_outcomes(
         frame: pd.DataFrame,
         closes: np.ndarray,
         direction: Direction,
         risk: float,
         horizon: int,
-    ) -> np.ndarray | None:
-        """Per window: how far price ran our way BEFORE the stop would have hit.
+    ) -> FirstTouchOutcomes | None:
+        """Per window: how it ended — target first, stop first, or neither.
 
-        `runs` above measures the favourable excursion and ignores the stop, so
-        a window where price dropped a full R and only then rallied counts as a
+        `runs` measures the favourable excursion and ignores the stop, so a
+        window where price dropped a full R and only then rallied counts as a
         win at any distance below that rally. That overstates every reach rate
         it produces, and the overstatement is largest exactly where it matters —
         volatile markets that whip both ways.
+
+        The third outcome is why this returns the whole record and not the
+        excursion array. A window that expired flat is not a loss and must not
+        be priced as one; without `stopped` there is no way to tell the two
+        apart, and the search was pricing every one of them as a full stop.
 
         The walk itself lives in `analysis.target_reach` because the runner
         needs the same measurement one step later, against the stop the order
@@ -618,7 +660,7 @@ class ConfluenceEngine:
         None when the frame lacks the columns or the history to do it, so the
         caller keeps its previous behaviour rather than inventing a number.
         """
-        return first_touch_runs(
+        return first_touch_outcomes(
             frame,
             risk=risk,
             bars_ahead=horizon,
