@@ -147,14 +147,21 @@ class SurvivalVerdict:
 
     @property
     def clears_break_even(self) -> bool:
-        """Positive measured expectancy, costs included.
+        """Positive measured expectancy AND a target that is the exit.
 
-        Written as a comparison of rates rather than `expected_r > 0` so that
-        an operator margin added to `required_pct` actually bites. With no
-        margin the two forms are the same statement: solving `expected_r > 0`
-        for the hit rate is where `required_pct` comes from.
+        Two conditions, because they stopped being one statement. The rate
+        comparison is kept so that an operator margin added to `required_pct`
+        actually bites, and it is what says the target — rather than drift —
+        is what ends the trade.
+
+        It is no longer sufficient on its own. `required_pct` is derived from
+        the two endings a resolved window can have and says nothing about the
+        expired ones, which still cost a round trip each. A plan can clear
+        59.3% against 52.5% needed and still be worth -0.02R a trade once the
+        windows that went nowhere are paid for. The expectancy prices every
+        window, so it is the one that decides.
         """
-        return self.forward_pct >= self.required_pct
+        return self.forward_pct >= self.required_pct and self.expected_r > 0.0
 
     def describe(self) -> str:
         expired = self.windows - self.resolved_windows
@@ -191,9 +198,19 @@ class TargetOdds:
     resolved_reach: float
     resolved_windows: int
 
-    def target_is_the_exit(self, *, reward_risk: float, cost_r: float) -> bool:
-        """Does the target carry the trade, on the windows that resolved?"""
-        if self.resolved_windows <= 0 or reward_risk <= 0:
+    def target_is_the_exit(
+        self, *, reward_risk: float, cost_r: float, minimum_resolved: int = 1
+    ) -> bool:
+        """Does the target carry the trade, on the windows that resolved?
+
+        `minimum_resolved` is the sample floor, and it is not decoration. The
+        resolved share is measured on a shrinking population as the distance
+        grows: at 3R on a 3,000-bar series only 36 windows resolve at all, and
+        a rate read off 36 samples has an error bar wide enough to clear any
+        requirement by luck. A distance whose evidence is that thin has not
+        been measured, it has been sampled.
+        """
+        if reward_risk <= 0 or self.resolved_windows < max(1, minimum_resolved):
             return False
         return self.resolved_reach >= (1.0 + cost_r) / (1.0 + reward_risk)
 
@@ -244,11 +261,23 @@ class FirstTouchOutcomes:
             return TargetOdds(0.0, 0.0, 0.0, 0)
         won = self.run >= distance
         lost = self.stopped & ~won
-        payoff = np.where(
-            won,
-            distance / risk - cost_r,
-            np.where(lost, -(1.0 + cost_r), self.settle_r - cost_r),
-        )
+        # PAPER PROFIT IS NOT BANKED, PAPER LOSS IS REAL.
+        #
+        # Crediting an expired window with wherever price happened to stand
+        # opened a hole as large as the one it closed. At 3R on a strongly
+        # trending series the target is touched in 0.5% of windows, 36 of 2,976
+        # resolve at all, and the entire +0.97R came from unrealised profit on
+        # positions that are still open — a plan whose edge is "the trade is up
+        # at the horizon" and whose target never arrives.
+        #
+        # An expired window is a position still exposed. What it shows in your
+        # favour you may yet give back; what it shows against you, you already
+        # hold. So the credit is capped at zero and the debit is not, and the
+        # round trip is charged either way. With that cap the expectancy curve
+        # gains an interior maximum — it rises to 1R and falls away after —
+        # instead of climbing forever into distances nothing reaches.
+        settled = np.minimum(self.settle_r, 0.0) - cost_r
+        payoff = np.where(won, distance / risk - cost_r, np.where(lost, -(1.0 + cost_r), settled))
         resolved = int(won.sum() + lost.sum())
         return TargetOdds(
             expected_r=float(payoff.mean()),

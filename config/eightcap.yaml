@@ -719,7 +719,20 @@ analysis:
     # WANNEER DIT TERUG MOET. `scorecard --days 3`: als de trades sterven op
     # kosten in plaats van op de markt, dan is de voorspelling uitgekomen en is
     # dit één regel terug.
-    minimum_r_multiple: 0.60
+    # 0.75 TEGEN EEN UITVOERINGSVLOER VAN 0.60. Die twee waren allebei 0,60 en
+    # dat is een muntje opgooien, geen instelling.
+    #
+    # De doelzoektocht landt op vrijwel elke markt op zijn eigen vloer. Met
+    # beide getallen op 0,60 komt elk plan dus op precies 0,60R bij de sizer
+    # aan — en tussen die twee momenten beweegt de koers. NDX100 SHORT op 19
+    # augustus: goedgekeurd, beoordeeld, en toen `RR_BELOW_MINIMUM: reward:risk
+    # is 1:0.52, below the required 1:0.60` (3995 pip stop tegen 2077 pip
+    # doel). Er was niks mis met die setup. Hij was gepland zonder speling.
+    #
+    # 0,75 geeft een plan een zevende van zijn beloning aan bewegingsruimte
+    # voordat de sizer hem weigert. Een validator bewaakt de afstand nu, dus
+    # deze twee kunnen niet meer stilletjes uit de pas lopen.
+    minimum_r_multiple: 0.75
     # De bereiktest vraagt al om de rekenkundige break-even reach rate. De extra
     # vaste drie procentpunten waren een tweede veiligheidsmarge bovenop spread-
     # en kostengates. Weg ermee; de marktmeting zelf blijft hard actief.

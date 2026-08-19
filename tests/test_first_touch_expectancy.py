@@ -683,8 +683,15 @@ class TestAWindowThatExpiredIsNotAStopOut:
 
         assert odds.reach == 0.0
         assert odds.resolved_windows == 0
-        assert odds.expected_r > 0.0  # the drift is real …
-        assert not odds.target_is_the_exit(reward_risk=1.0, cost_r=0.0)  # … the plan is not
+        # Two independent refusals, and either alone is enough.
+        #
+        # Capping the credit on an expired window at zero means the drift buys
+        # nothing: price is up at every horizon and the expectancy is still not
+        # positive, because none of it has been banked and the position is
+        # still open. And with nothing resolved, the target has not been shown
+        # to be the exit either.
+        assert odds.expected_r <= 0.0
+        assert not odds.target_is_the_exit(reward_risk=1.0, cost_r=0.0)
 
     def test_the_break_even_rate_is_applied_to_the_resolved_windows(self) -> None:
         """`(1 + cost) / (1 + RR)` was derived for a two-outcome trade.
@@ -699,3 +706,100 @@ class TestAWindowThatExpiredIsNotAStopOut:
         assert odds.reach < 0.46  # against the whole sample: fails break-even
         assert odds.resolved_reach > 0.46  # against the resolved ones: clears it
         assert odds.target_is_the_exit(reward_risk=1.5, cost_r=0.15)
+
+    def test_paper_profit_on_an_open_position_is_not_counted_as_earnings(self) -> None:
+        """The hole the first version of this fix opened, closed.
+
+        Crediting an expired window with wherever price stood made a distance
+        nothing reaches look like the best trade on the board: at 3R on a
+        trending series the target is touched in 0.5% of windows and the whole
+        +0.97R came from unrealised profit on positions still open. What is
+        showing in your favour you may yet give back; what is showing against
+        you, you already hold.
+        """
+        outcomes, risk = self._outcomes(0.00012)
+        distant = outcomes.expectancy_r(distance=3.0 * risk, risk=risk, cost_r=0.15)
+        near = outcomes.expectancy_r(distance=1.0 * risk, risk=risk, cost_r=0.15)
+
+        assert distant.reach < 0.02  # never actually touched
+        assert distant.expected_r < 0.0  # and therefore not a trade
+        assert near.expected_r > distant.expected_r
+        # The curve has an interior maximum now instead of climbing forever
+        # into distances nothing reaches.
+        assert (
+            near.expected_r
+            > outcomes.expectancy_r(distance=0.6 * risk, risk=risk, cost_r=0.15).expected_r
+        )
+
+    def test_a_thin_resolved_sample_cannot_decide_on_its_own(self) -> None:
+        """A rate off 36 windows is a sample, not a measurement."""
+        outcomes, risk = self._outcomes(0.00012)
+        odds = outcomes.expectancy_r(distance=3.0 * risk, risk=risk, cost_r=0.15)
+
+        assert odds.resolved_windows < 120
+        assert not odds.target_is_the_exit(reward_risk=3.0, cost_r=0.15, minimum_resolved=120)
+        # And the backstop is genuinely a backstop: by the time the sample is
+        # this thin the arithmetic has already refused the distance anyway.
+        assert odds.expected_r < 0.0
+
+
+class TestTheTwoFloorsMayNotSitOnTopOfEachOther:
+    """NDX100 SHORT, 19 August: approved, reviewed, then RR_BELOW_MINIMUM.
+
+    `reward:risk is 1:0.52, below the required 1:0.60`, on a 3,995 pip stop
+    against a 2,077 pip target. Nothing was wrong with the setup. The target
+    search lands on its own floor on nearly every market, both floors were
+    0.60, and the quote moved between planning and sizing.
+    """
+
+    @staticmethod
+    def _settings(**risk_overrides):  # type: ignore[no-untyped-def]
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH,
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml",
+            env_overrides=False,
+        )
+
+    def test_the_live_overlay_leaves_the_plan_room_to_move(self) -> None:
+        settings = self._settings()
+        confluence = settings.analysis.confluence
+
+        assert confluence.minimum_r_multiple > settings.risk.min_risk_reward
+        assert confluence.minimum_r_multiple >= settings.risk.min_risk_reward * (
+            1.0 + confluence.target_planning_margin
+        )
+
+    def test_a_config_that_puts_them_level_is_refused_at_load(self) -> None:
+        """Equal is the knife edge, and it shipped. A validator that only
+        refused `min_risk_reward > floor` allowed exactly the arrangement that
+        cost the trade."""
+        from config.schema import Settings
+
+        settings = self._settings()
+        raw = settings.model_dump()
+        # Level, which is exactly how the live overlay was configured.
+        raw["analysis"]["confluence"]["minimum_r_multiple"] = settings.risk.min_risk_reward
+
+        with pytest.raises(ValueError, match="RR_BELOW_MINIMUM"):
+            Settings.model_validate(raw)
+
+    def test_zero_margin_makes_level_floors_legal_again(self) -> None:
+        """The escape hatch has to actually work, or the validator is a wall."""
+        from config.schema import Settings
+
+        settings = self._settings()
+        raw = settings.model_dump()
+        raw["analysis"]["confluence"]["minimum_r_multiple"] = settings.risk.min_risk_reward
+        raw["analysis"]["confluence"]["target_planning_margin"] = 0.0
+
+        assert Settings.model_validate(raw).analysis.confluence.minimum_r_multiple == (
+            settings.risk.min_risk_reward
+        )
+
+    def test_the_margin_can_be_set_to_zero_to_accept_the_edge(self) -> None:
+        """Expressible, so the old behaviour is a decision and not an accident."""
+        from config.schema import ConfluenceConfig
+
+        assert ConfluenceConfig(target_planning_margin=0.0).target_planning_margin == 0.0
