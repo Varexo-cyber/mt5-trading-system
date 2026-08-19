@@ -206,3 +206,53 @@ class TestItDoesNotCashOutAWinner:
         """One config away, so the change is reversible on evidence rather than
         on argument."""
         assert squeeze(3.0, r_now=0.40, spread_squeeze_max_r=5.0) is not None
+
+
+class TestTheRuleIsOffOnTheLiveAccountOnItsOwnNumber:
+    """Eleven measurements, eleven negative, not once helpful.
+
+    The mechanics above still work and are still tested — the phenomenon is
+    real, and a quote can take a stop the market never reached. What the
+    account measured is that acting on it costs money, because a blown-out
+    spread is transient and closing at market makes the loss certain.
+
+        17 August, replay: 8 of 22 trades closed by this rule, every one
+        negative against its own untouched stop and target. It banked +0.38R
+        where leaving the position alone returned +1.02R. The response was to
+        restrict it to `spread_squeeze_max_r: 0.0` rather than switch it off.
+
+        19 August, live, WITH that restriction: EURAUD -0.35R (peak +0.00),
+        NDX100 -0.44R (peak +0.04), FRA40 -0.38R (peak +0.07). Three trades,
+        three losses, -1.17R.
+
+    Switching it off cannot increase risk: the position falls back on its own
+    stop, which is where the risk was defined and what the size was set
+    against.
+    """
+
+    @staticmethod
+    def _live():  # type: ignore[no-untyped-def]
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH,
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml",
+            env_overrides=False,
+        ).trade_management
+
+    def test_the_live_overlay_has_it_switched_off(self) -> None:
+        assert self._live().spread_squeeze_share == 0.0
+
+    def test_the_shipped_default_still_carries_it(self) -> None:
+        """Off for THIS account on THIS evidence, not deleted as an idea. The
+        NZDJPY case it was written for is real and the mechanics are intact."""
+        from config.schema import TradeManagementConfig
+
+        assert TradeManagementConfig().spread_squeeze_share > 0.0
+
+    def test_switching_it_off_leaves_the_stop_as_the_only_exit(self) -> None:
+        """The safety argument in one assertion: nothing is opened up. A
+        position that would have been closed early now runs to the stop it was
+        sized against."""
+        assert squeeze(6.0, spread_squeeze_share=0.0) is None
+        assert squeeze(6.0) is not None  # and the rule itself still functions

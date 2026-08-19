@@ -2778,6 +2778,61 @@ class TradeManagementConfig(Base):
     #: profit again; a large value restores the previous behaviour.
     spread_squeeze_max_r: float = Field(default=0.0)
 
+    #: How long a freshly opened position is left alone by the DISCRETIONARY
+    #: exits. Minutes.
+    #:
+    #: There was no such period at all: the management chain ran from the first
+    #: tick after the fill, so a trade opened on a full multi-timeframe
+    #: analysis was immediately subject to rules written for a trade that has
+    #: been running. FRA40 SHORT on 19 August was opened with a correct stop
+    #: and target and closed four minutes later at -0.38R, having peaked at
+    #: +0.07R. Nothing about the market had happened; a quote had.
+    #:
+    #: It gates ONLY the rules that are meaningless without a history, and the
+    #: distinction is the whole point. `_peak_stall_exit` looks for a peak that
+    #: has not formed and `_giveback_exit` measures a give-back from that same
+    #: absent peak — neither is a judgement about the trade, both are arithmetic
+    #: on a number that does not exist yet.
+    #:
+    #: WHAT IT DELIBERATELY DOES NOT GATE. A trade that is genuinely broken
+    #: after four minutes may leave, and should: a structure break is a
+    #: discrete event and is as real in minute four as in hour four. The health
+    #: read already carries its own bar — two independent families have to
+    #: corroborate before it acts — and that bar, not a clock, is what should
+    #: decide. Blocking it would mean holding a position the system can see is
+    #: broken, which is a worse failure than the one this fixes.
+    #:
+    #: Nor does it touch the guard rails: the broker's stop loss stands
+    #: throughout and remains the risk the position was sized against, the
+    #: evening flatten and the session-decay exit are deadlines rather than
+    #: opinions, and `tighten` still moves the stop, because reducing risk
+    #: early is never the mistake this addresses.
+    #:
+    #: 10 minutes: two M5 bars, and long enough for a peak to mean something
+    #: when one forms. Zero restores the old behaviour of measuring a
+    #: give-back from the first tick after the fill.
+    min_discretionary_exit_minutes: float = Field(default=10.0, ge=0.0, le=1_440.0)
+
+    #: How much room, measured in spreads, a tightened stop must keep between
+    #: itself and the price that triggers it.
+    #:
+    #: `HEALTH_TIGHTEN` halves the distance to the stop on a losing trade and
+    #: had no floor, so every run halved it again — three leave an eighth.
+    #: FRA40 SHORT on 19 August took exactly three inside one minute, all on
+    #: the same reading, and was left with 0.89 of room against a spread of
+    #: 1.2. The quote alone was wider than the entire distance to the stop.
+    #:
+    #: A stop inside one spread of price is not a stop. It is a fill at a worse
+    #: price waiting to happen, and the position had stopped being a trade
+    #: before any rule closed it.
+    #:
+    #: 2.0 is one spread to cross and one to breathe. It clamps rather than
+    #: refuses, so the risk reduction the reading earned still happens; the
+    #: existing "must improve on the current stop" test then declines the move
+    #: outright once the floor catches up, which is what ends the ratchet.
+    #: Zero restores the unbounded halving.
+    min_stop_room_spreads: float = Field(default=2.0, ge=0.0, le=50.0)
+
     #: The per-second read of how an open trade is actually behaving — has the
     #: structure broken, has momentum turned, is it running against us, has the
     #: spread blown out. See `analysis/position_health.py`.

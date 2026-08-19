@@ -1469,6 +1469,42 @@ modes:
     max_equity: 500
 
 trade_management:
+  # SPREAD_SQUEEZE UIT. 11 metingen, 11 keer negatief, nul keer geholpen.
+  #
+  # De regel sluit een licht verliezende positie zodra de spread 75% van de
+  # ruimte naar de stop opvreet. De redenering: een zekere kleine kost geruild
+  # tegen een waarschijnlijke grote. Dat klopt alleen als de kans dat je echt
+  # uitgestopt wordt boven de 38% ligt — en een brede spread is tijdelijk. De
+  # stop wordt alleen geraakt als die brede quote precies op het verkeerde
+  # moment blijft staan.
+  #
+  # DE METING, twee keer los van elkaar:
+  #
+  #   17 augustus, replay: 8 van de 22 trades gesloten door deze regel, en
+  #   ELK daarvan negatief tegen zijn eigen onaangeroerde stop en doel. Hij
+  #   bankte +0.38R waar met rust laten +1.02R gaf. Toen is hij ingeperkt tot
+  #   `spread_squeeze_max_r: 0.0` in plaats van uitgezet.
+  #
+  #   19 augustus, live, MET die inperking: EURAUD -0.35R (top +0.00),
+  #   NDX100 -0.44R (top +0.04), FRA40 -0.38R (top +0.07). Drie trades, drie
+  #   verliezen, -1.17R. FRA40 hield het vier minuten uit met een correcte TP
+  #   en SL en werd toen door een quote-artefact gesloten.
+  #
+  # Elf op elf is geen pech meer. Zoals de notitie bij `spread_squeeze_max_r`
+  # het zelf al zei: "de blowout ging voorbij, zoals blowouts doen, en de
+  # trade ging verder zonder ons."
+  #
+  # DIT VERHOOGT GEEN RISICO. De positie valt terug op zijn eigen stop, waar
+  # het risico altijd al was gedefinieerd en op gesized. Er wordt niets
+  # opengezet, er wordt een noodrem losgelaten die alleen zichzelf afremde.
+  #
+  # De code blijft staan. Het verschijnsel is echt — een NZDJPY-sell met 5,9
+  # pips ruimte en 6 pips spread wordt door de quote uitgestopt zonder dat de
+  # markt ooit tegen je was. Wat ontbreekt is een test op VOLHARDING: pas
+  # ingrijpen als de blowout blijft staan in plaats van bij de eerste tick.
+  # Zodra dat gemeten is kan dit getal terug.
+  spread_squeeze_share: 0.0
+
   # Geen vaste geldgrens als primaire exit. De gratis local-history adviser
   # vergelijkt de volledige actuele positie met eerdere Claude-supervisies en
   # mag bij sterke overeenkomst sluiten. SL, kapitaalbodem en mechanische

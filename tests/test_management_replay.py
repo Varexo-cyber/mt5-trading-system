@@ -219,7 +219,11 @@ def test_a_trade_that_stalls_near_its_peak_is_banked_by_a_rule(spec, settings) -
     """The complaint that started all of this: a trade goes well into profit,
     sits there, and hands it all back. The peak-stall rule exists to stop that
     and had never once run against real price history."""
-    closes = [at_r(0.3), at_r(0.7), at_r(0.9)] + [at_r(0.88)] * 12
+    # M1 bars, so the stall has to outlast `min_discretionary_exit_minutes`:
+    # a peak that forms in minute two is not a peak the give-back and stall
+    # rules may measure from yet, and this test is about the stall, not the
+    # settling period.
+    closes = [at_r(0.3), at_r(0.7), at_r(0.9)] + [at_r(0.88)] * 25
     frame = bars(closes)
 
     outcome = replay_management(trade(), frame, settings, spec)

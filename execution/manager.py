@@ -347,13 +347,31 @@ class PositionManager:
             # the money is still on the table. The two rules cannot both apply:
             # this one needs price near the peak, the give-back needs it far
             # from the peak.
-            stalled = self._peak_stall_exit(
-                position, r_now, peak_r, now, health, risk_money=risk_money
+            # BOTH OF THESE NEED A PEAK, AND A FRESH TRADE HAS NOT GOT ONE.
+            #
+            # The chain ran from the first tick after the fill, so a trade
+            # opened on a full multi-timeframe analysis was immediately judged
+            # by rules written for one that has been running. The stall looks
+            # for a peak that has not formed; the give-back measures a decline
+            # from that same absent peak. Neither is an opinion about the
+            # trade — both are arithmetic on a number that does not exist yet.
+            #
+            # The health read below is NOT gated, deliberately. A trade that is
+            # genuinely broken after four minutes may leave, and should: a
+            # structure break is a discrete event, as real in minute four as in
+            # hour four, and that read already carries its own bar of two
+            # corroborating families. Holding a position the system can see is
+            # broken would be a worse failure than the one this fixes.
+            settled = age_hours * 60.0 >= config.min_discretionary_exit_minutes
+            stalled = (
+                self._peak_stall_exit(position, r_now, peak_r, now, health, risk_money=risk_money)
+                if settled
+                else None
             )
             if stalled is not None:
                 events.append(stalled)
                 continue
-            giveback = self._giveback_exit(position, r_now, peak_r, health)
+            giveback = self._giveback_exit(position, r_now, peak_r, health) if settled else None
             if giveback is not None:
                 events.append(giveback)
                 continue
@@ -556,6 +574,7 @@ class PositionManager:
         an argument that leaving is affordable, and on this account those come
         apart often.
         """
+        config = self.settings.trade_management
         if health.action == "hold":
             return None
         if health.action in ("secure", "exit") and not self._worth_paying_to_leave(
@@ -596,6 +615,37 @@ class PositionManager:
         else:
             price = tick.bid if position.direction is Direction.LONG else tick.ask
             locked = price + (position.sl - price) * 0.5 if position.sl else price
+
+        # AND NEVER CLOSER TO PRICE THAN THE SPREAD CAN BRIDGE.
+        #
+        # The under-water formula halves the room to the stop, and it has no
+        # floor, so every run halves it again: three of them leave an eighth.
+        # FRA40 SHORT on 19 August took exactly three, all inside one minute,
+        # all reading `deteriorating (0.45): momentum_turned, adverse_excursion
+        # at -0.40R`. What was left afterwards was 0.89 of room against a
+        # spread of 1.2 — the quote alone was wider than the whole distance to
+        # the stop, so the position could no longer be anything but stopped.
+        #
+        # `SPREAD_SQUEEZE` then closed it citing that same 0.89, which is the
+        # part worth naming: one rule manufactured the trigger of another. The
+        # squeeze is switched off on this account for its own record, and that
+        # breaks the chain, but it does not fix the ratchet — a stop inside one
+        # spread of price is not a stop, it is a fill at a worse price waiting
+        # to happen, whoever notices it first.
+        #
+        # The trigger side is the one that matters: a short is closed at the
+        # ask, a long at the bid. Clamping rather than refusing keeps the risk
+        # reduction the reading earned; `improves` below then declines the move
+        # outright once the floor has caught up with the current stop, which is
+        # what actually stops the ratchet.
+        trigger = tick.ask if position.direction is Direction.SHORT else tick.bid
+        room_floor = max(getattr(tick, "spread", 0.0) or 0.0, 0.0) * config.min_stop_room_spreads
+        if room_floor > 0:
+            if position.direction is Direction.LONG:
+                locked = min(locked, trigger - room_floor)
+            else:
+                locked = max(locked, trigger + room_floor)
+
         improves = (position.direction is Direction.LONG and locked > position.sl) or (
             position.direction is Direction.SHORT and locked < position.sl
         )
