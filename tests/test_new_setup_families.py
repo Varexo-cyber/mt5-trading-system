@@ -414,10 +414,35 @@ class TestNoneOfThemCanTradeYet:
 
         assert MeanReversion().name == "mean_reversion"
 
-    def test_but_none_is_on_the_live_allowlist(self) -> None:
+    def test_the_two_that_produced_a_number_are_live_and_the_rest_are_not(self) -> None:
+        """Reaching the allowlist requires having been measured, not existing.
+
+        `session_breakout` is the best row in the module table (+0.145R over 33
+        trades) and `seasonality` cannot decide anything alone, so both may now
+        add a second voice. `volatility_squeeze` produced no trades at all in
+        the 180-day run and `mean_reversion` measured -0.193R over 194 — one
+        has no record and the other has a bad one, so neither is live.
+        """
         allowed = set(self._confluence().live_enabled_modules)
-        for module in ("volatility_squeeze", "mean_reversion", "session_breakout", "seasonality"):
+
+        assert {"session_breakout", "seasonality"} <= allowed
+        for module in ("volatility_squeeze", "mean_reversion"):
             assert module not in allowed, module
+
+    def test_neither_newcomer_can_carry_a_trade_on_its_own(self) -> None:
+        """Voting is not deciding. Both got in on samples too small to bet on.
+
+        `seasonality` is held back by its own 0.55 confidence ceiling and
+        `session_breakout` by an explicit floor above its 0.80 ceiling, so a
+        setup where either is the only detector pointing that way is refused
+        exactly as it was before they were enabled.
+        """
+        config = self._confluence()
+
+        assert SeasonalityConfig().maximum_confidence < config.lone_floor_for("seasonality")
+        assert SessionBreakoutConfig().maximum_confidence < config.lone_floor_for(
+            "session_breakout"
+        )
 
     def test_seasonality_cannot_reach_the_lone_module_floor(self) -> None:
         config = self._confluence()

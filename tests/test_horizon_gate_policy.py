@@ -123,3 +123,50 @@ def test_broad_old_veto_does_not_silence_a_new_quick_event() -> None:
 
     assert not service._broad_veto_memory_applies(quick)
     assert service._broad_veto_memory_applies(swing)
+
+
+def test_the_replay_can_judge_in_the_account_s_own_live_mode() -> None:
+    """The offline tool measured a different engine than the account runs.
+
+    `live_enabled_modules` is only consulted when the mode is live, and the
+    replay hardcoded BACKTEST. So every offline figure counted every weighted
+    detector while the account counted a subset — which made the tool built to
+    answer "why did nothing trade" answer it about the wrong engine.
+    """
+    from backtesting.replay import HistoricalContextReplay
+    from core.types import TradingMode
+
+    engine = object()
+
+    assert HistoricalContextReplay(engine).mode is TradingMode.BACKTEST  # type: ignore[arg-type]
+    assert (
+        HistoricalContextReplay(engine, mode=TradingMode.MICRO_LIVE).mode  # type: ignore[arg-type]
+        is TradingMode.MICRO_LIVE
+    )
+
+
+def test_session_breakout_may_corroborate_live_but_never_decide_alone() -> None:
+    """It is on the live allowlist on 33 trades, which is noise, not proof.
+
+    So it is allowed to be a second voice — that is what dissolves the 650
+    "this detector is the only one pointing this way" refusals — and its lone
+    floor is set above its own confidence ceiling so it can never carry a
+    trade by itself.
+    """
+    from pathlib import Path
+
+    from config.loader import load_settings
+
+    root = Path(__file__).resolve().parents[1]
+    confluence = load_settings(
+        overlay=root / "config" / "eightcap.yaml", env_overrides=False
+    ).analysis.confluence
+
+    assert "session_breakout" in confluence.live_enabled_modules
+    assert "seasonality" in confluence.live_enabled_modules
+    # Still off: the one detector with a losing record that is significant.
+    assert "trend_momentum" not in confluence.live_enabled_modules
+    # Above session_breakout's own 0.80 ceiling, so a lone firing is refused.
+    assert confluence.lone_floor_for("session_breakout") > 0.80
+    # Everything else keeps the single global floor.
+    assert confluence.lone_floor_for("impulse_break") == confluence.lone_module_minimum_confidence
