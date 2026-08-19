@@ -619,6 +619,31 @@ class ConfluenceEngine:
             worst = config.minimum_r_multiple
             floor = outcomes.expectancy_r(distance=worst * risk, risk=risk, cost_r=cost_r)
             expired = 1.0 - float(floor.resolved_windows) / max(outcomes.windows, 1)
+            # TWO REFUSALS THAT LOOK IDENTICAL AND ARE NOT.
+            #
+            # "The market resolved these windows and the plan lost" is a
+            # judgement about the trade. "Almost nothing resolved" is a
+            # statement about the MEASUREMENT: within this horizon price
+            # neither reached the target nor took the stop, so the window
+            # cannot answer the question at all. Both used to print as "no
+            # target pays on this market", which sends every diagnosis after it
+            # to the wrong place — one says fix the plan, the other says the
+            # horizon is too short for the stop being planned.
+            #
+            # The second is not rare here. Same market, same edge, stop widened
+            # from 4x to 32x ATR against a fixed 24-bar horizon: resolved
+            # windows go 2,915 -> 7, the expired share 2% -> 99.8%, and the
+            # expectancy +0.31R -> -0.12R purely because every expired window
+            # is charged a round trip. The market did not get worse; the ruler
+            # got too short.
+            if floor.resolved_windows < config.target_minimum_resolved_windows:
+                bars = horizon or 0
+                return None, (
+                    f"this horizon cannot judge a {risk:.5g} stop: in {bars} bars only "
+                    f"{floor.resolved_windows} of {outcomes.windows} windows reached "
+                    f"{worst:.2f}R or the stop, {expired:.0%} simply ran out of time. "
+                    f"The stop is too wide for the time the plan has, not the target too far"
+                )
             return None, (
                 f"no target between {worst:.2f}R and {ceiling:.2f}R pays on this market: "
                 f"at {worst:.2f}R it goes our way {floor.resolved_reach:.0%} of the "
