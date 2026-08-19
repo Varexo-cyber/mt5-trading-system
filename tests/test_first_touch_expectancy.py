@@ -840,3 +840,99 @@ class TestTheTwoFloorsMayNotSitOnTopOfEachOther:
         from config.schema import ConfluenceConfig
 
         assert ConfluenceConfig(target_planning_margin=0.0).target_planning_margin == 0.0
+
+
+class TestTheWindowIsSizedToWhatItHasToWatch:
+    """1,683 refusals an hour reading "no target pays" about plans that were
+    never measured.
+
+    Covering a distance d takes (d / speed)^2 bars, so a target at 0.75R of an
+    eight-ATR stop needs 36 and every profile handed out 24. Past six ATR of
+    stop, every window expires with neither the target nor the stop touched —
+    and an expired window is charged a round trip, so the expectancy converges
+    on minus the cost however good the market is. A structural swing stop
+    reaching the last swing low is routinely eight to sixteen ATR, so this was
+    not an edge case; it was most of them.
+    """
+
+    @staticmethod
+    def _market(drift: float, seed: int = 9, bars: int = 4000):
+        rng = np.random.default_rng(seed)
+        close = 1.10 + np.cumsum(rng.normal(drift, 0.0004, bars))
+        wick = np.abs(rng.normal(0.0, 0.00024, bars))
+        frame = pd.DataFrame({"close": close, "high": close + wick, "low": close - wick})
+        return frame, float(np.abs(np.diff(close)).mean())
+
+    @staticmethod
+    def _fitted(frame, risk: float, per_bar: float, base: int = 24) -> int:
+        needed = int((risk * 0.75 / per_bar) ** 2)
+        return max(base, min(needed, min(len(frame), 400) // 2))
+
+    def _verdict(self, frame, risk: float, bars: int):
+        outcomes = first_touch_outcomes(frame, risk=risk, bars_ahead=bars, long=True)
+        assert outcomes is not None
+        odds = outcomes.expectancy_r(distance=0.75 * risk, risk=risk, cost_r=0.10)
+        passes = odds.expected_r > 0 and odds.target_is_the_exit(
+            reward_risk=0.75, cost_r=0.10, minimum_resolved=30
+        )
+        return odds, passes
+
+    def test_a_wide_stop_becomes_measurable_instead_of_refused(self) -> None:
+        frame, per_bar = self._market(0.00008)
+        risk = per_bar * 32
+
+        flat, flat_passes = self._verdict(frame, risk, 24)
+        fitted, fitted_passes = self._verdict(frame, risk, self._fitted(frame, risk, per_bar))
+
+        assert flat.resolved_windows < 30  # nothing resolved: unmeasurable
+        assert not flat_passes
+        assert fitted.resolved_windows > 1_000
+        assert fitted_passes and fitted.expected_r > 0.5
+
+    def test_a_stop_the_flat_window_already_covered_is_left_alone(self) -> None:
+        """The change must reach only the plans that needed it. A four-ATR stop
+        resolves inside 24 bars, so its window does not move and neither does
+        its answer."""
+        frame, per_bar = self._market(0.00008)
+        risk = per_bar * 4
+
+        assert self._fitted(frame, risk, per_bar) == 24
+
+    def test_a_coin_flip_is_still_refused_over_the_longer_window(self) -> None:
+        """The check that matters. A longer ruler must not turn a market with
+        no edge into a trade — it only lets the market answer."""
+        frame, per_bar = self._market(0.0)
+
+        for multiple in (16, 32):
+            risk = per_bar * multiple
+            odds, passes = self._verdict(frame, risk, self._fitted(frame, risk, per_bar))
+            assert not passes, multiple
+            assert odds.expected_r < 0.0, multiple
+
+    def test_trading_into_the_trend_the_wrong_way_is_still_refused(self) -> None:
+        frame, per_bar = self._market(-0.00008)
+
+        for multiple in (16, 32):
+            risk = per_bar * multiple
+            odds, passes = self._verdict(frame, risk, self._fitted(frame, risk, per_bar))
+            assert not passes, multiple
+            assert odds.expected_r < -0.5, multiple
+
+    def test_the_window_never_outruns_the_history_that_measures_it(self) -> None:
+        """A stretch past the data does not widen the window, it removes the
+        gate: `_reachable_target` gives up and returns the planned distance
+        UNMEASURED. A test caught exactly that, approving a trade it was
+        written to refuse with a 34,560-minute horizon.
+        """
+        from analysis.confluence import ConfluenceEngine
+        from config.schema import ConfluenceConfig, HorizonProfileConfig
+
+        frame, per_bar = self._market(0.00008, bars=100)
+        engine = ConfluenceEngine([], ConfluenceConfig())
+        profile = HorizonProfileConfig(planning_timeframe="H1", target_horizon_bars=24)
+
+        # A stop so wide the square law would ask for thousands of bars.
+        horizon = engine._horizon_bars(per_bar * 200, per_bar * 200, profile, frame=frame)
+
+        assert horizon <= len(frame) // 3
+        assert horizon <= min(len(frame), 400) // 2

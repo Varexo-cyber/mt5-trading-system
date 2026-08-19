@@ -138,7 +138,13 @@ def test_standalone_m15_sweep_gets_an_intraday_plan() -> None:
     assert idea.horizon == "intraday"
     assert idea.setup_family == "liquidity_sweep_m15"
     assert idea.planning_timeframe == "M15"
-    assert idea.expected_horizon_minutes == 180
+    # The profile's own 12 bars is the FLOOR, not the answer. The window is
+    # sized to the distance it has to watch — covering d takes (d / speed)^2
+    # bars — because a flat 24 could not see past a six-ATR stop, and every
+    # window beyond that expired with neither target nor stop touched. What
+    # this test is about is which profile was chosen, and that is unchanged.
+    assert idea.expected_horizon_minutes >= 180
+    assert idea.expected_horizon_minutes % 15 == 0
 
 
 def test_m5_pullback_gets_a_genuinely_quick_plan() -> None:
