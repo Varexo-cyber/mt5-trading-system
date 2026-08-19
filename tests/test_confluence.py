@@ -152,11 +152,13 @@ def test_a_target_the_market_never_reaches_is_trimmed_or_refused() -> None:
     slow = ConfluenceEngine(modules(), config()).evaluate(context(step=0.00002), TradingMode.PAPER)
 
     assert not slow.approved
-    # The refusal names the measurement instead of a floor, and names all three
-    # outcomes: what share of the windows that RESOLVED went our way, how many
-    # simply expired, and what one trade is therefore worth.
-    assert "pays on this market" in slow.reason
-    assert "resolved" in slow.reason and "expired" in slow.reason
+    # And it names the right complaint. On a market this slow almost nothing
+    # resolves inside the horizon — neither the target nor the stop is reached
+    # — so what has failed is the MEASUREMENT, not the plan. Printing "no
+    # target pays on this market" there sends the next diagnosis looking for a
+    # target problem that does not exist.
+    assert "cannot judge" in slow.reason
+    assert "ran out of time" in slow.reason
 
 
 def test_a_trimmed_target_still_clears_the_minimum() -> None:
@@ -795,8 +797,8 @@ class TestTheTargetGoesWhereItPays:
         idea = self._idea(step=0.00002)
 
         assert not idea.approved
-        assert "pays on this market" in idea.reason
-        assert "resolved" in idea.reason and "expired" in idea.reason
+        assert "cannot judge" in idea.reason
+        assert "too wide for the time the plan has" in idea.reason
 
     def test_the_reach_is_first_touch_and_not_the_favourable_excursion(self) -> None:
         """The measurement that makes this honest rather than merely different.
@@ -1015,7 +1017,37 @@ class TestTheTargetBandHasToContainAPayableDistance:
         )
 
         assert not idea.approved
-        assert "pays on this market" in idea.reason
+        assert "cannot judge" in idea.reason
+
+    def test_the_two_refusals_are_told_apart(self) -> None:
+        """ "Resolved and lost" and "never resolved" are different findings.
+
+        The first is a judgement about the plan and says fix the plan. The
+        second is a statement about the window: within this horizon price
+        reached neither the target nor the stop, so nothing can be concluded,
+        and what needs fixing is the horizon or the width of the stop.
+
+        Same market, same edge, only the stop widened from 4x to 32x ATR
+        against a fixed 24-bar horizon: resolved windows fall 2,915 -> 7, the
+        expired share climbs 2% -> 99.8%, and the expectancy goes +0.31R ->
+        -0.12R purely because every expired window is charged a round trip. The
+        market did not get worse; the ruler got too short. Both used to print
+        the same sentence.
+        """
+        never = ConfluenceEngine(modules(), config()).evaluate(
+            context(step=0.00002), TradingMode.PAPER
+        )
+        # Choppy enough that the stop is reached often, and long enough that
+        # the resolved sample is a sample: this market ANSWERS the question,
+        # and the answer is no.
+        coin = ConfluenceEngine(modules(), config()).evaluate(
+            context(step=0.0, noise=0.003, bars=800), TradingMode.PAPER
+        )
+
+        assert not never.approved and not coin.approved
+        assert "cannot judge" in never.reason
+        assert "pays on this market" in coin.reason
+        assert "cannot judge" not in coin.reason
 
 
 class TestTheLoneFloorCanBeSetPerDetector:
