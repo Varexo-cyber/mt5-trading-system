@@ -388,10 +388,31 @@ class TestNoneOfThemCanTradeYet:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.confluence
 
+    #: `mean_reversion` is out on its own measurement, four hours after it was
+    #: built: 194 trades over 20 markets and 180 days, -0.193R a trade,
+    #: -37.53R, t = -2.45 — the second largest loser in the table.
+    #:
+    #: The reasoning it was built on was wrong. `liquidity_sweep` read +0.119R
+    #: over 23 trades and that was called "the only family not losing"; over 91
+    #: trades it is -0.139R. The hint was noise and the module built on it loses
+    #: money. Weight zero rather than deletion, so a later measurement can bring
+    #: it back instead of somebody reinventing it.
+    STILL_MEASURED = ("volatility_squeeze", "session_breakout", "seasonality")
+
     def test_they_are_weighted_so_the_backtest_can_see_them(self) -> None:
         weights = self._confluence().weights
-        for module in ("volatility_squeeze", "mean_reversion", "session_breakout", "seasonality"):
+        for module in self.STILL_MEASURED:
             assert weights.get(module, 0.0) > 0, module
+
+    def test_the_one_that_measured_negative_is_switched_off(self) -> None:
+        assert self._confluence().weights.get("mean_reversion", 0.0) == 0.0
+
+    def test_and_it_is_switched_off_rather_than_deleted(self) -> None:
+        """Losing sight of a detector means never finding out whether the
+        decision to drop it was right."""
+        from analysis import MeanReversion
+
+        assert MeanReversion().name == "mean_reversion"
 
     def test_but_none_is_on_the_live_allowlist(self) -> None:
         allowed = set(self._confluence().live_enabled_modules)
