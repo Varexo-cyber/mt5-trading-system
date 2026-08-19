@@ -180,3 +180,58 @@ class TestConstructionGuards:
     def test_missing_tick_size_falls_back_to_point(self) -> None:
         spec = InstrumentSpec.from_mt5(eurusd_spec(trade_tick_size=0.0))
         assert spec.tick_size == spec.point
+
+
+class TestSilverIsAMetalEvenWhenTheBrokerQuotesItLikeFX:
+    """The set that answers this already existed and the classifier never asked.
+
+    ISO 4217 assigns XAU/XAG/XPT/XPD to metals, so a broker quoting silver
+    FX-style sets `is_forex` and silver came back as FOREX. That is not a naming
+    problem: asset class picks the commission row, the slippage row, the session
+    rules and the spread cap.
+
+    Live, from `scan_report.py` across 845 markets:
+
+        XAGUSD   forex   spread  8.40 bps   blocked against the 8.0 forex cap
+        XAGEUR   forex   spread  9.91 bps   blocked
+
+    Both clear the metal cap of 25 comfortably. Two liquid markets discarded by
+    a label, on the day the owner asked for more markets like gold.
+    """
+
+    def test_silver_quoted_as_fx_is_still_a_metal(self) -> None:
+        from core.instrument import AssetClass, _classify_asset
+
+        assert _classify_asset("Forex\\Metals", "XAG", is_forex=True) is AssetClass.METAL
+        assert _classify_asset("", "XAG", is_forex=True) is AssetClass.METAL
+
+    def test_the_other_three_metals_travel_with_it(self) -> None:
+        from core.instrument import AssetClass, _classify_asset
+
+        for base in ("XAU", "XPT", "XPD"):
+            assert _classify_asset("", base, is_forex=True) is AssetClass.METAL, base
+
+    def test_crypto_quoted_as_fx_is_still_crypto(self) -> None:
+        """Same failure, same set, other half of it."""
+        from core.instrument import AssetClass, _classify_asset
+
+        for base in ("BTC", "ETH", "LTC", "XRP"):
+            assert _classify_asset("", base, is_forex=True) is AssetClass.CRYPTO, base
+
+    def test_an_ordinary_pair_is_untouched(self) -> None:
+        from core.instrument import AssetClass, _classify_asset
+
+        assert _classify_asset("Forex\\Majors", "EUR", is_forex=True) is AssetClass.FOREX
+        assert _classify_asset("Forex\\Minors", "NOK", is_forex=True) is AssetClass.FOREX
+
+    def test_the_metal_cap_is_the_one_silver_now_answers_to(self) -> None:
+        """8.40 bps against 8.0 was a refusal by four hundredths of a basis
+        point. Against the metal cap it is not close."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        caps = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).filters.spread.max_spread_bps
+
+        assert caps["forex"] < 8.40
+        assert caps["metal"] > 9.91
