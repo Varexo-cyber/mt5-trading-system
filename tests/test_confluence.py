@@ -930,21 +930,31 @@ class TestTheTargetBandHasToContainAPayableDistance:
 
         assert needed < 0.40, f"top of the band still needs {needed:.0%}"
 
-    def test_the_floor_is_held_at_a_full_r_on_the_evidence(self) -> None:
-        """The floor was going to 0.60 and the measurement stopped it.
+    def test_the_floor_is_where_the_owner_put_it_with_the_risk_stated(self) -> None:
+        """0.60, on the owner's explicit approval after both objections were put
+        to him in numbers.
 
-        `no target between 1.00R and 3.00R pays` is the single largest reason no
-        setup forms, and dropping the floor to 0.60 is worth +46% setups over
-        identical bars — 130 to 190. It stays at 1.0 anyway, because over 180
-        days and 20 markets not one detector is positive: trend_momentum at
-        -0.365R a trade over 163 trades, t = -4.01, and liquidity_sweep flipped
-        from +0.119R on 23 trades to -0.242R on 48. More setups out of detectors
-        that all lose is more losing.
+        Against: over 180 days and 20 markets not one detector is positive —
+        trend_momentum -0.251R over 148 trades at t = -3.05, and the best row in
+        the table is session_breakout at +0.145R over 33, which is still noise.
+        More setups out of detectors without a measured edge is more losing.
 
-        Written as a test rather than only as a config comment because the
-        argument for 0.60 is good and will be made again.
+        Also against: at these stop widths the round trip takes 27% of the risk
+        on 7 pips and 63% on 3.
+
+        He read both and accepted the risk, so this is his decision recorded
+        rather than an argument re-run. What keeps it honest is that it is not a
+        gate opening: the search still only picks a distance with positive
+        MEASURED first-touch expectancy, and since today that calculation
+        carries the whole bill — spread, commission and slippage.
+
+        `scorecard --days 3` is the check. Trades dying on costs rather than on
+        the market is the prediction coming true, and it is one line back.
         """
-        assert self._band().minimum_r_multiple >= 1.0
+        band = self._band()
+
+        assert band.minimum_r_multiple == 0.60
+        assert band.minimum_r_multiple < 1.0
 
     def test_the_sizer_will_not_refuse_what_the_analysis_may_plan(self) -> None:
         """Two floors that must agree, and they did not: `min_risk_reward` sat
