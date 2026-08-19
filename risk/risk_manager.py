@@ -647,6 +647,75 @@ class RiskManager:
             )
         return RiskDecision.allow(f"margin {required:.2f}/{state.margin_free:.2f} free")
 
+    def largest_volume_within_margin(
+        self,
+        state: RiskState,
+        symbol: str,
+        direction: Direction,
+        volume: float,
+        price: float,
+        *,
+        volume_min: float,
+        volume_step: float,
+    ) -> float:
+        """The biggest volume at or below `volume` whose margin actually fits.
+
+        `check_margin` is a yes/no gate: it is handed a volume derived from the
+        risk budget and refuses when the margin will not stretch. On a small
+        account against single-share CFDs that refuses almost everything —
+        0.15 lots of one German share wants 169 EUR of margin against 180 EUR
+        of equity — and the refusal throws away a setup that had already
+        cleared every analytical gate.
+
+        Nothing about the trade needs to change to make it fit. Entry, stop and
+        target are untouched, so every measurement that approved it stays true;
+        only the position gets smaller, and a smaller position risks LESS. That
+        is the opposite of rounding up to the broker minimum, which this system
+        forbids outright, and it is why this is safe in a way that "just take
+        the trade anyway" would not be.
+
+        Returns 0.0 when not even `volume_min` fits, so the caller still
+        refuses rather than sending an order that cannot be margined.
+
+        The broker's own estimator has the last word. Margin is very nearly
+        linear in volume, which makes it a good first guess and a bad final
+        answer — tiered rates exist — so the guess is verified and walked down
+        a step at a time until it passes or runs out of room.
+        """
+        if self.margin_estimator is None or volume <= 0 or volume_step <= 0:
+            return volume
+        if self.check_margin(state, symbol, direction, volume, price).approved:
+            return volume
+
+        def fits(candidate: float) -> bool:
+            try:
+                required = self.margin_estimator(symbol, direction, candidate, price)
+            except Exception:  # noqa: BLE001 - an unpriceable volume is not a usable one
+                return False
+            return required * self.margin_safety_factor <= state.margin_free
+
+        try:
+            required = self.margin_estimator(symbol, direction, volume, price)
+        except Exception:  # noqa: BLE001 - fail closed, exactly as check_margin does
+            return 0.0
+        headroom = required * self.margin_safety_factor
+        if headroom <= 0:
+            return 0.0
+        steps = int(volume * (state.margin_free / headroom) / volume_step)
+        # Ten walks down at most. The linear guess is close enough that one or
+        # two is normal, and an instrument needing more than ten is one this
+        # account has no business sizing by trial and error.
+        for _ in range(10):
+            if steps < 1:
+                return 0.0
+            candidate = round(steps * volume_step, 8)
+            if candidate < volume_min:
+                return 0.0
+            if fits(candidate):
+                return candidate
+            steps -= 1
+        return 0.0
+
     # -- forbidden practices -----------------------------------------------
 
     def assert_not_forbidden(

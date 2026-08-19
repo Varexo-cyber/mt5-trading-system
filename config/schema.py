@@ -553,6 +553,21 @@ class RiskConfig(Base):
     #: Margin headroom multiplier. A position that consumes the last of the
     #: free margin leaves nothing for the excursion before its own stop.
     margin_safety_factor: float = Field(default=2.0, ge=1.0, le=10.0)
+    #: When the margin will not stretch to the size the risk budget asked for,
+    #: send the largest size it WILL stretch to instead of refusing the trade.
+    #:
+    #: On a EUR 180 account against single-share CFDs the margin gate refuses
+    #: almost everything: 0.15 lots of one German share wants 169 EUR of margin,
+    #: and with the safety buffer that is more than the account holds. Those
+    #: setups had already cleared every analytical gate.
+    #:
+    #: Nothing about the trade changes to make it fit. Entry, stop and target
+    #: stay exactly where they were, so the measured expectancy that approved it
+    #: is still the expectancy of the smaller position — only the size moves,
+    #: and it moves DOWN. That is the opposite direction from rounding up to the
+    #: broker minimum, which this system forbids outright and still forbids:
+    #: when not even `volume_min` fits, the trade is refused as before.
+    reduce_volume_to_fit_margin: bool = True
 
     forbidden: ForbiddenPractices = ForbiddenPractices()
 

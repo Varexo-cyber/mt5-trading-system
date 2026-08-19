@@ -3045,6 +3045,50 @@ class JarvisRunner:
             sizing.volume,
             sizing.entry,
         )
+        if not margin.approved and self.settings.risk.reduce_volume_to_fit_margin:
+            # FIT IT INSTEAD OF REFUSING IT.
+            #
+            # Every analytical gate has already passed by here. The margin does
+            # not stretch to the size the risk budget asked for, and the size is
+            # the one thing that can change without invalidating any of it —
+            # entry, stop and target stay exactly where they were, so the
+            # measured expectancy that approved this trade is still the
+            # expectancy of the smaller one.
+            #
+            # It risks LESS, never more. Rounding UP to the broker minimum is
+            # forbidden outright in this system and stays forbidden: when even
+            # `volume_min` will not fit, this returns nothing and the refusal
+            # below stands.
+            fitted = self.risk.largest_volume_within_margin(
+                state,
+                symbol,
+                idea.direction,
+                sizing.volume,
+                sizing.entry,
+                volume_min=spec.volume_min,
+                volume_step=spec.volume_step,
+            )
+            if fitted > 0 and fitted < sizing.volume:
+                scale = fitted / sizing.volume
+                sizing = replace(
+                    sizing,
+                    volume=fitted,
+                    actual_risk_money=sizing.actual_risk_money * scale,
+                    actual_risk_pct=sizing.actual_risk_pct * scale,
+                )
+                log.info(
+                    "volume reduced to fit margin",
+                    extra={
+                        "event": "volume_fitted_to_margin",
+                        "symbol": symbol,
+                        "requested_volume": round(fitted / scale, 4),
+                        "volume": fitted,
+                        "risk_pct": round(sizing.actual_risk_pct, 3),
+                    },
+                )
+                margin = self.risk.check_margin(
+                    state, symbol, idea.direction, sizing.volume, sizing.entry
+                )
         if not margin.approved:
             cycle_pk = self._record_skip(
                 cycle_id,
