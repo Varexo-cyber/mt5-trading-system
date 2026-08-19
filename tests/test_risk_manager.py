@@ -603,6 +603,138 @@ class TestMargin:
         assert manager.check_margin(state, "EURUSD", Direction.LONG, 1.0, 1.085).approved
 
 
+class TestTheSizeIsFittedToTheMarginRatherThanRefused:
+    """0.15 lots of one German share wants 169 EUR against a 180 EUR account.
+
+    Every analytical gate had already passed. The size is the one thing that
+    can move without invalidating any of it — entry, stop and target stay put,
+    so the expectancy that approved the trade is still the expectancy of the
+    smaller one — and it moves DOWN, never up.
+    """
+
+    @staticmethod
+    def _manager(settings, journal, clock, per_lot: float):  # type: ignore[no-untyped-def]
+        return RiskManager(
+            settings=settings,
+            journal=journal,
+            clock=clock,
+            margin_estimator=lambda _s, _d, volume, _p: per_lot * volume,
+        )
+
+    def test_it_returns_the_largest_size_that_fits(
+        self, settings: Settings, journal: Journal, clock: SimulatedClock
+    ) -> None:
+        # 1000 per lot, 2.0x safety, 500 free -> 0.25 lots is the ceiling.
+        manager = self._manager(settings, journal, clock, 1_000.0)
+        state = manager.build_state(account(1_000.0, free=500.0))
+
+        fitted = manager.largest_volume_within_margin(
+            state, "EURUSD", Direction.LONG, 1.0, 1.085, volume_min=0.01, volume_step=0.01
+        )
+
+        assert fitted == pytest.approx(0.25)
+        assert manager.check_margin(state, "EURUSD", Direction.LONG, fitted, 1.085).approved
+
+    def test_a_size_that_already_fits_is_returned_untouched(
+        self, settings: Settings, journal: Journal, clock: SimulatedClock
+    ) -> None:
+        manager = self._manager(settings, journal, clock, 100.0)
+        state = manager.build_state(account(1_000.0, free=500.0))
+
+        fitted = manager.largest_volume_within_margin(
+            state, "EURUSD", Direction.LONG, 1.0, 1.085, volume_min=0.01, volume_step=0.01
+        )
+
+        assert fitted == 1.0
+
+    def test_it_never_returns_more_than_it_was_asked_for(
+        self, settings: Settings, journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """The whole safety argument rests on this. Sizing DOWN risks less;
+        sizing up would be rounding to the broker minimum, which is forbidden
+        outright and must stay impossible from here."""
+        manager = self._manager(settings, journal, clock, 1.0)
+        state = manager.build_state(account(1_000.0, free=1e9))
+
+        fitted = manager.largest_volume_within_margin(
+            state, "EURUSD", Direction.LONG, 0.02, 1.085, volume_min=0.01, volume_step=0.01
+        )
+
+        assert fitted == 0.02
+
+    def test_nothing_is_returned_when_even_the_broker_minimum_will_not_fit(
+        self, settings: Settings, journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """The refusal has to survive. An account that cannot margin one
+        minimum lot has no business in that instrument, and 0.0 is how this
+        says so without inventing a size."""
+        manager = self._manager(settings, journal, clock, 100_000.0)
+        state = manager.build_state(account(180.0, free=180.0))
+
+        fitted = manager.largest_volume_within_margin(
+            state, "IFX", Direction.LONG, 0.15, 35.0, volume_min=0.01, volume_step=0.01
+        )
+
+        assert fitted == 0.0
+
+    def test_the_broker_estimator_has_the_last_word_not_the_linear_guess(
+        self, settings: Settings, journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """Margin is nearly linear in volume, which makes it a good first guess
+        and a bad final answer. A tiered schedule has to be walked down, not
+        divided through."""
+        calls: list[float] = []
+
+        def tiered(_symbol, _direction, volume, _price):  # type: ignore[no-untyped-def]
+            calls.append(volume)
+            # Cheap per lot below 0.20, punitive at or above it.
+            return volume * (1_000.0 if volume < 0.20 else 5_000.0)
+
+        manager = RiskManager(
+            settings=settings, journal=journal, clock=clock, margin_estimator=tiered
+        )
+        state = manager.build_state(account(1_000.0, free=500.0))
+
+        fitted = manager.largest_volume_within_margin(
+            state, "EURUSD", Direction.LONG, 1.0, 1.085, volume_min=0.01, volume_step=0.01
+        )
+
+        # The linear guess off the 1.0-lot rate says 0.05; the tiered rate lets
+        # 0.25 through. Either way what comes back must actually pass the gate.
+        assert fitted > 0.0
+        assert manager.check_margin(state, "EURUSD", Direction.LONG, fitted, 1.085).approved
+        assert len(calls) > 1  # it re-asked rather than trusting the division
+
+    def test_an_estimator_that_raises_refuses_rather_than_guessing(
+        self, settings: Settings, journal: Journal, clock: SimulatedClock
+    ) -> None:
+        def broken(*_args):  # type: ignore[no-untyped-def]
+            raise RuntimeError("terminal said no")
+
+        manager = RiskManager(
+            settings=settings, journal=journal, clock=clock, margin_estimator=broken
+        )
+        state = manager.build_state(account(1_000.0, free=500.0))
+
+        fitted = manager.largest_volume_within_margin(
+            state, "EURUSD", Direction.LONG, 1.0, 1.085, volume_min=0.01, volume_step=0.01
+        )
+
+        assert fitted == 0.0
+
+    def test_without_an_estimator_the_size_is_left_alone(self, manager: RiskManager) -> None:
+        """Backtests have no estimator. Guessing at margin is worse than not
+        checking, which is what `check_margin` already decided."""
+        state = manager.build_state(account(1_000.0))
+
+        assert (
+            manager.largest_volume_within_margin(
+                state, "EURUSD", Direction.LONG, 1.0, 1.085, volume_min=0.01, volume_step=0.01
+            )
+            == 1.0
+        )
+
+
 class TestAntiMartingale:
     def test_full_risk_below_the_streak_threshold(
         self,
