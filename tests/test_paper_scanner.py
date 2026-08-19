@@ -431,3 +431,116 @@ def test_demo_mode_hard_refuses_a_live_account(tmp_path: Path) -> None:
 
     assert not fake.orders_sent
     assert not runner.broker.is_connected
+
+
+def _wide_spread_market(moment: datetime) -> FakeMT5:
+    """Two forex pairs: one hopeless on spread, one a whisker over the cap.
+
+    Against a 2.0 bps cap, EURUSD quotes 9.2 bps — over four times the limit —
+    and GBPUSD quotes 3.0 bps. Both are refused. Only the first is refused in a
+    way that six hours cannot plausibly change.
+    """
+    names = {
+        "EURUSD": "Forex\\Majors\\EURUSD",
+        "GBPUSD": "Forex\\Majors\\GBPUSD",
+    }
+    return FakeMT5(
+        now=moment,
+        specs={
+            name: eurusd_spec(name=name, path=path, currency_base=name[:3])
+            for name, path in names.items()
+        },
+        quotes={
+            "EURUSD": (1.08500, 1.08600),  # 9.21 bps
+            "GBPUSD": (1.08500, 1.085326),  # 3.00 bps
+        },
+    )
+
+
+def _scanner_with_forex_cap(
+    fake: FakeMT5, moment: datetime, *, cap_bps: float = 2.0, park_hours: float = 6.0
+) -> tuple[MT5Connector, UniverseScanner]:
+    market = connector(fake)
+    market.connect()
+    settings = load_settings(env_overrides=False)
+    spread = settings.filters.spread.model_copy(update={"max_spread_bps": {"forex": cap_bps}})
+    settings = settings.model_copy(
+        update={
+            "filters": settings.filters.model_copy(update={"spread": spread}),
+            "scanner": settings.scanner.model_copy(
+                update={"wide_spread_park_multiple": 2.0, "wide_spread_park_hours": park_hours}
+            ),
+        }
+    )
+    return market, UniverseScanner(market, settings, SimulatedClock(moment))
+
+
+def test_hopeless_spread_is_remembered_and_a_borderline_one_is_measured_again() -> None:
+    moment = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    fake = _wide_spread_market(moment)
+    market, scanner = _scanner_with_forex_cap(fake, moment)
+
+    first = scanner.scan(keep=5)
+    fake.calls.clear()
+    second = scanner.scan(keep=5)
+
+    assert not first.candidates and not second.candidates
+    measured_again = {args[0] for name, args in fake.calls if name == "symbol_info_tick"}
+    # The nine-bps market is not asked about; the three-bps one still is.
+    assert measured_again == {"GBPUSD"}
+    market.shutdown()
+
+
+def test_a_remembered_spread_refusal_still_reports_as_a_spread_block() -> None:
+    """`scan_report.py` counts blocked markets by stage. A held one must count.
+
+    If the hold invented its own stage the crypto column would quietly report
+    124 markets as passing, which is the opposite of what happened to them.
+    """
+    moment = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    fake = _wide_spread_market(moment)
+    market, scanner = _scanner_with_forex_cap(fake, moment)
+
+    scanner.scan(keep=5)
+    held = next(row for row in scanner.scan(keep=5).inspections if row.symbol == "EURUSD")
+
+    assert held.status == "REJECTED"
+    assert held.stage == "spread"
+    assert held.spread_bps == pytest.approx(9.21, abs=0.05)
+    assert held.asset_class.value == "forex"
+    assert "not re-measured until 18:00 UTC" in held.reason
+    market.shutdown()
+
+
+def test_the_hold_expires_and_the_market_gets_its_next_chance() -> None:
+    moment = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    fake = _wide_spread_market(moment)
+    market, scanner = _scanner_with_forex_cap(fake, moment)
+
+    scanner.scan(keep=5)
+    later = moment + timedelta(hours=6, minutes=1)
+    scanner.clock = SimulatedClock(later)
+    fake.now = later
+    fake.quotes["EURUSD"] = (1.08500, 1.085163)  # tightened to 1.50 bps
+    fake.calls.clear()
+
+    batch = scanner.scan(keep=5)
+
+    assert "EURUSD" in {row.symbol for row in batch.candidates}
+    assert ("symbol_info_tick", ("EURUSD",)) in fake.calls
+    market.shutdown()
+
+
+def test_zero_hours_switches_the_hold_off_entirely() -> None:
+    moment = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    fake = _wide_spread_market(moment)
+    market, scanner = _scanner_with_forex_cap(fake, moment, park_hours=0.0)
+
+    scanner.scan(keep=5)
+    fake.calls.clear()
+    scanner.scan(keep=5)
+
+    assert not scanner._parked
+    measured_again = {args[0] for name, args in fake.calls if name == "symbol_info_tick"}
+    assert measured_again == {"EURUSD", "GBPUSD"}
+    market.shutdown()
