@@ -192,14 +192,25 @@ class TestTheRunnerAsksItOfTheStopItWillSend:
         )
         return runner
 
-    def test_it_is_silent_when_the_engine_planned_a_different_trade(self) -> None:
-        """`_widen_stop_for_costs` runs just above this. With the engine NOT
-        planning on the widened stop, the analysis chose its target against the
-        narrow one and this would re-measure the wide one — refusing a target
-        the analysis proved payable, on geometry the analysis never saw.
+    def test_it_speaks_even_when_the_engine_planned_on_the_narrower_stop(self) -> None:
+        """It used to fall silent here, and that silence had a good reason.
 
-        Not a stricter test: a test of a plan nobody designed. 69 of 140 live
-        setups in six hours, and the whole reason the account took no trade.
+        `_widen_stop_for_costs` runs just above this. With the engine NOT
+        planning on the widened stop, the analysis chose its target against the
+        narrow one and this re-measured the wide one — refusing a target the
+        analysis had proved payable, on geometry the analysis never saw. 69 of
+        140 live setups in six hours.
+
+        The unfairness was in the arithmetic, not in asking the question.
+        Widening lowers reward-to-risk AND makes the position much harder to
+        stop out; the two-outcome form could only see the first, because it
+        counted every unresolved window as a stop-out. Stop-outs are counted
+        directly now, so a wider stop earns its credit and the question is fair
+        to ask again.
+
+        It matters because the alternative is worse: with this silent the
+        break-even branch is decided by the UNCONDITIONAL reach, which does not
+        know the stop exists at all and therefore cannot credit anything.
         """
         frame = walk()
         entry = float(frame["close"].iloc[-1])
@@ -209,7 +220,33 @@ class TestTheRunnerAsksItOfTheStopItWillSend:
             self._context(frame, entry), self._idea(0.0010, entry, entry + 0.0020)
         )
 
-        assert verdict is None
+        assert verdict is not None
+        assert verdict.resolved_windows > 0
+        # And it is measured against the stop the ORDER will carry.
+        assert verdict.reward_risk == pytest.approx(2.0, abs=0.01)
+
+    def test_a_wider_stop_is_credited_and_not_only_charged(self) -> None:
+        """The property the unconditional reading structurally cannot have.
+
+        Hold the target still and widen the stop. Reward-to-risk falls, so the
+        break-even requirement rises — that is the charge, and it is real. The
+        credit is that the position becomes far harder to stop out, which the
+        unconditional reach cannot see: it returns the same number whatever the
+        stop is, so widening can only ever count against a trade.
+        """
+        frame = walk()
+        entry = float(frame["close"].iloc[-1])
+        runner = self._runner(planning=False)
+        context = self._context(frame, entry)
+        target = entry + 0.0020
+
+        narrow = runner._target_survival(context, self._idea(0.0010, entry, target))
+        wide = runner._target_survival(context, self._idea(0.0030, entry, target))
+
+        assert narrow is not None and wide is not None
+        assert wide.reward_risk < narrow.reward_risk  # charged
+        assert wide.required_pct > narrow.required_pct  # charged
+        assert wide.forward_pct > narrow.forward_pct  # and credited
 
     @staticmethod
     def _context(frame: pd.DataFrame, entry: float):  # type: ignore[no-untyped-def]
