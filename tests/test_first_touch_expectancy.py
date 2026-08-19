@@ -162,15 +162,49 @@ class TestTheRunnerAsksItOfTheStopItWillSend:
     target questioned. The question has to be about the widened plan."""
 
     @staticmethod
-    def _runner():  # type: ignore[no-untyped-def]
+    def _runner(*, planning: bool = True):  # type: ignore[no-untyped-def]
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
         from runner.service import JarvisRunner
 
         runner = object.__new__(JarvisRunner)
-        runner.settings = load_settings(
+        settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
+        # This gate only speaks when the ENGINE also planned on the widened
+        # stop, so the mechanism is exercised with that on. The live overlay has
+        # it off, and `test_it_is_silent_when_the_engine_planned_a_different_
+        # trade` holds that end.
+        runner.settings = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={
+                        "confluence": settings.analysis.confluence.model_copy(
+                            update={"plan_on_cost_floor": planning}
+                        )
+                    }
+                )
+            }
+        )
         return runner
+
+    def test_it_is_silent_when_the_engine_planned_a_different_trade(self) -> None:
+        """`_widen_stop_for_costs` runs just above this. With the engine NOT
+        planning on the widened stop, the analysis chose its target against the
+        narrow one and this would re-measure the wide one — refusing a target
+        the analysis proved payable, on geometry the analysis never saw.
+
+        Not a stricter test: a test of a plan nobody designed. 69 of 140 live
+        setups in six hours, and the whole reason the account took no trade.
+        """
+        frame = walk()
+        entry = float(frame["close"].iloc[-1])
+        runner = self._runner(planning=False)
+
+        verdict = runner._target_survival(
+            self._context(frame, entry), self._idea(0.0010, entry, entry + 0.0020)
+        )
+
+        assert verdict is None
 
     @staticmethod
     def _context(frame: pd.DataFrame, entry: float):  # type: ignore[no-untyped-def]
