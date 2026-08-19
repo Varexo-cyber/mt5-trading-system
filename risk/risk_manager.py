@@ -684,21 +684,30 @@ class RiskManager:
         """
         if self.margin_estimator is None or volume <= 0 or volume_step <= 0:
             return volume
-        if self.check_margin(state, symbol, direction, volume, price).approved:
-            return volume
+
+        def required_for(candidate: float) -> float | None:
+            try:
+                return self.margin_estimator(symbol, direction, candidate, price)
+            except Exception:  # noqa: BLE001 - an unpriceable volume is not a usable one
+                return None
 
         def fits(candidate: float) -> bool:
-            try:
-                required = self.margin_estimator(symbol, direction, candidate, price)
-            except Exception:  # noqa: BLE001 - an unpriceable volume is not a usable one
-                return False
-            return required * self.margin_safety_factor <= state.margin_free
+            required = required_for(candidate)
+            return (
+                required is not None and required * self.margin_safety_factor <= state.margin_free
+            )
 
-        try:
-            required = self.margin_estimator(symbol, direction, volume, price)
-        except Exception:  # noqa: BLE001 - fail closed, exactly as check_margin does
-            return 0.0
+        # ONE QUESTION PER SIZE, AND NOT ONE MORE. Every estimate is an IPC
+        # round trip to a terminal that this account shares with a full
+        # catalogue scan on one vCPU, and this runs between a quote and an
+        # order. Asking `check_margin` first and then re-pricing the same
+        # volume cost a duplicate call on the hot path for nothing.
+        required = required_for(volume)
+        if required is None:
+            return 0.0  # fail closed, exactly as check_margin does
         headroom = required * self.margin_safety_factor
+        if headroom <= state.margin_free:
+            return volume
         if headroom <= 0:
             return 0.0
         steps = int(volume * (state.margin_free / headroom) / volume_step)
