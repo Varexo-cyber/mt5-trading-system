@@ -448,3 +448,51 @@ class TestNoneOfThemCanTradeYet:
         config = self._confluence()
 
         assert SeasonalityConfig().maximum_confidence < config.lone_module_minimum_confidence
+
+
+class TestTheRegimeSurvivesToTheModuleTable:
+    """One average hides two answers, and the difference decides the remedy.
+
+    "This detector loses money" and "this detector loses money EVERYWHERE" are
+    not the same finding. The first says switch it off; the second says only
+    let it fire where it works. `trend_momentum` was switched off on -0.251R
+    over 148 trades without that question being asked — and a trend follower
+    measured across ranges and transitions is precisely the case where an
+    average is the wrong statistic.
+
+    `market_regime` was computed on every one of those decisions and dropped at
+    the order boundary, so the question could not be answered at all.
+    """
+
+    def test_an_order_carries_what_the_regime_module_read(self) -> None:
+        from backtesting.engine import BacktestOrder
+        from core.types import Direction
+
+        order = BacktestOrder(
+            symbol="EURUSD",
+            decided_at=datetime(2026, 8, 19, tzinfo=UTC),
+            direction=Direction.LONG,
+            entry=1.10,
+            stop_loss=1.09,
+            take_profit=1.12,
+            regime="transition",
+        )
+
+        assert order.regime == "transition"
+
+    def test_it_defaults_to_empty_rather_than_guessing(self) -> None:
+        """A hand-built order has no regime, and inventing one would put
+        fabricated rows in the table this exists to make trustworthy."""
+        from backtesting.engine import BacktestOrder
+        from core.types import Direction
+
+        order = BacktestOrder(
+            symbol="EURUSD",
+            decided_at=datetime(2026, 8, 19, tzinfo=UTC),
+            direction=Direction.LONG,
+            entry=1.10,
+            stop_loss=1.09,
+            take_profit=1.12,
+        )
+
+        assert order.regime == ""
