@@ -100,12 +100,16 @@ class TestThePerDetectorFloor:
     `liquidity_sweep` — the worst and the best records in the module backtest.
     """
 
-    def test_the_table_is_empty_so_nothing_changes_yet(self) -> None:
-        """An entry is a claim that a detector is trustworthy alone, and only a
-        measurement can support one. Until then the global value governs."""
+    def test_an_unlisted_detector_still_takes_the_global_value(self) -> None:
+        """An entry is a claim about ONE detector, and it must not leak.
+
+        The table now carries `session_breakout` at 1.00 to hold it back. Every
+        detector that has not earned an entry — in either direction — must still
+        be judged by the single global floor.
+        """
         confluence = settings().analysis.confluence
 
-        assert confluence.lone_module_minimum_confidence_by_module == {}
+        assert "liquidity_sweep" not in confluence.lone_module_minimum_confidence_by_module
         assert confluence.lone_floor_for("liquidity_sweep") == (
             confluence.lone_module_minimum_confidence
         )

@@ -51,7 +51,7 @@ from backtesting.replay import REPLAY_TIMEFRAMES, HistoricalContextReplay
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.data_manager import DataManager
 from core.mt5_connector import MT5Connector
-from core.types import Timeframe
+from core.types import Timeframe, TradingMode
 from scripts.backtest_modules import build_engine
 
 DEFAULT_SYMBOLS = ("EURUSD.i", "GBPUSD.i", "USDJPY.i", "AUDUSD.i", "XAUUSD")
@@ -133,14 +133,14 @@ def apply_overrides(settings, pairs: list[str]):  # type: ignore[no-untyped-def]
     )
 
 
-def run(settings, catalogue, stride: int, label: str = ""):  # type: ignore[no-untyped-def]
+def run(settings, catalogue, stride: int, label: str = "", mode=TradingMode.BACKTEST):  # type: ignore[no-untyped-def]
     """Setups formed and the shape of every refusal, over the supplied bars.
 
     Prints per symbol as it goes. The loading phase reported progress and this
     one did not, so the run went silent for minutes at the exact point where it
     was doing the work — which reads as a hang, not as patience.
     """
-    replay = HistoricalContextReplay(build_engine(settings), decision_stride_bars=stride)
+    replay = HistoricalContextReplay(build_engine(settings), decision_stride_bars=stride, mode=mode)
     setups = 0
     decisions = 0
     refusals: Counter[str] = Counter()
@@ -201,6 +201,15 @@ def main(argv: list[str] | None = None) -> int:
         metavar="KEY=VALUE",
         help="override a confluence field and run both versions over the same bars",
     )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help=(
+            "judge in the account's own trading mode, so `live_enabled_modules` "
+            "applies the way it does on the account. Without this the run counts "
+            "every weighted detector, including the ones the allowlist excludes."
+        ),
+    )
     args = parser.parse_args(argv)
 
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml")
@@ -238,14 +247,29 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     threshold = settings.analysis.confluence.score_threshold
+    # The account's own mode, not a synthetic one: `live_enabled_modules`
+    # is consulted for micro_live and scaling, and which of the two this
+    # account runs is a fact in the overlay, not something to invent here.
+    mode = settings.mode if args.live else TradingMode.BACKTEST
+    allowed = settings.analysis.confluence.live_enabled_modules
+    if args.live:
+        muted = sorted(
+            module
+            for module, weight in settings.analysis.confluence.weights.items()
+            if weight > 0 and module not in allowed
+        )
+        print(f"\n  voting as {mode.value}: {len(allowed)} detectors on the allowlist")
+        if muted:
+            print(f"  weighted but NOT voting live: {', '.join(muted)}")
     print("\n  measuring as configured …", flush=True)
-    live = run(settings, catalogue, args.stride)
-    print(render("AS THE ACCOUNT IS CONFIGURED NOW", *live, args.days, threshold))
+    baseline = run(settings, catalogue, args.stride, mode=mode)
+    heading = "AS THE ACCOUNT VOTES LIVE" if args.live else "AS THE ACCOUNT IS CONFIGURED NOW"
+    print(render(heading, *baseline, args.days, threshold))
 
     if args.overrides:
         changed = apply_overrides(settings, args.overrides)
         print("\n  measuring the variant over the same bars …", flush=True)
-        variant = run(changed, catalogue, args.stride, label="variant ")
+        variant = run(changed, catalogue, args.stride, label="variant ", mode=mode)
         print(
             render(
                 "WITH " + ", ".join(args.overrides),
@@ -254,7 +278,7 @@ def main(argv: list[str] | None = None) -> int:
                 changed.analysis.confluence.score_threshold,
             )
         )
-        before, after = live[0], variant[0]
+        before, after = baseline[0], variant[0]
         delta = (after - before) / before if before else float("inf")
         print(
             f"\n  {before:,} setups -> {after:,} setups over the identical bars " f"({delta:+.0%})."

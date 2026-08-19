@@ -786,7 +786,42 @@ analysis:
     # mag handelen; het gewicht is wat de backtest hem laat meten. Zo blijft
     # `scripts/backtest_modules.py` hem volgen, en als het beeld op meer data
     # draait staat hij met één woord weer op deze regel.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout]
+    # `session_breakout` en `seasonality` EROP. Dit was een gat, geen keuze.
+    #
+    # Beide zijn gebouwd, gewogen (0,5 en 0,25), gemeten — en nooit op deze
+    # regel gezet. Achttien minuten live meten: session_breakout vuurde 227
+    # keer, seasonality 156 keer, samen 10% van alle detectie, en beide telden
+    # voor precies niks omdat `confluence.py:105` hun gewicht live op 0 zet.
+    #
+    # Waarom juist deze twee en niet trend_momentum erbij: session_breakout is
+    # de beste regel in de moduletabel, +0.145R over 33 trades, de enige
+    # familie die niet verliest. trend_momentum staat op -0.251R over 148
+    # trades met t = -3,05 en blijft eraf. De vloer voor één losse module
+    # bestaat om BEVESTIGING te eisen, en bevestiging van iets dat aantoonbaar
+    # geld verliest is geen bevestiging.
+    #
+    # WAT DIT NIET IS: bewijs. 33 trades met t = 0,76 is ruis; er zijn er
+    # ongeveer 232 nodig. Dit is een berekende gok op de enige module die niet
+    # verliest, niet een vastgesteld feit.
+    #
+    # Daarom mogen ze allebei alleen MEESTEMMEN en nooit zelf beslissen.
+    # `seasonality` kan dat al niet — zijn confidence-plafond is 0,55 en de
+    # losse-module-vloer is 0,65. Voor `session_breakout` staat het hieronder
+    # expliciet op 1,00, boven zijn eigen plafond van 0,80.
+    #
+    # Waar de winst vandaan komt: van de 2.095 NO_SIGNAL-beslissingen waren er
+    # 650 "deze detector is de enige die deze kant op wijst" — 232 fast_ema_-
+    # cross, 211 impulse_break, 207 liquidity_sweep. Die staan alleen omdat hun
+    # gezelschap uitstond. Een tweede stem lost precies die 650 op.
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, seasonality]
+
+    # Meestemmen mag, in je eentje beslissen niet. 1,00 ligt boven het
+    # confidence-plafond van session_breakout (0,80), dus een setup waarin hij
+    # de enige detector is wordt nog steeds geweigerd. Zodra hij als
+    # medestander genoeg trades heeft verzameld om een eigen cijfer te hebben,
+    # kan dit omlaag — en niet eerder.
+    lone_module_minimum_confidence_by_module:
+      session_breakout: 1.00
 
     # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
     # documented as a quick entry but classified as intraday, so a fresh M5

@@ -58,6 +58,7 @@ class HistoricalContextReplay:
         *,
         history_bars: int = 300,
         decision_stride_bars: int = 1,
+        mode: TradingMode = TradingMode.BACKTEST,
     ) -> None:
         if history_bars < 120:
             raise ValueError("history_bars must be at least 120")
@@ -66,6 +67,19 @@ class HistoricalContextReplay:
         self.engine = engine
         self.history_bars = history_bars
         self.decision_stride_bars = decision_stride_bars
+        # WHICH ENGINE IS BEING MEASURED.
+        #
+        # This was hardcoded to BACKTEST, and `live_enabled_modules` is only
+        # consulted when the mode is live. So every offline measurement counted
+        # every weighted detector, while the live account counted seven of
+        # eleven — 38% of the firings in a measured 18-minute live window came
+        # from modules the backtest votes with and the account does not.
+        #
+        # That is not a small discrepancy in a number. It means the tool built
+        # to answer "why did nothing trade" was answering it about a different
+        # engine. BACKTEST stays the default so every existing caller and every
+        # published module figure keeps its meaning; LIVE is now expressible.
+        self.mode = mode
 
     def ideas(
         self,
@@ -144,7 +158,7 @@ class HistoricalContextReplay:
                 ask=mid + spread / 2,
             )
             yield decided_at, spread, self.engine.evaluate(
-                MarketContext(symbol, decided_at, series, tick), TradingMode.BACKTEST
+                MarketContext(symbol, decided_at, series, tick), self.mode
             )
 
     def orders(
