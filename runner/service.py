@@ -2119,6 +2119,22 @@ class JarvisRunner:
         config = self.settings.analysis.confluence
         if not config.first_touch_target_test or not config.require_target_base_rate:
             return None
+        # AND ONLY WHEN THE ENGINE PLANNED THE SAME TRADE.
+        #
+        # This gate judges the plan against the stop the order will carry, and
+        # `_widen_stop_for_costs` runs a few lines above it. With
+        # `plan_on_cost_floor` off, the engine chose its target against the
+        # NARROW stop and this then re-measures the WIDE one — so a target the
+        # analysis proved payable is refused on geometry the analysis never
+        # saw. That is not a stricter test, it is a test of a plan nobody
+        # designed, and it cost 69 of 140 live setups in six hours.
+        #
+        # Either both halves see the widened stop or neither does. The engine
+        # side is off by its own measurement, so this one goes with it and the
+        # unconditional reading decides the break-even branch, exactly as it
+        # did before either existed.
+        if not config.plan_on_cost_floor:
+            return None
         if idea.direction is None:
             return None
         risk = abs(idea.entry - idea.stop_loss)
