@@ -197,6 +197,14 @@ class HistoricalContextReplay:
                     confidence=idea.confidence,
                     modules=active,
                     spread=spread,
+                    regime=next(
+                        (
+                            str(signal.details.get("regime", ""))
+                            for signal in idea.signals
+                            if signal.module == "market_regime"
+                        ),
+                        "",
+                    ),
                 )
             )
         return orders

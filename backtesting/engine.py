@@ -60,6 +60,15 @@ class BacktestOrder:
     #: Zero for an order built by hand, which is the old behaviour and honest
     #: about being a lower bound.
     spread: float = 0.0
+    #: What `market_regime` read at the deciding bar — trend_up, trend_down,
+    #: range, transition or extreme.
+    #:
+    #: It was computed on every decision and thrown away here, so the module
+    #: table could say a detector loses on average and never whether it loses
+    #: EVERYWHERE. Those are different findings with different answers: the
+    #: first says switch it off, the second says only let it fire where it
+    #: works. Empty when the replay did not record one.
+    regime: str = ""
 
     @property
     def risk(self) -> float:

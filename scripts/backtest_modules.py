@@ -223,6 +223,13 @@ def main(argv: list[str] | None = None) -> int:
         help="decide every Nth H1 bar. Raise it to trade accuracy for speed",
     )
     parser.add_argument(
+        "--by-regime",
+        action="store_true",
+        help="also split every detector by what `market_regime` read at the "
+        "deciding bar. Answers whether a detector loses everywhere or only "
+        "outside the conditions it was written for",
+    )
+    parser.add_argument(
         "--no-baseline",
         action="store_true",
         help="skip the coin-flip control. It is the only part that says whether "
@@ -320,6 +327,37 @@ def main(argv: list[str] | None = None) -> int:
             "before believing a row.",
         )
     )
+
+    if args.by_regime:
+        # ONE AVERAGE HIDES TWO ANSWERS.
+        #
+        # "This detector loses money" and "this detector loses money
+        # EVERYWHERE" are different findings and they have different remedies:
+        # the first says switch it off, the second says only let it fire where
+        # it works. `trend_momentum` was switched off on -0.251R over 148
+        # trades without anyone asking which of the two it was — and a trend
+        # follower being measured across ranges and transitions is exactly the
+        # case where the average is the wrong statistic.
+        #
+        # The regime was computed on every one of those decisions and thrown
+        # away at the order boundary. It is carried now, so the question is
+        # answerable instead of arguable.
+        by_regime: dict[str, dict[str, list[BacktestOrder]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for order in everything:
+            regime = order.regime or "unrecorded"
+            for module in order.modules:
+                by_regime[regime][module].append(order)
+        for regime, groups in sorted(by_regime.items()):
+            print(
+                render(
+                    f"WHEN PRESENT, IN {regime.upper()}",
+                    evidence_for(groups, execution_frames, backtester),
+                    "A row here is only worth acting on with enough trades behind "
+                    "it. Splitting five ways divides the sample five ways.",
+                )
+            )
 
     if not args.no_baseline:
         # Run on the ALONE population, where `modules[0]` is the module and the
