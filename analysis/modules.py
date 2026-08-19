@@ -353,9 +353,7 @@ class VolatilityRegime:
         regime = (
             "compressed"
             if percentile < self.config.compressed_percentile
-            else "extreme"
-            if percentile > self.config.extreme_percentile
-            else "normal"
+            else "extreme" if percentile > self.config.extreme_percentile else "normal"
         )
         return Signal(
             module=self.name,
