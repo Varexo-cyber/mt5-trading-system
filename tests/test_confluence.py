@@ -1167,3 +1167,88 @@ class TestTrendMomentumIsOffLiveOnItsRecord:
         assert "trend_momentum" in engine.config.weights
         assert "trend_momentum" not in engine.config.live_enabled_modules
         assert "liquidity_sweep" in engine.config.live_enabled_modules
+
+
+class TestExtremeMeansBigAndNotMerelyRare:
+    """The veto that refused a fifth of everything scanned, before any analysis.
+
+    `volatility_regime` read a percentile of the last 100 ATRs and called the
+    top five percent "extreme". That is purely relative: every market has a top
+    five percent, including a dead one, so the test fires at the same rate
+    whether anything is happening or not. Measured on synthetic series with
+    realistic volatility clustering:
+
+        calm, no shock at all   fires 10.4% of bars, ATR at most 1.51x median
+        with a real 4x shock    fires  9.2% of bars, ATR up to 4.61x median
+
+    Same rate, opposite situations — and it vetoes at the top of `evaluate()`,
+    so nothing downstream ever gets to disagree.
+    """
+
+    @staticmethod
+    def _series(scale, bars: int = 400):  # type: ignore[no-untyped-def]
+        import numpy as np
+
+        rng = np.random.default_rng(3)
+        base = np.full(bars, 0.02)
+        base[-20:] *= scale  # the recent stretch is `scale` times as active
+        close = 100 + np.cumsum(rng.normal(0.0, 1.0, bars) * base)
+        wick = np.abs(rng.normal(0.0, 1.0, bars)) * base * 0.6
+        index = pd.date_range("2026-01-01", periods=bars, freq="1h", tz=UTC)
+        frame = pd.DataFrame(
+            {
+                "open": close,
+                "high": close + wick,
+                "low": close - wick,
+                "close": close,
+                "tick_volume": 100,
+                "spread": 10,
+                "real_volume": 0,
+            },
+            index=index,
+        )
+        now = index[-1].to_pydatetime()
+        return MarketContext(
+            symbol="EURUSD",
+            now=now,
+            series={Timeframe.H1: Series("EURUSD", Timeframe.H1, frame, now)},
+            tick=Tick("EURUSD", now, 99.99, 100.01),
+        )
+
+    @staticmethod
+    def _regime(ctx, **overrides):  # type: ignore[no-untyped-def]
+        from analysis.modules import VolatilityRegime
+        from config.schema import VolatilityRegimeConfig
+
+        signal = VolatilityRegime(VolatilityRegimeConfig(**overrides)).analyze(ctx)
+        return signal.details.get("regime"), signal.details.get("atr_multiple_of_median")
+
+    def test_a_market_merely_busier_than_usual_is_not_extreme(self) -> None:
+        regime, multiple = self._regime(self._series(1.3))
+
+        assert multiple is not None and 1.0 < multiple < 2.0
+        assert regime != "extreme"
+
+    def test_a_market_that_has_genuinely_blown_out_still_is(self) -> None:
+        regime, multiple = self._regime(self._series(6.0))
+
+        assert multiple is not None and multiple >= 2.0
+        assert regime == "extreme"
+
+    def test_the_old_purely_relative_behaviour_is_one_number_away(self) -> None:
+        """Kept expressible, so this is a decision and not a one-way door."""
+        regime, _ = self._regime(self._series(1.3), extreme_atr_multiple=1.0)
+
+        assert regime == "extreme"
+
+    def test_the_reading_says_how_much_as_well_as_how_rare(self) -> None:
+        """A veto this powerful has to show its working, or the next person
+        reading a `NO_SIGNAL: extreme volatility regime` cannot tell whether it
+        was a crash or a Tuesday."""
+        from analysis.modules import VolatilityRegime
+        from config.schema import VolatilityRegimeConfig
+
+        signal = VolatilityRegime(VolatilityRegimeConfig()).analyze(self._series(6.0))
+
+        assert "percentile" in signal.reasoning
+        assert "median" in signal.reasoning
