@@ -89,9 +89,8 @@ def test_quick_relaxation_does_not_relax_adverse_reversal_limit() -> None:
     quick_config = service._entry_quality_config_for(quick)
     swing_config = service._entry_quality_config_for(swing)
 
-    assert (
-        quick_config.max_favourable_extension_atr["forex"]
-        > (swing_config.max_favourable_extension_atr["forex"])
+    assert quick_config.max_favourable_extension_atr["forex"] > (
+        swing_config.max_favourable_extension_atr["forex"]
     )
     assert quick_config.max_last_bar_adverse_atr == swing_config.max_last_bar_adverse_atr
 

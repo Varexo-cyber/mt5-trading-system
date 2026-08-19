@@ -2231,6 +2231,29 @@ class ConfluenceConfig(Base):
     #: same law the runway check uses. Left unbounded the square law runs away
     #: and the window stops describing a trade anyone would sit in.
     max_cost_horizon_stretch: float = Field(default=4.0, ge=1.0, le=25.0)
+    #: Size the measurement window to the distance it has to watch, instead of
+    #: giving every plan the profile's flat number of bars.
+    #:
+    #: Covering a distance d takes (d / speed)^2 bars, so a target at 0.75R of
+    #: an eight-ATR stop needs 36 bars and got 24. Past six ATR of stop every
+    #: window expires with neither the target nor the stop touched, and an
+    #: expired window is charged a round trip, so the expectancy converges on
+    #: minus the cost no matter how good the market is. 1,683 refusals an hour
+    #: read "no target pays" about plans that were never measured.
+    #:
+    #: A structural swing stop reaching the last swing low is routinely eight
+    #: to sixteen ATR, so this was not an edge case; it was most of them.
+    #:
+    #: It cannot invent a trade. The measurement still has to come back
+    #: positive, and `filters.runway` still refuses a plan that cannot finish
+    #: before the session does. All it buys is the chance to be measured.
+    fit_horizon_to_the_plan: bool = True
+    #: The ceiling on that, as a multiple of the profile's own bars. The square
+    #: law grows fast and an unbounded window stops describing a trade anyone
+    #: would sit in — at 24 bars of base this allows up to 576, which covers a
+    #: stop of about thirty ATR and is already further than the runway check
+    #: will let a session-bound plan travel.
+    max_plan_horizon_stretch: float = Field(default=24.0, ge=1.0, le=200.0)
     #: Choose the target with the best expectancy PER BAR rather than per trade.
     #:
     #: Maximising per trade systematically prefers the far target, because a

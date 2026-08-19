@@ -328,7 +328,7 @@ class ConfluenceEngine:
             return self._reject(
                 ctx, signals, "could not construct a positive stop distance", score, confidence
             )
-        horizon_bars = self._horizon_bars(risk, natural_risk, profile)
+        horizon_bars = self._horizon_bars(risk, natural_risk, profile, frame=frame)
         target, target_note = self._reachable_target(
             ctx, entry, risk, direction, profile=profile, horizon=horizon_bars
         )
@@ -369,7 +369,12 @@ class ConfluenceEngine:
         )
 
     def _horizon_bars(
-        self, risk: float, natural_risk: float, profile: HorizonProfileConfig | None
+        self,
+        risk: float,
+        natural_risk: float,
+        profile: HorizonProfileConfig | None,
+        *,
+        frame: pd.DataFrame | None = None,
     ) -> int:
         """Bars to allow the target, once the fee schedule has moved the stop.
 
@@ -393,6 +398,58 @@ class ConfluenceEngine:
         measured over exactly the bars it always was.
         """
         base = profile.target_horizon_bars if profile else self.config.target_horizon_bars
+
+        # AND THE WINDOW HAS TO BE LONG ENOUGH TO SEE THE PLAN AT ALL.
+        #
+        # The stretch above only fires when the FEE SCHEDULE widened the stop.
+        # A stop that was born wide — a structural swing stop reaching back to
+        # the last swing low, which is routinely eight to sixteen ATR — got the
+        # profile's flat 24 bars and could not be measured in them:
+        #
+        #     stop      target at 0.75R    bars the square law needs
+        #     4x ATR          3.0 ATR                     9   fits
+        #     6x ATR          4.5 ATR                    20   fits
+        #     8x ATR          6.0 ATR                    36   does not
+        #     16x ATR        12.0 ATR                   144   does not
+        #     32x ATR        24.0 ATR                   576   does not
+        #
+        # Past six ATR every window expires with neither the target nor the
+        # stop touched, and an expired window is charged a round trip, so the
+        # expectancy converges on minus the cost however good the market is.
+        # That is 1,683 refusals an hour reading "no target pays" about plans
+        # nothing ever measured — the ruler was too short, not the market too
+        # slow.
+        #
+        # So the window is sized to the distance it has to watch, by the same
+        # square law the runway check uses. It cannot invent a trade: the
+        # measurement still has to come back positive, and `filters.runway`
+        # still refuses a plan that cannot finish before the session does. All
+        # this buys is the chance to be measured.
+        if frame is not None and len(frame) > 1 and self.config.fit_horizon_to_the_plan:
+            closes = frame["close"].to_numpy(dtype=float)
+            per_bar = float(np.abs(np.diff(closes[-400:])).mean())
+            if per_bar > 0:
+                needed = (risk * self.config.minimum_r_multiple / per_bar) ** 2
+                # AND NEVER FURTHER THAN THE HISTORY CAN ACTUALLY MEASURE.
+                #
+                # `_reachable_target` needs three times the horizon in bars and
+                # cuts its own sample to the last 400; past either of those it
+                # gives up and returns the planned distance UNMEASURED. So a
+                # stretch that outran the data did not widen the window, it
+                # removed the gate — a test caught this approving a trade it
+                # was written to refuse, with a 34,560-minute horizon and
+                # "no history to bound the target" in the reason.
+                #
+                # Half the usable sample, so every window still has as many
+                # siblings as it has bars. A plan that needs more than that is
+                # one this history cannot judge, and it must keep being refused
+                # for that reason rather than waved through for want of a
+                # measurement.
+                usable = min(len(frame), 400)
+                affordable = min(len(frame) // 3, usable // 2)
+                ceiling = min(int(base * self.config.max_plan_horizon_stretch), affordable)
+                base = max(base, min(int(needed), max(ceiling, 0)))
+
         if natural_risk <= 0 or risk <= natural_risk:
             return base
         stretch = min((risk / natural_risk) ** 2, self.config.max_cost_horizon_stretch)

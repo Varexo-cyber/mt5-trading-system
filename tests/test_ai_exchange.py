@@ -81,8 +81,7 @@ def test_ai_exchange_marks_provider_failure_as_fail_closed() -> None:
 
 def _outcome_database(path) -> sqlite3.Connection:  # type: ignore[no-untyped-def]
     connection = sqlite3.connect(path)
-    connection.executescript(
-        """
+    connection.executescript("""
         CREATE TABLE analysis_cycles (
             id INTEGER PRIMARY KEY, cycle_id TEXT, mode TEXT, decision TEXT,
             reason TEXT, detail TEXT
@@ -91,8 +90,7 @@ def _outcome_database(path) -> sqlite3.Connection:  # type: ignore[no-untyped-de
             id INTEGER PRIMARY KEY, cycle_pk INTEGER, ticket INTEGER,
             entry_state TEXT, exit_reason TEXT
         );
-        """
-    )
+        """)
     return connection
 
 
