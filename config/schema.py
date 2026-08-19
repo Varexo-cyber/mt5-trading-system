@@ -3103,6 +3103,28 @@ class ScannerConfig(Base):
     #: who is examined first and who gets a scarce paid review. It cannot
     #: approve a setup any gate refused. 0.0 switches it off.
     after_cost_priority_weight: float = Field(default=12.0, ge=0.0, le=50.0)
+    #: Stop re-measuring a market whose spread is not close to the limit.
+    #:
+    #: A catalogue scan of 845 markets found 124 crypto pairs blocked on
+    #: spread with a class median of 1,581 bps — sixteen percent of the price,
+    #: seventy-nine times the cap. Those are not markets that tighten by lunch;
+    #: they are quoted that way. Fetching a contract and a tick for each of them
+    #: every rotation, on one vCPU, is time not spent on the markets that can
+    #: actually be traded.
+    #:
+    #: This changes nothing about what may be traded. Every symbol held here was
+    #: already refused for exactly this reason and is still refused; the refusal
+    #: is simply remembered for a few hours instead of re-derived. The candidate
+    #: set can shrink here and never grow.
+    #:
+    #: The multiple is what keeps it honest. A market a hair over the cap —
+    #: XAGUSD at 8.40 against 8.0, BNBUSD at 24.99 against 20 — can tighten
+    #: within the hour and is never held: it is re-measured every rotation like
+    #: everything else. Only what is far past the line is put down.
+    wide_spread_park_multiple: float = Field(default=2.0, ge=1.0, le=1000.0)
+    #: How long such a market is left alone. 0.0 switches the whole thing off
+    #: and every symbol is measured every rotation again.
+    wide_spread_park_hours: float = Field(default=6.0, ge=0.0, le=168.0)
 
     @field_validator("priority_symbols")
     @classmethod

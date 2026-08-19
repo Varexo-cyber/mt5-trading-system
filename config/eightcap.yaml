@@ -244,6 +244,30 @@ scanner:
   batch_size: 240
   priority_every_cycle: true
 
+  # MARKTEN MET EEN HOGE SPREAD ERUIT.
+  #
+  # Een scan over 845 markten: 124 van de 136 cryptoparen geblokkeerd op
+  # spread, met een klassemediaan van 1.581 bps. Dat is zestien procent van de
+  # prijs en negenenzeventig keer de limiet van 20. Zulke markten worden niet
+  # tegen lunchtijd smaller, ze worden zo gequote. Voor elk van hen elke ronde
+  # opnieuw een contract en een tick ophalen, op één vCPU, is tijd die niet
+  # naar de markten gaat waar wel in te handelen valt.
+  #
+  # Dit verandert NIETS aan wat verhandeld mag worden. Elk symbool dat hier
+  # wordt vastgehouden was al geweigerd om precies deze reden en wordt nog
+  # steeds geweigerd; de weigering wordt alleen zes uur onthouden in plaats van
+  # elke ronde opnieuw uitgerekend. De kandidatenlijst kan hier krimpen en
+  # nooit groeien.
+  #
+  # De factor 2,0 is wat het eerlijk houdt. Wat net over de limiet zit -
+  # XAGUSD op 8,40 tegen 8,0, BNBUSD op 24,99 tegen 20 - wordt NOOIT
+  # vastgehouden: dat kan binnen het uur smaller worden en wordt elke ronde
+  # gewoon opnieuw gemeten. Alleen wat mijlenver over de streep ligt gaat weg.
+  #
+  # 0.0 uur zet het uit en dan meet hij weer alles, elke ronde.
+  wide_spread_park_multiple: 2.0
+  wide_spread_park_hours: 6.0
+
   # Every market that survives the cheap scan gets the full multi-timeframe
   # analysis, not a top-20 slice of it. The cheap scan already threw out
   # everything untradeable — shut exchange, stale quote, spread over the limit,

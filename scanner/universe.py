@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
@@ -61,6 +61,22 @@ class ScanInspection:
 
 
 @dataclass(frozen=True, slots=True)
+class ParkedSpread:
+    """A spread measurement kept instead of taken again.
+
+    Only ever written for a market already refused at the spread stage, and
+    only when it was far enough past its cap that a re-measurement inside the
+    hold cannot plausibly change the answer.
+    """
+
+    until: datetime
+    asset_class: AssetClass
+    spread_bps: float
+    cap_bps: float
+    measured_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class ScanBatch:
     candidates: tuple[ScanCandidate, ...]
     inspections: tuple[ScanInspection, ...]
@@ -83,6 +99,10 @@ class UniverseScanner:
         # could not be tested at all. That is how the deep-analysis stage went
         # unexamined for so long.
         self.clock: Clock = clock or LiveClock()
+        # Symbol -> the spread refusal being remembered. Bounded by the
+        # catalogue, released by its own deadline, never persisted: a restart
+        # measures everything again.
+        self._parked: dict[str, ParkedSpread] = {}
 
     def catalogue(self) -> list[SymbolDescriptor]:
         """Every broker symbol the operator has asked to look at.
@@ -203,6 +223,25 @@ class UniverseScanner:
                 quote_age_seconds=quote_age_seconds,
             )
 
+        held = self._parked.get(descriptor.name)
+        if held is not None:
+            if inspected_at < held.until:
+                # Same stage as a fresh refusal on purpose: this symbol is
+                # blocked on spread, and every report that counts spread
+                # blocks must keep counting it.
+                return reject(
+                    "spread",
+                    (
+                        f"Spread {held.spread_bps:.3f} bps was "
+                        f"{held.spread_bps / held.cap_bps:.0f}x the {held.cap_bps:.3f} bps "
+                        f"limit at {held.measured_at:%H:%M} UTC; not re-measured "
+                        f"until {held.until:%H:%M} UTC"
+                    ),
+                    asset_class=held.asset_class,
+                    spread_bps=held.spread_bps,
+                )
+            del self._parked[descriptor.name]
+
         try:
             spec = self.broker.spec(descriptor.name)
             if not spec.is_tradable:
@@ -238,6 +277,18 @@ class UniverseScanner:
                 )
             cap = self.settings.filters.spread.max_spread_bps.get(spec.asset_class.value)
             if cap is None or spread_bps > cap:
+                scanner = self.settings.scanner
+                hours = scanner.wide_spread_park_hours
+                hopeless = cap is not None and spread_bps > cap * scanner.wide_spread_park_multiple
+                if hopeless and hours > 0.0:
+                    assert cap is not None  # implied by `hopeless`
+                    self._parked[descriptor.name] = ParkedSpread(
+                        inspected_at + timedelta(hours=hours),
+                        spec.asset_class,
+                        spread_bps,
+                        cap,
+                        inspected_at,
+                    )
                 return reject(
                     "spread",
                     (
