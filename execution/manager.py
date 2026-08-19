@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from statistics import median
 
 import pandas as pd
 
@@ -140,6 +142,13 @@ class PositionManager:
         #: ticket -> (highest R seen, when it was first reached). In memory on
         #: purpose: a restart resets the clock, which errs toward holding.
         self._peak_seen: dict[int, tuple[float, datetime]] = {}
+        #: Rolling spread readings per open ticket, so "the quote blew out" can
+        #: be told apart from "this instrument is always this wide". Bounded,
+        #: and dropped with the position.
+        self._spread_seen: dict[int, deque[float]] = {}
+        #: When the squeeze condition first held continuously, and how many
+        #: readings have held it since. Cleared the moment it stops holding.
+        self._squeeze_since: dict[int, tuple[datetime, int]] = {}
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -331,7 +340,7 @@ class PositionManager:
             # Next, because it is about to happen to us rather than about what
             # the trade is worth: a spread wide enough to trigger the stop on
             # its own.
-            squeezed = self._spread_squeeze_exit(position, tick, r_now)
+            squeezed = self._spread_squeeze_exit(position, tick, r_now, now)
             if squeezed is not None:
                 events.append(squeezed)
                 continue
@@ -1071,7 +1080,7 @@ class PositionManager:
         return saved_r > self._cost_of_leaving(position, risk, tick)
 
     def _spread_squeeze_exit(
-        self, position: Position, tick, r_now: float
+        self, position: Position, tick, r_now: float, now: datetime
     ) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
         """Leave when the spread, not the market, is about to take the stop.
 
@@ -1092,19 +1101,54 @@ class PositionManager:
         because the quote is wide, and the stop is doing precisely its job.
         """
         config = self.settings.trade_management
+
+        def forget() -> None:
+            self._squeeze_since.pop(position.ticket, None)
+
         share_limit = config.spread_squeeze_share
         if share_limit <= 0 or not position.sl:
+            forget()
             return None
         spread = getattr(tick, "spread", 0.0)
         if spread <= 0:
+            forget()
+            return None
+
+        # WHAT THIS INSTRUMENT'S SPREAD NORMALLY IS, measured on this position.
+        #
+        # The old test asked only whether the spread was large against the room
+        # to the stop. Those are two different complaints: a wide quote is one,
+        # a near stop is the other, and only the first is an argument for
+        # leaving. A market that is simply always this wide would trip it every
+        # tick once the stop came close — which is exactly what happened after
+        # the tightener pulled the stop in.
+        #
+        # The reference is the spread this same position has been living with,
+        # which needs no wiring to the entry filter's baselines and answers the
+        # right question directly: is the quote wider NOW than it has been
+        # while I have held this?
+        history = self._spread_seen.setdefault(
+            position.ticket, deque(maxlen=config.spread_squeeze_history)
+        )
+        history.append(float(spread))
+        if len(history) < config.spread_squeeze_min_samples:
+            # Not enough to call anything abnormal. Holding is the safe answer:
+            # the stop is still there and it is what the size was set against.
+            forget()
+            return None
+        usual = median(history)
+        if usual <= 0 or spread < usual * config.spread_squeeze_abnormal_multiple:
+            forget()
             return None
         # The side the stop actually triggers on: ask for a short, bid for a
         # long. Reading the wrong one hides the whole effect on the short side.
         trigger = tick.ask if position.direction is Direction.SHORT else tick.bid
         room = abs(position.sl - trigger)
         if room <= 0 or spread < room * share_limit:
+            forget()
             return None
         if r_now < config.spread_squeeze_min_r:
+            forget()
             return None
         # And not on a winner with room to spare, because there the trade being
         # made is the wrong way round. Crossing a blown-out spread at market
@@ -1114,15 +1158,40 @@ class PositionManager:
         # working — and the replay agrees, scoring every one of the eight
         # SPREAD_SQUEEZE exits of 17 August negative against leaving it alone.
         if r_now > config.spread_squeeze_max_r:
+            forget()
             return None
+
+        # AND IT HAS TO STILL BE TRUE IN A MOMENT.
+        #
+        # This is the whole difference between the rule that lost eleven times
+        # and one worth having. A blown-out spread is transient — every one of
+        # those eleven passed and the trade carried on without us — so acting
+        # on the first reading converts a temporary quote into a certain loss.
+        # Waiting costs nothing: the stop is still there throughout, and if the
+        # quote really is going to take it, it will still be wide in half a
+        # minute.
+        #
+        # Two conditions, because the guard tick's rate is not guaranteed:
+        # elapsed time so a fast loop cannot fire on a burst, and a reading
+        # count so a slow one cannot fire on a single sample.
+        first_seen, held = self._squeeze_since.get(position.ticket, (now, 0))
+        held += 1
+        self._squeeze_since[position.ticket] = (first_seen, held)
+        persisted = (now - first_seen).total_seconds()
+        if persisted < config.spread_squeeze_persist_seconds or held < 2:
+            return None
+
         result = self.broker.close_position(position)
         if not result.ok:
             return None
+        forget()
         return ManagementEvent(
             position.ticket,
             "SPREAD_SQUEEZE",
-            f"spread {spread:.5g} is {spread / room:.0%} of the {room:.5g} left to the stop; "
-            f"leaving at {r_now:.2f}R rather than being stopped by the quote",
+            f"spread {spread:.5g} is {spread / usual:.1f}x this position's usual "
+            f"{usual:.5g} and {spread / room:.0%} of the {room:.5g} left to the stop, "
+            f"held for {persisted:.0f}s over {held} readings; leaving at {r_now:.2f}R "
+            f"rather than being stopped by the quote",
             result.filled_price,
             position.profit + position.swap,
             r_at_action=r_now,

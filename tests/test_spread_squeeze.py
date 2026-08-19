@@ -13,6 +13,7 @@ book charging for the hour.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
@@ -45,7 +46,19 @@ def yen_position(direction: Direction = Direction.SHORT) -> Position:
     )
 
 
-def squeeze(spread_pips: float, *, r_now: float = -0.05, direction=Direction.SHORT, **overrides):  # type: ignore[no-untyped-def]
+def _tick(spread_pips: float, at=NOW):  # type: ignore[no-untyped-def]
+    return Tick(symbol="NZDJPY", time=at, bid=NZD_BID, ask=NZD_BID + spread_pips * 0.01)
+
+
+def squeeze(  # type: ignore[no-untyped-def]
+    spread_pips: float,
+    *,
+    r_now: float = -0.05,
+    direction=Direction.SHORT,
+    calm_pips: float = 0.5,
+    manager=None,
+    **overrides,
+):
     """Run the rule at a given spread and return the event, if any.
 
     `r_now` defaults just below break-even, which is the situation the rule
@@ -53,11 +66,22 @@ def squeeze(spread_pips: float, *, r_now: float = -0.05, direction=Direction.SHO
     was leaning on it. The squeeze no longer reaches into profit — crossing a
     blown-out spread there pays a certain cost to avoid a possible one — so a
     fixture in profit would be testing a case the rule declines by design.
+
+    Two things now have to be supplied that the rule did not used to need, and
+    both are the point of it. It compares against what THIS position has been
+    living with, so `calm_pips` seeds a quiet baseline first; and it will not
+    act on a single reading, so the wide quote is presented twice with the
+    persistence window elapsed between. A helper that skipped either would be
+    testing a rule the account does not run.
     """
-    manager = manager_for(BrokerStub(), JournalStub(), **overrides)
-    bid = NZD_BID
-    tick = Tick(symbol="NZDJPY", time=NOW, bid=bid, ask=bid + spread_pips * 0.01)
-    return manager._spread_squeeze_exit(yen_position(direction), tick, r_now)
+    position = yen_position(direction)
+    manager = manager or manager_for(BrokerStub(), JournalStub(), **overrides)
+    config = manager.settings.trade_management
+    for _ in range(config.spread_squeeze_min_samples):
+        manager._spread_squeeze_exit(position, _tick(calm_pips), r_now, NOW)
+    manager._spread_squeeze_exit(position, _tick(spread_pips), r_now, NOW)
+    later = NOW + timedelta(seconds=config.spread_squeeze_persist_seconds + 1)
+    return manager._spread_squeeze_exit(position, _tick(spread_pips, later), r_now, later)
 
 
 def test_a_normal_spread_leaves_the_trade_alone() -> None:
@@ -86,10 +110,8 @@ def test_the_exit_happens_before_the_stop_would() -> None:
 def test_the_side_the_stop_triggers_on_is_the_one_read() -> None:
     """A short is stopped on the ask. Reading the bid instead hides the entire
     effect, because the bid is the side that is not moving."""
-    wide = Tick(symbol="NZDJPY", time=NOW, bid=NZD_BID, ask=NZD_BID + 0.04)
-    manager = manager_for(BrokerStub(), JournalStub())
     # Ask is 4 pips from the bid and within 2 pips of the stop.
-    assert manager._spread_squeeze_exit(yen_position(), wide, -0.05) is not None
+    assert squeeze(4.0) is not None
 
 
 def test_a_long_is_measured_on_the_bid() -> None:
@@ -108,9 +130,17 @@ def test_a_long_is_measured_on_the_bid() -> None:
         swap=0.0,
         opened_at=NOW,
     )
+
+    def euro(spread: float, at=NOW):  # type: ignore[no-untyped-def]
+        return Tick(symbol="EURUSD", time=at, bid=1.09975, ask=1.09975 + spread)
+
+    config = manager.settings.trade_management
+    for _ in range(config.spread_squeeze_min_samples):
+        manager._spread_squeeze_exit(long_position, euro(0.00005), -0.05, NOW)
     # Bid 1.09975, stop 1.0994: 3.5 points of room against a 4-point spread.
-    tick = Tick(symbol="EURUSD", time=NOW, bid=1.09975, ask=1.09975 + 0.00040)
-    assert manager._spread_squeeze_exit(long_position, tick, -0.05) is not None
+    manager._spread_squeeze_exit(long_position, euro(0.00040), -0.05, NOW)
+    later = NOW + timedelta(seconds=config.spread_squeeze_persist_seconds + 1)
+    assert manager._spread_squeeze_exit(long_position, euro(0.00040), -0.05, later) is not None
 
 
 def test_a_trade_already_most_of_the_way_to_its_stop_is_left_to_the_stop() -> None:
@@ -139,7 +169,7 @@ def test_a_position_without_a_stop_is_not_measured() -> None:
     manager = manager_for(BrokerStub(), JournalStub())
     naked = replace(yen_position(), sl=0.0)
     tick = Tick(symbol="NZDJPY", time=NOW, bid=NZD_BID, ask=NZD_BID + 0.06)
-    assert manager._spread_squeeze_exit(naked, tick, 0.05) is None
+    assert manager._spread_squeeze_exit(naked, tick, 0.05, NOW) is None
 
 
 def test_a_refused_close_is_not_reported_as_an_exit() -> None:
@@ -148,8 +178,7 @@ def test_a_refused_close_is_not_reported_as_an_exit() -> None:
         "R", (), {"ok": False, "filled_price": None, "filled_volume": None}
     )()
     manager = manager_for(broker, JournalStub())
-    tick = Tick(symbol="NZDJPY", time=NOW, bid=NZD_BID, ask=NZD_BID + 0.06)
-    assert manager._spread_squeeze_exit(yen_position(), tick, 0.05) is None
+    assert squeeze(6.0, r_now=0.05, manager=manager) is None
 
 
 def test_the_reason_carries_the_numbers() -> None:
@@ -208,26 +237,15 @@ class TestItDoesNotCashOutAWinner:
         assert squeeze(3.0, r_now=0.40, spread_squeeze_max_r=5.0) is not None
 
 
-class TestTheRuleIsOffOnTheLiveAccountOnItsOwnNumber:
-    """Eleven measurements, eleven negative, not once helpful.
+class TestItWaitsToSeeWhetherTheBlowoutIsReal:
+    """The three tests the rule did not have, and why it has them.
 
-    The mechanics above still work and are still tested — the phenomenon is
-    real, and a quote can take a stop the market never reached. What the
-    account measured is that acting on it costs money, because a blown-out
-    spread is transient and closing at market makes the loss certain.
-
-        17 August, replay: 8 of 22 trades closed by this rule, every one
-        negative against its own untouched stop and target. It banked +0.38R
-        where leaving the position alone returned +1.02R. The response was to
-        restrict it to `spread_squeeze_max_r: 0.0` rather than switch it off.
-
-        19 August, live, WITH that restriction: EURAUD -0.35R (peak +0.00),
-        NDX100 -0.44R (peak +0.04), FRA40 -0.38R (peak +0.07). Three trades,
-        three losses, -1.17R.
-
-    Switching it off cannot increase risk: the position falls back on its own
-    stop, which is where the risk was defined and what the size was set
-    against.
+    It was measured negative eleven times out of eleven — eight in the 17
+    August replay, every one worse than leaving the position alone, and three
+    live afterwards. What was wrong was not what it looked at but how fast it
+    believed it: every one of those blowouts passed and the trade carried on
+    without us, so acting on the first reading turned a temporary quote into a
+    certain loss.
     """
 
     @staticmethod
@@ -240,19 +258,68 @@ class TestTheRuleIsOffOnTheLiveAccountOnItsOwnNumber:
             env_overrides=False,
         ).trade_management
 
-    def test_the_live_overlay_has_it_switched_off(self) -> None:
-        assert self._live().spread_squeeze_share == 0.0
+    def test_one_reading_of_a_wide_quote_is_not_an_exit(self) -> None:
+        """The whole difference. Waiting costs nothing — the stop is there
+        throughout, and a quote that really will take it is still wide in half
+        a minute."""
+        manager = manager_for(BrokerStub(), JournalStub())
+        position = yen_position()
+        config = manager.settings.trade_management
+        for _ in range(config.spread_squeeze_min_samples):
+            manager._spread_squeeze_exit(position, _tick(0.5), -0.05, NOW)
 
-    def test_the_shipped_default_still_carries_it(self) -> None:
-        """Off for THIS account on THIS evidence, not deleted as an idea. The
-        NZDJPY case it was written for is real and the mechanics are intact."""
-        from config.schema import TradeManagementConfig
+        assert manager._spread_squeeze_exit(position, _tick(6.0), -0.05, NOW) is None
 
-        assert TradeManagementConfig().spread_squeeze_share > 0.0
+    def test_a_blowout_that_passes_leaves_the_trade_alone(self) -> None:
+        """One wide reading, then calm again, then wide once more later. The
+        clock has run but the condition has not held, so nothing fires."""
+        manager = manager_for(BrokerStub(), JournalStub())
+        position = yen_position()
+        config = manager.settings.trade_management
+        for _ in range(config.spread_squeeze_min_samples):
+            manager._spread_squeeze_exit(position, _tick(0.5), -0.05, NOW)
+        later = NOW + timedelta(seconds=config.spread_squeeze_persist_seconds + 1)
 
-    def test_switching_it_off_leaves_the_stop_as_the_only_exit(self) -> None:
-        """The safety argument in one assertion: nothing is opened up. A
-        position that would have been closed early now runs to the stop it was
-        sized against."""
-        assert squeeze(6.0, spread_squeeze_share=0.0) is None
-        assert squeeze(6.0) is not None  # and the rule itself still functions
+        manager._spread_squeeze_exit(position, _tick(6.0), -0.05, NOW)
+        manager._spread_squeeze_exit(position, _tick(0.5), -0.05, NOW)  # it passed
+
+        assert manager._spread_squeeze_exit(position, _tick(6.0), -0.05, later) is None
+
+    def test_a_blowout_that_holds_is_still_an_exit(self) -> None:
+        assert squeeze(6.0) is not None
+
+    def test_a_market_that_is_simply_always_this_wide_is_not_a_blowout(self) -> None:
+        """The second complaint, and it is a different one. A wide quote argues
+        for leaving; a near stop does not. FRA40 tripped this every tick once
+        `HEALTH_TIGHTEN` had pulled the stop in three times — the spread never
+        changed, the room did."""
+        assert squeeze(6.0, calm_pips=6.0) is None
+
+    def test_it_says_nothing_until_it_has_seen_enough(self) -> None:
+        """Below the sample floor nothing can be called abnormal, and holding
+        is the safe answer: the stop is still there and it is what the size was
+        set against."""
+        manager = manager_for(BrokerStub(), JournalStub())
+        position = yen_position()
+        later = NOW + timedelta(seconds=120)
+
+        assert manager._spread_squeeze_exit(position, _tick(6.0), -0.05, NOW) is None
+        assert manager._spread_squeeze_exit(position, _tick(6.0), -0.05, later) is None
+
+    def test_the_live_overlay_runs_it_with_all_three(self) -> None:
+        config = self._live()
+
+        assert config.spread_squeeze_share > 0.0
+        assert config.spread_squeeze_persist_seconds > 0.0
+        assert config.spread_squeeze_abnormal_multiple > 1.0
+        assert config.spread_squeeze_min_samples >= 2
+
+    def test_the_reason_records_what_convinced_it(self) -> None:
+        """A rule with this record has to say why it acted, not just that it
+        did — the next review of it starts from these numbers."""
+        event = squeeze(6.0)
+
+        assert event is not None
+        assert "usual" in event.detail
+        assert "held for" in event.detail
+        assert "readings" in event.detail

@@ -1469,41 +1469,48 @@ modes:
     max_equity: 500
 
 trade_management:
-  # SPREAD_SQUEEZE UIT. 11 metingen, 11 keer negatief, nul keer geholpen.
+  # SPREAD_SQUEEZE WEER AAN, MAAR NU MET DRIE TESTS DIE HIJ NIET HAD.
   #
-  # De regel sluit een licht verliezende positie zodra de spread 75% van de
-  # ruimte naar de stop opvreet. De redenering: een zekere kleine kost geruild
-  # tegen een waarschijnlijke grote. Dat klopt alleen als de kans dat je echt
-  # uitgestopt wordt boven de 38% ligt — en een brede spread is tijdelijk. De
-  # stop wordt alleen geraakt als die brede quote precies op het verkeerde
-  # moment blijft staan.
+  # Hij was elf van de elf keer negatief: acht in de replay van 17 augustus,
+  # elk slechter dan de positie met rust laten (hij bankte +0.38R waar niks
+  # doen +1.02R gaf), en daarna live EURAUD -0.35R, NDX100 -0.44R en FRA40
+  # -0.38R. Uitzetten was het eerlijke antwoord op dat cijfer.
   #
-  # DE METING, twee keer los van elkaar:
+  # Maar het verschijnsel is echt. Een short wordt gesloten op de ASK, een long
+  # op de BID. Dunt het boek uit, dan schuift precies de kant waarop jouw stop
+  # afgaat ernaartoe, terwijl de markt stilstaat. Een NZDJPY-short met 5,9 pips
+  # ruimte en 6 pips spread wordt uitgestopt zonder dat de markt ooit tegen die
+  # trade was. Dat is geen mening, dat is het orderboek.
   #
-  #   17 augustus, replay: 8 van de 22 trades gesloten door deze regel, en
-  #   ELK daarvan negatief tegen zijn eigen onaangeroerde stop en doel. Hij
-  #   bankte +0.38R waar met rust laten +1.02R gaf. Toen is hij ingeperkt tot
-  #   `spread_squeeze_max_r: 0.0` in plaats van uitgezet.
+  # Wat er mis was, was niet WAT hij keek maar HOE SNEL hij het geloofde:
   #
-  #   19 augustus, live, MET die inperking: EURAUD -0.35R (top +0.00),
-  #   NDX100 -0.44R (top +0.04), FRA40 -0.38R (top +0.07). Drie trades, drie
-  #   verliezen, -1.17R. FRA40 hield het vier minuten uit met een correcte TP
-  #   en SL en werd toen door een quote-artefact gesloten.
+  #   1. Hij vuurde op de EERSTE meting. Alle elf blowouts waaiden over en de
+  #      trade liep door zonder ons. Nu moet de toestand 30 seconden EN minstens
+  #      twee metingen standhouden. Wachten kost niks: de stop staat er de hele
+  #      tijd, en een quote die hem echt gaat pakken is over een halve minuut
+  #      nog steeds breed.
   #
-  # Elf op elf is geen pech meer. Zoals de notitie bij `spread_squeeze_max_r`
-  # het zelf al zei: "de blowout ging voorbij, zoals blowouts doen, en de
-  # trade ging verder zonder ons."
+  #   2. Hij vergeleek de spread alleen met de RUIMTE tot de stop. Dat zijn twee
+  #      verschillende klachten — een brede quote is er een, een dichtbije stop
+  #      de andere, en alleen de eerste is een reden om eruit te gaan. Nu moet
+  #      de spread ook minstens 2x zo breed zijn als wat DEZE positie gewend is.
   #
-  # DIT VERHOOGT GEEN RISICO. De positie valt terug op zijn eigen stop, waar
-  # het risico altijd al was gedefinieerd en op gesized. Er wordt niets
-  # opengezet, er wordt een noodrem losgelaten die alleen zichzelf afremde.
+  #   3. Onder de tien metingen zegt hij niks. Te weinig om iets abnormaal te
+  #      noemen, en dan is vasthouden het veilige antwoord.
   #
-  # De code blijft staan. Het verschijnsel is echt — een NZDJPY-sell met 5,9
-  # pips ruimte en 6 pips spread wordt door de quote uitgestopt zonder dat de
-  # markt ooit tegen je was. Wat ontbreekt is een test op VOLHARDING: pas
-  # ingrijpen als de blowout blijft staan in plaats van bij de eerste tick.
-  # Zodra dat gemeten is kan dit getal terug.
-  spread_squeeze_share: 0.0
+  # En de val waar FRA40 in liep is apart dichtgetimmerd: `HEALTH_TIGHTEN` trok
+  # de stop drie keer achter elkaar naar de prijs, en de 0,89 ruimte waar de
+  # squeeze op reageerde had die tightener zelf net gemaakt. Zie
+  # `min_stop_room_spreads` — een stop mag nooit dichter bij de prijs komen dan
+  # de spread kan overbruggen.
+  #
+  # WANNEER DIT WEER UIT MOET: `scorecard --days 7`. Blijft hij negatief scoren
+  # tegen zijn eigen onaangeroerde stop, dan is de volharding niet de fix en
+  # gaat `spread_squeeze_share` op 0.0.
+  spread_squeeze_share: 0.75
+  spread_squeeze_persist_seconds: 30.0
+  spread_squeeze_abnormal_multiple: 2.0
+  spread_squeeze_min_samples: 10
 
   # Geen vaste geldgrens als primaire exit. De gratis local-history adviser
   # vergelijkt de volledige actuele positie met eerdere Claude-supervisies en

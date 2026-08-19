@@ -2778,6 +2778,42 @@ class TradeManagementConfig(Base):
     #: profit again; a large value restores the previous behaviour.
     spread_squeeze_max_r: float = Field(default=0.0)
 
+    #: WHAT MADE THE SQUEEZE WORTH KEEPING. Three tests it did not have.
+    #:
+    #: The rule was measured negative eleven times out of eleven — eight in the
+    #: 17 August replay, every one worse than leaving the position alone, and
+    #: three live afterwards (EURAUD -0.35R, NDX100 -0.44R, FRA40 -0.38R). The
+    #: phenomenon it exists for is real: a short is closed at the ask and a long
+    #: at the bid, so a thinning book can take a stop with the market perfectly
+    #: still. What was wrong was how fast it believed it.
+    #:
+    #: 1. PERSISTENCE. Every one of those eleven blowouts passed and the trade
+    #:    carried on without us. Acting on the first reading turns a temporary
+    #:    quote into a certain loss, and waiting costs nothing — the stop is
+    #:    there throughout, and a quote that really will take it is still wide
+    #:    half a minute later. Both an elapsed time and a reading count, because
+    #:    the guard tick's rate is not guaranteed: time so a fast loop cannot
+    #:    fire on a burst, count so a slow one cannot fire on a single sample.
+    spread_squeeze_persist_seconds: float = Field(default=30.0, ge=0.0, le=3_600.0)
+    #: 2. ABNORMALITY. The old test asked only whether the spread was large
+    #:    against the room left to the stop, and those are two different
+    #:    complaints — a wide quote is one, a near stop is the other, and only
+    #:    the first argues for leaving. A market that is simply always this wide
+    #:    tripped it every tick once the stop came close, which is exactly what
+    #:    happened after the tightener pulled the stop in. The reference is the
+    #:    spread THIS position has been living with, so the question asked is
+    #:    the right one: is the quote wider now than it has been while I held
+    #:    this?
+    spread_squeeze_abnormal_multiple: float = Field(default=2.0, ge=1.0, le=50.0)
+    #: 3. EVIDENCE. Below this many readings nothing can be called abnormal, and
+    #:    the safe answer is to hold: the stop is still there and it is what the
+    #:    size was set against.
+    spread_squeeze_min_samples: int = Field(default=10, ge=2, le=10_000)
+    #: How many readings the comparison is drawn from. At a one-second guard
+    #: tick this is two minutes of quote history, which is the right scale for
+    #: "wider than usual" without a morning's calm dragging the median down.
+    spread_squeeze_history: int = Field(default=120, ge=2, le=10_000)
+
     #: How long a freshly opened position is left alone by the DISCRETIONARY
     #: exits. Minutes.
     #:
