@@ -326,7 +326,29 @@ class InstrumentSpec:
 
 
 def _classify_asset(path: str, currency_base: str, is_forex: bool) -> AssetClass:
-    """Classify from MT5's catalogue path, with conservative fallbacks."""
+    """Classify from MT5's catalogue path, with conservative fallbacks.
+
+    THE BASE CODE IS CHECKED BEFORE `is_forex`, and the set it checks against
+    already existed for exactly this reason — it just was not consulted here.
+
+    ISO 4217 assigns XAU/XAG/XPT/XPD to metals, so a broker that quotes silver
+    FX-style sets `is_forex` and silver came back as FOREX. That is not a label
+    problem: asset class picks the commission row, the slippage row, the session
+    rules and the spread cap. Silver was being held to the FOREX cap of 8 bps.
+
+    Live, from `scan_report.py` over 845 markets:
+
+        XAGUSD   forex   spread  8.40 bps   blocked by 0.40
+        XAGEUR   forex   spread  9.91 bps   blocked
+
+    Both clear the metal cap of 25 with room to spare. Two liquid markets thrown
+    away by a classification, on the day the owner asked for more markets like
+    gold.
+    """
+    if currency_base.upper() in _NON_FX_BASE_CODES:
+        if currency_base.upper() in {"XAU", "XAG", "XPT", "XPD"}:
+            return AssetClass.METAL
+        return AssetClass.CRYPTO
     if is_forex:
         return AssetClass.FOREX
     root = path.split("\\", 1)[0].strip().lower()
