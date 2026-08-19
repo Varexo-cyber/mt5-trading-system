@@ -665,16 +665,37 @@ analysis:
     # afstanden die nu zijn toegestaan. De runner levert nu de volle rekening
     # aan via `round_trip_cost_price`.
     #
-    # EN TOCH STAAT HIJ OP 1.0, want de 20-symbolen meting kwam binnen terwijl
-    # dit werd geschreven en die zegt iets anders. Verlagen naar 0.60 levert
-    # +46% setups op (130 -> 190 over dezelfde bars), maar over 180 dagen en 20
-    # markten is GEEN ENKELE module positief — trend_momentum -0.365R per trade
-    # over 163 trades met t = -4.01, en liquidity_sweep klapte van +0.119R op 23
-    # trades naar -0.242R op 48. 46% meer setups uit detectoren die allemaal
-    # verliezen is 46% meer verlies.
+    # OP 0.60, OP UITDRUKKELIJKE GOEDKEURING VAN DE EIGENAAR, MET HET RISICO
+    # HARDOP BENOEMD EN AANVAARD.
     #
-    # Eén regel, klaar om te zetten zodra een detector zijn plek verdient.
-    minimum_r_multiple: 1.0
+    # Hij stond op 1.0 omdat de meting tegen was: +46% setups (130 -> 190 over
+    # dezelfde bars), maar over 180 dagen en 20 markten is geen enkele detector
+    # positief — trend_momentum -0.251R over 148 trades met t = -3.05, en
+    # session_breakout is met +0.145R op 33 trades de beste regel in de tabel
+    # en nog altijd ruis (t = 0.76). Meer setups uit detectoren zonder gemeten
+    # edge is meer verlies, en dat is precies gezegd voordat dit werd gezet.
+    #
+    # En de kosten waren het tweede bezwaar, ook hardop:
+    #
+    #     stop  3 pips -> de broker pakt 63% van het risico
+    #     stop  5 pips -> 38%
+    #     stop  7 pips -> 27%
+    #     stop 20 pips -> 10%
+    #
+    # De eigenaar heeft beide gelezen en het risico geaccepteerd. Dit is de
+    # zichtbare, terugdraaibare handeling die daarbij hoort.
+    #
+    # WAT DIT NIET IS. Geen poort die opengaat: de zoeker kiest alleen een
+    # afstand met positieve GEMETEN first-touch verwachtingswaarde, en sinds
+    # vandaag telt daar de volle rekening in mee — spread, commissie en
+    # slippage, aangeleverd door de runner. Een markt die 0.60R niet vaak genoeg
+    # haalt om zichzelf terug te verdienen wordt nog steeds geweigerd. Wat
+    # verandert is dat de vraag gesteld mag worden.
+    #
+    # WANNEER DIT TERUG MOET. `scorecard --days 3`: als de trades sterven op
+    # kosten in plaats van op de markt, dan is de voorspelling uitgekomen en is
+    # dit één regel terug.
+    minimum_r_multiple: 0.60
     # De bereiktest vraagt al om de rekenkundige break-even reach rate. De extra
     # vaste drie procentpunten waren een tweede veiligheidsmarge bovenop spread-
     # en kostengates. Weg ermee; de marktmeting zelf blijft hard actief.
@@ -1329,10 +1350,10 @@ risk:
   # die een derde van de tijd gehaald wordt. Welke van de twee het is, bepaalt
   # de verwachtingswaarde-zoeker in de engine, niet dit getal.
   #
-  # 1.0 en niet 0.60, omdat `analysis.confluence.minimum_r_multiple` op 1.0 is
-  # gebleven — zie de meting daar. De validator houdt de twee voortaan aan
-  # elkaar vast, dus wie de een verzet moet de ander meenemen.
-  min_risk_reward: 1.0
+  # 0.60, mee met `analysis.confluence.minimum_r_multiple` — zie de motivatie
+  # en het aanvaarde risico daar. De validator weigert elke combinatie waarin
+  # deze twee uit elkaar lopen, dus ze bewegen altijd samen.
+  min_risk_reward: 0.60
   max_trades_per_day: 0
   max_trades_per_week: 0
 
