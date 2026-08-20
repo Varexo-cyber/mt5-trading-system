@@ -1022,6 +1022,32 @@ ai:
 # capital backstop. These comments describe the effective settings below and
 # must change with them.
 filters:
+  # CURRENCY_CONCENTRATION VAN 1 NAAR 2, op de duurste regel in de scorecard.
+  #
+  # `scorecard --days 2` over 39 gesloten trades: deze poort blokkeerde 9
+  # setups, 7 daarvan zouden hebben gewonnen, en het kostte 9,08R. Dat is de
+  # duurste poort van allemaal.
+  #
+  # Op 1 mag er per valuta precies een positie openstaan, en de meeste paren
+  # delen de USD, dus een enkele EURUSD sloot elke andere dollarpositie uit —
+  # ook een die er niets mee te maken had. EURUSD en USDJPY lopen vaak
+  # tegengesteld; die twee zijn geen dubbele weddenschap.
+  #
+  # WAT DE ECHTE BESCHERMING IS, en die blijft ongemoeid: `correlation` meet de
+  # rollende samenhang over 200 H1-bars en weigert een tweede positie zodra
+  # |correlatie| boven 0,7 komt met richtingen die de blootstelling verdubbelen.
+  # Dat is een METING. Deze telling was een grove tweede laag daarbovenop, en
+  # de meting kan het onderscheid maken dat de telling niet kan.
+  #
+  # `max_positions_per_asset_class: 1` blijft ook staan, dus vier DAX-aandelen
+  # tegelijk blijft onmogelijk.
+  #
+  # VOORBEHOUD: 81 geblokkeerde setups waren nog niet opgelost en tellen niet
+  # mee in dat cijfer. Richting, geen precisie. Volgende scorecard beslist of
+  # het standhoudt.
+  currency_exposure:
+    max_positions_per_currency: 2
+
   liveliness:
     # DODE MARKTEN. Qiagen (QIA) stond op 36,6349 / 36,6550 - 2,01 cent spread -
     # met M1-bars van een paar punten hoog. Erin en eruit kostte meer dan de
@@ -1039,6 +1065,29 @@ filters:
     # terugweg dekken". Zet hem hoger als je meer marge wilt boven de kosten;
     # 0 zet de test uit.
     min_bar_range_in_spreads: 1.0
+
+    # EN DE RELATIEVE TEST OMLAAG, OP ZIJN EIGEN CIJFER.
+    #
+    # `scorecard --days 2` over 39 gesloten trades: MARKET_TOO_QUIET
+    # blokkeerde 10 setups, 7 daarvan zouden hebben gewonnen, en het kostte
+    # 8,46R. Dat is de duurste na CURRENCY_CONCENTRATION.
+    #
+    # 0,50 eist dat de laatste 6 M5-bars minstens de helft van het eigen
+    # 120-bars normaal bewegen. Maar een rustige markt is niet hetzelfde als
+    # een dode markt, en de meting zegt dat er in die rustige markten prima te
+    # handelen viel.
+    #
+    # De ABSOLUTE test hierboven blijft ongemoeid, en dat is degene die er
+    # werkelijk toe doet: `min_bar_range_in_spreads: 1.0` weigert nog steeds
+    # elke markt waar een doorsnee bar minder beweegt dan de spread kost. De
+    # QIA-zaak — 2,01 cent spread tegen bars van een paar punten — wordt daar
+    # gepakt, niet hier.
+    #
+    # VOORBEHOUD: 81 geblokkeerde setups waren nog niet opgelost en tellen niet
+    # mee. Snel oplossende trades zijn oververtegenwoordigd in wat wel telt, dus
+    # dit is een richting en geen precisiegetal. Bij de volgende scorecard kijk
+    # ik of het standhoudt.
+    min_activity_ratio: 0.35
 
   spread:
     # Van 2.0x naar 2.5x het eigen uur-baseline. De absolute bps-limiet blijft

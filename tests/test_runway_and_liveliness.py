@@ -671,3 +671,74 @@ class TestTheSpreadGateSelectsInsteadOfPreselecting:
         ).risk
 
         assert 0.0 < risk.max_cost_share_of_risk <= 0.5
+
+
+class TestTheTwoGatesThePriceRecordSaysAreCostingMoney:
+    """`scorecard --days 2`, 39 closed trades, on what the gates REFUSED.
+
+    The journal shadows a blocked setup and resolves it later, so this is a
+    measured counterfactual rather than an argument:
+
+        CURRENCY_CONCENTRATION   9 blocked, 7 won, cost 9.08R
+        MARKET_TOO_QUIET        10 blocked, 7 won, cost 8.46R
+
+    Both are crude second layers sitting on top of a finer measurement, and in
+    both cases the finer measurement is untouched. What is deliberately NOT
+    loosened is the other half of that table — INSUFFICIENT_RUNWAY saved 10.75R
+    and NEWS_BLACKOUT 7.75R, and runway is the sharper lesson of the two: 11 of
+    its 16 blocked setups would have won, and it still saved money, because the
+    winners were small and the losers were not.
+    """
+
+    @staticmethod
+    def _live():  # type: ignore[no-untyped-def]
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH,
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml",
+            env_overrides=False,
+        ).filters
+
+    def test_a_second_position_per_currency_is_allowed(self) -> None:
+        """One position per currency meant a single EURUSD excluded every other
+        dollar pair, including ones that move the other way."""
+        assert self._live().currency_exposure.max_positions_per_currency == 2
+
+    def test_but_the_measured_correlation_guard_still_decides(self) -> None:
+        """The count was never the real protection. This is: a rolling
+        correlation over 200 H1 bars, which can tell EURUSD from USDJPY where a
+        count of shared currencies cannot."""
+        correlation = self._live().correlation
+
+        assert correlation.enabled
+        assert correlation.max_abs_correlation <= 0.7
+
+    def test_and_one_position_per_asset_class_is_untouched(self) -> None:
+        """Four DAX shares at once stays impossible."""
+        exposure = self._live().currency_exposure
+
+        assert exposure.max_positions_per_asset_class == 1
+        assert "stock" in exposure.grouped_asset_classes
+
+    def test_a_quiet_market_is_allowed_and_a_dead_one_is_not(self) -> None:
+        """`min_activity_ratio` measures a market against its OWN recent
+        normal, so it cannot tell quiet from dead — a permanently dead market
+        has a dead normal and scores near 1.0. The absolute test is the one
+        that catches those, and it is the one left alone.
+        """
+        liveliness = self._live().liveliness
+
+        assert liveliness.min_activity_ratio < 0.5  # quiet is allowed
+        assert liveliness.min_bar_range_in_spreads >= 1.0  # dead is not
+
+    def test_the_gates_that_saved_money_are_all_still_on(self) -> None:
+        """The same table priced these positive, and one of them is the
+        clearest lesson in it: runway blocked 16 setups of which 11 would have
+        won, and still saved 10.75R."""
+        filters = self._live()
+
+        assert filters.runway.enabled
+        assert filters.news.enabled
+        assert filters.session.enabled
+        assert filters.runway.min_runway_minutes > 0
