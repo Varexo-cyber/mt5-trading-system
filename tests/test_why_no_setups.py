@@ -146,3 +146,65 @@ class TestThePerDetectorFloor:
             apply_overrides(
                 settings(), ["lone_module_minimum_confidence_by_module=liquidity_sweep"]
             )
+
+
+class TestAListOfDetectorNamesCanBeOverridden:
+    """`trend_continuation_modules` is a tuple, and a tuple had no branch.
+
+    It fell through to the catch-all and set the field to a plain STRING —
+    which pydantic either coerces to a tuple of single characters or rejects,
+    so the run would have measured neither the current rule nor the proposed
+    one while printing a difference. That is precisely the failure
+    `apply_overrides` documents itself as existing to prevent.
+
+    The question it blocks is a real one. The live overlay lists only
+    `trend_momentum` as a continuation module while the config's own comments
+    claim `drift_continuation` and `fast_ema_cross` are on it too, and
+    `trend_momentum` carries no live weight — so the range/transition guard
+    protects against nothing on this account. What adding the other two would
+    cost in setups is measurable, and this is what measures it.
+    """
+
+    def test_a_comma_separated_list_becomes_a_tuple(self) -> None:
+        changed = apply_overrides(
+            settings(),
+            ["trend_continuation_modules=trend_momentum,drift_continuation,fast_ema_cross"],
+        ).analysis.confluence
+
+        assert changed.trend_continuation_modules == (
+            "trend_momentum",
+            "drift_continuation",
+            "fast_ema_cross",
+        )
+
+    def test_a_single_name_still_works(self) -> None:
+        changed = apply_overrides(
+            settings(), ["trend_continuation_modules=drift_continuation"]
+        ).analysis.confluence
+
+        assert changed.trend_continuation_modules == ("drift_continuation",)
+
+    def test_a_misspelt_detector_stops_the_run(self) -> None:
+        """A typo would silently measure nothing and report "no difference",
+        which is worse than an error because it looks like an answer."""
+        with pytest.raises(SystemExit, match="unknown detector"):
+            apply_overrides(settings(), ["trend_continuation_modules=drift_contnuation"])
+
+    def test_an_untypeable_field_is_refused_rather_than_guessed(self) -> None:
+        """The catch-all used to pass the raw string through for ANY unhandled
+        type. Refusing is the only honest answer: a run that sets a field to
+        something the operator did not ask for measures neither version."""
+        confluence = settings().analysis.confluence
+        exotic = next(
+            (
+                name
+                for name, value in confluence.model_dump().items()
+                if not isinstance(value, (bool, int, float, str, dict, tuple, list))
+                and value is not None
+            ),
+            "",
+        )
+        if not exotic:
+            pytest.skip("no field of an unhandled type on this config")
+        with pytest.raises(SystemExit, match="cannot yet type"):
+            apply_overrides(settings(), [f"{exotic}=whatever"])

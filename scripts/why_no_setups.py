@@ -122,8 +122,38 @@ def apply_overrides(settings, pairs: list[str]):  # type: ignore[no-untyped-def]
                     raise SystemExit(f"unknown detector {module!r}; known: {known}")
                 merged[module] = float(number)
             updates[key] = merged
-        else:
+        elif isinstance(current, tuple):
+            # A LIST OF DETECTOR NAMES, comma separated:
+            #
+            #     --set trend_continuation_modules=trend_momentum,drift_continuation
+            #
+            # This fell through to the branch below and set the field to a
+            # plain STRING — the exact failure this function's docstring says
+            # it exists to prevent. Pydantic would either coerce it to a tuple
+            # of single characters or reject it, and the run would report a
+            # difference that came from neither version of the rule.
+            #
+            # Names are checked against the weights table for the same reason
+            # the dict branch does it: a typo would silently measure nothing
+            # and print "no difference".
+            names = tuple(item.strip() for item in raw.split(",") if item.strip())
+            for name in names:
+                if name not in confluence.weights:
+                    known = ", ".join(sorted(confluence.weights))
+                    raise SystemExit(f"unknown detector {name!r}; known: {known}")
+            updates[key] = names
+        elif isinstance(current, str):
             updates[key] = raw
+        else:
+            # Refuse rather than guess. Passing the raw string through is how a
+            # field of an unhandled type gets set to something that is not what
+            # the operator asked for, and the run then measures neither the
+            # current rule nor the proposed one while reporting a number.
+            raise SystemExit(
+                f"--set cannot yet type a value for {key!r} "
+                f"(it holds {type(current).__name__}). Add a branch for it "
+                f"rather than letting the run measure something else."
+            )
     return settings.model_copy(
         update={
             "analysis": settings.analysis.model_copy(
