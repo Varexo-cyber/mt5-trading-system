@@ -284,18 +284,23 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         learning = settings.learning
-        estimates = reader.edge_calibrations(
+        estimates = reader.selection_evidence(
             minimum_trades=learning.selection_min_trades,
             shrinkage_trades=learning.selection_shrinkage_trades,
             points_per_r=learning.selection_points_per_r,
             modifier_cap=learning.selection_modifier_cap,
+            outcome_floor_r=learning.selection_outcome_floor_r,
+            outcome_cap_r=learning.selection_outcome_cap_r,
         )
         if not estimates:
-            print(f"  ranking     not yet    no segment has {learning.selection_min_trades} trades")
+            print(
+                "  ranking     not yet    no learned facet has "
+                f"{learning.selection_min_trades} trades"
+            )
         else:
-            print("  ranking     ok         ordering only; cannot approve a refused setup")
+            print("  ranking     ok         second brain; ordering only, never an entry gate")
             for item in sorted(estimates, key=lambda e: e.modifier)[:8]:
-                where = " ".join(part for part in item.key if part != "*") or "everything"
+                where = f"{item.dimension}={item.value} {item.direction}"
                 print(
                     f"               {where:<26}{item.trades:>4} trades  "
                     f"{item.mean_r:+.2f}R  ->  {item.modifier:+.2f} punten"

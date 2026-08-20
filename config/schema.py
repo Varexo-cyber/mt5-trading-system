@@ -3207,7 +3207,48 @@ class LearningConfig(Base):
     #: scores, or the calibration runs and changes no ordering at all.
     selection_points_per_r: float = Field(default=6.0, ge=0.0, le=40.0)
     selection_modifier_cap: float = Field(default=4.0, ge=0.0, le=10.0)
+    #: The ensemble combines reusable outcome facets instead of waiting for one
+    #: sparse exact segment.  It remains ranking-only and separately bounded.
+    selection_ensemble_strength: float = Field(default=1.5, ge=0.0, le=3.0)
+    selection_ensemble_modifier_cap: float = Field(default=6.0, ge=0.0, le=10.0)
+    selection_outcome_floor_r: float = Field(default=-1.0, ge=-5.0, le=0.0)
+    selection_outcome_cap_r: float = Field(default=2.0, ge=0.1, le=10.0)
+    selection_dimension_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "setup_horizon": 1.5,
+            "setup_family": 1.0,
+            "detector": 1.0,
+            "regime": 1.0,
+            "session": 0.8,
+            "score_band": 0.8,
+            "asset_class": 0.6,
+            "horizon": 0.6,
+            "direction": 0.5,
+        }
+    )
     selection_refresh_minutes: int = Field(default=15, ge=1, le=1440)
+
+    @model_validator(mode="after")
+    def validate_selection_brain(self) -> LearningConfig:
+        allowed = {
+            "setup_horizon",
+            "setup_family",
+            "detector",
+            "regime",
+            "session",
+            "score_band",
+            "asset_class",
+            "horizon",
+            "direction",
+        }
+        unknown = set(self.selection_dimension_weights) - allowed
+        if unknown:
+            raise ValueError(f"unknown selection_dimension_weights: {sorted(unknown)}")
+        if any(value < 0.0 for value in self.selection_dimension_weights.values()):
+            raise ValueError("selection_dimension_weights may not be negative")
+        if self.selection_outcome_floor_r >= self.selection_outcome_cap_r:
+            raise ValueError("selection outcome floor must be below its cap")
+        return self
 
 
 class DataQuarantineConfig(Base):

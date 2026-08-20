@@ -81,7 +81,8 @@ from analysis.playbooks import (
 )
 from analysis.target_reach import measure as measure_target_reach
 from analysis.target_reach import measure_first_touch
-from brain import EdgeCalibration, build_brain
+from brain import SelectionEvidence, build_brain
+from brain.selection import SelectionVerdict, combine_selection_evidence
 from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
@@ -116,6 +117,7 @@ from filters.calendar.events import symbol_currencies
 from filters.headline_filter import HeadlineFilter
 from filters.news_filter import NewsFilter
 from filters.runway_filter import RunwayFilter
+from filters.session_filter import SessionFilter
 from infra.atomic import write_json_atomic
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger
@@ -484,8 +486,8 @@ class JarvisRunner:
         attach = getattr(self.advisor, "attach_brain", None)
         if callable(attach):
             attach(self.brain)
-        self._edge_calibrations: list[EdgeCalibration] = []
-        self._edge_calibrations_at: datetime | None = None
+        self._selection_evidence: list[SelectionEvidence] = []
+        self._selection_evidence_at: datetime | None = None
         self._brain_schema_ready = False
         if self.brain.enabled:
             self._brain_schema_ready = self.brain.migrate()
@@ -1969,7 +1971,7 @@ class JarvisRunner:
                     )
                 analysed.append(item)
         self._world_state = build_world_state(self._cycle_observations)
-        self._refresh_edge_calibrations()
+        self._refresh_selection_evidence()
         observations = {row.symbol: row for row in self._cycle_observations}
         routed: list[AnalysedCandidate] = []
         for item in analysed:
@@ -1992,20 +1994,23 @@ class JarvisRunner:
                 routing=routing,
                 cap=self.settings.analysis.market_regime.ranking_modifier_cap,
             )
-            calibration = self._calibration_for(
+            selection = self._selection_brain_for(
                 asset_class=spec.asset_class.value,
                 setup_family=item.idea.setup_family,
                 horizon=item.idea.horizon,
                 direction=item.idea.direction.name if item.idea.direction else "",
                 regime=observation.regime,
+                score=item.idea.score,
+                signals=item.idea.signals,
             )
-            if calibration is not None:
-                reasons = (*intelligence.reasons, calibration.summary())
+            if selection.reasons:
+                summary = selection.summary()
+                reasons = (*intelligence.reasons, summary)
                 intelligence = replace(
                     intelligence,
-                    learned_alignment=calibration.modifier,
+                    learned_alignment=selection.modifier,
                     reasons=reasons,
-                    thesis=f"{intelligence.thesis}; {calibration.summary()}",
+                    thesis=f"{intelligence.thesis}; {summary}",
                 )
             penalty = self._recent_refusal_penalty(item)
             if penalty < 0.0:
@@ -2311,8 +2316,8 @@ class JarvisRunner:
         # the rare path where that gate has not run yet.
         return max(0.0, min(weight, retained * weight))
 
-    def _refresh_edge_calibrations(self) -> None:
-        """Refresh realised selection evidence on a bounded cadence.
+    def _refresh_selection_evidence(self) -> None:
+        """Refresh the second brain's realised facets on a bounded cadence.
 
         Neon is remote and this runs inside the scan loop, so one query every
         cycle would turn learning into latency. A missing database or thin
@@ -2320,19 +2325,23 @@ class JarvisRunner:
         """
         config = self.settings.learning
         if not config.selection_calibration_enabled:
-            self._edge_calibrations = []
+            self._selection_evidence = []
             return
         now = self.clock.now()
-        if self._edge_calibrations_at is not None and now - self._edge_calibrations_at < timedelta(
-            minutes=config.selection_refresh_minutes
+        if (
+            self._selection_evidence_at is not None
+            and now - self._selection_evidence_at
+            < timedelta(minutes=config.selection_refresh_minutes)
         ):
             return
-        self._edge_calibrations_at = now
-        self._edge_calibrations = self.brain.edge_calibrations(
+        self._selection_evidence_at = now
+        self._selection_evidence = self.brain.selection_evidence(
             minimum_trades=config.selection_min_trades,
             shrinkage_trades=config.selection_shrinkage_trades,
             points_per_r=config.selection_points_per_r,
             modifier_cap=config.selection_modifier_cap,
+            outcome_floor_r=config.selection_outcome_floor_r,
+            outcome_cap_r=config.selection_outcome_cap_r,
         )
 
     def _recent_refusal_penalty(self, item: AnalysedCandidate) -> float:
@@ -2363,7 +2372,7 @@ class JarvisRunner:
             return 0.0
         return -min(4.0, 2.0 * record.repeats)
 
-    def _calibration_for(
+    def _selection_brain_for(
         self,
         *,
         asset_class: str,
@@ -2371,22 +2380,41 @@ class JarvisRunner:
         horizon: str,
         direction: str,
         regime: str,
-    ) -> EdgeCalibration | None:
-        """Most-specific eligible estimate; exact, cross-regime, then broad."""
-        keys = (
-            (asset_class, setup_family, horizon, direction, regime),
-            (asset_class, setup_family, horizon, direction, "*"),
-            (asset_class, "*", "*", direction, "*"),
-            # Direction alone, and on a small account it is the only rung that
-            # ever fires. The finer buckets need more trades than a month
-            # produces, and a trade backfilled from the local journal has no
-            # decision behind it, so its asset class reads 'unknown' and can
-            # never match a live 'forex' candidate above. Without this the
-            # ladder ends above the only evidence that exists.
-            ("*", "*", "*", direction, "*"),
+        score: float,
+        signals: tuple[Signal, ...],
+    ) -> SelectionVerdict:
+        """The account's learned context for one candidate, never a gate."""
+        if not direction:
+            return SelectionVerdict()
+        session_filter = self.filters.find(SessionFilter)
+        if session_filter is None:
+            session = "unknown"
+        elif asset_class in session_filter.config.continuous_asset_classes:
+            session = "continuous"
+        elif asset_class in session_filter.config.broker_hours_asset_classes:
+            session = "broker-hours"
+        else:
+            session = session_filter.session_label(self.clock.now())
+        supporting = tuple(
+            signal.module
+            for signal in signals
+            if signal.score and ("LONG" if signal.score > 0 else "SHORT") == direction
         )
-        by_key = {item.key: item for item in self._edge_calibrations}
-        return next((by_key[key] for key in keys if key in by_key), None)
+        config = self.settings.learning
+        return combine_selection_evidence(
+            self._selection_evidence,
+            asset_class=asset_class,
+            setup_family=setup_family,
+            horizon=horizon,
+            direction=direction,
+            regime=regime,
+            session=session,
+            score=score,
+            detectors=supporting,
+            weights=config.selection_dimension_weights,
+            strength=config.selection_ensemble_strength,
+            cap=config.selection_ensemble_modifier_cap,
+        )
 
     def _apply_market_scout(
         self, analysed: list[AnalysedCandidate], batch: ScanBatch

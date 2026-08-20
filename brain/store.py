@@ -348,6 +348,36 @@ class EdgeCalibration:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectionEvidence:
+    """One shrunk facet used by the second-brain candidate ranker.
+
+    Facets stay separate on purpose.  An exact five-column segment is usually
+    empty on a small account, while one account-wide LONG/SHORT average throws
+    away nearly everything the journal knows.  The runner combines matching
+    facets without granting any of them entry, sizing or risk authority.
+    """
+
+    dimension: str
+    value: str
+    direction: str
+    trades: int
+    wins: int
+    mean_r: float
+    modifier: float
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return self.dimension, self.value, self.direction
+
+    def summary(self) -> str:
+        return (
+            f"{self.dimension}={self.value}: {self.trades} realised trades, "
+            f"{self.wins} won, {self.mean_r:+.2f}R average, "
+            f"{self.modifier:+.2f} ranking points"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class GateScoreline:
     """Passive grade of plans refused by one gate."""
 
@@ -1551,6 +1581,112 @@ class Brain:
             )
         return sorted(estimates, key=lambda item: item.specificity, reverse=True)
 
+    def selection_evidence(
+        self,
+        *,
+        minimum_trades: int,
+        shrinkage_trades: int,
+        points_per_r: float,
+        modifier_cap: float,
+        outcome_floor_r: float,
+        outcome_cap_r: float,
+    ) -> list[SelectionEvidence]:
+        """Independent realised facets for ranking already-valid candidates.
+
+        Only broker-confirmed closed trades enter ``realised``.  Each UNION
+        asks one reusable question instead of demanding a sparse exact match:
+        how this setup family, horizon, detector, asset class, regime, session,
+        score band or direction has actually performed on this account.
+
+        ``pnl_r`` is clipped for this ranking estimate only.  The untouched P/L
+        remains in the database and every report; clipping merely prevents one
+        corrupt fill or singular outlier from teaching the selector more than
+        the rest of its history combined.
+        """
+        rows = self._run(
+            """
+            WITH realised AS (
+                SELECT
+                    COALESCE(NULLIF(d.setup_family, ''), NULLIF(d.playbook, ''),
+                             'unknown') AS setup_family,
+                    COALESCE(d.horizon, 'unknown') AS horizon,
+                    COALESCE(d.asset_class, 'unknown') AS asset_class,
+                    COALESCE(d.regime, 'unknown') AS regime,
+                    COALESCE(d.session, 'unknown') AS session,
+                    CASE
+                        WHEN d.conviction IS NULL THEN 'unknown'
+                        ELSE (FLOOR(d.conviction / 10) * 10)::INT::TEXT
+                    END AS score_band,
+                    COALESCE(d.signals, '[]'::jsonb) AS signals,
+                    t.direction,
+                    GREATEST(%s, LEAST(%s, t.pnl_r)) AS bounded_r
+                FROM trades t
+                LEFT JOIN decisions d ON d.id = t.decision_id
+                WHERE t.account = %s AND t.closed_at IS NOT NULL AND t.pnl_r IS NOT NULL
+            ), facets AS (
+                SELECT 'setup_horizon' AS dimension,
+                       setup_family || '|' || horizon AS value,
+                       direction, bounded_r
+                FROM realised
+                UNION ALL
+                SELECT 'setup_family', setup_family, direction, bounded_r FROM realised
+                UNION ALL
+                SELECT 'horizon', horizon, direction, bounded_r FROM realised
+                UNION ALL
+                SELECT 'asset_class', asset_class, direction, bounded_r FROM realised
+                UNION ALL
+                SELECT 'regime', regime, direction, bounded_r FROM realised
+                UNION ALL
+                SELECT 'session', session, direction, bounded_r FROM realised
+                UNION ALL
+                SELECT 'score_band', score_band, direction, bounded_r FROM realised
+                UNION ALL
+                SELECT 'direction', '*', direction, bounded_r FROM realised
+                UNION ALL
+                SELECT 'detector', signal->>'module', realised.direction, bounded_r
+                FROM realised
+                CROSS JOIN LATERAL jsonb_array_elements(realised.signals) AS signal
+                WHERE COALESCE(signal->>'module', '') <> ''
+                  AND COALESCE(signal->>'direction', '') = realised.direction
+            )
+            SELECT dimension, value, direction, COUNT(*),
+                   COUNT(*) FILTER (WHERE bounded_r > 0), AVG(bounded_r)
+            FROM facets
+            WHERE value <> 'unknown'
+            GROUP BY dimension, value, direction
+            HAVING COUNT(*) >= %s
+            ORDER BY dimension, value, direction
+            """,
+            (
+                outcome_floor_r,
+                outcome_cap_r,
+                self.account,
+                minimum_trades,
+            ),
+            fetch="all",
+        )
+        if not rows:
+            return []
+        estimates: list[SelectionEvidence] = []
+        for row in rows:
+            trades = int(row[3])
+            mean_r = float(row[5] or 0.0)
+            shrink = trades / (trades + max(1, shrinkage_trades))
+            raw = mean_r * shrink * points_per_r
+            modifier = max(-modifier_cap, min(modifier_cap, raw))
+            estimates.append(
+                SelectionEvidence(
+                    dimension=str(row[0]),
+                    value=str(row[1]),
+                    direction=str(row[2]),
+                    trades=trades,
+                    wins=int(row[4]),
+                    mean_r=mean_r,
+                    modifier=round(modifier, 3),
+                )
+            )
+        return estimates
+
     def gate_scoreboard(self, *, symbol: str = "", limit: int = 12) -> list[GateScoreline]:
         """How refused executable plans resolved after the decision."""
         rows = self._run(
@@ -1796,6 +1932,9 @@ class NullBrain:
         return []
 
     def edge_calibrations(self, **_: Any) -> list[EdgeCalibration]:
+        return []
+
+    def selection_evidence(self, **_: Any) -> list[SelectionEvidence]:
         return []
 
     def gate_scoreboard(self, **_: Any) -> list[GateScoreline]:
