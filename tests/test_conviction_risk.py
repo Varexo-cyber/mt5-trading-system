@@ -451,8 +451,8 @@ def eurusd_spec_object() -> InstrumentSpec:
     return InstrumentSpec.from_mt5(eurusd_spec())
 
 
-class TestTheEngineSizesTheTradeNotTheArchive:
-    """With the paid reviewer switched off, whose conviction was buying the lots?
+class TestTheAdviserMayOnlyCapTheEngineStake:
+    """The live chart sets the ceiling and the final review may reduce it.
 
     `ai.provider: local_history` makes the adviser the nearest-neighbour
     archive, and its confidence means two different things depending on how much
@@ -461,13 +461,9 @@ class TestTheEngineSizesTheTradeNotTheArchive:
         under min_neighbors   it passes the engine's confidence straight through
         at or over it         it returns 1 - learned_veto_rate
 
-    The first is the engine's read of the chart in front of it. The second is a
-    hit rate over comparable past setups — a real measurement, and not the one
-    sizing asks for. So the stake would have stopped responding to the live
-    chart the moment enough history existed, with no config change and nothing
-    in the log to show the input had been swapped.
-
-    The owner's instruction was explicit: everything comes from the engine.
+    A historical approval never inflates weak current evidence. Conversely, a
+    weak final review may cap an aggressive engine stake. Every approved setup
+    still trades; only the amount at risk changes.
     """
 
     @staticmethod
@@ -511,16 +507,16 @@ class TestTheEngineSizesTheTradeNotTheArchive:
 
         return Advice(True, confidence, "test", provider="local_history", said_yes=True)
 
-    def test_the_stake_follows_the_engine_where_the_two_disagree(self) -> None:
-        """Engine sure, archive lukewarm. The chart decides the size."""
+    def test_a_lukewarm_final_review_caps_an_aggressive_engine(self) -> None:
         runner = self._runner()
 
         stake, why = runner._conviction_stake(
             None, self._idea(confidence=0.70), self._advice(confidence=0.50)
         )
 
-        assert stake == pytest.approx(6.0), "the archive's hit rate sized the trade"
-        assert "engine conviction 0.70" in why
+        assert stake == pytest.approx(2.0)
+        assert "effective conviction 0.50" in why
+        assert "engine 0.70" in why
 
     def test_a_confident_archive_cannot_inflate_a_weak_setup(self) -> None:
         """The same swap in the other direction, which is the dangerous one:
@@ -533,7 +529,7 @@ class TestTheEngineSizesTheTradeNotTheArchive:
         )
 
         assert stake == pytest.approx(2.0)
-        assert "engine conviction 0.50" in why
+        assert "effective conviction 0.50" in why
 
     def test_both_numbers_are_recorded_so_the_journal_shows_the_input(self) -> None:
         """A stake reason naming only the output cannot be audited later."""
@@ -543,8 +539,9 @@ class TestTheEngineSizesTheTradeNotTheArchive:
             None, self._idea(confidence=0.60), self._advice(confidence=0.48)
         )
 
-        assert "engine conviction 0.60" in why
-        assert "adviser said 0.48" in why
+        assert "effective conviction 0.48" in why
+        assert "engine 0.60" in why
+        assert "adviser cap 0.48" in why
 
     def test_the_exposure_cap_still_speaks_in_engine_terms(self) -> None:
         """The trimmed path names the engine too, or the two branches would
@@ -557,7 +554,8 @@ class TestTheEngineSizesTheTradeNotTheArchive:
         )
 
         assert stake == 0.0
-        assert "engine conviction 0.70" in why
+        assert "effective conviction 0.70" in why
+        assert "engine 0.70" in why
 
 
 class TestAFreeAdviserIsNotRationed:

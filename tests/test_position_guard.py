@@ -2165,6 +2165,51 @@ class TestALosingTradeIsNotLeftToRunToItsStop:
 
         assert moved is None
 
+    def test_one_unchanged_health_episode_cannot_ratchet_the_stop(self) -> None:
+        """Observing every second is not permission to send the same order
+        every second. This is the exact EURAUD/FRA40 failure mode."""
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+        warning = PositionHealth("deteriorating", 0.6, "tighten", (), "same warning")
+
+        at(broker, -0.3)
+        first = manager._act_on_health(
+            position(), warning, r_now=-0.3, risk=ENTRY - STOP, tick=broker.tick("EURUSD")
+        )
+        moved_once = broker.modified[-1]
+        at(broker, -0.5)
+        second = manager._act_on_health(
+            replace(position(), sl=moved_once),
+            replace(warning, severity=0.68),
+            r_now=-0.5,
+            risk=ENTRY - STOP,
+            tick=broker.tick("EURUSD"),
+        )
+
+        assert first is not None
+        assert second is None
+        assert broker.modified == [moved_once]
+
+    def test_recovery_rearms_a_later_health_episode(self) -> None:
+        broker, journal = BrokerStub(), JournalStub()
+        manager = manager_for(broker, journal)
+        warning = PositionHealth("deteriorating", 0.6, "tighten", (), "warning")
+
+        at(broker, -0.3)
+        assert manager._act_on_health(
+            position(), warning, -0.3, ENTRY - STOP, broker.tick("EURUSD")
+        ) is not None
+        manager._act_on_health(
+            position(), PositionHealth("healthy", 0.0, "hold", (), "recovered"),
+            -0.1, ENTRY - STOP, broker.tick("EURUSD")
+        )
+        at(broker, -0.4)
+        again = manager._act_on_health(
+            position(), warning, -0.4, ENTRY - STOP, broker.tick("EURUSD")
+        )
+
+        assert again is not None
+
 
 class TestPeakStallAsksTheReadFirst:
     """The last exit in this file that closed a live position on a timer alone.
