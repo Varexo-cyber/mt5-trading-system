@@ -5097,11 +5097,17 @@ class JarvisRunner:
 
     def _assess_entry_quality(self, context: MarketContext, idea: TradeIdea, asset_class):  # type: ignore[no-untyped-def]
         assert idea.direction is not None
+        executable_price = None
+        if context.tick is not None:
+            executable_price = (
+                context.tick.ask if idea.direction is Direction.LONG else context.tick.bid
+            )
         return assess_entry_quality(
             context,
             idea.direction,
             asset_class,
             self._entry_quality_config_for(idea),
+            executable_price=executable_price,
         )
 
     def _reach_failure_is_advisory(self, idea: TradeIdea, reach) -> bool:  # type: ignore[no-untyped-def]

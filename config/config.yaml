@@ -571,6 +571,16 @@ analysis:
       metal: 1.50
       commodity: 1.50
       unknown: 1.20
+    # A closed breakout may be strong. A live market order another full ATR
+    # beyond that already-confirmed bar is a late fill and waits for a retest.
+    max_live_favourable_gap_atr:
+      forex: 0.75
+      crypto: 1.00
+      stock: 0.90
+      index: 0.90
+      metal: 1.00
+      commodity: 1.00
+      unknown: 0.75
     max_last_bar_adverse_atr: 0.20
     max_review_price_drift_atr: 0.25
     max_review_latency_seconds: 45

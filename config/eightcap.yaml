@@ -497,6 +497,18 @@ analysis:
       metal: 3.00
       commodity: 2.85
       unknown: 2.25
+    # Houd de ruime CLOSED-bar breakoutdetectie hierboven intact, maar betaal
+    # niet nogmaals een verticale LIVE candle erbovenop. Dit vormt geen setup
+    # minder: het verandert ENTER_NOW tijdelijk in WAIT_RETEST en dezelfde
+    # markt wordt de volgende cyclus opnieuw bekeken.
+    max_live_favourable_gap_atr:
+      forex: 0.75
+      crypto: 1.00
+      stock: 0.90
+      index: 0.90
+      metal: 1.00
+      commodity: 1.00
+      unknown: 0.75
 
   confluence:
     # Measured, not guessed: fed a textbook uptrend, every symbol came back

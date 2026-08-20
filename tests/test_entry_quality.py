@@ -82,6 +82,79 @@ def test_an_ordinary_move_is_still_tradeable() -> None:
     assert verdict.decision is EntryTimingDecision.ENTER_NOW
 
 
+def test_a_live_spike_after_the_last_closed_bar_is_not_chased() -> None:
+    """The setup may be valid while its currently offered price is not.
+
+    This is an execution wait, not a deleted setup: once the quote returns to a
+    normal location the same closed-bar evidence may clear immediately.
+    """
+    closes = quiet_history()
+    market = context(closes)
+
+    chased = assess_entry_quality(
+        market,
+        Direction.LONG,
+        AssetClass.CRYPTO,
+        config(),
+        executable_price=103.0,
+    )
+    retested = assess_entry_quality(
+        market,
+        Direction.LONG,
+        AssetClass.CRYPTO,
+        config(),
+        executable_price=float(closes[-1] + 0.05),
+    )
+
+    assert chased.decision is EntryTimingDecision.WAIT_RETEST
+    assert chased.reason_code == "DIRECTIONAL_MOVE_OVEREXTENDED"
+    assert chased.executable_gap_atr is not None and chased.executable_gap_atr > 0
+    assert retested.decision is EntryTimingDecision.ENTER_NOW
+
+
+def test_quick_horizon_may_not_scale_away_the_live_quote_guard() -> None:
+    """Quick breakouts may relax closed-bar shape, never the price offered now."""
+    base = config()
+    scaled = base.model_copy(
+        update={
+            "max_favourable_extension_atr": {
+                key: value * 3.0 for key, value in base.max_favourable_extension_atr.items()
+            },
+            "max_single_bar_body_atr": {
+                key: value * 3.0 for key, value in base.max_single_bar_body_atr.items()
+            },
+            "max_ema_distance_atr": {
+                key: value * 3.0 for key, value in base.max_ema_distance_atr.items()
+            },
+        }
+    )
+
+    verdict = assess_entry_quality(
+        context(quiet_history()),
+        Direction.LONG,
+        AssetClass.CRYPTO,
+        scaled,
+        executable_price=101.5,
+    )
+
+    assert verdict.decision is EntryTimingDecision.WAIT_RETEST
+    assert "live quote ran" in verdict.detail
+
+
+def test_a_live_short_dump_is_not_sold_at_the_bottom() -> None:
+    closes = quiet_history()
+
+    verdict = assess_entry_quality(
+        context(closes),
+        Direction.SHORT,
+        AssetClass.CRYPTO,
+        config(),
+        executable_price=97.0,
+    )
+
+    assert verdict.decision is EntryTimingDecision.WAIT_RETEST
+
+
 def test_a_pullback_that_is_still_falling_waits_for_the_turn() -> None:
     closes = quiet_history()
     closes[-4:] = [100.5, 100.45, 100.35, 100.0]
