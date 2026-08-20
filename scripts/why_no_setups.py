@@ -178,7 +178,11 @@ def run(settings, catalogue, stride: int, label: str = "", mode=TradingMode.BACK
     for symbol, frames, point, start, end in catalogue:
         started = perf_counter()
         before = setups
-        for _decided_at, idea in replay.ideas(symbol, frames, point=point, start=start, end=end):
+        ideas = replay.ideas(symbol, frames, point=point, start=start, end=end)
+        # Three values, not two: the spread rides along since the backtest
+        # started charging it. This tool unpacked two and crashed on the
+        # first symbol, which is why it could not be run at all.
+        for _decided_at, _spread, idea in ideas:
             decisions += 1
             if idea.approved:
                 setups += 1
@@ -277,10 +281,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     threshold = settings.analysis.confluence.score_threshold
-    # The account's own mode, not a synthetic one: `live_enabled_modules`
-    # is consulted for micro_live and scaling, and which of the two this
-    # account runs is a fact in the overlay, not something to invent here.
-    mode = settings.mode if args.live else TradingMode.BACKTEST
+    # `live_enabled_modules` is consulted only when the mode IS live, and the
+    # configured mode is not reliably one: this printed "voting as backtest"
+    # while listing the allowlist, so it applied nothing and reported a number
+    # anyway. Prefer the account's own live mode when it has one, and say out
+    # loud which mode is being measured either way — a run that silently
+    # measures the wrong engine is the failure this whole tool exists to avoid.
+    if not args.live:
+        mode = TradingMode.BACKTEST
+    elif settings.mode.is_live:
+        mode = settings.mode
+    else:
+        mode = TradingMode.MICRO_LIVE
     allowed = settings.analysis.confluence.live_enabled_modules
     if args.live:
         muted = sorted(
@@ -288,7 +300,8 @@ def main(argv: list[str] | None = None) -> int:
             for module, weight in settings.analysis.confluence.weights.items()
             if weight > 0 and module not in allowed
         )
-        print(f"\n  voting as {mode.value}: {len(allowed)} detectors on the allowlist")
+        note = "" if settings.mode.is_live else f" (config says {settings.mode.value})"
+        print(f"\n  voting as {mode.value}{note}: {len(allowed)} detectors on the allowlist")
         if muted:
             print(f"  weighted but NOT voting live: {', '.join(muted)}")
     print("\n  measuring as configured …", flush=True)

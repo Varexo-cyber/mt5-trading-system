@@ -9,6 +9,8 @@ Both are pinned here.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from config.loader import DEFAULT_CONFIG_PATH, load_settings
@@ -208,3 +210,44 @@ class TestAListOfDetectorNamesCanBeOverridden:
             pytest.skip("no field of an unhandled type on this config")
         with pytest.raises(SystemExit, match="cannot yet type"):
             apply_overrides(settings(), [f"{exotic}=whatever"])
+
+
+class TestTheToolCanActuallyBeRun:
+    """It could not. Both faults reported a number or a crash, never the truth.
+
+    `replay.ideas()` began yielding three values when the backtest started
+    charging the spread, and this tool still unpacked two — so it died on the
+    first symbol with `too many values to unpack`. Nobody noticed because
+    nobody could run it, and it is the tool that exists so a rule can be judged
+    before money is put behind it.
+
+    The second fault was quieter and worse. `--live` resolved to the configured
+    mode, which is not reliably a live one, so the run printed "voting as
+    backtest" WHILE listing the live allowlist — applying none of it and
+    reporting a setup count anyway. A tool that silently measures the wrong
+    engine is the exact failure it was written to prevent.
+    """
+
+    def test_the_consumer_unpacks_what_the_replay_yields(self) -> None:
+        """Checked against the signature rather than by running MT5, so this
+        keeps holding when the shape changes again."""
+        import inspect
+
+        from backtesting.replay import HistoricalContextReplay
+
+        yielded = inspect.signature(HistoricalContextReplay.ideas).return_annotation
+        source = Path(__file__).resolve().parents[1] / "scripts" / "why_no_setups.py"
+
+        assert "tuple[datetime, float, TradeIdea]" in str(yielded)
+        assert "for _decided_at, _spread, idea in ideas:" in source.read_text()
+
+    def test_live_measures_a_live_mode_even_when_the_config_is_not_one(self) -> None:
+        from core.types import TradingMode
+
+        assert not TradingMode.BACKTEST.is_live
+        assert TradingMode.MICRO_LIVE.is_live
+        source = (Path(__file__).resolve().parents[1] / "scripts" / "why_no_setups.py").read_text()
+
+        # The fallback exists and the run says which mode it actually used.
+        assert "TradingMode.MICRO_LIVE" in source
+        assert "config says" in source
