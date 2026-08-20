@@ -1518,6 +1518,40 @@ modes:
     max_equity: 500
 
 trade_management:
+  # DE PROFIT-LOCK NAAR WAAR DEZE TRADES ECHT LEVEN.
+  #
+  # Hij armeerde op 0,7R en borgde de helft van de top. Over 39 gesloten
+  # trades in 48 uur redde dat er PRECIES EEN, goed voor +0,18R — want maar
+  # vier van die 39 zagen ooit 0,6R en geen enkele 1,5R. De hele ladder
+  # (break-even 0,6 / lock 0,7 / ATR-trail 1,5) hing boven de trades.
+  #
+  # Diezelfde 39 trades, opnieuw gerekend met de lock op 0,20R en 0,6:
+  #
+  #     armeert  fractie  gered   nu      met lock   winst
+  #       0.70R      0.5      1   +4.60R    +4.79R   +0.18R   <- hoe het stond
+  #       0.40R      0.6      5   +4.60R    +5.57R   +0.97R
+  #       0.25R      0.6     10   +4.60R    +5.89R   +1.29R
+  #       0.20R      0.6     19   +4.60R    +6.34R   +1.74R   <- hier
+  #
+  # +1,74R is rond de EUR 17 over twee dagen, ofwel 38% meer dan er binnenkwam.
+  #
+  # WAAROM DEZE REGEL EN NIET DE HEALTH-TIGHTEN: de lock meet vanaf de TOP en
+  # ratelt dus mee omhoog, hij draait elke beheerronde, en hij zit bij de
+  # BROKER — hij overleeft een herstart van de VPS en het wegvallen van dit
+  # proces om drie uur 's nachts. De health-tighten zette de stop eenmalig op
+  # de helft van wat de trade op DAT moment waard was en liet hem daarna staan:
+  # een positie die op +0,12R werd geraakt kreeg een stop op +0,06R, liep door
+  # naar +0,59R, en kwam terug om op die +0,06R te eindigen. Niet het securen
+  # was fout, het bevriezen was fout.
+  #
+  # VOORBEHOUD: die +1,74R is een BOVENGRENS. Hij neemt aan dat de lock elke
+  # teruggezakte trade op de bodem opvangt, en telt niet mee dat een stop op
+  # 60% van de top ook een trade kan pakken die daarna alsnog was hersteld.
+  # Met 40% ruimte onder de top is dat zeldzaam, maar niet nul. Volgende
+  # `scorecard --days 2` zegt of het klopt.
+  profit_lock_from_r: 0.20
+  profit_lock_fraction: 0.6
+
   # SPREAD_SQUEEZE WEER AAN, MAAR NU MET DRIE TESTS DIE HIJ NIET HAD.
   #
   # Hij was elf van de elf keer negatief: acht in de replay van 17 augustus,
