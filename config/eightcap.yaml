@@ -509,6 +509,10 @@ analysis:
       metal: 1.00
       commodity: 1.00
       unknown: 0.75
+    lifecycle_enabled: true
+    lifecycle_pullback_atr: {quick: 0.20, intraday: 0.30, swing: 0.40}
+    lifecycle_resumption_atr: {quick: 0.05, intraday: 0.08, swing: 0.10}
+    lifecycle_expiry_minutes: {quick: 30, intraday: 240, swing: 1440}
 
   confluence:
     # Measured, not guessed: fed a textbook uptrend, every symbol came back
@@ -1530,6 +1534,7 @@ modes:
     max_equity: 500
 
 trade_management:
+  thesis_invalidation_at_r: 0.35
   # DE PROFIT-LOCK NAAR WAAR DEZE TRADES ECHT LEVEN.
   #
   # Hij armeerde op 0,7R en borgde de helft van de top. Over 39 gesloten
@@ -1765,6 +1770,9 @@ learning:
   selection_modifier_cap: 4.0
   selection_ensemble_strength: 1.5
   selection_ensemble_modifier_cap: 6.0
+  selection_raw_conviction_weight: 0.35
+  selection_independent_family_bonus: 1.5
+  selection_independent_family_cap: 3
   selection_outcome_floor_r: -1.0
   selection_outcome_cap_r: 2.0
   selection_dimension_weights:

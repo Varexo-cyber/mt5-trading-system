@@ -655,6 +655,7 @@ class PositionManager:
             risk=risk,
             secure_at_r=config.health_secure_at_r,
             tighten_at_r=config.health_tighten_at_r,
+            thesis_invalidation_at_r=config.thesis_invalidation_at_r,
             # So the drift readers can tell how much of their window is from
             # after this trade opened, rather than from the chart that produced
             # it. Taken from the timeframe rather than hardcoded: the two must
@@ -1850,8 +1851,9 @@ class PositionManager:
                 return ManagementEvent(
                     position.ticket,
                     "AI_EXIT_NOT_WORTH_PAYING",
-                    f"close refused: the stop is nearer than the exit costs "
-                    f"({verdict.reason})"[:400],
+                    f"close refused: the stop is nearer than the exit costs ({verdict.reason})"[
+                        :400
+                    ],
                     r_at_action=r_now,
                 )
             result = self.broker.close_position(position)

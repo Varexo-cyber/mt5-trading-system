@@ -31,7 +31,9 @@ class EntryTimingAssessment:
     ema_distance_atr: float | None = None
     directional_range_location: float | None = None
     last_bar_adverse_atr: float | None = None
+    last_bar_directional_atr: float | None = None
     executable_gap_atr: float | None = None
+    reference_atr: float | None = None
 
     @property
     def passed(self) -> bool:
@@ -163,7 +165,9 @@ def assess_entry_quality(
         "ema_distance_atr": ema_distance,
         "directional_range_location": directional_location,
         "last_bar_adverse_atr": last_adverse,
+        "last_bar_directional_atr": last_move,
         "executable_gap_atr": executable_gap,
+        "reference_atr": reference,
     }
     rounded = {key: round(value, 3) for key, value in metrics.items()}
 

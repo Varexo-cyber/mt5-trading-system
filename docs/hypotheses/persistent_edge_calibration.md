@@ -54,3 +54,34 @@ Pas na minimaal 100 afgesloten trades per geëvalueerde segmentfamilie:
 - geen verslechtering van maximale drawdown;
 - parameterplateau rondom minimumsteekproef en shrinkage;
 - afzonderlijke rapportage van long en short.
+
+## Uitbreiding vooraf geregistreerd: setup-lifecycle en thesis-invalidation
+
+Waargenomen fout op 20 augustus 2026: richting en instapmoment waren nog te
+veel één beslissing. ETHUSD kon terecht bullish zijn en toch bovenaan een live
+spike worden gekocht. Een `WAIT_RETEST` werd later als een nieuwe anonieme
+setup bekeken in plaats van als de volgende toestand van dezelfde thesis. Ook
+domineerde de ruwe confluencescore de begrensde leerlaag, terwijl de scorecard
+geen monotone relatie tussen ruwe score en gerealiseerde R liet zien.
+
+Voor implementatie wordt daarom vastgelegd:
+
+1. Bewaar een doorgeschoten of actief terugtrekkende setup over scancycli.
+2. Eis na doorschieten eerst een meetbare pullback en daarna een nieuw gesloten
+   directioneel instapframe voordat een order mag worden gepromoveerd.
+3. Laat iedere setup verlopen op zijn eigen horizon; een oude thesis wordt
+   nooit permanente entrytoestemming.
+4. Bewaar iedere detectie en overgang in de decision-context. De lifecycle
+   vertraagt een entry en wist geen setup uit de telling.
+5. Beperk de dominantie van de ruwe score in de rangorde en geef alleen
+   begrensde extra prioriteit aan onafhankelijke bewijsfamilies. Geen van beide
+   mag een broker-, risk-, cost- of executiongate omzeilen.
+6. Een materieel verliezende positie is inhoudelijk ongeldig wanneer minimaal
+   twee onafhankelijke healthfamilies overeenkomen, minstens één daarvan
+   chartbewijs is, en de gezamenlijke read al `deteriorating` is. Dit mag alleen
+   risico verminderen: sluiten, nooit bijkopen of de stop verbreden.
+
+Succes is netto R en entry-MAE op onaangeraakte forward trades, niet alleen
+trade count of winrate. Setupdetecties vóór timing blijven zichtbaar, zodat
+minder orders nooit als betere setupdetectie kunnen worden verkocht. De
+managementbaseline tegen het oorspronkelijke SL/TP-plan mag niet verslechteren.

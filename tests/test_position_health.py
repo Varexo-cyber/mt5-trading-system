@@ -528,17 +528,17 @@ class TestBeingDownIsNeverAReasonToClose:
         assert signal is not None
         assert signal.family == "trajectory"
 
-    def test_a_modest_offside_still_only_tightens(self) -> None:
-        """The lower rung survives. A trade just past the noise level with the
-        tape drifting is not a closed trade — it gets a smaller stop, which
-        costs nothing when the reading is wrong."""
+    def test_path_and_chart_can_invalidate_before_the_full_stop(self) -> None:
+        """A material loss plus an independent chart family is forward
+        evidence that the original thesis has broken."""
         fast, _ = deteriorating_bars()
         health = assess_position(
             sign=LONG, r_now=-0.40, age_minutes=30, fast=fast, structure=flat()
         )
 
         assert {signal.family for signal in health.signals} == {"drift", "trajectory"}
-        assert health.action == "tighten"
+        assert health.action == "exit"
+        assert "thesis invalidated" in health.reason
 
     def test_materially_offside_with_the_tape_against_it_now_closes(self) -> None:
         """The case the owner kept watching run to the full stop. Down 0.60R
