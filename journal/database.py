@@ -763,6 +763,10 @@ class Journal:
         ticket: int,
         entry_price: float,
         opened_at: datetime | None = None,
+        filled_risk_money: float | None = None,
+        filled_risk_pct: float | None = None,
+        filled_sl_distance_pips: float | None = None,
+        filled_planned_rr: float | None = None,
     ) -> None:
         """Mark an intent as a live trade once the broker has confirmed it.
 
@@ -777,7 +781,16 @@ class Journal:
         managed correctly and only its record was wrong, which is the kind of
         corruption that survives for months.
         """
-        self._mark_open(trade_id, ticket=ticket, entry_price=entry_price, opened_at=opened_at)
+        self._mark_open(
+            trade_id,
+            ticket=ticket,
+            entry_price=entry_price,
+            opened_at=opened_at,
+            filled_risk_money=filled_risk_money,
+            filled_risk_pct=filled_risk_pct,
+            filled_sl_distance_pips=filled_sl_distance_pips,
+            filled_planned_rr=filled_planned_rr,
+        )
 
     def _mark_open(
         self,
@@ -786,6 +799,10 @@ class Journal:
         ticket: int,
         entry_price: float,
         opened_at: datetime | None,
+        filled_risk_money: float | None = None,
+        filled_risk_pct: float | None = None,
+        filled_sl_distance_pips: float | None = None,
+        filled_planned_rr: float | None = None,
     ) -> None:
         """Attach a broker ticket to an intent, preserving a good entry price.
 
@@ -795,7 +812,33 @@ class Journal:
         fixing one of them and not the other has already gone wrong once in
         this codebase.
         """
-        if entry_price > 0:
+        fill_metrics = (
+            filled_risk_money,
+            filled_risk_pct,
+            filled_sl_distance_pips,
+            filled_planned_rr,
+        )
+        has_fill_metrics = all(value is not None for value in fill_metrics)
+        if any(value is not None for value in fill_metrics) and not has_fill_metrics:
+            raise ValueError("filled entry metrics must be supplied together")
+
+        if entry_price > 0 and has_fill_metrics:
+            self.conn.execute(
+                "UPDATE trades SET ticket = ?, entry_price = ?, risk_money = ?, risk_pct = ?, "
+                "sl_distance_pips = ?, planned_rr = ?, entry_state = 'OPEN', opened_at = ? "
+                "WHERE id = ?",
+                (
+                    ticket,
+                    entry_price,
+                    filled_risk_money,
+                    filled_risk_pct,
+                    filled_sl_distance_pips,
+                    filled_planned_rr,
+                    iso(opened_at or self.clock.now()),
+                    trade_id,
+                ),
+            )
+        elif entry_price > 0:
             self.conn.execute(
                 "UPDATE trades SET ticket = ?, entry_price = ?, entry_state = 'OPEN', "
                 "opened_at = ? WHERE id = ?",

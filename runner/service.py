@@ -88,6 +88,7 @@ from core.clock import Clock, LiveClock
 from core.data_manager import DataManager, atr
 from core.data_quarantine import DataQuarantine
 from core.errors import DataIntegrityError, InsufficientDataError, TradingSystemError
+from core.instrument import InstrumentSpec
 from core.startup import run_startup_guard
 from core.types import (
     AccountSnapshot,
@@ -1071,8 +1072,12 @@ class JarvisRunner:
                     "parsed": event.safe_dict(),
                 },
             )
-        self.journal.promote_pending_entry(
-            trade_id, ticket=result.position_ticket, entry_price=result.filled_price
+        self._promote_confirmed_entry(
+            trade_id=trade_id,
+            result=result,
+            sizing=sizing,
+            spec=spec,
+            equity=account.equity,
         )
         self.external_inbox.open_campaign(
             source=event.envelope.source,
@@ -3608,10 +3613,12 @@ class JarvisRunner:
             )
             self.alerts.send(f"Order rejected: {symbol} {result.retcode_name} {result.comment}")
             return False
-        self.journal.promote_pending_entry(
-            trade_id,
-            ticket=result.position_ticket,
-            entry_price=result.filled_price,
+        self._promote_confirmed_entry(
+            trade_id=trade_id,
+            result=result,
+            sizing=sizing,
+            spec=spec,
+            equity=account.equity,
         )
         # The taken side of the same record. Written after the broker confirms
         # rather than beside the intent, so the long-term memory never carries
@@ -3677,6 +3684,53 @@ class JarvisRunner:
             self.clock.now(),
         )
         return True
+
+    def _promote_confirmed_entry(
+        self,
+        *,
+        trade_id: int,
+        result: OrderResult,
+        sizing: SizingResult,
+        spec: InstrumentSpec,
+        equity: float,
+    ) -> None:
+        """Replace intent-time risk arithmetic with the broker's real fill.
+
+        An entry intent is deliberately written before ``order_send`` so a
+        crash cannot orphan a live position. Its RR and money risk therefore
+        describe the requested quote. Once the broker confirms a different
+        fill, every entry-derived number must move with it; otherwise
+        postmortems compare P/L with a fictional R and can teach the brain the
+        wrong lesson. ETHUSD #134859872 exposed this: the displayed levels were
+        roughly 2.51R while the stored intent still reported 0.78R.
+        """
+
+        fill = float(result.filled_price)
+        if fill <= 0.0:
+            self.journal.promote_pending_entry(
+                trade_id,
+                ticket=result.position_ticket,
+                entry_price=fill,
+            )
+            return
+
+        stop_distance = abs(fill - sizing.sl)
+        reward = (sizing.tp - fill) * int(sizing.direction)
+        planned_rr = max(reward, 0.0) / stop_distance if stop_distance > 0.0 else 0.0
+        commission_per_lot = self.settings.risk.commission_per_lot(spec.asset_class.value)
+        risk_money = (
+            spec.money_per_lot(stop_distance) + commission_per_lot
+        ) * sizing.volume
+        risk_pct = 100.0 * risk_money / equity if equity > 0.0 else 0.0
+        self.journal.promote_pending_entry(
+            trade_id,
+            ticket=result.position_ticket,
+            entry_price=fill,
+            filled_risk_money=risk_money,
+            filled_risk_pct=risk_pct,
+            filled_sl_distance_pips=spec.price_to_pips(stop_distance),
+            filled_planned_rr=planned_rr,
+        )
 
     def _record_review_snapshots(
         self, cycle_pk: int, symbol: str, request_payload: dict[str, object]
