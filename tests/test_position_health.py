@@ -588,27 +588,54 @@ def _tighten_fixture():  # type: ignore[no-untyped-def]
     return manager_for(BrokerStub(), JournalStub()), position, tick
 
 
-class TestATinyProfitIsNotWorthProtecting:
-    """The measured leak: 28 of 39 trades kept 17% of their best moment.
+class TestSecuringFastIsTheOwnersChoiceAndTheRatchetIsWhatMakesItWork:
+    """The tightener is left alone; the rule that WALKS THE STOP UP is fixed.
 
-    Every other rule that parks a stop in profit waits — break-even at 0.6R,
-    the profit lock at 0.7R, the ATR trail at 1.5R. The health tightener had no
-    threshold, so a warning at +0.12R put the stop at +0.06R, and nothing
-    walked it up afterwards because all three of those rules sit above where
-    these trades live: only four of the thirty-nine ever reached 0.6R.
+    Securing early is the owner's stated priority and his record supports it:
+    85% win rate, +EUR 41 over 48 hours, and on a EUR 180 account a string of
+    full-R losses is existential. What went wrong was never that the stop moved
+    early — it was that nothing moved it again afterwards. One position was
+    tightened at +0.12R to a stop at +0.06R, ran to +0.59R, and came back to
+    close at +0.06R.
 
-        reached their target   4 trades   kept 104%   +0.57R each
-        went out on a stop    28 trades   kept  17%   +0.05R each
-
-    Those 28 reached +7.86R on paper between them and banked +1.36R. The
-    scorecard prices the interference at -0.10R a trade against leaving the
-    position alone, better in 5 cases out of 12.
+    `_profit_lock` is the rule that cannot do that: it measures from the PEAK,
+    so it ratchets and never retreats, it runs every management pass, and it
+    lives at the broker where it survives a VPS restart. It was simply armed
+    above where these trades live — at 0.7R, on a record where four of
+    thirty-nine ever saw 0.6R. It rescued exactly one trade.
     """
 
     @staticmethod
-    def _tighten(manager, position, r_now: float, tick):  # type: ignore[no-untyped-def]
+    def _live():  # type: ignore[no-untyped-def]
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH,
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml",
+            env_overrides=False,
+        ).trade_management
+
+    def test_the_ratchet_arms_where_the_trades_actually_peak(self) -> None:
+        """39 closed trades, replayed at each threshold: 0.70R rescued 1 for
+        +0.18R, 0.40R rescued 5 for +0.97R, 0.20R rescued 19 for +1.74R."""
+        config = self._live()
+
+        assert config.profit_lock_from_r <= 0.25
+        assert config.profit_lock_fraction >= 0.6
+
+    def test_it_arms_below_break_even_because_that_is_the_whole_point(self) -> None:
+        """Break-even waits for 0.6R and almost nothing reaches it. A rule that
+        only protects trades which never happen protects nothing."""
+        config = self._live()
+
+        assert config.profit_lock_from_r < config.break_even_at_r
+
+    def test_the_health_tightener_still_secures_early(self) -> None:
+        """Not gated on R. Securing fast is the point, and the ratchet above is
+        what stops a fast secure from becoming a frozen one."""
         from analysis.position_health import PositionHealth
 
+        manager, position, tick = _tighten_fixture()
         health = PositionHealth(
             verdict="deteriorating",
             severity=0.45,
@@ -616,27 +643,5 @@ class TestATinyProfitIsNotWorthProtecting:
             reason="momentum_turned",
         )
         risk = abs(position.price_open - position.sl)
-        return manager._act_on_health(position, health, r_now, risk, tick)
 
-    def test_a_warning_below_break_even_leaves_the_stop_where_it_is(self) -> None:
-        manager, position, tick = _tighten_fixture()
-        floor = manager.settings.trade_management.break_even_at_r
-
-        assert floor > 0.2  # the fixture is only meaningful under it
-        assert self._tighten(manager, position, 0.12, tick) is None
-
-    def test_a_warning_above_break_even_still_tightens(self) -> None:
-        """The rule is not switched off, it is given the same discipline the
-        break-even rule already had."""
-        manager, position, tick = _tighten_fixture()
-        floor = manager.settings.trade_management.break_even_at_r
-
-        assert self._tighten(manager, position, floor + 0.3, tick) is not None
-
-    def test_a_losing_position_is_untouched_by_this_and_still_tightens(self) -> None:
-        """The half that was always sound. Under water the question is how much
-        of the remaining risk is worth carrying, and cutting it is a real
-        reduction rather than a lock on nothing."""
-        manager, position, tick = _tighten_fixture()
-
-        assert self._tighten(manager, position, -0.30, tick) is not None
+        assert manager._act_on_health(position, health, 0.12, risk, tick) is not None
