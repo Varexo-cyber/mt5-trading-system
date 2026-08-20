@@ -93,6 +93,40 @@ class TestEntryPriceSurvivesPromotion:
         assert row["ticket"] == 134372678
         assert row["entry_state"] == "OPEN"
 
+    def test_real_fill_can_replace_every_entry_derived_metric(
+        self, journal: Journal, recorder: Recorder, sizing: SizingResult
+    ) -> None:
+        trade_id = pending(recorder, sizing)
+        journal.promote_pending_entry(
+            trade_id,
+            ticket=134859872,
+            entry_price=1.08512,
+            filled_risk_money=7.25,
+            filled_risk_pct=0.725,
+            filled_sl_distance_pips=12.4,
+            filled_planned_rr=2.51,
+        )
+
+        row = journal.query("SELECT * FROM trades WHERE id = ?", (trade_id,))[0]
+        assert row["entry_price"] == pytest.approx(1.08512)
+        assert row["risk_money"] == pytest.approx(7.25)
+        assert row["risk_pct"] == pytest.approx(0.725)
+        assert row["sl_distance_pips"] == pytest.approx(12.4)
+        assert row["planned_rr"] == pytest.approx(2.51)
+
+    def test_partial_fill_metrics_are_rejected(
+        self, journal: Journal, recorder: Recorder, sizing: SizingResult
+    ) -> None:
+        trade_id = pending(recorder, sizing)
+
+        with pytest.raises(ValueError, match="must be supplied together"):
+            journal.promote_pending_entry(
+                trade_id,
+                ticket=134859872,
+                entry_price=1.08512,
+                filled_planned_rr=2.51,
+            )
+
     def test_a_missing_fill_price_keeps_the_sizing_price(
         self, journal: Journal, recorder: Recorder, sizing: SizingResult
     ) -> None:
