@@ -1000,6 +1000,41 @@ class Journal:
             (volume, ticket),
         )
 
+    def refresh_open_trade_fill_metrics(
+        self,
+        ticket: int,
+        *,
+        volume: float,
+        entry_price: float,
+        risk_money: float,
+        risk_pct: float,
+        sl_distance_pips: float,
+        planned_rr: float,
+    ) -> None:
+        """Re-anchor a surviving position to the broker's authoritative fill.
+
+        This is the restart repair for trades opened by an older build that
+        stored intent-time arithmetic. It also handles a broker/netting layer
+        reporting a larger live volume than the original ticket record: the
+        manager must reason about the money that actually exists at MT5.
+        """
+
+        self.conn.execute(
+            "UPDATE trades SET volume = ?, entry_price = ?, risk_money = ?, risk_pct = ?, "
+            "sl_distance_pips = ?, planned_rr = ? "
+            "WHERE ticket = ? AND closed_at IS NULL",
+            (
+                volume,
+                entry_price,
+                risk_money,
+                risk_pct,
+                sl_distance_pips,
+                planned_rr,
+                ticket,
+            ),
+        )
+        self.conn.commit()
+
     def equity_mark(self, period: str, period_key: datetime) -> float | None:
         row = self.conn.execute(
             "SELECT equity FROM equity_marks WHERE period = ? AND period_key = ?",
