@@ -238,12 +238,11 @@ class TestTheCalibrationCanActuallyReachThisAccount:
         candidate in the finer buckets. Without this rung the ladder stops
         above the only evidence a small account has.
         """
-        source = (Path(__file__).resolve().parent.parent / "runner" / "service.py").read_text(
-            encoding="utf-8"
-        )
-        assert '("*", "*", "*", direction, "*")' in source
-
         store = (Path(__file__).resolve().parent.parent / "brain" / "store.py").read_text(
             encoding="utf-8"
         )
-        assert "GROUP BY direction" in store, "the query must produce that rung"
+        assert "SELECT 'direction', '*', direction" in store
+        selector = (Path(__file__).resolve().parent.parent / "brain" / "selection.py").read_text(
+            encoding="utf-8"
+        )
+        assert '"direction": "*"' in selector, "the broad direction facet must be matched"

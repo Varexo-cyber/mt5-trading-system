@@ -647,7 +647,7 @@ class TestTheOperatorCanSeeWhatItLearned:
         )
 
         assert "learned_bank_threshold()" in source, "the threshold that changes when it banks"
-        assert "edge_calibrations(" in source, "the adjustment that changes what ranks first"
+        assert "selection_evidence(" in source, "the second brain that changes what ranks first"
 
     def test_it_says_what_the_threshold_will_actually_do(self) -> None:
         """A learned number nobody can compare to the configured one is noise.

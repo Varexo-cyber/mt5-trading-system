@@ -686,6 +686,20 @@ learning:
   selection_shrinkage_trades: 80
   selection_points_per_r: 6.0
   selection_modifier_cap: 4.0
+  selection_ensemble_strength: 1.5
+  selection_ensemble_modifier_cap: 6.0
+  selection_outcome_floor_r: -1.0
+  selection_outcome_cap_r: 2.0
+  selection_dimension_weights:
+    setup_horizon: 1.5
+    setup_family: 1.0
+    detector: 1.0
+    regime: 1.0
+    session: 0.8
+    score_band: 0.8
+    asset_class: 0.6
+    horizon: 0.6
+    direction: 0.5
   selection_refresh_minutes: 15
 
 scanner:
