@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -229,6 +230,11 @@ class PositionManager:
                 continue
             row = self.journal.open_trade_by_ticket(position.ticket)
             assert row is not None
+            refreshed = self._refresh_fill_metrics(position, row)
+            if refreshed is not None:
+                events.append(refreshed)
+                row = self.journal.open_trade_by_ticket(position.ticket)
+                assert row is not None
             journal_volume = float(row["volume"])
             tolerance = self.broker.spec(position.symbol).volume_step / 2
             partial_actions = ("PARTIAL_CLOSE", "PARTIAL_CLOSE_RECOVERED")
@@ -281,6 +287,62 @@ class PositionManager:
                         )
                     )
         return events
+
+    def _refresh_fill_metrics(self, position: Position, row) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
+        """Repair intent-time entry metrics from the position MT5 still has.
+
+        The method is feature-detected so the small journal doubles used by
+        the fast management tests remain intentionally tiny. Production's
+        :class:`Journal` always provides the repair method.
+        """
+
+        refresh = getattr(self.journal, "refresh_open_trade_fill_metrics", None)
+        if refresh is None:
+            return None
+        spec = self.broker.spec(position.symbol)
+        original_sl = float(row["sl"])
+        original_tp = float(row["tp"])
+        distance = abs(position.price_open - original_sl)
+        if distance <= 0.0:
+            return None
+        reward = (original_tp - position.price_open) * int(position.direction)
+        planned_rr = max(reward, 0.0) / distance
+        commission = self.settings.risk.commission_per_lot(spec.asset_class.value)
+        risk_money = (spec.money_per_lot(distance) + commission) * position.volume
+        equity_before = float(row["equity_before"] or 0.0)
+        risk_pct = 100.0 * risk_money / equity_before if equity_before > 0.0 else 0.0
+        sl_pips = spec.price_to_pips(distance)
+        changed = any(
+            (
+                not math.isclose(float(row[key]), value, rel_tol=1e-9, abs_tol=1e-9)
+                for key, value in (
+                    ("volume", position.volume),
+                    ("entry_price", position.price_open),
+                    ("risk_money", risk_money),
+                    ("risk_pct", risk_pct),
+                    ("sl_distance_pips", sl_pips),
+                    ("planned_rr", planned_rr),
+                )
+            )
+        )
+        if not changed:
+            return None
+        refresh(
+            position.ticket,
+            volume=position.volume,
+            entry_price=position.price_open,
+            risk_money=risk_money,
+            risk_pct=risk_pct,
+            sl_distance_pips=sl_pips,
+            planned_rr=planned_rr,
+        )
+        return ManagementEvent(
+            position.ticket,
+            "BROKER_FILL_METRICS_SYNCED",
+            f"reconciled MT5 fill/volume: {position.volume:g} lots at "
+            f"{position.price_open:g}, 1R {risk_money:.2f}, planned RR {planned_rr:.2f}",
+            remaining_volume=position.volume,
+        )
 
     def manage(
         self,

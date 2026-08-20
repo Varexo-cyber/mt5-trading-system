@@ -127,6 +127,30 @@ class TestEntryPriceSurvivesPromotion:
                 filled_planned_rr=2.51,
             )
 
+    def test_an_old_open_trade_can_be_reanchored_to_broker_reality(
+        self, journal: Journal, recorder: Recorder, sizing: SizingResult
+    ) -> None:
+        trade_id = pending(recorder, sizing)
+        journal.promote_pending_entry(trade_id, ticket=134859872, entry_price=1.08512)
+
+        journal.refresh_open_trade_fill_metrics(
+            134859872,
+            volume=0.30,
+            entry_price=1.08600,
+            risk_money=12.50,
+            risk_pct=1.25,
+            sl_distance_pips=25.0,
+            planned_rr=1.75,
+        )
+
+        row = journal.query("SELECT * FROM trades WHERE id = ?", (trade_id,))[0]
+        assert row["volume"] == pytest.approx(0.30)
+        assert row["entry_price"] == pytest.approx(1.08600)
+        assert row["risk_money"] == pytest.approx(12.50)
+        assert row["risk_pct"] == pytest.approx(1.25)
+        assert row["sl_distance_pips"] == pytest.approx(25.0)
+        assert row["planned_rr"] == pytest.approx(1.75)
+
     def test_a_missing_fill_price_keeps_the_sizing_price(
         self, journal: Journal, recorder: Recorder, sizing: SizingResult
     ) -> None:
