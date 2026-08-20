@@ -1881,6 +1881,22 @@ class EntryQualityConfig(Base):
             "unknown": 1.20,
         }
     )
+    #: Maximum favourable movement from the latest CLOSED entry-timeframe bar
+    #: to the executable quote. This is deliberately separate from the three
+    #: closed-bar extension limits above. A breakout may legitimately close
+    #: far from its EMA; a market order another ATR beyond that already-closed
+    #: evidence is simply paying late. Quick setups do not scale this limit.
+    max_live_favourable_gap_atr: dict[str, float] = Field(
+        default_factory=lambda: {
+            "forex": 0.75,
+            "crypto": 1.00,
+            "stock": 0.90,
+            "index": 0.90,
+            "metal": 1.00,
+            "commodity": 1.00,
+            "unknown": 0.75,
+        }
+    )
     #: A pullback that is still moving materially against the proposal has not
     #: become a retest yet. It is reconsidered after the next closed M5 bar.
     max_last_bar_adverse_atr: float = Field(default=0.20, ge=0.0, le=2.0)
@@ -1921,6 +1937,7 @@ class EntryQualityConfig(Base):
         "max_favourable_extension_atr",
         "max_single_bar_body_atr",
         "max_ema_distance_atr",
+        "max_live_favourable_gap_atr",
     )
     @classmethod
     def _asset_limits_are_complete(cls, value: dict[str, float]) -> dict[str, float]:

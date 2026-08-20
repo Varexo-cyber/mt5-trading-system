@@ -31,6 +31,7 @@ class EntryTimingAssessment:
     ema_distance_atr: float | None = None
     directional_range_location: float | None = None
     last_bar_adverse_atr: float | None = None
+    executable_gap_atr: float | None = None
 
     @property
     def passed(self) -> bool:
@@ -64,6 +65,8 @@ def assess_entry_quality(
     direction: Direction,
     asset_class: AssetClass,
     config: EntryQualityConfig,
+    *,
+    executable_price: float | None = None,
 ) -> EntryTimingAssessment:
     """Refuse both chasing and a pullback that has not finished.
 
@@ -119,10 +122,24 @@ def assess_entry_quality(
     closes = frame["close"].astype(float)
     opens = frame["open"].astype(float)
     sign = int(direction)
-    last = float(closes.iloc[-1])
+    closed_last = float(closes.iloc[-1])
+    # Closed bars decide whether a setup exists. The live quote decides
+    # whether that setup is still offered at a sensible price. Keeping those
+    # jobs separate is important: using a forming candle as signal evidence is
+    # look-ahead, while ignoring its price at execution is how ETHUSD was
+    # bought at the top of a live spike that the last closed M5 bar could not
+    # yet contain.
+    last = (
+        float(executable_price)
+        if executable_price is not None and isfinite(float(executable_price))
+        else closed_last
+    )
+    executable_gap = sign * (last - closed_last) / reference
     extension = sign * (last - float(closes.iloc[-1 - config.extension_bars])) / reference
-    body = sign * (last - float(opens.iloc[-1])) / reference
-    last_move = sign * (last - float(closes.iloc[-2])) / reference
+    # Candle shape remains closed-bar evidence. Combining a live quote with the
+    # closed candle's open would manufacture a body that never existed.
+    body = sign * (closed_last - float(opens.iloc[-1])) / reference
+    last_move = sign * (closed_last - float(closes.iloc[-2])) / reference
     last_adverse = max(0.0, -last_move)
 
     recent = frame.tail(config.range_lookback_bars)
@@ -138,6 +155,7 @@ def assess_entry_quality(
     extension_limit = config.max_favourable_extension_atr[asset]
     body_limit = config.max_single_bar_body_atr[asset]
     ema_limit = config.max_ema_distance_atr[asset]
+    live_gap_limit = config.max_live_favourable_gap_atr[asset]
 
     metrics = {
         "favourable_extension_atr": extension,
@@ -145,6 +163,7 @@ def assess_entry_quality(
         "ema_distance_atr": ema_distance,
         "directional_range_location": directional_location,
         "last_bar_adverse_atr": last_adverse,
+        "executable_gap_atr": executable_gap,
     }
     rounded = {key: round(value, 3) for key, value in metrics.items()}
 
@@ -160,6 +179,11 @@ def assess_entry_quality(
 
     at_extreme = directional_location >= config.directional_extreme_location
     breaches: list[str] = []
+    if executable_gap > live_gap_limit:
+        breaches.append(
+            f"live quote ran {executable_gap:.2f}>{live_gap_limit:.2f} ATR beyond the "
+            f"latest closed {timeframe.value} bar"
+        )
     if at_extreme and extension > extension_limit:
         breaches.append(
             f"{config.extension_bars}-bar move {extension:.2f}>{extension_limit:.2f} ATR"
@@ -183,7 +207,7 @@ def assess_entry_quality(
     return EntryTimingAssessment(
         EntryTimingDecision.ENTER_NOW,
         "ENTRY_PRICE_NOT_EXTENDED",
-        f"{timeframe.value} entry is not extended and the latest closed bar is not "
+        f"executable {timeframe.value} entry is not extended and the latest closed bar is not "
         f"materially opposing the {direction.name}",
         timeframe.value,
         **rounded,
