@@ -1900,9 +1900,9 @@ def test_the_learned_bank_threshold_can_be_switched_off_on_evidence() -> None:
     )
     off.equity = on.equity = 10_000.0
 
-    assert off._worth_taking(100.0) > on._worth_taking(
-        100.0
-    ), "with the learned floor off, the bar to bank must stay higher"
+    assert off._worth_taking(100.0) > on._worth_taking(100.0), (
+        "with the learned floor off, the bar to bank must stay higher"
+    )
 
 
 def test_it_is_on_by_default_and_off_for_this_account() -> None:
@@ -2196,12 +2196,16 @@ class TestALosingTradeIsNotLeftToRunToItsStop:
         warning = PositionHealth("deteriorating", 0.6, "tighten", (), "warning")
 
         at(broker, -0.3)
-        assert manager._act_on_health(
-            position(), warning, -0.3, ENTRY - STOP, broker.tick("EURUSD")
-        ) is not None
+        assert (
+            manager._act_on_health(position(), warning, -0.3, ENTRY - STOP, broker.tick("EURUSD"))
+            is not None
+        )
         manager._act_on_health(
-            position(), PositionHealth("healthy", 0.0, "hold", (), "recovered"),
-            -0.1, ENTRY - STOP, broker.tick("EURUSD")
+            position(),
+            PositionHealth("healthy", 0.0, "hold", (), "recovered"),
+            -0.1,
+            ENTRY - STOP,
+            broker.tick("EURUSD"),
         )
         at(broker, -0.4)
         again = manager._act_on_health(
@@ -2294,7 +2298,8 @@ class TestTheEntryGateIsAuditableOnWhatItLETTHROUGH:
         # Written on the refusal …
         assert '"entry_quality": entry_quality.safe_dict(),' in source
         # … and on the trade that was allowed through.
-        assert 'filter_data = {**filter_data, "entry_quality": entry_quality.safe_dict()}' in source
+        assert '"entry_quality": entry_quality.safe_dict(),' in source
+        assert '"setup_lifecycle": lifecycle.safe_dict(),' in source
 
     def test_the_postmortem_shows_them(self) -> None:
         """Recording without reporting would move the blind spot rather than

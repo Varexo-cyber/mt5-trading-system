@@ -1927,6 +1927,20 @@ class EntryQualityConfig(Base):
     #: remain unchanged.
     quick_extension_multiplier: float = Field(default=1.25, ge=1.0, le=3.0)
 
+    #: Preserve a valid directional setup across cycles when only its entry is
+    #: late. The setup waits for a real pullback and then a newly closed bar
+    #: resuming in its direction; it is not silently discarded and rediscovered.
+    lifecycle_enabled: bool = True
+    lifecycle_pullback_atr: dict[str, float] = Field(
+        default_factory=lambda: {"quick": 0.20, "intraday": 0.30, "swing": 0.40}
+    )
+    lifecycle_resumption_atr: dict[str, float] = Field(
+        default_factory=lambda: {"quick": 0.05, "intraday": 0.08, "swing": 0.10}
+    )
+    lifecycle_expiry_minutes: dict[str, float] = Field(
+        default_factory=lambda: {"quick": 30.0, "intraday": 240.0, "swing": 1440.0}
+    )
+
     @field_validator("timeframe")
     @classmethod
     def _entry_timeframe_is_supported(cls, value: str) -> str:
@@ -1951,6 +1965,18 @@ class EntryQualityConfig(Base):
             )
         if any(limit <= 0.0 or limit > 10.0 for limit in value.values()):
             raise ValueError("entry-quality ATR limits must be above zero and at most 10")
+        return value
+
+    @field_validator(
+        "lifecycle_pullback_atr", "lifecycle_resumption_atr", "lifecycle_expiry_minutes"
+    )
+    @classmethod
+    def _lifecycle_horizons_are_complete(cls, value: dict[str, float]) -> dict[str, float]:
+        expected = {"quick", "intraday", "swing"}
+        if set(value) != expected:
+            raise ValueError(f"setup lifecycle requires exactly {sorted(expected)}")
+        if any(limit <= 0.0 for limit in value.values()):
+            raise ValueError("setup lifecycle limits must be above zero")
         return value
 
 
@@ -2961,6 +2987,10 @@ class TradeManagementConfig(Base):
     health_secure_at_r: float = Field(default=0.5, ge=0.0)
     #: At or above this R, a single warning tightens the stop instead.
     health_tighten_at_r: float = Field(default=0.2, ge=0.0)
+    #: A losing trade whose path and at least one independent chart family both
+    #: contradict the entry thesis may be cut before the original full stop.
+    #: This only reduces risk; it never widens a stop or creates a position.
+    thesis_invalidation_at_r: float = Field(default=0.35, ge=0.0, le=1.0)
     #: Asset-specific horizons. Forex keeps the established M1/M5 behaviour;
     #: continuously traded and exchange products use slower confirmation so a
     #: single noisy one-minute print cannot masquerade as structural failure.
@@ -3211,6 +3241,12 @@ class LearningConfig(Base):
     #: sparse exact segment.  It remains ranking-only and separately bounded.
     selection_ensemble_strength: float = Field(default=1.5, ge=0.0, le=3.0)
     selection_ensemble_modifier_cap: float = Field(default=6.0, ge=0.0, le=10.0)
+    #: Raw confluence establishes eligibility, but must not drown out realised
+    #: evidence once candidates are ordered. This affects ordering only.
+    selection_raw_conviction_weight: float = Field(default=0.35, ge=0.0, le=1.0)
+    #: Reward genuinely different observations, not three variants of one EMA.
+    selection_independent_family_bonus: float = Field(default=1.5, ge=0.0, le=5.0)
+    selection_independent_family_cap: int = Field(default=3, ge=1, le=8)
     selection_outcome_floor_r: float = Field(default=-1.0, ge=-5.0, le=0.0)
     selection_outcome_cap_r: float = Field(default=2.0, ge=0.1, le=10.0)
     selection_dimension_weights: dict[str, float] = Field(

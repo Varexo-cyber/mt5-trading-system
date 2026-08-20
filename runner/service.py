@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -41,6 +42,7 @@ from analysis import (
     FastEmaCross,
     ImpulseBreak,
     LevelReaction,
+    LifecycleDecision,
     LiquiditySweep,
     M1MicroBreakout,
     MarketObservation,
@@ -50,6 +52,8 @@ from analysis import (
     OpportunityIntelligence,
     Seasonality,
     SessionBreakout,
+    SetupLifecycleBook,
+    SetupState,
     TrendMomentum,
     VolatilityRegime,
     VolatilitySqueeze,
@@ -59,6 +63,7 @@ from analysis import (
     assess_review_drift,
     observe_market,
     scout_market_snapshot,
+    supporting_families,
 )
 from analysis import (
     world_state as build_world_state,
@@ -288,6 +293,11 @@ class AnalysedCandidate:
     #: How much of this setup's own reward survives its own round trip. See
     #: `JarvisRunner._after_cost_priority`.
     after_cost_priority: float = 0.0
+    #: Raw scores establish eligibility upstream. Once eligible, their role in
+    #: ordering is deliberately reduced so realised evidence and independent
+    #: evidence families can materially change which setup is considered first.
+    raw_conviction_weight: float = 1.0
+    independent_family_bonus: float = 0.0
 
     @property
     def conviction(self) -> float:
@@ -314,7 +324,9 @@ class AnalysedCandidate:
             if self.intelligence is not None
             else 0.0
         )
-        return self.conviction + modifier
+        return (
+            self.conviction * self.raw_conviction_weight + self.independent_family_bonus + modifier
+        )
 
     @property
     def selection_score(self) -> float:
@@ -458,6 +470,13 @@ class JarvisRunner:
         # One global closed-bar view per cycle. It is prompt/dashboard context,
         # never a source of entry permission.
         self.market_intelligence_file = root / "runtime" / "market_intelligence.json"
+        entry = self.settings.analysis.entry_quality
+        self.setup_lifecycle = SetupLifecycleBook(
+            root / "runtime" / "setup_lifecycle.json",
+            pullback_atr=entry.lifecycle_pullback_atr,
+            resumption_atr=entry.lifecycle_resumption_atr,
+            expiry_minutes=entry.lifecycle_expiry_minutes,
+        )
         self.scout_throttle = ScoutThrottle(root / "runtime" / "market_scout_state.json")
         self._cycle_observations: list[MarketObservation] = []
         self._cycle_contexts: dict[str, MarketContext] = {}
@@ -1978,7 +1997,14 @@ class JarvisRunner:
             observation = observations.get(item.symbol)
             intelligence = item.intelligence
             if observation is None or intelligence is None:
-                routed.append(item)
+                routed.append(
+                    replace(
+                        item,
+                        raw_conviction_weight=(
+                            self.settings.learning.selection_raw_conviction_weight
+                        ),
+                    )
+                )
                 continue
             spec = self.broker.spec(item.symbol)
             routing = self.settings.analysis.asset_class_routing.get(
@@ -2022,7 +2048,29 @@ class JarvisRunner:
                         f"the reviewer has refused this direction recently ({penalty:+.1f})",
                     ),
                 )
-            routed.append(replace(item, intelligence=intelligence))
+            families = supporting_families(item.idea.signals, item.idea.direction)
+            family_steps = min(
+                max(0, len(families) - 1),
+                self.settings.learning.selection_independent_family_cap,
+            )
+            family_bonus = family_steps * self.settings.learning.selection_independent_family_bonus
+            if families:
+                intelligence = replace(
+                    intelligence,
+                    reasons=(
+                        *intelligence.reasons,
+                        f"independent evidence families: {', '.join(families)} "
+                        f"({family_bonus:+.1f} ranking only)",
+                    ),
+                )
+            routed.append(
+                replace(
+                    item,
+                    intelligence=intelligence,
+                    raw_conviction_weight=(self.settings.learning.selection_raw_conviction_weight),
+                    independent_family_bonus=family_bonus,
+                )
+            )
         analysed = routed
         analysed.sort(key=lambda item: item.selection_key, reverse=True)
         self._publish_market_intelligence(analysed)
@@ -2857,6 +2905,7 @@ class JarvisRunner:
             return False
 
         entry_quality = self._assess_entry_quality(context, idea, spec.asset_class)
+        lifecycle = self._observe_setup_lifecycle(context, idea, entry_quality)
         # Recorded on the same row as the refusal, and that is the whole point.
         # `momentum_scalp` asks for a shallow pullback off a fresh impulse;
         # `entry_quality` refuses a price sitting at its range extreme. Those
@@ -2869,10 +2918,13 @@ class JarvisRunner:
             if candidate.playbooks is not None
             else {}
         )
-        if not entry_quality.passed:
+        if not lifecycle.may_enter:
             if entry_quality.decision is EntryTimingDecision.DATA_UNAVAILABLE:
                 reason = Reason.DATA_UNAVAILABLE
-            elif entry_quality.reason_code == "PULLBACK_STILL_ACTIVE":
+            elif lifecycle.state in (
+                SetupState.PULLBACK_RECEIVED,
+                SetupState.WAIT_RESUMPTION,
+            ):
                 reason = Reason.AWAITING_CONFIRMATION
             else:
                 reason = Reason.ENTRY_OVEREXTENDED
@@ -2881,11 +2933,12 @@ class JarvisRunner:
                 symbol,
                 account.equity,
                 reason,
-                entry_quality.detail,
+                lifecycle.reason,
                 signals=list(idea.signals),
                 extra={
                     **filter_data,
                     "entry_quality": entry_quality.safe_dict(),
+                    "setup_lifecycle": lifecycle.safe_dict(),
                     **playbook_note,
                 },
             )
@@ -2914,7 +2967,11 @@ class JarvisRunner:
         # A gate that cannot be audited on its own decisions is a gate nobody
         # can improve, and the last three attempts to tune this one were made
         # by reading the code and guessing which sub-test had fired.
-        filter_data = {**filter_data, "entry_quality": entry_quality.safe_dict()}
+        filter_data = {
+            **filter_data,
+            "entry_quality": entry_quality.safe_dict(),
+            "setup_lifecycle": lifecycle.safe_dict(),
+        }
 
         # Give the stop the room the costs demand, before anything is sized.
         #
@@ -3254,7 +3311,8 @@ class JarvisRunner:
         # already run, and an approval on this pair wipes the pattern outright.
         pattern = (
             self.veto_patterns.established(symbol, idea.direction.name, self.clock.now())
-            if self.operation is not OperationMode.MONITOR and self._broad_veto_memory_applies(idea)
+            if self.operation is not OperationMode.MONITOR
+            and self._broad_veto_memory_applies(idea)
             # "Only ever suppresses a paid call" — so only when there is one.
             and self._reviews_cost_money()
             else None
@@ -3746,9 +3804,7 @@ class JarvisRunner:
         reward = (sizing.tp - fill) * int(sizing.direction)
         planned_rr = max(reward, 0.0) / stop_distance if stop_distance > 0.0 else 0.0
         commission_per_lot = self.settings.risk.commission_per_lot(spec.asset_class.value)
-        risk_money = (
-            spec.money_per_lot(stop_distance) + commission_per_lot
-        ) * sizing.volume
+        risk_money = (spec.money_per_lot(stop_distance) + commission_per_lot) * sizing.volume
         risk_pct = 100.0 * risk_money / equity if equity > 0.0 else 0.0
         self.journal.promote_pending_entry(
             trade_id,
@@ -5021,14 +5077,19 @@ class JarvisRunner:
             )
         timing = self._assess_entry_quality(fresh_context, fresh_idea, spec.asset_class)
         binding["entry_quality"] = timing.safe_dict()
-        if not timing.passed:
+        lifecycle = self._observe_setup_lifecycle(fresh_context, fresh_idea, timing)
+        binding["setup_lifecycle"] = lifecycle.safe_dict()
+        if not lifecycle.may_enter:
             if timing.decision is EntryTimingDecision.DATA_UNAVAILABLE:
                 reason = Reason.DATA_UNAVAILABLE
-            elif timing.reason_code == "PULLBACK_STILL_ACTIVE":
+            elif lifecycle.state in (
+                SetupState.PULLBACK_RECEIVED,
+                SetupState.WAIT_RESUMPTION,
+            ):
                 reason = Reason.AWAITING_CONFIRMATION
             else:
                 reason = Reason.ENTRY_OVEREXTENDED
-            return fail(reason, timing.detail, binding)
+            return fail(reason, lifecycle.reason, binding)
 
         risk_decision = self.risk.evaluate(
             fresh_state,
@@ -5136,6 +5197,7 @@ class JarvisRunner:
                 {
                     **filter_data,
                     "entry_quality": timing.safe_dict(),
+                    "setup_lifecycle": lifecycle.safe_dict(),
                     "stake_pct": round(stake, 2),
                     "stake_reason": why_stake,
                 },
@@ -5190,6 +5252,30 @@ class JarvisRunner:
             asset_class,
             self._entry_quality_config_for(idea),
             executable_price=executable_price,
+        )
+
+    def _observe_setup_lifecycle(
+        self, context: MarketContext, idea: TradeIdea, timing
+    ) -> LifecycleDecision:  # type: ignore[no-untyped-def]
+        """Keep direction alive while execution timing develops across cycles."""
+        config = self.settings.analysis.entry_quality
+        if not config.lifecycle_enabled:
+            state = SetupState.ENTER_NOW if timing.passed else SetupState.DETECTED
+            return LifecycleDecision(state, timing.detail, False)
+        if context.tick is None or idea.direction is None:
+            return LifecycleDecision(SetupState.DETECTED, "live quote unavailable", False)
+        executable_price = (
+            context.tick.ask if idea.direction is Direction.LONG else context.tick.bid
+        )
+        bar_time = None
+        with suppress(KeyError, ValueError, IndexError):
+            bar_time = context.bars(Timeframe.parse(timing.timeframe)).last_bar_time
+        return self.setup_lifecycle.observe(
+            idea,
+            timing,
+            executable_price=executable_price,
+            now=self.clock.now(),
+            bar_time=bar_time,
         )
 
     def _reach_failure_is_advisory(self, idea: TradeIdea, reach) -> bool:  # type: ignore[no-untyped-def]

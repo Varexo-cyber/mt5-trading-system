@@ -463,6 +463,7 @@ def assess_position(
     weights: HealthWeights | None = None,
     secure_at_r: float = 0.5,
     tighten_at_r: float = 0.2,
+    thesis_invalidation_at_r: float = 0.35,
     fast_bar_minutes: float = 1.0,
 ) -> PositionHealth:
     """Combine the readers into one verdict and one permitted action.
@@ -576,6 +577,21 @@ def assess_position(
             # direction.
             action = "tighten"
 
+    # A materially losing position plus corroboration from its own path and an
+    # independent chart family is no longer merely "uncomfortable": the entry
+    # thesis has failed in forward data. Unlike a tighter stop this decision
+    # does not wait for the original full invalidation level to be touched.
+    # It can only reduce an existing loss and still needs two distinct facts.
+    thesis_invalidated = (
+        r_now <= -thesis_invalidation_at_r
+        and "trajectory" in strongest
+        and any(family != "trajectory" for family in strongest)
+        and severity >= DETERIORATING_AT
+    )
+    if thesis_invalidated:
+        verdict = "broken"
+        action = "exit"
+
     # One thing wrong is noise; two independent things agreeing is evidence.
     # Counted in families, not signals: a steady drift trips both the slope and
     # the run reader, and letting that pass as corroboration would satisfy this
@@ -591,6 +607,8 @@ def assess_position(
             action = "tighten"
 
     names = ", ".join(signal.name for signal in signals)
+    if thesis_invalidated:
+        names = f"thesis invalidated; {names}"
     return PositionHealth(
         verdict,
         severity,

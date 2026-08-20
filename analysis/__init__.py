@@ -10,6 +10,7 @@ from analysis.entry_quality import (
     assess_entry_quality,
     assess_review_drift,
 )
+from analysis.evidence_families import family_for, supporting_families
 from analysis.fast_ema_cross import FastEmaCross
 from analysis.impulse_break import ImpulseBreak
 from analysis.m1_micro_breakout import M1MicroBreakout
@@ -28,6 +29,7 @@ from analysis.mean_reversion import MeanReversion
 from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, VolatilityRegime
 from analysis.seasonality import Seasonality
 from analysis.session_breakout import SessionBreakout
+from analysis.setup_lifecycle import LifecycleDecision, SetupLifecycleBook, SetupState
 from analysis.volatility_squeeze import VolatilitySqueeze
 
 __all__ = [
@@ -39,6 +41,7 @@ __all__ = [
     "FastEmaCross",
     "ImpulseBreak",
     "LevelReaction",
+    "LifecycleDecision",
     "LiquiditySweep",
     "M1MicroBreakout",
     "MarketObservation",
@@ -49,6 +52,8 @@ __all__ = [
     "ReviewDriftAssessment",
     "Seasonality",
     "SessionBreakout",
+    "SetupLifecycleBook",
+    "SetupState",
     "TradeIdea",
     "TrendMomentum",
     "VolatilityRegime",
@@ -57,7 +62,9 @@ __all__ = [
     "assess_entry_quality",
     "assess_opportunity",
     "assess_review_drift",
+    "family_for",
     "observe_market",
     "scout_market_snapshot",
+    "supporting_families",
     "world_state",
 ]
