@@ -619,6 +619,31 @@ class PositionManager:
         # from a full R to roughly the loss already taken plus half of what was
         # left. Never past price by construction, and `_worth_moving` below
         # still refuses a move too small to pay for itself.
+        # A WINNER THAT HAS NOT EARNED PROTECTION YET IS LEFT ALONE.
+        #
+        # Every other rule that parks a stop in profit waits: break-even at
+        # 0.6R, the profit lock at 0.7R, the ATR trail at 1.5R. This one had no
+        # threshold at all, so a warning at +0.12R put the stop at +0.06R — and
+        # then nothing walked it up, because the rules that would have are all
+        # above where these trades live.
+        #
+        # 39 closed trades over 48 hours say what that costs. Four reached
+        # their target and kept 104% of their best moment, averaging +0.57R.
+        # Twenty-eight went out on a stop and kept 17%, averaging +0.05R: they
+        # reached +7.86R on paper between them and banked +1.36R. One peaked at
+        # +0.59R and returned +0.06R. Only four of the thirty-nine ever saw
+        # 0.6R, so none of the disciplined rules had armed — this was the only
+        # thing touching the stop, and it was locking an eighth of an R.
+        #
+        # The scorecard prices the interference directly: against leaving the
+        # position on its own untouched stop and target, stepping in came to
+        # -0.10R a trade and was better in 5 cases out of 12.
+        #
+        # Under water it still works exactly as before, and that is the half
+        # that was always sound: there the question is how much of the
+        # remaining risk is worth carrying, and cutting it is a real reduction.
+        if 0.0 <= r_now < config.break_even_at_r:
+            return None
         if r_now >= 0.0:
             locked = position.price_open + risk * r_now * 0.5 * int(position.direction)
         else:
