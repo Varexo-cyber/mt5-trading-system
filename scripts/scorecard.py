@@ -145,7 +145,7 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
         # analysis tables, or a hand-built one, must still produce a report.
         rows = db.execute(
             columns.format(
-                extra=", c.total_score, c.score_threshold",
+                extra=", c.total_score, c.score_threshold, t.cycle_pk",
                 join=" LEFT JOIN analysis_cycles c ON c.id = t.cycle_pk",
             ),
             (since.isoformat(),),
@@ -161,6 +161,48 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
         "direction": {},
         "what closed it": {},
     }
+
+    # WHICH DETECTOR WAS BEHIND THE MONEY, and under what regime.
+    #
+    # The journal has carried both since the beginning and nothing ever asked.
+    # `module_scores` records every module's score, confidence and WEIGHT for
+    # the cycle that produced the trade, and the cycle records the regime the
+    # classifier read — so "where did the winners come from" is a join, not a
+    # backtest.
+    #
+    # It matters more than the offline table does, because this is the account's
+    # own money at its own sizes with its own costs, and because the offline
+    # table cannot see how a detector behaved on the 845 markets this scans.
+    modules_by_cycle: dict[int, list[tuple[str, float]]] = {}
+    if scored:
+        try:
+            for row in db.execute(
+                "SELECT m.cycle_pk, m.module, m.score FROM module_scores m "
+                "JOIN trades t ON t.cycle_pk = m.cycle_pk "
+                "WHERE m.weight > 0 AND m.score != 0 "
+                "AND t.closed_at IS NOT NULL AND t.closed_at >= ?",
+                (since.isoformat(),),
+            ).fetchall():
+                modules_by_cycle.setdefault(int(row["cycle_pk"]), []).append(
+                    (str(row["module"]), float(row["score"]))
+                )
+            slices["which detector was behind it"] = {}
+        except sqlite3.OperationalError:
+            modules_by_cycle = {}
+        # Fetched on its own rather than added to the join above, so a journal
+        # without the column loses this one slice instead of every scored slice
+        # in the report. An older journal must still produce a report.
+        try:
+            regimes = {
+                int(row["id"]): str(row["volatility_regime"] or "unrecorded")
+                for row in db.execute(
+                    "SELECT id, volatility_regime FROM analysis_cycles"
+                ).fetchall()
+            }
+            if regimes:
+                slices["the regime at entry"] = {}
+        except sqlite3.OperationalError:
+            regimes = {}
     if scored:
         # Does the engine's own confidence predict anything? Nobody had asked.
         # A setup scoring 58.5 against a bar of 40 lost money on the same day a
@@ -193,6 +235,20 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
                 row,
             )
             into("what the raw score was", score_band(row["total_score"]), row)
+            if "the regime at entry" in slices:
+                into(
+                    "the regime at entry",
+                    regimes.get(int(row["cycle_pk"] or 0), "unrecorded"),
+                    row,
+                )
+            # A trade with three detectors behind it counts once in each of
+            # their rows, so these columns do not add up to the book. That is
+            # the same reading `backtest_modules.py` calls WHEN PRESENT, and it
+            # is the honest one: a detector cannot be credited alone for a
+            # decision three of them made.
+            for module, score in modules_by_cycle.get(int(row["cycle_pk"] or 0), ()):
+                if score * (1 if str(row["direction"]) == "LONG" else -1) > 0:
+                    into("which detector was behind it", module, row)
     return slices
 
 
@@ -268,6 +324,9 @@ def show(title: str, buckets: dict[str, Bucket], minimum: int) -> None:
         return
     print()
     print(f"  {title.upper()}")
+    if title == "which detector was behind it":
+        print("  A trade with three detectors behind it counts once in each row,")
+        print("  so these do not add up to the book. Read a row against the others.")
     print(f"  {'':22}{'trades':>7}{'won':>6}{'net':>10}{'money':>9}{'kept':>8}")
     print("  " + "-" * 62)
     for bucket in sorted(worth_reading, key=lambda b: b.net_r):

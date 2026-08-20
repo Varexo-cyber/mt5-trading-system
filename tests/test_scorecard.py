@@ -311,3 +311,131 @@ class TestAThresholdChangeCanBeJudged:
         """A missing score put in the lowest band would invent evidence that
         low scores lose, on rows that never carried a score at all."""
         assert score_band(None) == "unrecorded"
+
+
+class TestWhereTheMoneyActuallyCameFrom:
+    """ "Which detector produced the winners" was a join, not a backtest.
+
+    `module_scores` has recorded every module's score, confidence and weight
+    for the cycle behind each trade since the journal was written, and
+    `analysis_cycles` records the regime the classifier read. Nothing ever
+    asked either of them, so the only way to judge a detector was an offline
+    replay on five symbols — which cannot see how it behaves on the 845 markets
+    this account scans, at its own sizes, paying its own costs.
+
+    The regime slice answers a live question directly: `drift_continuation`
+    fires in `transition` and the guard that should discount it protects only
+    `trend_momentum`, which carries no live weight. Whether that costs money is
+    measurable here rather than arguable.
+    """
+
+    def _journal(self, journal: Path, rows) -> Path:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.executescript(
+            "CREATE TABLE IF NOT EXISTS analysis_cycles "
+            "(id INTEGER PRIMARY KEY, total_score REAL, score_threshold REAL,"
+            " volatility_regime TEXT);"
+            "CREATE TABLE IF NOT EXISTS module_scores "
+            "(id INTEGER PRIMARY KEY, cycle_pk INTEGER, module TEXT, score REAL,"
+            " confidence REAL, weight REAL);"
+            "ALTER TABLE trades ADD COLUMN cycle_pk INTEGER;"
+        )
+        now = datetime.now(UTC)
+        for i, (pnl, regime, modules) in enumerate(rows, start=900):
+            db.execute("INSERT INTO analysis_cycles VALUES (?,?,?,?)", (i, 55.0, 26.0, regime))
+            for module, score, weight in modules:
+                db.execute(
+                    "INSERT INTO module_scores (cycle_pk, module, score, confidence, weight)"
+                    " VALUES (?,?,?,?,?)",
+                    (i, module, score, 0.8, weight),
+                )
+            db.execute(
+                "INSERT INTO trades (id, cycle_pk, symbol, direction, pnl_r, pnl_money, "
+                "mfe_r, exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    i,
+                    i,
+                    "EURUSD",
+                    "LONG",
+                    pnl,
+                    pnl * 10,
+                    0.4,
+                    "BROKER_TP",
+                    (now - timedelta(hours=8)).isoformat(),
+                    (now - timedelta(hours=3)).isoformat(),
+                ),
+            )
+        db.commit()
+        db.close()
+        return journal
+
+    def test_each_detector_gets_its_own_line(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        path = self._journal(
+            journal,
+            [
+                (+0.5, "trend_up", [("impulse_break", 60.0, 0.6)]),
+                (+0.5, "trend_up", [("impulse_break", 60.0, 0.6)]),
+                (-0.4, "transition", [("drift_continuation", 55.0, 0.7)]),
+                (-0.4, "transition", [("drift_continuation", 55.0, 0.7)]),
+            ],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "WHICH DETECTOR WAS BEHIND IT" in out
+        assert "impulse_break" in out
+        assert "drift_continuation" in out
+        assert "THE REGIME AT ENTRY" in out
+        assert "transition" in out
+
+    def test_a_detector_pointing_the_other_way_is_not_credited(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """A module scoring negative on a LONG did not produce that trade, and
+        crediting it would put the blame — or the credit — on the wrong row."""
+        path = self._journal(
+            journal,
+            [(+0.5, "trend_up", [("impulse_break", 60.0, 0.6), ("mean_reversion", -40.0, 0.5)])],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "impulse_break" in out
+        assert "mean_reversion" not in out
+
+    def test_a_module_carrying_no_weight_is_not_credited_either(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """`trend_momentum` is computed and logged on this account and votes on
+        nothing. It did not produce the trade and must not appear to have."""
+        path = self._journal(
+            journal,
+            [(+0.5, "trend_up", [("impulse_break", 60.0, 0.6), ("trend_momentum", 65.0, 0.0)])],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "impulse_break" in out
+        assert "trend_momentum" not in out
+
+    def test_the_double_counting_is_stated_rather_than_hidden(self, journal: Path, capsys) -> None:
+        """Three detectors behind one trade puts it in three rows. Without the
+        note the columns look like a book that does not balance."""
+        path = self._journal(
+            journal,
+            [
+                (
+                    +0.5,
+                    "trend_up",
+                    [("impulse_break", 60.0, 0.6), ("liquidity_sweep", 50.0, 0.8)],
+                )
+            ],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "counts once in each row" in out
