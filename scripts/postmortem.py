@@ -250,6 +250,38 @@ def report(db: sqlite3.Connection, trade: sqlite3.Row) -> None:
             for key, value in interesting.items():
                 print(f"    {key:<20} {value}")
 
+        # WHERE THE PRICE SAT WHEN IT WAS BOUGHT.
+        #
+        # The entry gate measures four things and the postmortem printed none
+        # of them, so "why did it buy the top" could only be answered by
+        # reading the code and guessing which sub-test had been closest. ETHUSD
+        # LONG on 20 August went in within two points of a vertical M1 spike
+        # and never printed a positive tick; the report offered `activity_ratio`
+        # and `ai_confidence`.
+        #
+        # Each number is shown against the limit it was judged by, because the
+        # gate only refuses when the price is at its range extreme AND one of
+        # the other three is breached — so the interesting reading is always
+        # which of them came closest and by how much.
+        quality = context.get("entry_quality") or {}
+        if isinstance(quality, dict) and quality:
+            print("\n  where the price was when it was bought:")
+            labels = (
+                ("directional_range_location", "where in its own range", "%"),
+                ("favourable_extension_atr", "already travelled", "ATR"),
+                ("single_bar_body_atr", "last bar body", "ATR"),
+                ("ema_distance_atr", "distance from EMA20", "ATR"),
+                ("last_bar_adverse_atr", "last bar against it", "ATR"),
+            )
+            for key, label, unit in labels:
+                value = quality.get(key)
+                if value is None:
+                    continue
+                shown = f"{float(value):.0%}" if unit == "%" else f"{float(value):.2f} {unit}"
+                print(f"    {label:<24} {shown}")
+            if quality.get("reason_code"):
+                print(f"    {'gate verdict':<24} {quality['reason_code']}")
+
     print()
 
 

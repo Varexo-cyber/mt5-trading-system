@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -2221,3 +2222,46 @@ class TestPeakStallAsksTheReadFirst:
                 position(), 0.92 + minute * 0.01, 0.92 + minute * 0.01, self.at(minute), STALLED
             )
             assert verdict is None
+
+
+class TestTheEntryGateIsAuditableOnWhatItLETTHROUGH:
+    """`entry_quality.safe_dict()` was written on refusals and nowhere else.
+
+    Every setup the gate REFUSED carried its four measurements into the
+    journal; every trade it APPROVED carried none. That is backwards — the
+    refusals are the ones nobody has to explain.
+
+    ETHUSD LONG on 20 August entered at 2313.40, within two points of a
+    vertical M1 spike, and never printed a positive tick: peak +0.00R, -0.46R
+    at the low. Asking why the gate allowed it produced `activity_ratio` and
+    `ai_confidence` and nothing else. Where in its range that price sat, how
+    far the move had already run, how big the last bar was, how far from the
+    EMA — all four measured at the moment of the decision, none kept.
+
+    A gate nobody can audit on its own decisions is a gate nobody can improve,
+    and the last three attempts to tune this one were made by reading the code
+    and guessing which sub-test had fired.
+    """
+
+    def test_the_approved_path_journals_the_same_numbers_as_the_refusal(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "runner" / "service.py").read_text()
+
+        # Written on the refusal …
+        assert '"entry_quality": entry_quality.safe_dict(),' in source
+        # … and on the trade that was allowed through.
+        assert 'filter_data = {**filter_data, "entry_quality": entry_quality.safe_dict()}' in source
+
+    def test_the_postmortem_shows_them(self) -> None:
+        """Recording without reporting would move the blind spot rather than
+        close it: the numbers would be in the journal and still absent from the
+        one report anybody reads after a bad trade."""
+        source = (Path(__file__).resolve().parents[1] / "scripts" / "postmortem.py").read_text()
+
+        assert "where the price was when it was bought" in source
+        for key in (
+            "directional_range_location",
+            "favourable_extension_atr",
+            "single_bar_body_atr",
+            "ema_distance_atr",
+        ):
+            assert key in source, key

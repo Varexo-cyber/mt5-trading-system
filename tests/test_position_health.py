@@ -645,3 +645,80 @@ class TestSecuringFastIsTheOwnersChoiceAndTheRatchetIsWhatMakesItWork:
         risk = abs(position.price_open - position.sl)
 
         assert manager._act_on_health(position, health, 0.12, risk, tick) is not None
+
+
+class TestTheRatchetCannotManufactureALossOnATightSpread:
+    """EURAUD LONG, 20 August. Seven tightenings inside one minute.
+
+        worst it reached   -0.60R      the market never went lower
+        its real stop      -1.00R      never came near it
+        what it returned   -0.66R      the tightened stop
+
+    Severity climbed 0.46 -> 0.68 and never reached the 0.75 an exit needs, so
+    nothing ever decided to leave. The stop was simply walked up into the price
+    until it was taken, at a level worse than the position's own deepest point.
+
+    The spread floor added for FRA40 did nothing here and could not: FRA40 had
+    32 pips of spread, so two of them was 64 pips of protection; EURAUD had
+    0.10 pips, so two was 0.2. A floor has to be measured in something that
+    means the same on both, and the trade's own risk is the only such unit.
+
+    Replayed on the real numbers — entry 1.64035, stop 1.63918, 11.7 pips —
+    the spread floor alone walks the stop to 1.63967 and the trade's deepest
+    point of 1.63965 takes it out. With 0.15R the walk stops at 1.63954 after
+    two moves and the position survives.
+    """
+
+    ENTRY, STOP, SPREAD = 1.64035, 1.63918, 0.00001
+
+    def _walk(self, *, spreads: float, r_floor: float) -> float:
+        """The tightening rule's own arithmetic, run to a standstill."""
+        risk = self.ENTRY - self.STOP
+        floor = max(self.SPREAD * spreads, risk * r_floor)
+        stop = self.STOP
+        for r_now in (-0.53, -0.54, -0.55, -0.56, -0.57, -0.57, -0.58):
+            price = self.ENTRY + risk * r_now
+            locked = min(price + (stop - price) * 0.5, price - floor)
+            if locked <= stop:  # the `improves` test declines it
+                break
+            stop = locked
+        return stop
+
+    def test_the_spread_floor_alone_walks_the_stop_into_the_price(self) -> None:
+        deepest = self.ENTRY + (self.ENTRY - self.STOP) * -0.60
+
+        assert self._walk(spreads=2.0, r_floor=0.0) > deepest  # taken out
+
+    def test_a_floor_in_r_leaves_the_position_alive(self) -> None:
+        deepest = self.ENTRY + (self.ENTRY - self.STOP) * -0.60
+
+        assert self._walk(spreads=2.0, r_floor=0.15) < deepest  # survives
+
+    def test_the_larger_of_the_two_floors_applies(self) -> None:
+        """Neither floor replaces the other; each covers what the other cannot.
+
+        The R floor is the bigger number on both cases measured so far —
+        EURAUD at 11.7 pips and FRA40 at 874 — because a stop is usually many
+        spreads wide. Where the spread floor takes over is the case this
+        account trades a lot of: a tight stop on a market whose round trip is a
+        large share of it. At a 7-pip stop and a 0.8-pip spread, two spreads is
+        1.6 pips against the R floor's 1.05 — and a stop inside the spread is
+        not a stop whatever share of R it happens to be.
+        """
+        tight_stop, its_spread = 0.00070, 0.00008
+
+        assert its_spread * 2.0 > tight_stop * 0.15
+        assert 0.00117 * 0.15 > 0.00001 * 2.0  # EURAUD: the R floor wins
+        assert 0.874 * 0.15 > 0.032 * 2.0  # FRA40: the R floor wins there too
+
+    def test_the_live_overlay_carries_both(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        config = load_settings(
+            DEFAULT_CONFIG_PATH,
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml",
+            env_overrides=False,
+        ).trade_management
+
+        assert config.min_stop_room_spreads > 0
+        assert config.min_stop_room_r > 0

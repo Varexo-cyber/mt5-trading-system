@@ -647,8 +647,26 @@ class PositionManager:
         # reduction the reading earned; `improves` below then declines the move
         # outright once the floor has caught up with the current stop, which is
         # what actually stops the ratchet.
+        # AND A FLOOR IN R, BECAUSE THE SPREAD ONE IS NOT ALWAYS A FLOOR.
+        #
+        # Measuring the room in spreads works on FRA40, where 32 pips of spread
+        # makes two of them 64 pips of protection. On EURAUD the spread is 0.10
+        # pips, so two of them is 0.2 pips — no floor at all, and the ratchet
+        # ran unimpeded.
+        #
+        # EURAUD LONG, 20 August: seven tightenings inside one minute, severity
+        # climbing 0.46 -> 0.68 and never reaching the 0.75 an exit needs. Its
+        # worst excursion was -0.60R and its real stop sat at -1.00R, so the
+        # market never came near it. It closed at -0.66R on the tightened stop
+        # — a loss the position had not taken and the rules manufactured.
+        #
+        # So the room must also be a share of the trade's own risk, which is
+        # the only unit that means the same thing on every instrument.
         trigger = tick.ask if position.direction is Direction.SHORT else tick.bid
-        room_floor = max(getattr(tick, "spread", 0.0) or 0.0, 0.0) * config.min_stop_room_spreads
+        room_floor = max(
+            max(getattr(tick, "spread", 0.0) or 0.0, 0.0) * config.min_stop_room_spreads,
+            risk * config.min_stop_room_r,
+        )
         if room_floor > 0:
             if position.direction is Direction.LONG:
                 locked = min(locked, trigger - room_floor)

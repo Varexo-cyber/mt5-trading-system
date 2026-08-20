@@ -2867,6 +2867,25 @@ class JarvisRunner:
                 self._record_counterfactual(cycle_pk, idea, reason)
             return False
 
+        # AND ON THE TRADES IT LET THROUGH, WHICH IS THE HALF THAT MATTERED.
+        #
+        # `entry_quality.safe_dict()` was written on the refusal above and
+        # nowhere else, so every setup this gate REFUSED carried its numbers
+        # into the journal and every trade it APPROVED carried none. That is
+        # backwards: the refusals are the ones nobody has to explain.
+        #
+        # ETHUSD LONG, 20 August, entered at 2313.40 within two points of a
+        # vertical M1 spike and never printed a positive tick — peak +0.00R,
+        # -0.46R at the low. Asking why the gate allowed it produced
+        # `activity_ratio` and `ai_confidence` and nothing else. Where in its
+        # range that price sat, how far the move had already run, how large the
+        # last bar was, how far from the EMA — all four measured, none kept.
+        #
+        # A gate that cannot be audited on its own decisions is a gate nobody
+        # can improve, and the last three attempts to tune this one were made
+        # by reading the code and guessing which sub-test had fired.
+        filter_data = {**filter_data, "entry_quality": entry_quality.safe_dict()}
+
         # Give the stop the room the costs demand, before anything is sized.
         #
         # The cost gate in the sizer would otherwise refuse this outright, and

@@ -2905,6 +2905,23 @@ class TradeManagementConfig(Base):
     #: outright once the floor catches up, which is what ends the ratchet.
     #: Zero restores the unbounded halving.
     min_stop_room_spreads: float = Field(default=2.0, ge=0.0, le=50.0)
+    #: The same floor expressed as a share of the trade's own risk, and the
+    #: larger of the two applies.
+    #:
+    #: Spreads alone are not a floor everywhere. On FRA40, 32 pips of spread
+    #: makes two of them 64 pips of real protection; on EURAUD the spread is
+    #: 0.10 pips, two of them is 0.2 pips, and the ratchet ran with nothing in
+    #: its way. EURAUD LONG on 20 August took seven tightenings inside one
+    #: minute, severity climbing 0.46 -> 0.68 and never reaching the 0.75 an
+    #: exit needs. Its worst excursion was -0.60R against a real stop at
+    #: -1.00R, so the market never came near it — and it closed at -0.66R on
+    #: the tightened stop. The rules manufactured a loss the position had not
+    #: taken.
+    #:
+    #: 0.15R is roughly a seventh of the distance the trade was sized against,
+    #: which is enough room for ordinary noise and still lets a genuine
+    #: reduction happen. Zero falls back to the spread floor alone.
+    min_stop_room_r: float = Field(default=0.15, ge=0.0, le=1.0)
 
     #: The per-second read of how an open trade is actually behaving — has the
     #: structure broken, has momentum turned, is it running against us, has the
