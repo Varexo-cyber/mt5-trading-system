@@ -36,6 +36,25 @@ class ManagementEvent:
     volume_closed: float | None = None
     remaining_volume: float | None = None
     r_at_action: float | None = None
+    old_sl: float | None = None
+    new_sl: float | None = None
+    old_tp: float | None = None
+    new_tp: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HealthIntervention:
+    """The evidence episode that already earned one stop intervention.
+
+    The guard observes every second, but an unchanged observation is not new
+    evidence.  Without this memory the same M1/M5 condition tightened a stop
+    seven times inside one minute on EURAUD and manufactured a broker stop-out
+    that the original trade plan never reached.
+    """
+
+    families: frozenset[str]
+    severity: float
+    r_at_action: float
 
 
 #: How long a computed ATR stays usable, in seconds.
@@ -149,6 +168,11 @@ class PositionManager:
         #: When the squeeze condition first held continuously, and how many
         #: readings have held it since. Cleared the moment it stops holding.
         self._squeeze_since: dict[int, tuple[datetime, int]] = {}
+        #: A per-second observer must not become a per-second order generator.
+        #: One unchanged family of health evidence earns one intervention; a
+        #: healthy/watch reading rearms it, and genuinely new independent
+        #: evidence may act again.
+        self._health_interventions: dict[int, HealthIntervention] = {}
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -277,6 +301,9 @@ class PositionManager:
         patience = min(1.0, max(0.1, patience))
         events: list[ManagementEvent] = []
         config = self.settings.trade_management
+        live_tickets = {position.ticket for position in positions}
+        for ticket in set(self._health_interventions) - live_tickets:
+            self._health_interventions.pop(ticket, None)
         for position in positions:
             row = self.journal.open_trade_by_ticket(position.ticket)
             if row is None:
@@ -352,6 +379,10 @@ class PositionManager:
             health = self._read_health(position, r_now, age_hours * 60.0, risk, tick)
             self.last_health[position.ticket] = health
             self.last_observation[position.ticket]["health_observed"] = True
+            if health.action == "hold":
+                # Recovery is the boundary between evidence episodes. Only
+                # after it may the same family earn another intervention.
+                self._health_interventions.pop(position.ticket, None)
             # Asked first, because it is the only exit here that can act while
             # the money is still on the table. The two rules cannot both apply:
             # this one needs price near the peak, the give-back needs it far
@@ -585,6 +616,7 @@ class PositionManager:
         """
         config = self.settings.trade_management
         if health.action == "hold":
+            self._health_interventions.pop(position.ticket, None)
             return None
         if health.action in ("secure", "exit") and not self._worth_paying_to_leave(
             position, risk, tick
@@ -602,6 +634,12 @@ class PositionManager:
                 position.profit + position.swap,
                 r_at_action=r_now,
             )
+        families = frozenset(signal.family for signal in health.signals)
+        previous = self._health_interventions.get(position.ticket)
+        if previous is not None and families.issubset(previous.families):
+            # Severity changing on the same tick stream is not independent
+            # confirmation. Keep observing it, but do not ratchet the stop.
+            return None
         # tighten: pull the stop to just inside what the trade is currently
         # worth. Never past price, and never a widening — a reading this weak
         # has not earned the right to close anything, only to risk less.
@@ -679,14 +717,24 @@ class PositionManager:
         if not improves or not self._worth_moving(position, locked, risk):
             return None
         spec = self.broker.spec(position.symbol)
-        result = self.broker.modify_stops(position, sl=spec.normalize_price(locked), tp=position.tp)
+        new_sl = spec.normalize_price(locked)
+        result = self.broker.modify_stops(position, sl=new_sl, tp=position.tp)
         if not result.ok:
             return None
+        self._health_interventions[position.ticket] = HealthIntervention(
+            families=families,
+            severity=health.severity,
+            r_at_action=r_now,
+        )
         return ManagementEvent(
             position.ticket,
             "HEALTH_TIGHTEN",
             f"{health.reason} at {r_now:.2f}R",
             r_at_action=r_now,
+            old_sl=position.sl,
+            new_sl=new_sl,
+            old_tp=position.tp,
+            new_tp=position.tp,
         )
 
     def _evening_flatten(

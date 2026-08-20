@@ -2186,14 +2186,13 @@ class JarvisRunner:
     def _conviction_stake(self, state, idea: TradeIdea, advice: Advice) -> tuple[float, str]:
         """The risk percentage this setup has earned, and why.
 
-        Two numbers decide it and they do different jobs. The ENGINE's own
-        confidence in this setup sets what it is worth; the total-exposure cap
-        decides whether the book can carry it. The second can only reduce the
+        Three numbers decide it and they do different jobs. The ENGINE's own
+        confidence in this setup sets the ceiling, the final adviser's
+        confidence may reduce that ceiling, and the total-exposure cap decides
+        whether the book can carry it. Neither later number can increase the
         first.
 
-        The engine's number and not the adviser's, and that distinction stopped
-        being cosmetic once the paid reviewer was switched off. With
-        `ai.provider: local_history` the adviser is the nearest-neighbour
+        With `ai.provider: local_history` the adviser is the nearest-neighbour
         archive, and its confidence means two different things depending on how
         much history it happens to hold:
 
@@ -2203,16 +2202,11 @@ class JarvisRunner:
                                  statement about how often COMPARABLE PAST
                                  setups turned out useful
 
-        The second is a real measurement and it is not the one being asked for
-        here. Sizing is "how good is the setup in front of me", and reading it
-        off an archive's hit rate means the stake stops responding to this chart
-        the moment enough history exists — silently, with no config change and
-        nothing in the log to show the input had been swapped.
-
-        `advice` is still what decides whether the trade opens at all; it just
-        no longer decides how much. Which of the two spoke is named in the
-        reason string, so the journal records the input rather than only the
-        output.
+        The archive must never inflate a weak live chart. It may, however, cap
+        a large stake when comparable evidence is weak. That is the asymmetry
+        the live EURUSD loss exposed: engine conviction bought 5.74% of equity
+        while the final adviser only reported 0.47 confidence. Taking the
+        minimum preserves every approved trade and changes only its size.
 
         A stake of zero means do not open this at all. The cap trims down to
         the ordinary stake and no further: a trade squeezed into whatever
@@ -2222,24 +2216,27 @@ class JarvisRunner:
         a reason naming the account size rather than the full book.
         """
         config = self.settings.risk.conviction_risk
-        conviction = idea.confidence
+        engine_confidence = idea.confidence
+        conviction = min(engine_confidence, advice.confidence)
         wanted = config.stake_for(conviction)
         allowed = self.risk.room_for_more_risk(state, wanted, self.broker.spec)
         if allowed >= wanted:
             return wanted, (
-                f"engine conviction {conviction:.2f} stakes {wanted:.1f}% "
-                f"(adviser said {advice.confidence:.2f} and decides only whether to open)"
+                f"effective conviction {conviction:.2f} stakes {wanted:.1f}% "
+                f"(engine {engine_confidence:.2f}, adviser cap {advice.confidence:.2f})"
             )
         used = self.risk.open_risk_pct(state, self.broker.spec)
         if allowed + 1e-9 < config.floor_pct:
             return 0.0, (
-                f"engine conviction {conviction:.2f} earned {wanted:.1f}% but the book "
+                f"effective conviction {conviction:.2f} (engine {engine_confidence:.2f}, "
+                f"adviser cap {advice.confidence:.2f}) earned {wanted:.1f}% but the book "
                 f"already carries {used:.1f}% of the "
                 f"{self.settings.risk.max_total_open_risk_pct:.1f}% ceiling, leaving "
                 f"{allowed:.1f}% — under the {config.floor_pct:.1f}% ordinary stake"
             )
         return allowed, (
-            f"engine conviction {conviction:.2f} earned {wanted:.1f}% but the book "
+            f"effective conviction {conviction:.2f} (engine {engine_confidence:.2f}, "
+            f"adviser cap {advice.confidence:.2f}) earned {wanted:.1f}% but the book "
             f"already carries {used:.1f}% of the "
             f"{self.settings.risk.max_total_open_risk_pct:.1f}% ceiling, so this "
             f"takes {allowed:.1f}%"
@@ -4119,6 +4116,10 @@ class JarvisRunner:
             self.recorder.record_management_action(
                 trade_id,
                 action=event.action,
+                old_sl=event.old_sl,
+                new_sl=event.new_sl,
+                old_tp=event.old_tp,
+                new_tp=event.new_tp,
                 volume_closed=event.volume_closed,
                 r_at_action=event.r_at_action,
                 note=event.detail,
