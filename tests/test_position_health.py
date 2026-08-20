@@ -561,3 +561,82 @@ class TestBeingDownIsNeverAReasonToClose:
 
         assert {signal.family for signal in health.signals} == {"drift"}
         assert health.action not in ("exit", "secure")
+
+
+def _tighten_fixture():  # type: ignore[no-untyped-def]
+    """A live long with room between price and its stop, and a manager to run.
+
+    Built from the position-guard fixtures so the broker and journal stubs are
+    the ones the rest of the suite already trusts.
+    """
+    from core.types import Direction, Position, Tick
+    from tests.test_position_guard import NOW, BrokerStub, JournalStub, manager_for
+
+    position = Position(
+        ticket=4242,
+        symbol="EURUSD",
+        direction=Direction.LONG,
+        volume=0.05,
+        price_open=1.1000,
+        sl=1.0980,
+        tp=1.1060,
+        profit=0.0,
+        swap=0.0,
+        opened_at=NOW,
+    )
+    tick = Tick(symbol="EURUSD", time=NOW, bid=1.1012, ask=1.1013)
+    return manager_for(BrokerStub(), JournalStub()), position, tick
+
+
+class TestATinyProfitIsNotWorthProtecting:
+    """The measured leak: 28 of 39 trades kept 17% of their best moment.
+
+    Every other rule that parks a stop in profit waits — break-even at 0.6R,
+    the profit lock at 0.7R, the ATR trail at 1.5R. The health tightener had no
+    threshold, so a warning at +0.12R put the stop at +0.06R, and nothing
+    walked it up afterwards because all three of those rules sit above where
+    these trades live: only four of the thirty-nine ever reached 0.6R.
+
+        reached their target   4 trades   kept 104%   +0.57R each
+        went out on a stop    28 trades   kept  17%   +0.05R each
+
+    Those 28 reached +7.86R on paper between them and banked +1.36R. The
+    scorecard prices the interference at -0.10R a trade against leaving the
+    position alone, better in 5 cases out of 12.
+    """
+
+    @staticmethod
+    def _tighten(manager, position, r_now: float, tick):  # type: ignore[no-untyped-def]
+        from analysis.position_health import PositionHealth
+
+        health = PositionHealth(
+            verdict="deteriorating",
+            severity=0.45,
+            action="tighten",
+            reason="momentum_turned",
+        )
+        risk = abs(position.price_open - position.sl)
+        return manager._act_on_health(position, health, r_now, risk, tick)
+
+    def test_a_warning_below_break_even_leaves_the_stop_where_it_is(self) -> None:
+        manager, position, tick = _tighten_fixture()
+        floor = manager.settings.trade_management.break_even_at_r
+
+        assert floor > 0.2  # the fixture is only meaningful under it
+        assert self._tighten(manager, position, 0.12, tick) is None
+
+    def test_a_warning_above_break_even_still_tightens(self) -> None:
+        """The rule is not switched off, it is given the same discipline the
+        break-even rule already had."""
+        manager, position, tick = _tighten_fixture()
+        floor = manager.settings.trade_management.break_even_at_r
+
+        assert self._tighten(manager, position, floor + 0.3, tick) is not None
+
+    def test_a_losing_position_is_untouched_by_this_and_still_tightens(self) -> None:
+        """The half that was always sound. Under water the question is how much
+        of the remaining risk is worth carrying, and cutting it is a real
+        reduction rather than a lock on nothing."""
+        manager, position, tick = _tighten_fixture()
+
+        assert self._tighten(manager, position, -0.30, tick) is not None
