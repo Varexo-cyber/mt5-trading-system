@@ -540,6 +540,21 @@ class TestBeingDownIsNeverAReasonToClose:
         assert health.action == "exit"
         assert "thesis invalidated" in health.reason
 
+    def test_configured_invalidation_threshold_also_arms_the_path_reader(self) -> None:
+        fast, _ = deteriorating_bars()
+
+        health = assess_position(
+            sign=LONG,
+            r_now=-0.26,
+            age_minutes=30,
+            fast=fast,
+            structure=flat(),
+            thesis_invalidation_at_r=0.25,
+        )
+
+        assert {signal.family for signal in health.signals} == {"drift", "trajectory"}
+        assert health.action == "exit"
+
     def test_materially_offside_with_the_tape_against_it_now_closes(self) -> None:
         """The case the owner kept watching run to the full stop. Down 0.60R
         with momentum turned scored 0.58 and tightened a stop; it scores 0.85

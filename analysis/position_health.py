@@ -521,7 +521,11 @@ def assess_position(
     # can corroborate anything before the drift family becomes eligible — which
     # is the whole reason a trade that went wrong in fifteen minutes had nothing
     # watching it.
-    offside = adverse_excursion(r_now)
+    # One configured threshold must govern both halves of thesis invalidation.
+    # Previously the final comparison used `thesis_invalidation_at_r` while
+    # this reader silently retained its own 0.35R default, so lowering the
+    # configured threshold had no effect at all.
+    offside = adverse_excursion(r_now, arm_r=thesis_invalidation_at_r)
     if offside is not None:
         signals.append(offside)
 

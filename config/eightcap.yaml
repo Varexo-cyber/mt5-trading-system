@@ -486,9 +486,25 @@ analysis:
       metal: 1.70
       commodity: 1.70
       unknown: 1.40
+    # A breakout may be strong, but paying at the directional edge after one
+    # oversized final bar is the EURAUD buy-high failure. This is WAIT_RETEST,
+    # not a deleted setup; a normal next bar can release it immediately.
+    max_extreme_single_bar_body_atr:
+      forex: 0.75
+      crypto: 1.10
+      stock: 1.00
+      index: 1.00
+      metal: 1.10
+      commodity: 1.00
+      unknown: 0.80
     # Een terugloop die nog beweegt is nog geen retest — maar 0,20 ATR is
     # gewone ruis op een M5-bar, niet "de pullback loopt nog".
     max_last_bar_adverse_atr: 0.70
+    # FRA40 was sold from a two-bars-old 2 ATR impulse without a fresh resume.
+    # Keep the setup, but require the current M5 bar to take over from an old
+    # impulse before paying the market price.
+    stale_impulse_after_bars: 1
+    stale_impulse_min_resumption_atr: 0.05
     max_favourable_extension_atr:
       forex: 2.75
       crypto: 3.00
@@ -1534,7 +1550,10 @@ modes:
     max_equity: 500
 
 trade_management:
-  thesis_invalidation_at_r: 0.35
+  # Still needs the position path plus an independent chart family. The only
+  # change is that corroborated failure may act at -0.25R instead of waiting
+  # for -0.35R; the broker SL remains the unconditional backstop.
+  thesis_invalidation_at_r: 0.25
   # DE PROFIT-LOCK NAAR WAAR DEZE TRADES ECHT LEVEN.
   #
   # Hij armeerde op 0,7R en borgde de helft van de top. Over 39 gesloten
