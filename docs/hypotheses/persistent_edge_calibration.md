@@ -85,3 +85,16 @@ Succes is netto R en entry-MAE op onaangeraakte forward trades, niet alleen
 trade count of winrate. Setupdetecties vóór timing blijven zichtbaar, zodat
 minder orders nooit als betere setupdetectie kunnen worden verkocht. De
 managementbaseline tegen het oorspronkelijke SL/TP-plan mag niet verslechteren.
+
+### Forward-amendement 21 augustus 2026: geen dubbele recovery-poort
+
+De eerste lifecycleversie kon een setup in `WAIT_PULLBACK` of
+`WAIT_RESUMPTION` houden nadat de gewone entry-qualitymeting alweer
+`ENTER_NOW` gaf. Daarmee moest dezelfde herstelde entry tweemaal bewijzen dat
+zij tijdig was: eerst via range, EMA-afstand, candlebody, live gap en adverse
+bar, daarna opnieuw via vaste lifecycle-ATR-drempels. De lifecycle blijft het
+geheugen van een te late thesis en iedere wait blijft met zijn onaangeraakte
+counterfactual in het journal staan. Zodra de oorspronkelijke entry-quality
+op een latere cyclus opnieuw `ENTER_NOW` geeft, mag de lifecycle die entry niet
+meer blokkeren. Deze wijziging wordt uitsluitend op nieuwe forward trades
+beoordeeld.
