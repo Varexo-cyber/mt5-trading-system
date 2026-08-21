@@ -15,7 +15,7 @@ from analysis.entry_quality import (
 )
 from config.loader import load_settings
 from core.instrument import AssetClass
-from core.types import Direction, MarketContext, Series, Tick, Timeframe
+from core.types import Direction, MarketContext, Series, Signal, Tick, Timeframe
 
 NOW = datetime(2026, 8, 10, 13, 30, tzinfo=UTC)
 
@@ -78,6 +78,61 @@ def test_an_ordinary_move_is_still_tradeable() -> None:
     closes[-4:] = [100.0, 100.08, 100.16, 100.24]
 
     verdict = assess_entry_quality(context(closes), Direction.LONG, AssetClass.FOREX, config())
+
+    assert verdict.decision is EntryTimingDecision.ENTER_NOW
+
+
+def test_a_large_final_body_at_the_range_edge_waits_without_deleting_direction() -> None:
+    closes = quiet_history()
+    closes[-3:] = [100.0, 100.05, 100.85]
+    live = config().model_copy(update={"directional_extreme_location": 0.80})
+
+    verdict = assess_entry_quality(context(closes), Direction.LONG, AssetClass.FOREX, live)
+
+    assert verdict.decision is EntryTimingDecision.WAIT_RETEST
+    assert verdict.reason_code == "DIRECTIONAL_MOVE_OVEREXTENDED"
+    assert "one-bar thrust at the range edge" in verdict.detail
+
+
+def test_an_old_impulse_waits_for_a_fresh_resumption_bar() -> None:
+    market = context(quiet_history())
+    stale = Signal(
+        module="impulse_break",
+        score=60.0,
+        confidence=0.8,
+        reasoning="old impulse",
+        details={"bars_since_impulse": 2},
+    )
+
+    verdict = assess_entry_quality(
+        market,
+        Direction.LONG,
+        AssetClass.FOREX,
+        config(),
+        signals=(stale,),
+    )
+
+    assert verdict.decision is EntryTimingDecision.WAIT_RETEST
+    assert verdict.reason_code == "STALE_IMPULSE_AWAITING_RESUMPTION"
+
+
+def test_a_fresh_impulse_is_not_delayed_by_the_stale_impulse_rule() -> None:
+    market = context(quiet_history())
+    fresh = Signal(
+        module="impulse_break",
+        score=60.0,
+        confidence=0.8,
+        reasoning="fresh impulse",
+        details={"bars_since_impulse": 1},
+    )
+
+    verdict = assess_entry_quality(
+        market,
+        Direction.LONG,
+        AssetClass.FOREX,
+        config(),
+        signals=(fresh,),
+    )
 
     assert verdict.decision is EntryTimingDecision.ENTER_NOW
 

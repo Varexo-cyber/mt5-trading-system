@@ -3311,8 +3311,7 @@ class JarvisRunner:
         # already run, and an approval on this pair wipes the pattern outright.
         pattern = (
             self.veto_patterns.established(symbol, idea.direction.name, self.clock.now())
-            if self.operation is not OperationMode.MONITOR
-            and self._broad_veto_memory_applies(idea)
+            if self.operation is not OperationMode.MONITOR and self._broad_veto_memory_applies(idea)
             # "Only ever suppresses a paid call" — so only when there is one.
             and self._reviews_cost_money()
             else None
@@ -5252,6 +5251,7 @@ class JarvisRunner:
             asset_class,
             self._entry_quality_config_for(idea),
             executable_price=executable_price,
+            signals=idea.signals,
         )
 
     def _observe_setup_lifecycle(

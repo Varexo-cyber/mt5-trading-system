@@ -1870,6 +1870,21 @@ class EntryQualityConfig(Base):
             "unknown": 1.00,
         }
     )
+    #: A directional extreme plus a large final body is a special case. The
+    #: ordinary body ceiling above must allow real breakouts; this lower limit
+    #: says only that buying the top (or selling the bottom) of a one-bar thrust
+    #: should wait for the same setup to be offered again.
+    max_extreme_single_bar_body_atr: dict[str, float] = Field(
+        default_factory=lambda: {
+            "forex": 0.75,
+            "crypto": 1.10,
+            "stock": 1.00,
+            "index": 1.00,
+            "metal": 1.10,
+            "commodity": 1.00,
+            "unknown": 0.80,
+        }
+    )
     max_ema_distance_atr: dict[str, float] = Field(
         default_factory=lambda: {
             "forex": 1.35,
@@ -1900,6 +1915,11 @@ class EntryQualityConfig(Base):
     #: A pullback that is still moving materially against the proposal has not
     #: become a retest yet. It is reconsidered after the next closed M5 bar.
     max_last_bar_adverse_atr: float = Field(default=0.20, ge=0.0, le=2.0)
+    #: An impulse is still directional evidence after this many bars, but it is
+    #: no longer entry timing. It must be followed by a newly closed resumption
+    #: bar rather than bought or sold solely because an older impulse existed.
+    stale_impulse_after_bars: int = Field(default=1, ge=0, le=20)
+    stale_impulse_min_resumption_atr: float = Field(default=0.05, ge=0.0, le=2.0)
     #: The AI reviewed one exact price shape. More drift than this invalidates
     #: that review; it never becomes permission to chase the new price.
     #:
@@ -1950,6 +1970,7 @@ class EntryQualityConfig(Base):
     @field_validator(
         "max_favourable_extension_atr",
         "max_single_bar_body_atr",
+        "max_extreme_single_bar_body_atr",
         "max_ema_distance_atr",
         "max_live_favourable_gap_atr",
     )

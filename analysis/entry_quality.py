@@ -9,7 +9,7 @@ from math import isfinite
 from config.schema import EntryQualityConfig
 from core.data_manager import atr
 from core.instrument import AssetClass
-from core.types import Direction, MarketContext, Timeframe
+from core.types import Direction, MarketContext, Signal, Timeframe
 
 
 class EntryTimingDecision(StrEnum):
@@ -69,6 +69,7 @@ def assess_entry_quality(
     config: EntryQualityConfig,
     *,
     executable_price: float | None = None,
+    signals: tuple[Signal, ...] = (),
 ) -> EntryTimingAssessment:
     """Refuse both chasing and a pullback that has not finished.
 
@@ -194,6 +195,9 @@ def assess_entry_quality(
         )
     if at_extreme and body > body_limit:
         breaches.append(f"last body {body:.2f}>{body_limit:.2f} ATR")
+    extreme_body_limit = config.max_extreme_single_bar_body_atr[asset]
+    if at_extreme and body > extreme_body_limit:
+        breaches.append(f"one-bar thrust at the range edge {body:.2f}>{extreme_body_limit:.2f} ATR")
     if at_extreme and ema_distance > ema_limit:
         breaches.append(f"EMA distance {ema_distance:.2f}>{ema_limit:.2f} ATR")
     if breaches:
@@ -204,6 +208,25 @@ def assess_entry_quality(
             f"{config.range_lookback_bars}-bar range after "
             + ", ".join(breaches)
             + "; wait for a retest",
+            timeframe.value,
+            **rounded,
+        )
+
+    stale_impulses = [
+        signal
+        for signal in signals
+        if signal.module == "impulse_break"
+        and signal.score * sign > 0.0
+        and int(signal.details.get("bars_since_impulse", 0)) > config.stale_impulse_after_bars
+    ]
+    if stale_impulses and last_move < config.stale_impulse_min_resumption_atr:
+        oldest = max(int(signal.details.get("bars_since_impulse", 0)) for signal in stale_impulses)
+        return EntryTimingAssessment(
+            EntryTimingDecision.WAIT_RETEST,
+            "STALE_IMPULSE_AWAITING_RESUMPTION",
+            f"the supporting impulse is {oldest} bars old and the latest closed "
+            f"{timeframe.value} bar resumed only {last_move:.2f} ATR; wait for at least "
+            f"{config.stale_impulse_min_resumption_atr:.2f} ATR of fresh confirmation",
             timeframe.value,
             **rounded,
         )
