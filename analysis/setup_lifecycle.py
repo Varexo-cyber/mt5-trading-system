@@ -161,6 +161,34 @@ class SetupLifecycleBook:
 
         track.observations += 1
         track.updated_at = now
+
+        # The lifecycle is memory, not a second entry-quality gate. Once the
+        # native timing assessment says the executable price is no longer
+        # extended and the closed entry bar is no longer adverse, the reason
+        # for waiting has cleared. Requiring another fixed ATR pullback and a
+        # separate resumption threshold asked the recovered setup to prove the
+        # same thing twice and discarded otherwise timely entries.
+        if timing.passed:
+            previous = track.state
+            reason = (
+                f"{previous.value} cleared: current {timing.timeframe} entry timing "
+                "is executable again"
+            )
+            self._transition(track, SetupState.ENTER_NOW, reason, now)
+            self._tracked.pop(key, None)
+            self._save()
+            return LifecycleDecision(
+                SetupState.ENTER_NOW,
+                reason,
+                True,
+                self._age(track, now),
+                resumption_atr=(
+                    round(timing.last_bar_directional_atr, 3)
+                    if timing.last_bar_directional_atr is not None
+                    else None
+                ),
+            )
+
         sign = 1 if idea.direction.name == "LONG" else -1
         reference = timing.reference_atr or 0.0
         if reference <= 0.0:

@@ -66,7 +66,7 @@ def test_timely_new_setup_enters_without_artificial_wait(tmp_path: Path) -> None
     assert not verdict.tracked
 
 
-def test_overextended_setup_waits_for_pullback_and_new_resumption_bar(tmp_path: Path) -> None:
+def test_overextended_setup_enters_when_native_timing_recovers(tmp_path: Path) -> None:
     now = datetime(2026, 8, 20, 12, tzinfo=UTC)
     store = tmp_path / "setups.json"
     lifecycle = book(store)
@@ -80,42 +80,40 @@ def test_overextended_setup_waits_for_pullback_and_new_resumption_bar(tmp_path: 
     )
     assert late.state is SetupState.WAIT_PULLBACK
 
-    pulled = lifecycle.observe(
+    recovered = lifecycle.observe(
         idea(),
         timing(EntryTimingDecision.ENTER_NOW, "TIMELY", directional=0.1),
         executable_price=1.107,
         now=now + timedelta(minutes=1),
         bar_time=now,
     )
-    assert pulled.state is SetupState.PULLBACK_RECEIVED
+    assert recovered.state is SetupState.ENTER_NOW
+    assert recovered.tracked
+    assert "entry timing is executable again" in recovered.reason
 
+
+def test_active_pullback_enters_on_first_closed_bar_that_clears_native_gate(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 20, 12, tzinfo=UTC)
+    lifecycle = book(tmp_path / "setups.json")
     waiting = lifecycle.observe(
         idea(),
-        timing(EntryTimingDecision.ENTER_NOW, "TIMELY", directional=0.1),
-        executable_price=1.108,
-        now=now + timedelta(minutes=2),
+        timing(EntryTimingDecision.WAIT_RETEST, "PULLBACK_STILL_ACTIVE", directional=-0.8),
+        executable_price=1.10,
+        now=now,
         bar_time=now,
     )
     assert waiting.state is SetupState.WAIT_RESUMPTION
 
-    same_bar = lifecycle.observe(
+    recovered = lifecycle.observe(
         idea(),
-        timing(EntryTimingDecision.ENTER_NOW, "TIMELY", directional=0.1),
-        executable_price=1.108,
-        now=now + timedelta(minutes=3),
-        bar_time=now,
-    )
-    assert same_bar.state is SetupState.WAIT_RESUMPTION
-
-    entered = lifecycle.observe(
-        idea(),
-        timing(EntryTimingDecision.ENTER_NOW, "TIMELY", directional=0.1),
-        executable_price=1.109,
+        timing(EntryTimingDecision.ENTER_NOW, "TIMELY", directional=0.01),
+        executable_price=1.101,
         now=now + timedelta(minutes=5),
         bar_time=now + timedelta(minutes=5),
     )
-    assert entered.state is SetupState.ENTER_NOW
-    assert entered.tracked
+    assert recovered.state is SetupState.ENTER_NOW
 
 
 def test_waiting_setup_survives_restart_and_expires(tmp_path: Path) -> None:
