@@ -3237,7 +3237,9 @@ class JarvisRunner:
                 total_score=idea.score,
                 score_threshold=self.settings.analysis.confluence.score_threshold,
                 signals=list(idea.signals),
-                weights=self.settings.analysis.confluence.weights,
+                weights=self.settings.analysis.confluence.effective_weights(
+                    self.settings.system.mode
+                ),
             )
             return False
 
@@ -3635,7 +3637,7 @@ class JarvisRunner:
             total_score=idea.score,
             score_threshold=self.settings.analysis.confluence.score_threshold,
             signals=list(idea.signals),
-            weights=self.settings.analysis.confluence.weights,
+            weights=self.settings.analysis.confluence.effective_weights(self.settings.system.mode),
         )
         self.recorder.record_sizing(cycle_pk, sizing)
         self._record_review_snapshots(cycle_pk, symbol, request_payload)
@@ -3870,7 +3872,7 @@ class JarvisRunner:
             total_score=total_score,
             score_threshold=self.settings.analysis.confluence.score_threshold,
             signals=signals,
-            weights=self.settings.analysis.confluence.weights,
+            weights=self.settings.analysis.confluence.effective_weights(self.settings.system.mode),
         )
         self.scan_activity.record_deep_decision(
             symbol,

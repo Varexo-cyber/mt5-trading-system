@@ -1329,3 +1329,58 @@ class TestARegimeThisAccountRefusesToTrade:
         engine = ConfluenceEngine(modules(), self._config(refused_regimes=("transition",)))
 
         assert engine.evaluate(context(), TradingMode.PAPER).approved
+
+
+class TestTheJournalRecordsTheWeightAModuleActuallyCarried:
+    """`weights` says what a module is worth; `live_enabled_modules` says which
+    modules may vote when the money is real. Live, a module off the allowlist
+    is forced to zero — computed, logged, and deciding nothing.
+
+    The engine always applied that. The journal recorded the raw `weights`
+    table instead, so `trend_momentum` (weight 1.0, not live-enabled) was
+    written to `module_scores` at 1.0 on every live cycle. `scorecard.py`
+    credits any module with `weight > 0`, so it attributed 60 live trades to a
+    detector that cast no vote in any of them — and that table is what a
+    decision about which detectors to keep is made from.
+    """
+
+    @staticmethod
+    def _config() -> ConfluenceConfig:
+        return config(
+            weights={"one": 1.0, "two": 1.0, "volatility_regime": 0.0},
+            live_enabled_modules=("one",),
+        )
+
+    def test_live_zeroes_a_module_that_may_not_vote(self) -> None:
+        assert self._config().effective_weights(TradingMode.MICRO_LIVE) == {
+            "one": 1.0,
+            "two": 0.0,
+            "volatility_regime": 0.0,
+        }
+
+    def test_paper_leaves_every_weight_alone(self) -> None:
+        """The allowlist gates live only. Backtests and paper have to keep
+        scoring the full set or the two engines stop being comparable."""
+        assert self._config().effective_weights(TradingMode.PAPER) == {
+            "one": 1.0,
+            "two": 1.0,
+            "volatility_regime": 0.0,
+        }
+
+    def test_the_engine_scores_exactly_what_the_journal_will_record(self) -> None:
+        """The bug was two places computing the same thing. This pins them to
+        one answer: whatever the engine let vote is what gets written down."""
+        cfg = self._config()
+        engine = ConfluenceEngine(modules(), cfg)
+
+        idea = engine.evaluate(context(), TradingMode.MICRO_LIVE)
+        effective = cfg.effective_weights(TradingMode.MICRO_LIVE)
+
+        assert not idea.approved  # `two` cannot vote, so `one` is alone
+        assert effective["two"] == 0.0
+
+    def test_a_returned_copy_cannot_edit_the_config(self) -> None:
+        weights = self._config().effective_weights(TradingMode.PAPER)
+        weights["one"] = 99.0
+
+        assert self._config().weights["one"] == 1.0
