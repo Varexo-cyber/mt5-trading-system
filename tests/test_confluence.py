@@ -1252,3 +1252,80 @@ class TestExtremeMeansBigAndNotMerelyRare:
 
         assert "percentile" in signal.reasoning
         assert "median" in signal.reasoning
+
+
+class TestARegimeThisAccountRefusesToTrade:
+    """`transition` was half the book over four live days and all of the
+    damage: 44 trades, -20.86 EUR, against +22.44 in `trend_up`. It is the
+    classifier's leftover branch, and what it MEANS is that the timeframes
+    disagree about direction — so those trades were taken into a market the
+    system itself could not read.
+
+    A hard refusal and not a score discount, because a discount only removes
+    one module's contribution and the objection here is to the market rather
+    than to any one reader of it.
+    """
+
+    @staticmethod
+    def _modules(regime: str) -> list[StubModule]:
+        return [
+            *modules(),
+            StubModule(Signal("market_regime", 0, 0.0, details={"regime": regime})),
+        ]
+
+    @staticmethod
+    def _config(**overrides: object) -> ConfluenceConfig:
+        return config(
+            weights={
+                "one": 1.0,
+                "two": 1.0,
+                "volatility_regime": 0.0,
+                "market_regime": 0.0,
+            },
+            **overrides,
+        )
+
+    def test_a_refused_regime_is_refused_however_good_the_evidence(self) -> None:
+        engine = ConfluenceEngine(
+            self._modules("transition"), self._config(refused_regimes=("transition",))
+        )
+
+        idea = engine.evaluate(context(), TradingMode.PAPER)
+
+        assert not idea.approved
+        assert "transition" in idea.reason
+
+    def test_the_same_evidence_in_a_regime_that_pays_is_taken(self) -> None:
+        """Or the test above would only prove the fixture cannot trade."""
+        engine = ConfluenceEngine(
+            self._modules("trend_up"), self._config(refused_regimes=("transition",))
+        )
+
+        assert engine.evaluate(context(), TradingMode.PAPER).approved
+
+    def test_trend_down_stays_open_on_the_shipped_config(self) -> None:
+        """It loses over the same four days and is deliberately NOT blocked:
+        eleven trades cannot condemn a direction, and closing it would close
+        every short in a falling market. Pinned so the reasoning has to be
+        re-argued rather than quietly reversed."""
+        from config.loader import load_settings
+
+        settings = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.analysis.confluence.refused_regimes == ("transition",)
+
+    def test_an_empty_list_trades_every_regime(self) -> None:
+        engine = ConfluenceEngine(self._modules("transition"), self._config())
+
+        assert engine.evaluate(context(), TradingMode.PAPER).approved
+
+    def test_an_unrecorded_regime_is_not_silently_blocked(self) -> None:
+        """No `market_regime` signal means no reading, not a refusal — the
+        fail-safe for missing data lives in the data layer, and a blocklist
+        that fires on `None` would refuse every market whose classifier is
+        merely disabled."""
+        engine = ConfluenceEngine(modules(), self._config(refused_regimes=("transition",)))
+
+        assert engine.evaluate(context(), TradingMode.PAPER).approved

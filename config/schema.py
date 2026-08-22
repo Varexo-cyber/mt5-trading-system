@@ -2163,6 +2163,35 @@ class ConfluenceConfig(Base):
     #: `trend_up` and `trend_down` obviously support one, and `extreme` is
     #: already refused outright at the top of `evaluate`.
     continuation_contradicting_regimes: tuple[str, ...] = ("range", "transition")
+    #: Regimes this account refuses outright, whatever the modules say.
+    #:
+    #: Measured over 90 closed trades and four days, by what `market_regime`
+    #: read at entry:
+    #:
+    #:     transition   44 trades  59% won  -20.86 EUR   -0.47 a trade
+    #:     trend_down   11 trades  55% won  -11.75 EUR   -1.07 a trade
+    #:     trend_up     21 trades  90% won  +22.44 EUR   +1.07 a trade
+    #:     range         6 trades 100% won   +9.57 EUR   +1.59 a trade
+    #:     extreme       8 trades 100% won   +9.25 EUR   +1.16 a trade
+    #:
+    #: `transition` is half the book and all of the damage. It is the
+    #: classifier's leftover branch and what it MEANS is that the two
+    #: timeframes disagree about direction, so half these trades were taken
+    #: into a market the system could not read. At 22 trades it was +2.41 EUR
+    #: and was deliberately left alone; at 44 it is -20.86.
+    #:
+    #: `trend_down` is NOT on this list, and the omission is deliberate. It
+    #: loses money over these four days, but it is a real trend and not chop:
+    #: refusing it refuses every short in a falling market, which is the one
+    #: thing this account has asked for most. Eleven trades is also far too
+    #: thin to condemn a direction — `transition` looked profitable at 22.
+    #: The scorecard now splits regime by direction, so when the sample is big
+    #: enough this can be narrowed to whichever side actually loses instead of
+    #: closed wholesale.
+    #:
+    #: A hard refusal rather than a discount, because the objection is to the
+    #: market and not to any one module reading it. Empty trades every regime.
+    refused_regimes: tuple[str, ...] = ()
     #: Modules whose evidence lives on a fast chart. When nothing but these
     #: fired, the plan is an intraday one.
     #:
