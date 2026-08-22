@@ -658,3 +658,135 @@ class TestReadingHistoryBackThroughAFilterThatDidNotExistYet:
         assert "WHICH DETECTOR, IN WHICH REGIME" in out
         assert "impulse_break in trend_up" in out
         assert "impulse_break in transition" in out
+
+
+class TestWhetherMovingTheStopPaid:
+    """BROKER_SL was 49 of 90 closed trades at a lift of -0.52R, better in 15.
+
+    Read as one row that says the stop is costing money. But `BROKER_SL` names
+    the broker filling a stop, not a decision, and it covers two different
+    trades: one where the stop was never touched and the plan simply failed —
+    baseline and actual are the same trade, lift ~0 by construction, diluting
+    the average toward nothing — and one where the stop was ratcheted up behind
+    price and that is what got hit, which is the only real counterfactual.
+
+    `trades.sl` is written once at entry and never updated, and
+    `management_actions` records every move, so the halves can be told apart.
+    """
+
+    def _journal(self, journal: Path, rows) -> Path:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS management_baselines (
+                trade_id INTEGER PRIMARY KEY, observed_at TEXT, resolved_at TEXT,
+                outcome TEXT, baseline_pnl_r REAL, actual_pnl_r REAL, lift_r REAL);
+            CREATE TABLE IF NOT EXISTS management_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER, ts TEXT,
+                action TEXT, old_sl REAL, new_sl REAL, old_tp REAL, new_tp REAL,
+                volume_closed REAL, r_at_action REAL, note TEXT);
+        """)
+        now = datetime.now(UTC)
+        for trade_id, reason, actual, baseline, moved_at in rows:
+            db.execute(
+                "INSERT INTO trades (id, symbol, direction, pnl_r, pnl_money, mfe_r, "
+                "exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    trade_id,
+                    "EURUSD",
+                    "LONG",
+                    actual,
+                    actual,
+                    0.5,
+                    reason,
+                    (now - timedelta(hours=6)).isoformat(),
+                    (now - timedelta(hours=2)).isoformat(),
+                ),
+            )
+            db.execute(
+                "INSERT INTO management_baselines (trade_id, observed_at, resolved_at, "
+                "outcome, baseline_pnl_r, actual_pnl_r, lift_r) VALUES (?,?,?,?,?,?,?)",
+                (
+                    trade_id,
+                    now.isoformat(),
+                    now.isoformat(),
+                    "TP",
+                    baseline,
+                    actual,
+                    actual - baseline,
+                ),
+            )
+            if moved_at is not None:
+                db.execute(
+                    "INSERT INTO management_actions (trade_id, ts, action, old_sl, new_sl, "
+                    "r_at_action, note) VALUES (?,?,?,?,?,?,?)",
+                    (trade_id, now.isoformat(), "BREAK_EVEN", 1.0900, 1.1000, moved_at, ""),
+                )
+        db.commit()
+        db.close()
+        return journal
+
+    def _book(self, journal: Path) -> Path:
+        return self._journal(
+            journal,
+            [
+                # Ratcheted to break-even and stopped there; the original plan
+                # would have run to target. This is what securing early costs.
+                (70, "BROKER_SL", 0.0, 2.0, 0.30),
+                (71, "BROKER_SL", 0.0, 2.0, 0.30),
+                # Never touched. The plan failed on its own terms and the
+                # baseline is the same trade, so it says nothing either way.
+                (72, "BROKER_SL", -1.0, -1.0, None),
+            ],
+        )
+
+    def test_the_two_halves_are_reported_apart(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        main(["--db", str(self._book(journal)), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "DID MOVING THE STOP PAY" in out
+        assert "BROKER_SL stop moved" in out
+        assert "BROKER_SL stop untouched" in out
+
+    def test_the_cost_of_securing_early_is_not_diluted_by_the_untouched_half(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Averaged as one row these three trades read -1.33R. Split, the
+        ratchet is -2.00R and the untouched trade is 0.00R — and only the first
+        number names something to stop doing."""
+        main(["--db", str(self._book(journal)), "--days", "2"])
+        lines = {
+            line.split("  ")[1].strip(): line
+            for line in capsys.readouterr().out.splitlines()
+            if "BROKER_SL stop" in line
+        }
+
+        assert "-2.00R" in lines["BROKER_SL stop moved"]
+        assert "0/2" in lines["BROKER_SL stop moved"]
+        assert "+0.00R" in lines["BROKER_SL stop untouched"]
+
+    def test_it_reports_the_r_the_stop_was_first_moved_at(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Whether the lock fires too early is the actionable half: a lift of
+        -2R at +0.30R is a threshold, not a bug in the idea of locking."""
+        main(["--db", str(self._book(journal)), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "+0.30R" in out
+
+    def test_a_journal_without_the_actions_table_still_reports(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Read-only report over an older database: a missing measurement is a
+        missing section, never a crash."""
+        db = sqlite3.connect(journal)
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS management_baselines (
+                trade_id INTEGER PRIMARY KEY, observed_at TEXT, resolved_at TEXT,
+                outcome TEXT, baseline_pnl_r REAL, actual_pnl_r REAL, lift_r REAL);
+        """)
+        db.commit()
+        db.close()
+
+        assert main(["--db", str(journal), "--days", "2"]) == 0
+        assert "DID MOVING THE STOP PAY" not in capsys.readouterr().out
