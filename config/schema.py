@@ -2986,6 +2986,46 @@ class TradeManagementConfig(Base):
     #: which is enough room for ordinary noise and still lets a genuine
     #: reduction happen. Zero falls back to the spread floor alone.
     min_stop_room_r: float = Field(default=0.15, ge=0.0, le=1.0)
+    #: How many tightenings in a row on a reading that will not improve before
+    #: the position is closed instead.
+    #:
+    #: The exit threshold needs two families to agree, and a reading that never
+    #: gets there can repeat forever while the stop is walked into the price.
+    #: EURAUD LONG on 20 August took SEVEN tightenings inside one minute —
+    #: severity 0.46, 0.64, 0.66, 0.67, 0.68, 0.68, 0.68, never reaching the
+    #: 0.75 an exit needs — and closed on the walked-up stop at -0.66R, worse
+    #: than its own deepest excursion of -0.60R. Its real stop was never
+    #: touched.
+    #:
+    #: Seven tightenings ARE an exit, just a worse one: the position leaves at
+    #: whatever the stop was dragged to, plus slippage, at a moment the market
+    #: picks rather than one we do. A reading strong enough to move the stop
+    #: that many times is strong enough to close on.
+    #:
+    #: 3, because that is the point at which the halving has taken most of the
+    #: room anyway. The run only counts while the reading refuses to improve
+    #: and any `hold` clears it, so a trade that steadies is not punished for a
+    #: bad moment. Zero restores tightening without limit.
+    #: Close on the second INDEPENDENT warning instead of tightening again.
+    #:
+    #: `HealthIntervention` already stops the same evidence acting twice, which
+    #: is what walked EURAUD's stop into the price seven times in one minute.
+    #: It does not answer what should happen when the evidence genuinely
+    #: broadens, and there the answer is not a third stop move.
+    #:
+    #: An exit needs two families to reach 0.75 in ONE reading. Two families
+    #: arriving minutes apart never sum, so a trade can deteriorate on
+    #: trajectory, then on drift as well, and still only ever earn tighter
+    #: stops. EURAUD LONG on 20 August did exactly that — `adverse_excursion`,
+    #: then `momentum_turned, adverse_run, adverse_excursion` — and closed on
+    #: the walked-up stop at -0.66R, worse than its own deepest excursion of
+    #: -0.60R, on a trade whose real stop at -1.00R was never touched.
+    #:
+    #: Leaving at market at a moment we choose beats leaving at whatever the
+    #: stop was dragged to, plus slippage, at a moment the market chooses.
+    #: `_worth_paying_to_leave` still applies, so a position whose stop is
+    #: nearer than the exit costs is left to the stop.
+    exit_on_second_independent_warning: bool = True
 
     #: The per-second read of how an open trade is actually behaving — has the
     #: structure broken, has momentum turned, is it running against us, has the

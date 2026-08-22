@@ -1900,9 +1900,9 @@ def test_the_learned_bank_threshold_can_be_switched_off_on_evidence() -> None:
     )
     off.equity = on.equity = 10_000.0
 
-    assert off._worth_taking(100.0) > on._worth_taking(100.0), (
-        "with the learned floor off, the bar to bank must stay higher"
-    )
+    assert off._worth_taking(100.0) > on._worth_taking(
+        100.0
+    ), "with the learned floor off, the bar to bank must stay higher"
 
 
 def test_it_is_on_by_default_and_off_for_this_account() -> None:

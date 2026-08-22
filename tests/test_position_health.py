@@ -737,3 +737,87 @@ class TestTheRatchetCannotManufactureALossOnATightSpread:
 
         assert config.min_stop_room_spreads > 0
         assert config.min_stop_room_r > 0
+
+
+class TestASecondIndependentWarningIsAnExit:
+    """Two families arriving minutes apart never sum, so they never close.
+
+    An exit needs 0.75 in ONE reading, which takes two families at once.
+    EURAUD LONG on 20 August deteriorated on `adverse_excursion`, then on
+    `momentum_turned, adverse_run, adverse_excursion` as well, and every one of
+    those readings only ever earned a tighter stop. It closed on the walked-up
+    stop at -0.66R — worse than its own deepest excursion of -0.60R, on a trade
+    whose real stop at -1.00R was never touched.
+
+    `HealthIntervention` stops the SAME evidence acting twice. This decides
+    what happens when the evidence genuinely broadens: leave, at a moment we
+    choose, rather than move the stop a third time.
+    """
+
+    @staticmethod
+    def _health(families, severity=0.60, action="tighten"):  # type: ignore[no-untyped-def]
+        from analysis.position_health import HealthSignal, PositionHealth
+
+        return PositionHealth(
+            verdict="deteriorating",
+            severity=severity,
+            action=action,  # type: ignore[arg-type]
+            signals=tuple(
+                HealthSignal(family=f, name=f, severity=severity, detail="") for f in families
+            ),
+            reason=", ".join(families),
+        )
+
+    def test_the_same_evidence_twice_does_nothing_the_second_time(self) -> None:
+        manager, position, tick = _tighten_fixture()
+        risk = abs(position.price_open - position.sl)
+
+        first = manager._act_on_health(position, self._health(["trajectory"]), -0.55, risk, tick)
+        second = manager._act_on_health(position, self._health(["trajectory"]), -0.56, risk, tick)
+
+        assert first is not None and first.action == "HEALTH_TIGHTEN"
+        assert second is None
+
+    def test_a_second_independent_family_closes_the_position(self) -> None:
+        manager, position, tick = _tighten_fixture()
+        risk = abs(position.price_open - position.sl)
+
+        manager._act_on_health(position, self._health(["trajectory"]), -0.55, risk, tick)
+        event = manager._act_on_health(
+            position, self._health(["trajectory", "drift"]), -0.56, risk, tick
+        )
+
+        assert event is not None
+        assert event.action == "HEALTH_EXIT"
+        assert "drift" in event.detail
+        assert "walking it further into the price" in event.detail
+
+    def test_the_first_warning_still_only_tightens(self) -> None:
+        """One family is not two. The corroboration standard is unchanged."""
+        manager, position, tick = _tighten_fixture()
+        risk = abs(position.price_open - position.sl)
+
+        event = manager._act_on_health(
+            position, self._health(["trajectory", "drift"]), -0.55, risk, tick
+        )
+
+        assert event is not None
+        assert event.action == "HEALTH_TIGHTEN"
+
+    def test_it_can_be_switched_off(self) -> None:
+        manager, position, tick = _tighten_fixture()
+        manager.settings = manager.settings.model_copy(
+            update={
+                "trade_management": manager.settings.trade_management.model_copy(
+                    update={"exit_on_second_independent_warning": False}
+                )
+            }
+        )
+        risk = abs(position.price_open - position.sl)
+
+        manager._act_on_health(position, self._health(["trajectory"]), -0.55, risk, tick)
+        event = manager._act_on_health(
+            position, self._health(["trajectory", "drift"]), -0.56, risk, tick
+        )
+
+        assert event is None or event.action == "HEALTH_TIGHTEN"
