@@ -569,3 +569,92 @@ class TestWhenItTurned:
             == 1
         )
         assert "must be after" in capsys.readouterr().out
+
+
+class TestReadingHistoryBackThroughAFilterThatDidNotExistYet:
+    """`transition` was refused after 90 trades were already in the book, and
+    every per-detector average in this report was computed across all 90.
+
+    A detector's average is the average of the markets it was allowed into. Cut
+    a regime and the book changes under the table, so "which detector should I
+    lean on now" cannot be answered from a report that still counts the trades
+    the engine will never take again.
+    """
+
+    def _journal(self, journal: Path, rows) -> Path:  # type: ignore[no-untyped-def]
+        return TestWhereTheMoneyActuallyCameFrom()._journal(journal, rows)
+
+    def _book(self, journal: Path) -> Path:
+        return self._journal(
+            journal,
+            [
+                (+0.8, "trend_up", [("impulse_break", 60.0, 0.6)], "LONG"),
+                (-0.7, "transition", [("impulse_break", 60.0, 0.6)], "LONG"),
+                (-0.7, "transition", [("drift_continuation", 55.0, 0.7)], "LONG"),
+            ],
+        )
+
+    def test_excluding_a_regime_removes_its_trades_from_every_slice(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        main(["--db", str(self._book(journal)), "--days", "2", "--exclude-regime", "transition"])
+        out = capsys.readouterr().out
+
+        assert "1 closed trades" in out
+        assert "excluding trades opened in: transition" in out
+        # Not merely hidden from the regime column: the detector that only ever
+        # fired in `transition` has no trades left to be credited with.
+        assert "drift_continuation" not in out
+
+    def test_keeping_a_regime_reports_only_that_one(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        main(["--db", str(self._book(journal)), "--days", "2", "--regime", "transition"])
+        out = capsys.readouterr().out
+
+        assert "2 closed trades" in out
+        assert "only trades opened in: transition" in out
+
+    def test_the_unfiltered_report_is_unchanged(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The flags are opt-in, so the default report has to be the old one."""
+        main(["--db", str(self._book(journal)), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "3 closed trades" in out
+        assert "excluding trades opened in" not in out
+
+    def test_a_regime_cannot_be_kept_and_dropped_at_once(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Silently resolving the contradiction would report an empty book and
+        let it be read as "nothing traded" rather than "you asked for both"."""
+        code = main(
+            [
+                "--db",
+                str(self._book(journal)),
+                "--days",
+                "2",
+                "--regime",
+                "trend_up",
+                "--exclude-regime",
+                "trend_up",
+            ]
+        )
+
+        assert code == 1
+        assert "cannot be both kept and excluded" in capsys.readouterr().out
+
+    def test_the_detector_is_crossed_with_the_regime_it_fired_in(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """A module that pays in a trend and bleeds in a range reads as
+        mediocre in both single columns, and the action it deserves — let it
+        fire only where it works — is invisible until the two are crossed."""
+        main(["--db", str(self._book(journal)), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "WHICH DETECTOR, IN WHICH REGIME" in out
+        assert "impulse_break in trend_up" in out
+        assert "impulse_break in transition" in out

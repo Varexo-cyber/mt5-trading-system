@@ -2592,6 +2592,33 @@ class ConfluenceConfig(Base):
             module, self.lone_module_minimum_confidence
         )
 
+    def effective_weights(self, mode: TradingMode) -> dict[str, float]:
+        """The weight each module ACTUALLY carries in `mode`.
+
+        `weights` says what a module is worth; `live_enabled_modules` says
+        which modules are allowed to vote at all when the money is real. Live,
+        a module missing from the allowlist is forced to zero — it is computed,
+        it is logged, and it decides nothing.
+
+        The engine has always applied that. The journal never did: it recorded
+        the raw `weights` table, so `trend_momentum` (weight 1.0, not on the
+        live allowlist) was written to `module_scores` at 1.0 for every live
+        cycle. `scorecard.py` credits any module with `weight > 0`, so 60 live
+        trades were attributed to a detector that cast no vote in any of them
+        — and the detector table is exactly what a decision about which
+        detectors to keep gets made from.
+
+        One method, called by both, so the engine's answer and the journal's
+        answer cannot drift apart again.
+        """
+        if not mode.is_live:
+            return dict(self.weights)
+        allowed = set(self.live_enabled_modules)
+        return {
+            module: (weight if module in allowed else 0.0)
+            for module, weight in self.weights.items()
+        }
+
 
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()

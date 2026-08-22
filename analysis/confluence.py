@@ -143,11 +143,10 @@ class ConfluenceEngine:
                 )
 
         allowed_live = set(self.config.live_enabled_modules)
+        effective = self.config.effective_weights(mode)
         weighted: list[tuple[Signal, float]] = []
         for signal in signals:
-            weight = self.config.weights.get(signal.module, 0.0)
-            if mode.is_live and signal.module not in allowed_live:
-                weight = 0.0
+            weight = effective.get(signal.module, 0.0)
             if weight > 0 and signal.score and signal.confidence >= self.config.minimum_confidence:
                 weighted.append((signal, weight))
         if not weighted:

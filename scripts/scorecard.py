@@ -133,9 +133,22 @@ def score_band(score: float | None) -> str:
 
 
 def taken(
-    db: sqlite3.Connection, since: datetime, until: datetime | None = None
+    db: sqlite3.Connection,
+    since: datetime,
+    until: datetime | None = None,
+    keep_regimes: frozenset[str] = frozenset(),
+    drop_regimes: frozenset[str] = frozenset(),
 ) -> dict[str, dict[str, Bucket]]:
-    """Closed trades, sliced every way the journal can support."""
+    """Closed trades, sliced every way the journal can support.
+
+    `keep_regimes` and `drop_regimes` restrict the book to the market shapes
+    still being traded. Every per-detector number in this report was measured
+    across the whole book, and when a regime is refused the book changes under
+    it: a detector's average is the average of the markets it was allowed into.
+    `--exclude-regime transition` re-reads the same four days as if the refusal
+    had been in place all along, which is the only honest basis for deciding
+    which detector to lean on next.
+    """
     columns = (
         "SELECT t.symbol, t.direction, t.pnl_r, t.pnl_money, t.mfe_r, t.exit_reason, "
         "t.opened_at{extra} FROM trades t{join} "
@@ -229,6 +242,18 @@ def taken(
                 # action is a blanket refusal; with it a regime that loses on
                 # one side and pays on the other can be halved instead.
                 slices["the regime at entry, by side"] = {}
+                if modules_by_cycle:
+                    # And the detector crossed with the regime it fired in.
+                    #
+                    # "Which detector should I lean on" and "which market
+                    # should I trade" are the same question asked twice, and
+                    # neither slice on its own can answer it. A detector's
+                    # average is the average of the markets it was let into: a
+                    # module that pays in a trend and bleeds in a range shows
+                    # up as mediocre in both single columns, and the action it
+                    # deserves — let it fire only where it works — is invisible
+                    # until the two are crossed.
+                    slices["which detector, in which regime"] = {}
         except sqlite3.OperationalError:
             regimes = {}
     if scored:
@@ -248,6 +273,15 @@ def taken(
         bucket.add(float(row["pnl_r"]), float(row["pnl_money"] or 0.0), row["mfe_r"])
 
     for row in rows:
+        regime = regimes.get(int(row["cycle_pk"] or 0), "unrecorded") if scored else "unrecorded"
+        # A trade whose regime was never recorded cannot be shown to be one of
+        # the kept ones, so `--regime` drops it and `--exclude-regime` keeps
+        # it. Both readings refuse to guess, in the direction the flag asked
+        # for.
+        if keep_regimes and regime not in keep_regimes:
+            continue
+        if regime in drop_regimes:
+            continue
         into("instrument", str(row["symbol"]), row)
         into("direction", str(row["direction"]), row)
         into("what closed it", str(row["exit_reason"] or "unknown"), row)
@@ -267,7 +301,6 @@ def taken(
             )
             into("what the raw score was", score_band(row["total_score"]), row)
             if "the regime at entry" in slices:
-                regime = regimes.get(int(row["cycle_pk"] or 0), "unrecorded")
                 into("the regime at entry", regime, row)
                 into("the regime at entry, by side", f"{regime} {row['direction']}", row)
             # A trade with three detectors behind it counts once in each of
@@ -278,6 +311,8 @@ def taken(
             for module, score in modules_by_cycle.get(int(row["cycle_pk"] or 0), ()):
                 if score * (1 if str(row["direction"]) == "LONG" else -1) > 0:
                     into("which detector was behind it", module, row)
+                    if "which detector, in which regime" in slices:
+                        into("which detector, in which regime", f"{module} in {regime}", row)
     return slices
 
 
@@ -389,7 +424,28 @@ def main(argv: list[str] | None = None) -> int:
         "every slice read side by side",
     )
     parser.add_argument("--until", default="", help="ISO instant to stop at. Open-ended without it")
+    parser.add_argument(
+        "--regime",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="report only trades opened in this regime; repeatable",
+    )
+    parser.add_argument(
+        "--exclude-regime",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="drop trades opened in this regime, so a refusal added today can "
+        "be read back over history as if it had always been there; repeatable",
+    )
     args = parser.parse_args(argv)
+
+    keep = frozenset(args.regime)
+    drop = frozenset(args.exclude_regime)
+    if keep & drop:
+        print(f"a regime cannot be both kept and excluded: {', '.join(sorted(keep & drop))}")
+        return 1
 
     path = ROOT / args.db
     if not path.exists():
@@ -418,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     db = connect(path)
     try:
-        slices = taken(db, since, until)
+        slices = taken(db, since, until, keep_regimes=keep, drop_regimes=drop)
         gates = refused(db, since, until)
         pending = unresolved(db, since, until)
         interventions = intervened(db, since, until)
@@ -429,6 +485,13 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("=" * 72)
     print(f"  SCORECARD — last {args.days:g} days, {total} closed trades")
+    # Stated on the header rather than left to be remembered. A filtered report
+    # is a different book from the unfiltered one, and the two are printed in
+    # the same shape — the reader has to be told which one is on the screen.
+    if keep:
+        print(f"  only trades opened in: {', '.join(sorted(keep))}")
+    if drop:
+        print(f"  excluding trades opened in: {', '.join(sorted(drop))}")
     print("=" * 72)
 
     if not total:
