@@ -414,35 +414,46 @@ class TestNoneOfThemCanTradeYet:
 
         assert MeanReversion().name == "mean_reversion"
 
-    def test_the_two_that_produced_a_number_are_live_and_the_rest_are_not(self) -> None:
-        """Reaching the allowlist requires having been measured, not existing.
+    def test_the_bet_on_each_newcomer_was_settled_by_live_money(self) -> None:
+        """Both were let in as a calculated gamble on 33 and 156 firings, with
+        the comment saying in as many words: "WAT DIT NIET IS: bewijs."
 
-        `session_breakout` is the best row in the module table (+0.145R over 33
-        trades) and `seasonality` cannot decide anything alone, so both may now
-        add a second voice. `volatility_squeeze` produced no trades at all in
-        the 180-day run and `mean_reversion` measured -0.193R over 194 — one
-        has no record and the other has a bad one, so neither is live.
+        Four days of real trades settled it in opposite directions.
+        `session_breakout` earned +1.20 EUR a trade and stays;
+        `seasonality` cost -1.01, the only net-negative of the nine, and is
+        off. That is the gamble being closed out rather than a new opinion —
+        and it is why the two are no longer asserted as a pair.
+
+        `volatility_squeeze` produced no trades at all in the 180-day run and
+        `mean_reversion` measured -0.193R over 194. One has no record and the
+        other a bad one, so neither was ever live to settle.
         """
         allowed = set(self._confluence().live_enabled_modules)
 
-        assert {"session_breakout", "seasonality"} <= allowed
-        for module in ("volatility_squeeze", "mean_reversion"):
+        assert "session_breakout" in allowed
+        for module in ("seasonality", "volatility_squeeze", "mean_reversion"):
             assert module not in allowed, module
 
-    def test_neither_newcomer_can_carry_a_trade_on_its_own(self) -> None:
-        """Voting is not deciding. Both got in on samples too small to bet on.
-
-        `seasonality` is held back by its own 0.55 confidence ceiling and
-        `session_breakout` by an explicit floor above its 0.80 ceiling, so a
-        setup where either is the only detector pointing that way is refused
-        exactly as it was before they were enabled.
+    def test_the_one_still_live_may_now_carry_a_trade_when_convinced(self) -> None:
+        """`session_breakout` was pinned above its own 0.80 ceiling — voting
+        but never deciding — explicitly until it had a number of its own. It
+        has one, so the floor drops below the ceiling and its most convinced
+        firings can stand alone. Below 0.80 and well above the 0.45 module
+        floor: a gap, not a door.
         """
+        config = self._confluence()
+        floor = config.lone_floor_for("session_breakout")
+
+        assert config.minimum_confidence < floor < SessionBreakoutConfig().maximum_confidence
+
+    def test_the_one_switched_off_could_never_have_decided_anything_anyway(self) -> None:
+        """Worth stating, because it says what `seasonality` actually cost the
+        account: it was never the reason a trade was taken, only ever a second
+        voice on somebody else's setup — and that voting averaged out
+        negative."""
         config = self._confluence()
 
         assert SeasonalityConfig().maximum_confidence < config.lone_floor_for("seasonality")
-        assert SessionBreakoutConfig().maximum_confidence < config.lone_floor_for(
-            "session_breakout"
-        )
 
     def test_seasonality_cannot_reach_the_lone_module_floor(self) -> None:
         config = self._confluence()

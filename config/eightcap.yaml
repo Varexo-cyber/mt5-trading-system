@@ -886,20 +886,101 @@ analysis:
     # 650 "deze detector is de enige die deze kant op wijst" — 232 fast_ema_-
     # cross, 211 impulse_break, 207 liquidity_sweep. Die staan alleen omdat hun
     # gezelschap uitstond. Een tweede stem lost precies die 650 op.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, seasonality]
+    #
+    # `seasonality` ERAF, 22 augustus, op zijn eigen live cijfer.
+    #
+    # Van de negen detectoren op deze regel is hij de enige die over vier dagen
+    # echt geld GEMETEN verliest: -1,01 EUR per trade. De rest staat op +2,08
+    # (ema_pullback_resume), +1,30 (fast_ema_cross), +1,20 (session_breakout),
+    # +0,57 (impulse_break) en -0,04 (drift_continuation, feitelijk nul).
+    #
+    # De regels hierboven zetten hem erop met de expliciete waarschuwing "WAT
+    # DIT NIET IS: bewijs" en "een berekende gok". De gok is gedaan en het
+    # antwoord is binnen. Hij kon sowieso al nooit alleen beslissen — zijn
+    # confidence-plafond is 0,55 tegen een losse-module-vloer van 0,65 — dus
+    # wat hij deed was uitsluitend MEESTEMMEN met andermans setups, en dat
+    # meestemmen ging gemiddeld de verkeerde kant op.
+    #
+    # Zijn WEIGHT blijft staan (0,25). Alleen deze allowlist bepaalt of hij
+    # live meetelt; het gewicht is wat de backtest hem laat meten. Zo blijft
+    # `scripts/backtest_modules.py` hem volgen en staat hij met één woord weer
+    # op deze regel als het beeld op meer data draait.
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout]
 
-    # Meestemmen mag, in je eentje beslissen niet. 1,00 ligt boven het
-    # confidence-plafond van session_breakout (0,80), dus een setup waarin hij
-    # de enige detector is wordt nog steeds geweigerd. Zodra hij als
-    # medestander genoeg trades heeft verzameld om een eigen cijfer te hebben,
-    # kan dit omlaag — en niet eerder.
+    # MEER SETUPS, MAAR ALLEEN VAN DE DETECTOREN DIE GELD VERDIENEN.
+    #
+    # De losse-module-vloer is de knop die de meeste setups tegenhoudt: van
+    # 2.095 NO_SIGNAL-beslissingen waren er 650 "deze detector is de enige die
+    # deze kant op wijst". Gemeten over 90 dagen haalt 0,65 -> 0,55 het aantal
+    # gevormde setups van 71 naar 153 — meer dan een verdubbeling.
+    #
+    # Dat globaal doen is precies de fout van 20 augustus: het volume ging van
+    # 24 naar 193 setups per uur, en wat er door de verbrede poort kwam was
+    # onevenredig `transition` — 44 trades voor -20,86 EUR. Een enkel getal kan
+    # de ene detector doorlaten en de andere niet tegenhouden.
+    #
+    # Deze tabel kan dat wel, en er is nu waar hij op te vullen is: vier dagen
+    # ECHT GELD per detector, wat zwaarder weegt dan welke backtest ook.
+    #
+    #     ema_pullback_resume   +2,08 EUR per trade
+    #     fast_ema_cross        +1,30
+    #     session_breakout      +1,20
+    #     impulse_break         +0,57
+    #
+    # `ema_pullback_resume` en `impulse_break` naar 0,55, de volle stap. Let op
+    # dat dit de HK50-ramp die deze vloer heeft opgeleverd nog steeds weigert:
+    # `impulse_break` stond daar op exact 0,45 en blijft onder 0,55 liggen.
+    #
+    # `session_breakout` van 1,00 naar 0,75. Hij stond dicht "tot hij een eigen
+    # cijfer heeft" en dat cijfer is er nu. Niet naar 0,55: zijn plafond is
+    # 0,80, dus 0,75 laat alleen zijn meest overtuigde lezingen door. Een kier
+    # en geen deur.
+    #
+    # `fast_ema_cross` maar een halve stap, naar 0,60, en dat is bewust. Live
+    # staat hij op +1,30 maar in de moduletabel op de SLECHTSTE van allemaal,
+    # en van de ~1.174 weigeringen die 0,55 loslaat zijn er 473 van hem. Twee
+    # bronnen die elkaar tegenspreken plus het grootste volume-effect van de
+    # tabel is precies de combinatie waarbij je een halve stap zet en meet.
     lone_module_minimum_confidence_by_module:
-      session_breakout: 1.00
+      ema_pullback_resume: 0.55
+      impulse_break: 0.55
+      fast_ema_cross: 0.60
+      session_breakout: 0.75
 
     # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
     # documented as a quick entry but classified as intraday, so a fresh M5
     # short could inherit an M15 plan or be blended with slower evidence. The
     # label now matches the detector and gives it M5 planning authority.
+    # DE GEWICHTEN STONDEN BIJNA OMGEKEERD EVENREDIG AAN DE VERDIENSTEN.
+    #
+    # Ze zijn ooit op oordeel gezet, voordat er bewijs was, en niemand heeft ze
+    # aangeraakt toen het bewijs binnenkwam. Vier dagen echt geld naast de
+    # weging die in `config.yaml` staat:
+    #
+    #     ema_pullback_resume   +2,08 EUR/trade   woog 0,55
+    #     fast_ema_cross        +1,30             woog 0,50   <- laagste
+    #     session_breakout      +1,20             woog 0,50   <- laagste
+    #     impulse_break         +0,57             woog 0,60
+    #     drift_continuation    -0,04             woog 0,70
+    #     liquidity_sweep        (geen cijfer)    woog 0,80
+    #
+    # De drie beste verdieners droegen de drie laagste gewichten.
+    #
+    # WAT DIT WEL EN NIET DOET: bij een LOSSE module valt het gewicht volledig
+    # weg — teller en noemer lopen allebei over de instemmende modules, dus de
+    # score is dan gewoon |ruwe score| x zekerheid. Dit raakt dus uitsluitend
+    # setups waar twee of meer detectoren het eens zijn, en daar verschuift het
+    # de score naar degene die het geld hebben verdiend. De losse-module-vloer
+    # hierboven is de knop voor de eenzame setups; dit is de knop voor de rest.
+    #
+    # `drift_continuation` blijft op 0,70 staan. -0,04 over 60 trades is niet
+    # verliesgevend maar nul, en hij is de enige module op deze rekening die
+    # een short kan vinden in een dalende markt.
+    weights:
+      ema_pullback_resume: 0.8
+      fast_ema_cross: 0.6
+      session_breakout: 0.65
+
     quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
     quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
 

@@ -788,3 +788,82 @@ class TestNoBarIsFetchedThatNothingReads:
 
         for timeframe, count in settings.data.bars.items():
             assert count >= settings.data.minimum_bars_for(timeframe), timeframe
+
+
+class TestTheDetectorsAreTunedByWhatTheyEarned:
+    """Four days of live money per detector, applied to the two knobs that
+    decide how many of their setups reach the gate.
+
+    The knobs were set on judgement before there was evidence and never
+    revisited once it arrived, which left the three best earners carrying the
+    three lowest weights and `session_breakout` behind a floor above its own
+    confidence ceiling — able to agree with a setup and never to make one.
+    """
+
+    def _confluence(self):  # type: ignore[no-untyped-def]
+        settings = load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+        return settings.analysis.confluence
+
+    def test_the_one_detector_measured_losing_money_no_longer_votes_live(self) -> None:
+        """`seasonality` at -1.01 EUR a trade, the only net-negative of the
+        nine. Its weight stays so the backtest keeps following it."""
+        confluence = self._confluence()
+
+        assert "seasonality" not in confluence.live_enabled_modules
+        assert confluence.weights["seasonality"] > 0
+        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["seasonality"] == 0.0
+
+    def test_the_proven_detectors_have_a_lower_bar_to_stand_alone(self) -> None:
+        """This is where extra setups come from, and it is aimed rather than
+        global: dropping the floor for everyone took setups from 71 to 153 in
+        one step, which is how 20 August happened."""
+        confluence = self._confluence()
+
+        assert confluence.lone_floor_for("ema_pullback_resume") == 0.55
+        assert confluence.lone_floor_for("impulse_break") == 0.55
+        # Untouched detectors keep the global floor, so this cannot leak.
+        assert confluence.lone_floor_for("drift_continuation") == 0.65
+        assert confluence.lone_floor_for("m1_micro_breakout") == 0.65
+
+    def test_the_hk50_disaster_that_created_this_floor_is_still_refused(self) -> None:
+        """`impulse_break` alone at exactly 0.45 for -0.56R. Loosening its
+        floor to 0.55 must not buy that trade back."""
+        assert self._confluence().lone_floor_for("impulse_break") > 0.45
+
+    def test_the_detector_that_contradicts_itself_gets_half_a_step(self) -> None:
+        """`fast_ema_cross` is +1.30 EUR a trade live and the worst module in
+        the offline table, and it alone accounts for 473 of the refusals a full
+        step would release. Two sources disagreeing plus the largest volume
+        effect is where you move half way and measure."""
+        confluence = self._confluence()
+
+        assert 0.55 < confluence.lone_floor_for("fast_ema_cross") < 0.65
+
+    def test_session_breakout_can_now_reach_a_setup_of_its_own(self) -> None:
+        """It sat at 1.00 against a confidence ceiling of 0.80 — deliberately
+        unable to decide anything until it had a number. It has one: +1.20 EUR
+        a trade. A gap and not a door, so still under its ceiling."""
+        floor = self._confluence().lone_floor_for("session_breakout")
+
+        assert 0.55 < floor < 0.80
+
+    def test_the_best_earners_no_longer_carry_the_lowest_weights(self) -> None:
+        """Weight only moves setups where two or more detectors agree — for a
+        lone module it cancels out of numerator and denominator alike — so this
+        is the other half of the same question."""
+        weights = self._confluence().weights
+
+        assert weights["ema_pullback_resume"] > weights["drift_continuation"]
+        assert weights["fast_ema_cross"] > weights["seasonality"]
+        assert weights["session_breakout"] > weights["fast_ema_cross"]
+
+    def test_every_live_detector_still_carries_weight(self) -> None:
+        """A module on the allowlist with no weight is voting on nothing, which
+        is the exact defect the effective-weight fix exists to expose."""
+        confluence = self._confluence()
+        live = confluence.effective_weights(TradingMode.MICRO_LIVE)
+
+        for module in confluence.live_enabled_modules:
+            assert live.get(module, 0.0) > 0.0, module
