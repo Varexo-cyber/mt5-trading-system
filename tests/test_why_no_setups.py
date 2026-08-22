@@ -123,7 +123,12 @@ class TestThePerDetectorFloor:
         ).analysis.confluence
 
         assert changed.lone_floor_for("liquidity_sweep") == 0.55
-        assert changed.lone_floor_for("fast_ema_cross") == 0.65
+        # A detector with no entry of its own, so it must still read the global
+        # floor. `fast_ema_cross` stood here until it earned a measured entry,
+        # which would have made this pass for the wrong reason.
+        assert changed.lone_floor_for("m1_micro_breakout") == (
+            changed.lone_module_minimum_confidence
+        )
 
     def test_several_detectors_can_be_set_at_once(self) -> None:
         changed = apply_overrides(

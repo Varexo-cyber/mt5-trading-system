@@ -144,13 +144,18 @@ def test_the_replay_can_judge_in_the_account_s_own_live_mode() -> None:
     )
 
 
-def test_session_breakout_may_corroborate_live_but_never_decide_alone() -> None:
-    """It is on the live allowlist on 33 trades, which is noise, not proof.
+def test_the_live_allowlist_follows_the_measured_record() -> None:
+    """Both halves of this were set on the backtest and re-decided on four days
+    of real money.
 
-    So it is allowed to be a second voice — that is what dissolves the 650
-    "this detector is the only one pointing this way" refusals — and its lone
-    floor is set above its own confidence ceiling so it can never carry a
-    trade by itself.
+    `session_breakout` was let in as a second voice on 33 backtest trades and
+    pinned above its own 0.80 ceiling so it could never decide anything. It
+    earned +1.20 EUR a trade live, so the floor drops UNDER that ceiling: a
+    lone firing is possible now, but only from its most convinced readings.
+
+    `seasonality` went the other way. It was the same calculated bet on
+    evidence just as thin, and it came back at -1.01 EUR a trade — the only
+    net-negative of the nine — so it is off the allowlist entirely.
     """
     from pathlib import Path
 
@@ -162,10 +167,12 @@ def test_session_breakout_may_corroborate_live_but_never_decide_alone() -> None:
     ).analysis.confluence
 
     assert "session_breakout" in confluence.live_enabled_modules
-    assert "seasonality" in confluence.live_enabled_modules
+    assert "seasonality" not in confluence.live_enabled_modules
     # Still off: the one detector with a losing record that is significant.
     assert "trend_momentum" not in confluence.live_enabled_modules
-    # Above session_breakout's own 0.80 ceiling, so a lone firing is refused.
-    assert confluence.lone_floor_for("session_breakout") > 0.80
-    # Everything else keeps the single global floor.
-    assert confluence.lone_floor_for("impulse_break") == confluence.lone_module_minimum_confidence
+    # Under the 0.80 ceiling now, so a convinced lone firing can carry a trade.
+    assert 0.55 < confluence.lone_floor_for("session_breakout") < 0.80
+    # A detector with no live figure of its own keeps the single global floor.
+    assert (
+        confluence.lone_floor_for("m1_micro_breakout") == confluence.lone_module_minimum_confidence
+    )

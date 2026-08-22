@@ -1099,28 +1099,37 @@ class TestTheLoneFloorCanBeSetPerDetector:
         with _pytest.raises(ValueError, match="between 0 and 1"):
             ConfluenceConfig(lone_module_minimum_confidence_by_module={"trend_momentum": 1.4})
 
-    def test_the_only_entry_is_the_one_that_holds_a_detector_back(self) -> None:
-        """The table shipped empty, and its first entry TIGHTENS rather than releases.
+    def test_every_entry_names_a_detector_with_a_live_record(self) -> None:
+        """The table shipped empty and its first entry TIGHTENED, holding
+        `session_breakout` above its own 0.80 ceiling until it had a number.
 
-        `session_breakout` joined the live allowlist on 33 trades — the best row
-        in the module table and still noise at t = 0.76. It is there to be a
-        second voice for the 650 refusals that read "this detector is the only
-        one pointing this way", not to carry trades on a record it does not
-        have. A floor above its own 0.80 confidence ceiling is how that is
-        stated in a number rather than in a comment.
+        It has one now, and so do the others: four days of real trades at
+        +2.08, +1.30, +1.20 and +0.57 EUR apiece. That is what an entry costs,
+        and it is why this asserts the table's KEYS rather than its values —
+        the numbers are a judgement that will move again, the rule that only a
+        measured detector gets an entry is the part that must not.
         """
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
         settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
-        table = settings.analysis.confluence.lone_module_minimum_confidence_by_module
+        confluence = settings.analysis.confluence
+        table = confluence.lone_module_minimum_confidence_by_module
 
-        assert table == {"session_breakout": 1.0}
-        # Nothing here may be looser than the global floor without its own
-        # measured record; an entry below it releases a detector to trade alone.
-        floor = settings.analysis.confluence.lone_module_minimum_confidence
-        assert all(value >= floor for value in table.values())
+        # Every earner from the live table, and nothing else. A detector with
+        # no measured record must keep the single global floor.
+        assert set(table) == {
+            "ema_pullback_resume",
+            "impulse_break",
+            "fast_ema_cross",
+            "session_breakout",
+        }
+        # And a released detector still has to be CONVINCED. Loosening below
+        # the module confidence floor would make the entry meaningless: every
+        # firing would clear it and the corroboration requirement would be off
+        # rather than relaxed.
+        assert all(value > confluence.minimum_confidence for value in table.values())
 
 
 class TestTrendMomentumIsOffLiveOnItsRecord:
