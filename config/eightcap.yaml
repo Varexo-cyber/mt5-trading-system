@@ -531,6 +531,34 @@ analysis:
     lifecycle_expiry_minutes: {quick: 30, intraday: 240, swing: 1440}
 
   confluence:
+    # Deze rekening handelt niet in `transition`.
+    #
+    # 90 gesloten trades over vier dagen, gesneden op wat `market_regime` bij
+    # entry las:
+    #
+    #     transition   44 trades  59% gewonnen  -20,86 EUR   -0,47 per trade
+    #     trend_down   11 trades  55% gewonnen  -11,75 EUR   -1,07 per trade
+    #     trend_up     21 trades  90% gewonnen  +22,44 EUR   +1,07 per trade
+    #     range         6 trades 100% gewonnen   +9,57 EUR   +1,59 per trade
+    #     extreme       8 trades 100% gewonnen   +9,25 EUR   +1,16 per trade
+    #
+    # `transition` is de helft van het boek en de hele schade. Het is de
+    # restbak van de classificatie, en wat het BETEKENT is dat de twee
+    # tijdframes het oneens zijn over de richting - de helft van deze trades
+    # is dus genomen in een markt die het systeem zelf niet kon lezen. Bij 22
+    # trades stond deze bak op +2,41 EUR en is hij daarom met rust gelaten;
+    # bij 44 staat hij op -20,86.
+    #
+    # `trend_down` staat er bewust NIET bij, ook al verliest hij. Dat is een
+    # echte trend en geen chop: hem dichtzetten zet elke short in een dalende
+    # markt dicht. Elf trades is bovendien te dun om een richting te
+    # veroordelen - `transition` zag er bij 22 ook nog winstgevend uit. De
+    # scorecard splitst regime nu op richting, dus zodra de steekproef groot
+    # genoeg is kan dit teruggebracht worden tot de helft die echt verliest,
+    # in plaats van in één keer weggegooid.
+    refused_regimes:
+      - transition
+
     # Measured, not guessed: fed a textbook uptrend, every symbol came back
     # NO_SIGNAL — "too few independent directional modules". Three modules carry
     # weight, and two of them look for opposite things. `trend_momentum` wants

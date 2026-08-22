@@ -219,6 +219,16 @@ def taken(
             }
             if regimes:
                 slices["the regime at entry"] = {}
+                # And the same regimes split by which way the trade faced.
+                #
+                # The regime slice alone can only recommend closing a regime
+                # down, and closing `trend_down` down closes every short in a
+                # falling market. A regime is not a verdict on a trade: it is
+                # the market's shape, and a shape a LONG hates is often the
+                # one a SHORT wants. Without this column the only available
+                # action is a blanket refusal; with it a regime that loses on
+                # one side and pays on the other can be halved instead.
+                slices["the regime at entry, by side"] = {}
         except sqlite3.OperationalError:
             regimes = {}
     if scored:
@@ -257,11 +267,9 @@ def taken(
             )
             into("what the raw score was", score_band(row["total_score"]), row)
             if "the regime at entry" in slices:
-                into(
-                    "the regime at entry",
-                    regimes.get(int(row["cycle_pk"] or 0), "unrecorded"),
-                    row,
-                )
+                regime = regimes.get(int(row["cycle_pk"] or 0), "unrecorded")
+                into("the regime at entry", regime, row)
+                into("the regime at entry, by side", f"{regime} {row['direction']}", row)
             # A trade with three detectors behind it counts once in each of
             # their rows, so these columns do not add up to the book. That is
             # the same reading `backtest_modules.py` calls WHEN PRESENT, and it

@@ -341,7 +341,9 @@ class TestWhereTheMoneyActuallyCameFrom:
             "ALTER TABLE trades ADD COLUMN cycle_pk INTEGER;"
         )
         now = datetime.now(UTC)
-        for i, (pnl, regime, modules) in enumerate(rows, start=900):
+        for i, row in enumerate(rows, start=900):
+            pnl, regime, modules = row[0], row[1], row[2]
+            direction = row[3] if len(row) > 3 else "LONG"
             db.execute("INSERT INTO analysis_cycles VALUES (?,?,?,?)", (i, 55.0, 26.0, regime))
             for module, score, weight in modules:
                 db.execute(
@@ -356,7 +358,7 @@ class TestWhereTheMoneyActuallyCameFrom:
                     i,
                     i,
                     "EURUSD",
-                    "LONG",
+                    direction,
                     pnl,
                     pnl * 10,
                     0.4,
@@ -388,6 +390,31 @@ class TestWhereTheMoneyActuallyCameFrom:
         assert "drift_continuation" in out
         assert "THE REGIME AT ENTRY" in out
         assert "transition" in out
+
+    def test_a_regime_is_also_split_by_which_way_the_trade_faced(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """`trend_down` lost money over four live days, and the regime slice
+        alone can only recommend closing it — which closes every short in a
+        falling market. A regime is the market's shape, not a verdict on a
+        trade: the shape a LONG hates is often the one a SHORT wants. This
+        column is what makes halving it possible instead of blanket-refusing
+        it, and here the shorts pay while the longs bleed."""
+        path = self._journal(
+            journal,
+            [
+                (-0.9, "trend_down", [("impulse_break", 60.0, 0.6)], "LONG"),
+                (-0.9, "trend_down", [("impulse_break", 60.0, 0.6)], "LONG"),
+                (+1.4, "trend_down", [("impulse_break", -60.0, 0.6)], "SHORT"),
+            ],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "THE REGIME AT ENTRY, BY SIDE" in out
+        assert "trend_down LONG" in out
+        assert "trend_down SHORT" in out
 
     def test_a_detector_pointing_the_other_way_is_not_credited(
         self, journal: Path, capsys

@@ -98,6 +98,50 @@ class ConfluenceEngine:
         if regime == "extreme":
             return self._reject(ctx, signals, "extreme volatility regime")
 
+        # REGIMES THIS ACCOUNT DOES NOT TRADE, on its own four-day record.
+        #
+        # 90 closed trades, sliced by what `market_regime` read at entry:
+        #
+        #     transition   44 trades  59% won  -20.86 EUR   -0.47 a trade
+        #     trend_down   11 trades  55% won  -11.75 EUR   -1.07 a trade
+        #     trend_up     21 trades  90% won  +22.44 EUR   +1.07 a trade
+        #     range         6 trades 100% won   +9.57 EUR   +1.59 a trade
+        #     extreme       8 trades 100% won   +9.25 EUR   +1.16 a trade
+        #
+        # `transition` is half the book and all of the damage. It is the
+        # classifier's leftover branch, and what it MEANS is that the two
+        # timeframes disagree about direction — so half these trades were taken
+        # into a market the system itself could not read. At 22 trades this
+        # bucket was +2.41 EUR and was left alone for exactly that reason; at
+        # 44 it is -20.86, which is the measurement arriving rather than an
+        # opinion changing.
+        #
+        # `trend_down` is deliberately absent. It loses over these same four
+        # days, but it is a real trend rather than chop: refusing it refuses
+        # every short in a falling market, which is the thing this account has
+        # asked for most. Eleven trades is also too thin to condemn a
+        # direction — `transition` looked profitable at 22 as well. The
+        # scorecard splits regime by direction now, so when the sample is big
+        # enough this can be narrowed to whichever side actually loses.
+        #
+        # A hard refusal rather than a discount: a discount only removes a
+        # module's contribution, and here the objection is to the market, not
+        # to any one reader of it.
+        blocked = set(self.config.refused_regimes)
+        if blocked:
+            market_regime = next(
+                (s.details.get("regime") for s in signals if s.module == "market_regime"),
+                None,
+            )
+            if market_regime in blocked:
+                return self._reject(
+                    ctx,
+                    signals,
+                    f"this account does not trade the {market_regime} regime: it has "
+                    f"lost money over every window measured so far, and the objection "
+                    f"is to the market rather than to any one module reading it",
+                )
+
         allowed_live = set(self.config.live_enabled_modules)
         weighted: list[tuple[Signal, float]] = []
         for signal in signals:
