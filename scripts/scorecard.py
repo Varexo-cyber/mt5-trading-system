@@ -132,12 +132,19 @@ def score_band(score: float | None) -> str:
     return f"score {floor}-{floor + 5}"
 
 
-def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket]]:
+def taken(
+    db: sqlite3.Connection, since: datetime, until: datetime | None = None
+) -> dict[str, dict[str, Bucket]]:
     """Closed trades, sliced every way the journal can support."""
     columns = (
         "SELECT t.symbol, t.direction, t.pnl_r, t.pnl_money, t.mfe_r, t.exit_reason, "
         "t.opened_at{extra} FROM trades t{join} "
         "WHERE t.closed_at IS NOT NULL AND t.closed_at >= ? AND t.pnl_r IS NOT NULL"
+        "{bound}"
+    )
+    bound = " AND t.closed_at < ?" if until else ""
+    window: tuple[str, ...] = (
+        (since.isoformat(), until.isoformat()) if until else (since.isoformat(),)
     )
     try:
         # The cycle that produced the trade carries the score the engine gave
@@ -147,15 +154,26 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
             columns.format(
                 extra=", c.total_score, c.score_threshold, t.cycle_pk",
                 join=" LEFT JOIN analysis_cycles c ON c.id = t.cycle_pk",
+                bound=bound,
             ),
-            (since.isoformat(),),
+            window,
         ).fetchall()
         scored = True
     except sqlite3.OperationalError:
-        rows = db.execute(columns.format(extra="", join=""), (since.isoformat(),)).fetchall()
+        rows = db.execute(columns.format(extra="", join="", bound=bound), window).fetchall()
         scored = False
 
     slices: dict[str, dict[str, Bucket]] = {
+        # WHEN IT TURNED, before why.
+        #
+        # The report sliced the book six ways and never by the clock, so "it
+        # worked Wednesday and Thursday morning and then stopped" could not be
+        # checked — only felt. A day column and an hour column make the shape
+        # visible in one run, and `--since` / `--until` then let the same
+        # report be run over the good stretch and the bad one so every other
+        # slice can be read side by side.
+        "which day": {},
+        "which hour it opened": {},
         "instrument": {},
         "session": {},
         "direction": {},
@@ -180,8 +198,8 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
                 "SELECT m.cycle_pk, m.module, m.score FROM module_scores m "
                 "JOIN trades t ON t.cycle_pk = m.cycle_pk "
                 "WHERE m.weight > 0 AND m.score != 0 "
-                "AND t.closed_at IS NOT NULL AND t.closed_at >= ?",
-                (since.isoformat(),),
+                "AND t.closed_at IS NOT NULL AND t.closed_at >= ?" + bound,
+                window,
             ).fetchall():
                 modules_by_cycle.setdefault(int(row["cycle_pk"]), []).append(
                     (str(row["module"]), float(row["score"]))
@@ -224,10 +242,13 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
         into("direction", str(row["direction"]), row)
         into("what closed it", str(row["exit_reason"] or "unknown"), row)
         try:
-            hour = datetime.fromisoformat(str(row["opened_at"])).astimezone(UTC).hour
+            opened = datetime.fromisoformat(str(row["opened_at"])).astimezone(UTC)
+            hour, day = opened.hour, opened.strftime("%a %d %b")
         except ValueError:
-            hour = -1
+            hour, day = -1, "unknown"
         into("session", session_of(hour) if hour >= 0 else "unknown", row)
+        into("which day", day, row)
+        into("which hour it opened", f"{hour:02d}:00 UTC" if hour >= 0 else "unknown", row)
         if scored:
             into(
                 "how sure the engine was",
@@ -252,17 +273,21 @@ def taken(db: sqlite3.Connection, since: datetime) -> dict[str, dict[str, Bucket
     return slices
 
 
-def refused(db: sqlite3.Connection, since: datetime) -> dict[str, Bucket]:
+def refused(
+    db: sqlite3.Connection, since: datetime, until: datetime | None = None
+) -> dict[str, Bucket]:
     """What each gate blocked, and what those setups went on to do.
 
     The journal shadows a blocked setup and resolves it against later price, so
     this is recorded rather than imagined. A gate whose blocked trades would
     have made money is costing you, and there is no other way to find out.
     """
+    bound = " AND opened_at < ?" if until else ""
+    window = (since.isoformat(), until.isoformat()) if until else (since.isoformat(),)
     rows = db.execute(
         "SELECT blocked_by, outcome, pnl_r FROM shadow_trades "
-        "WHERE opened_at >= ? AND pnl_r IS NOT NULL AND outcome IS NOT NULL",
-        (since.isoformat(),),
+        "WHERE opened_at >= ? AND pnl_r IS NOT NULL AND outcome IS NOT NULL" + bound,
+        window,
     ).fetchall()
     gates: dict[str, Bucket] = {}
     for row in rows:
@@ -271,7 +296,9 @@ def refused(db: sqlite3.Connection, since: datetime) -> dict[str, Bucket]:
     return gates
 
 
-def intervened(db: sqlite3.Connection, since: datetime) -> list[sqlite3.Row]:
+def intervened(
+    db: sqlite3.Connection, since: datetime, until: datetime | None = None
+) -> list[sqlite3.Row]:
     """Every rule that closed a trade early, beside what holding would have paid.
 
     `management_baselines` has been filled since the resolver was written and
@@ -301,19 +328,24 @@ def intervened(db: sqlite3.Connection, since: datetime) -> list[sqlite3.Row]:
         FROM management_baselines b
         JOIN trades t ON t.id = b.trade_id
         WHERE t.closed_at >= ? AND t.exit_reason IS NOT NULL
+        """
+            + (" AND t.closed_at < ?" if until else "")
+            + """
         GROUP BY t.exit_reason
         ORDER BY AVG(b.lift_r)
         """,
-            (since.isoformat(),),
+            (since.isoformat(), until.isoformat()) if until else (since.isoformat(),),
         ).fetchall()
     except sqlite3.OperationalError:
         return []
 
 
-def unresolved(db: sqlite3.Connection, since: datetime) -> int:
+def unresolved(db: sqlite3.Connection, since: datetime, until: datetime | None = None) -> int:
+    bound = " AND opened_at < ?" if until else ""
+    window = (since.isoformat(), until.isoformat()) if until else (since.isoformat(),)
     row = db.execute(
-        "SELECT COUNT(*) AS n FROM shadow_trades WHERE opened_at >= ? AND pnl_r IS NULL",
-        (since.isoformat(),),
+        "SELECT COUNT(*) AS n FROM shadow_trades WHERE opened_at >= ? AND pnl_r IS NULL" + bound,
+        window,
     ).fetchone()
     return int(row["n"]) if row else 0
 
@@ -329,7 +361,10 @@ def show(title: str, buckets: dict[str, Bucket], minimum: int) -> None:
         print("  so these do not add up to the book. Read a row against the others.")
     print(f"  {'':22}{'trades':>7}{'won':>6}{'net':>10}{'money':>9}{'kept':>8}")
     print("  " + "-" * 62)
-    for bucket in sorted(worth_reading, key=lambda b: b.net_r):
+    # Time reads in order; everything else reads worst-first.
+    chronological = title in ("which day", "which hour it opened")
+    order = (lambda b: b.name) if chronological else (lambda b: b.net_r)
+    for bucket in sorted(worth_reading, key=order):  # type: ignore[arg-type,return-value]
         print(bucket.row())
 
 
@@ -338,6 +373,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--days", type=float, default=30.0, help="window to report on")
     parser.add_argument("--min-sample", type=int, default=1, help="hide thinner buckets")
     parser.add_argument("--db", default="journal/trading.db", help="journal path")
+    parser.add_argument(
+        "--since",
+        default="",
+        help="ISO instant to start from, e.g. 2026-08-21T00:00. Overrides --days, "
+        "so the same report can be run over a good stretch and a bad one and "
+        "every slice read side by side",
+    )
+    parser.add_argument("--until", default="", help="ISO instant to stop at. Open-ended without it")
     args = parser.parse_args(argv)
 
     path = ROOT / args.db
@@ -345,13 +388,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No journal at {path}.")
         return 1
 
-    since = datetime.now(UTC) - timedelta(days=args.days)
+    if args.since:
+        try:
+            since = datetime.fromisoformat(args.since)
+        except ValueError:
+            print(f"--since is not an ISO instant: {args.since!r}")
+            return 1
+        since = since if since.tzinfo else since.replace(tzinfo=UTC)
+    else:
+        since = datetime.now(UTC) - timedelta(days=args.days)
+    until: datetime | None = None
+    if args.until:
+        try:
+            until = datetime.fromisoformat(args.until)
+        except ValueError:
+            print(f"--until is not an ISO instant: {args.until!r}")
+            return 1
+        until = until if until.tzinfo else until.replace(tzinfo=UTC)
+        if until <= since:
+            print("--until must be after --since")
+            return 1
     db = connect(path)
     try:
-        slices = taken(db, since)
-        gates = refused(db, since)
-        pending = unresolved(db, since)
-        interventions = intervened(db, since)
+        slices = taken(db, since, until)
+        gates = refused(db, since, until)
+        pending = unresolved(db, since, until)
+        interventions = intervened(db, since, until)
     finally:
         db.close()
 

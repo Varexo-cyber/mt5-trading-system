@@ -439,3 +439,106 @@ class TestWhereTheMoneyActuallyCameFrom:
         out = capsys.readouterr().out
 
         assert "counts once in each row" in out
+
+
+class TestWhenItTurned:
+    """ "It worked Wednesday and Thursday morning and then stopped" could be
+    felt and not checked.
+
+    The report sliced the book six ways and never by the clock. A day column
+    and an hour column make the shape visible in one run; `--since` / `--until`
+    then let the same report be run over the good stretch and the bad one, so
+    every other slice — detector, regime, instrument, direction — can be read
+    side by side instead of guessed at.
+    """
+
+    def _two_days(self, journal: Path) -> Path:
+        db = sqlite3.connect(journal)
+        now = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
+        rows = [
+            (now - timedelta(days=1, hours=4), +0.5),  # the good stretch
+            (now - timedelta(days=1, hours=3), +0.4),
+            (now - timedelta(hours=6), -0.6),  # and the bad one
+            (now - timedelta(hours=5), -0.7),
+        ]
+        for i, (opened, pnl) in enumerate(rows, start=700):
+            db.execute(
+                "INSERT INTO trades (id, symbol, direction, pnl_r, pnl_money, mfe_r, "
+                "exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    i,
+                    "EURUSD",
+                    "LONG",
+                    pnl,
+                    pnl * 10,
+                    0.5,
+                    "BROKER_SL",
+                    opened.isoformat(),
+                    (opened + timedelta(minutes=30)).isoformat(),
+                ),
+            )
+        db.commit()
+        db.close()
+        return journal
+
+    def test_the_day_and_the_hour_each_get_a_column(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        path = self._two_days(journal)
+
+        main(["--db", str(path), "--days", "3"])
+        out = capsys.readouterr().out
+
+        assert "WHICH DAY" in out
+        assert "WHICH HOUR IT OPENED" in out
+        assert "UTC" in out
+
+    def test_time_columns_read_in_order_not_by_profit(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """A day column sorted worst-first would hide the one thing it exists
+        to show: which way the book moved as the clock ran."""
+        path = self._two_days(journal)
+
+        main(["--db", str(path), "--days", "3"])
+        block = capsys.readouterr().out.split("WHICH HOUR IT OPENED")[1].split("INSTRUMENT")[0]
+        hours = [line.strip().split()[0] for line in block.splitlines() if ":00 UTC" in line]
+
+        assert hours == sorted(hours)
+
+    def test_a_window_can_be_bounded_at_both_ends(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """The point of the whole thing: run the good stretch alone."""
+        path = self._two_days(journal)
+        cut = (datetime.now(UTC) - timedelta(hours=12)).isoformat()
+
+        main(
+            [
+                "--db",
+                str(path),
+                "--since",
+                (datetime.now(UTC) - timedelta(days=2)).isoformat(),
+                "--until",
+                cut,
+            ]
+        )
+        out = capsys.readouterr().out
+
+        assert "2 closed trades" in out
+
+    def test_a_bad_instant_is_refused_rather_than_ignored(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """Silently falling back to --days would report a different window than
+        the one asked for, which is the failure every tool here guards."""
+        assert main(["--db", str(journal), "--since", "not-a-date"]) == 1
+        assert "not an ISO instant" in capsys.readouterr().out
+
+    def test_an_until_before_the_since_is_refused(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        assert (
+            main(
+                [
+                    "--db",
+                    str(journal),
+                    "--since",
+                    "2026-08-21T00:00",
+                    "--until",
+                    "2026-08-20T00:00",
+                ]
+            )
+            == 1
+        )
+        assert "must be after" in capsys.readouterr().out

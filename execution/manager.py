@@ -703,6 +703,46 @@ class PositionManager:
             # Severity changing on the same tick stream is not independent
             # confirmation. Keep observing it, but do not ratchet the stop.
             return None
+
+        # A SECOND, INDEPENDENT WARNING IS A REASON TO LEAVE, NOT TO TIGHTEN AGAIN.
+        #
+        # The guard above stops the same evidence acting twice, which is what
+        # walked EURAUD's stop into the price seven times in a minute. It does
+        # not answer what SHOULD happen when the evidence genuinely broadens —
+        # and there the answer is not a third stop move.
+        #
+        # An exit needs two families to reach 0.75 in ONE reading. Two families
+        # arriving minutes apart never sum, so a trade can deteriorate on
+        # trajectory, then on drift as well, and still only ever earn tighter
+        # stops. EURAUD did exactly that: `adverse_excursion`, then
+        # `momentum_turned, adverse_run, adverse_excursion`, and it closed on
+        # the walked-up stop at -0.66R — worse than its own deepest excursion
+        # of -0.60R, on a trade whose real stop at -1.00R was never touched.
+        #
+        # So the second independent family closes it. Leaving at market at a
+        # moment we choose beats leaving at whatever the stop was dragged to,
+        # plus slippage, at a moment the market chooses.
+        if (
+            previous is not None
+            and config.exit_on_second_independent_warning
+            and families - previous.families
+            and self._worth_paying_to_leave(position, risk, tick)
+        ):
+            result = self.broker.close_position(position)
+            if result.ok:
+                self._health_interventions.pop(position.ticket, None)
+                fresh = ", ".join(sorted(families - previous.families))
+                return ManagementEvent(
+                    position.ticket,
+                    "HEALTH_EXIT",
+                    f"{health.reason} at {r_now:.2f}R; {fresh} has now joined the "
+                    f"warning that already tightened this stop — leaving rather than "
+                    f"walking it further into the price",
+                    result.filled_price,
+                    position.profit + position.swap,
+                    r_at_action=r_now,
+                )
+
         # tighten: pull the stop to just inside what the trade is currently
         # worth. Never past price, and never a widening — a reading this weak
         # has not earned the right to close anything, only to risk less.
