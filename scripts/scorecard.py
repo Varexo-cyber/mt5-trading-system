@@ -76,10 +76,10 @@ class Bucket:
     def median_kept(self) -> float | None:
         return sorted(self.kept)[len(self.kept) // 2] if self.kept else None
 
-    def row(self) -> str:
+    def row(self, width: int = 22) -> str:
         kept = self.median_kept
         return (
-            f"  {self.name:<22}{self.trades:>7}{self.wins:>6}"
+            f"  {self.name:<{width}}{self.trades:>7}{self.wins:>6}"
             f"{self.net_r:>+9.2f}R{self.money:>+9.2f}"
             + (f"{kept:>8.0%}" if kept is not None else f"{'—':>8}")
         )
@@ -383,6 +383,62 @@ def intervened(
         return []
 
 
+def ratcheted(
+    db: sqlite3.Connection, since: datetime, until: datetime | None = None
+) -> list[sqlite3.Row]:
+    """Did MOVING the stop pay, or did it only cut the plan short?
+
+    `intervened` grades the rule that closed the trade. It cannot grade the
+    rule that moved the stop, and that is the bigger question here: BROKER_SL
+    was 49 of 90 closed trades over four days at a lift of -0.52R, better in
+    15. But `BROKER_SL` names the broker filling a stop, not a decision — and
+    the same label covers two entirely different trades:
+
+      * the stop was never touched, so the plan simply failed. Baseline and
+        actual are the same trade, lift is ~0 by construction, and the row is
+        diluting the average toward nothing.
+      * the stop was ratcheted up behind the price and THAT is what got hit.
+        Here the baseline is a genuine counterfactual, and the lift is the
+        price of securing early.
+
+    Averaged together they answer nothing. `trades.sl` is written once at
+    entry and never updated, so the baseline really is the plan as placed, and
+    `management_actions` records every move with its old and new stop — the
+    two halves can be told apart exactly.
+
+    This is the account's stated priority measured against itself: "liever
+    veilig stellen dan risico's" is a preference, and this is what it costs.
+    """
+    # 72 hours is the resolver's replay horizon, so a "would have recovered"
+    # can be a hold this account would never have sat through, and holding a
+    # loser also occupies risk budget this cannot see. The lift is evidence,
+    # not a verdict.
+    moved = (
+        "SELECT trade_id, COUNT(*) AS moves, MIN(r_at_action) AS first_r "
+        "FROM management_actions "
+        "WHERE new_sl IS NOT NULL AND old_sl IS NOT NULL AND new_sl != old_sl "
+        "GROUP BY trade_id"
+    )
+    try:
+        return db.execute(
+            "SELECT t.exit_reason AS name,"
+            " CASE WHEN m.moves > 0 THEN 'stop moved' ELSE 'stop untouched' END AS ratchet,"
+            " COUNT(*) AS trades, AVG(b.actual_pnl_r) AS actual,"
+            " AVG(b.baseline_pnl_r) AS baseline, AVG(b.lift_r) AS lift,"
+            " SUM(CASE WHEN b.lift_r > 0 THEN 1 ELSE 0 END) AS better,"
+            " AVG(m.first_r) AS first_r"
+            " FROM management_baselines b"
+            " JOIN trades t ON t.id = b.trade_id"
+            f" LEFT JOIN ({moved}) m ON m.trade_id = t.id"
+            " WHERE t.closed_at >= ? AND t.exit_reason IS NOT NULL"
+            + (" AND t.closed_at < ?" if until else "")
+            + " GROUP BY name, ratchet ORDER BY AVG(b.lift_r)",
+            (since.isoformat(), until.isoformat()) if until else (since.isoformat(),),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
 def unresolved(db: sqlite3.Connection, since: datetime, until: datetime | None = None) -> int:
     bound = " AND opened_at < ?" if until else ""
     window = (since.isoformat(), until.isoformat()) if until else (since.isoformat(),)
@@ -402,13 +458,18 @@ def show(title: str, buckets: dict[str, Bucket], minimum: int) -> None:
     if title == "which detector was behind it":
         print("  A trade with three detectors behind it counts once in each row,")
         print("  so these do not add up to the book. Read a row against the others.")
-    print(f"  {'':22}{'trades':>7}{'won':>6}{'net':>10}{'money':>9}{'kept':>8}")
-    print("  " + "-" * 62)
+    # The crossed slices carry names like "ema_pullback_resume in trend_up",
+    # which overran the fixed 22 and pushed every number out of its column —
+    # so the one table built to be compared row against row was the one that
+    # could not be. The width follows the longest name instead.
+    width = max(22, max(len(b.name) for b in worth_reading))
+    print(f"  {'':{width}}{'trades':>7}{'won':>6}{'net':>10}{'money':>9}{'kept':>8}")
+    print("  " + "-" * (width + 40))
     # Time reads in order; everything else reads worst-first.
     chronological = title in ("which day", "which hour it opened")
     order = (lambda b: b.name) if chronological else (lambda b: b.net_r)
     for bucket in sorted(worth_reading, key=order):  # type: ignore[arg-type,return-value]
-        print(bucket.row())
+        print(bucket.row(width))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -478,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
         gates = refused(db, since, until)
         pending = unresolved(db, since, until)
         interventions = intervened(db, since, until)
+        stop_moves = ratcheted(db, since, until)
     finally:
         db.close()
 
@@ -531,6 +593,34 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print("  A negative lift means the rule paid to do worse than nothing. A losing")
         print("  record with a positive lift is a rule earning its keep on bad trades.")
+
+    if stop_moves:
+        print()
+        print("  DID MOVING THE STOP PAY")
+        print("  The same exit label covers two different trades: one where the stop was")
+        print("  never touched and the plan simply failed, and one where the stop was")
+        print("  ratcheted up behind price and THAT is what got hit. Only the second is a")
+        print("  real counterfactual; averaged together they answer nothing.")
+        head = f"{'':32}{'trades':>7}{'got':>9}{'holding':>9}{'lift':>9}"
+        print(f"  {head}{'better':>8}{'moved at':>10}")
+        print("  " + "-" * 86)
+        for row in stop_moves:
+            if int(row["trades"]) < args.min_sample:
+                continue
+            label = f"{row['name']!s} {row['ratchet']!s}"
+            first = row["first_r"]
+            when = f"{float(first):+.2f}R" if first is not None else "—"
+            print(
+                f"  {label:<32}{int(row['trades']):>7}"
+                f"{float(row['actual']):>+8.2f}R{float(row['baseline']):>+8.2f}R"
+                f"{float(row['lift']):>+8.2f}R{int(row['better']):>5}/{int(row['trades'])}"
+                f"{when:>10}"
+            )
+        print()
+        print("  `moved at` is the R the stop was FIRST moved at. A stop-moved row with a")
+        print("  negative lift is what securing early costs; an untouched row near zero is")
+        print("  the plan being graded against itself and carries no information.")
+        print("  The replay runs 72h, so some recoveries are holds this account never had.")
 
     if pending:
         print(f"\n  {pending} blocked setup(s) not yet resolved and excluded.")
