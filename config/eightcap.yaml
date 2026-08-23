@@ -1688,10 +1688,47 @@ modes:
     max_equity: 500
 
 trade_management:
-  # Still needs the position path plus an independent chart family. The only
-  # change is that corroborated failure may act at -0.25R instead of waiting
-  # for -0.35R; the broker SL remains the unconditional backstop.
-  thesis_invalidation_at_r: 0.25
+  # Still needs the position path plus an independent chart family. Alleen het
+  # moment schuift op: bevestigd falen mag nu ingrijpen op -0,15R in plaats van
+  # -0,25R. De broker-SL blijft de onvoorwaardelijke achtervang.
+  #
+  # Van 0,25 naar 0,15 op eigenaarsinstructie, met dit als onderbouwing:
+  # HEALTH_EXIT deed 12 trades, 0 gewonnen, -36,82 EUR bij een lift van
+  # -0,06R. Die lift leest als "ingrijpen was een wassen neus", maar zegt iets
+  # preciezers — die trades bereikten hun stop tóch. En voor een trade die
+  # sowieso verloren was is eerder weggaan strikt goedkoper: dezelfde baseline,
+  # een kleiner verlies.
+  #
+  # Wat dit NIET verzwakt: de eis blijft trajectory PLUS een onafhankelijke
+  # chartfamilie PLUS severity >= 0,45. Eén lezing kan hier nog steeds niks.
+  thesis_invalidation_at_r: 0.15
+
+  # DE UITGANGSDREMPEL, EN DE ENE FAMILIECOMBINATIE DIE ER NIET BIJ KON.
+  #
+  # 0,75 was tot nu toe een constante in de code. De familiegewichten zijn
+  # structure 0,45, trajectory 0,50, drift 0,35, liquidity 0,30, en de code
+  # noteert zelf welk paar daardoor buiten de boot viel:
+  #
+  #     trajectory + structure   0,95   haalt het
+  #     trajectory + drift       0,85   haalt het
+  #     trajectory + liquidity   0,80   haalt het
+  #     structure  + drift       0,80   haalt het
+  #     structure  + liquidity   0,75   haalt het precies
+  #     drift      + liquidity   0,65   HAALT HET NIET
+  #
+  # Op 0,65 doet dat laatste paar wat deze klasse over zichzelf beweert: twee
+  # onafhankelijke families die het eens zijn kunnen een trade sluiten. Een
+  # trade waarvan de drift is gedraaid EN de kosten zijn opgeblazen kreeg tot
+  # nu toe alleen een strakkere stop, en liep daarna vaak door naar de volle
+  # stop.
+  #
+  # DE VEILIGHEID BLIJFT INTACT, en dat is meetbaar en niet beloofd. De
+  # zwaarste losse familie is trajectory op 0,50, dus op 0,65 kan geen enkele
+  # familie deze drempel in z'n eentje halen — met 0,15 marge. De schemavloer
+  # staat op 0,55 en `assess` klemt daar nogmaals op. Bovendien degradeert de
+  # corroboratieregel een exit van één familie sowieso naar een stopverkrapping.
+  # "Deze trade staat op verlies" sluit dus nog altijd niks.
+  health_broken_at: 0.65
   # DE PROFIT-LOCK NAAR WAAR DEZE TRADES ECHT LEVEN.
   #
   # Hij armeerde op 0,7R en borgde de helft van de top. Over 39 gesloten

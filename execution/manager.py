@@ -656,6 +656,7 @@ class PositionManager:
             secure_at_r=config.health_secure_at_r,
             tighten_at_r=config.health_tighten_at_r,
             thesis_invalidation_at_r=config.thesis_invalidation_at_r,
+            broken_at=config.health_broken_at,
             # So the drift readers can tell how much of their window is from
             # after this trade opened, rather than from the chart that produced
             # it. Taken from the timeframe rather than hardcoded: the two must

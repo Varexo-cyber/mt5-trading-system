@@ -3108,6 +3108,22 @@ class TradeManagementConfig(Base):
     #: contradict the entry thesis may be cut before the original full stop.
     #: This only reduces risk; it never widens a stop or creates a position.
     thesis_invalidation_at_r: float = Field(default=0.35, ge=0.0, le=1.0)
+    #: Combined severity at which the reading becomes "broken" and the position
+    #: is closed rather than merely tightened.
+    #:
+    #: This was a constant in `analysis/position_health.py`, which meant the one
+    #: knob controlling how early a failing trade gets cut could only be moved
+    #: by editing source. It is the second time this exact complaint has been
+    #: acted on — the owner already raised the `trajectory` family weight from
+    #: 0.30 to 0.50 "after watching trades run from a manageable loss to the
+    #: full stop with every reader watching and none able to speak".
+    #:
+    #: The floor of 0.55 is enforced in `assess` and is not a preference. The
+    #: heaviest single family is `trajectory` at 0.50, so any value above that
+    #: keeps "no one family can close a trade alone" true by arithmetic rather
+    #: than by convention. The corroboration rule demotes a lone family's exit
+    #: to a stop tightening as well, so the guarantee is doubled.
+    health_broken_at: float = Field(default=0.75, ge=0.55, le=1.0)
     #: Asset-specific horizons. Forex keeps the established M1/M5 behaviour;
     #: continuously traded and exchange products use slower confirmation so a
     #: single noisy one-minute print cannot masquerade as structural failure.

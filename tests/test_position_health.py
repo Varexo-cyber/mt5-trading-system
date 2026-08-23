@@ -16,6 +16,7 @@ import pandas as pd
 
 from analysis.position_health import (
     MIN_AGE_MINUTES,
+    MINIMUM_BROKEN_AT,
     HealthSignal,
     adverse_run,
     assess_position,
@@ -821,3 +822,72 @@ class TestASecondIndependentWarningIsAnExit:
         )
 
         assert event is None or event.action == "HEALTH_TIGHTEN"
+
+
+class TestTheExitThresholdIsATunableWithAFloor:
+    """`BROKEN_AT` was a constant, so the one knob deciding how early a failing
+    trade gets cut could only be moved by editing source. This is the second
+    time that complaint has been acted on — the `trajectory` weight was already
+    raised from 0.30 to 0.50 "after watching trades run from a manageable loss
+    to the full stop with every reader watching and none able to speak".
+
+    The account now runs 0.65, which admits the one family pair the weights
+    excluded: drift + liquidity sums to 0.65 and nothing else fell short.
+    """
+
+    def test_the_account_runs_the_lower_threshold(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.trade_management.health_broken_at == 0.65
+        # And a corroborated failure may act sooner on a losing trade.
+        assert settings.trade_management.thesis_invalidation_at_r == 0.15
+
+    def test_no_single_family_can_reach_it(self) -> None:
+        """The safety argument, as arithmetic rather than as a comment. The
+        heaviest family is `trajectory` at 0.50; the threshold must stay above
+        it or "this trade is down" could close a trade on its own."""
+        from analysis.position_health import HealthWeights
+
+        weights = HealthWeights()
+        heaviest = max(weights.structure, weights.drift, weights.liquidity, weights.trajectory)
+
+        assert heaviest < 0.65
+        assert heaviest < MINIMUM_BROKEN_AT
+
+    def test_the_floor_cannot_be_configured_away(self) -> None:
+        """The schema bounds it and `assess` clamps it again. Two guards,
+        because this is the number whose entire job is to sit above the
+        heaviest single family — a value under it turns the two-family rule
+        from structural into advisory."""
+        import pytest as _pytest
+
+        from config.schema import TradeManagementConfig
+
+        with _pytest.raises(ValueError):
+            TradeManagementConfig(health_broken_at=0.40)
+
+    def test_a_caller_passing_a_reckless_value_is_clamped_not_obeyed(self) -> None:
+        """Belt and braces: the schema is not the only way into `assess`, and
+        a lone `trajectory` at full strength must not be able to close a trade
+        however the threshold arrives."""
+        health = assess_position(
+            sign=LONG,
+            r_now=-1.0,
+            age_minutes=1.0,
+            fast=None,
+            structure=None,
+            broken_at=0.01,
+        )
+
+        assert health.action in ("hold", "tighten")
+
+    def test_the_default_is_unchanged_for_callers_that_do_not_pass_it(self) -> None:
+        """Backtests and any other caller keep the old behaviour unless they
+        opt in, so this change cannot silently rewrite a measured comparison."""
+        from analysis.position_health import BROKEN_AT
+
+        assert BROKEN_AT == 0.75
