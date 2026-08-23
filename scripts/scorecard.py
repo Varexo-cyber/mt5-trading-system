@@ -399,31 +399,62 @@ def intervened(
     question — did stepping in beat leaving it alone — and it is the only
     column here that can condemn or acquit an exit rule.
     """
-    # A journal written before the baseline resolver existed simply has no such
-    # table. This is a read-only report and must not die on an old database:
-    # an absent measurement is a missing section, not a crash.
-    try:
-        return db.execute(
-            """
-        SELECT t.exit_reason AS name,
-               COUNT(*) AS trades,
-               AVG(b.actual_pnl_r) AS actual,
-               AVG(b.baseline_pnl_r) AS baseline,
-               AVG(b.lift_r) AS lift,
-               SUM(CASE WHEN b.lift_r > 0 THEN 1 ELSE 0 END) AS better
-        FROM management_baselines b
-        JOIN trades t ON t.id = b.trade_id
-        WHERE t.closed_at >= ? AND t.exit_reason IS NOT NULL
-        """
-            + (" AND t.closed_at < ?" if until else "")
-            + """
-        GROUP BY t.exit_reason
-        ORDER BY AVG(b.lift_r)
-        """,
-            (since.isoformat(), until.isoformat()) if until else (since.isoformat(),),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return []
+    # AND AT WHAT R IT FIRED, which is the column that says what to change.
+    #
+    # `lift` says whether a rule was right to act; it cannot say whether it
+    # acted in time, and those are different repairs. HEALTH_EXIT read 12
+    # trades, 0 won, -36.82 EUR at a lift of -0.06R — stepping in was a wash,
+    # so those trades were going to hit their stop either way. For a trade that
+    # was doomed regardless, leaving EARLIER is strictly cheaper: the same
+    # baseline, a smaller actual.
+    #
+    # So the question is not whether to exit but where it currently does, and
+    # `management_actions.r_at_action` has recorded that on every close since
+    # the table was written. Firing at -0.80R on a -1.00R stop is a rule
+    # arriving after the damage; firing at -0.30R is one doing its job, and
+    # then the loss came from somewhere else.
+    #
+    # Joined on the action NAME as well as the trade, so this is the R of the
+    # closing decision itself rather than of some earlier stop move on the same
+    # position.
+    fired = (
+        "SELECT trade_id, action, AVG(r_at_action) AS fired_at "
+        "FROM management_actions WHERE r_at_action IS NOT NULL "
+        "GROUP BY trade_id, action"
+    )
+    # A journal written before either table existed must still produce a
+    # report, and the two are missing independently. Asking for the new column
+    # in the same statement as the old ones would let an absent
+    # `management_actions` delete the whole intervention section — trading a
+    # section that has condemned and acquitted exit rules for one extra column.
+    # So the join is attempted and then dropped, in that order.
+    window = (since.isoformat(), until.isoformat()) if until else (since.isoformat(),)
+    core = (
+        "SELECT t.exit_reason AS name,"
+        " COUNT(*) AS trades,"
+        " AVG(b.actual_pnl_r) AS actual,"
+        " AVG(b.baseline_pnl_r) AS baseline,"
+        " AVG(b.lift_r) AS lift,"
+        " SUM(CASE WHEN b.lift_r > 0 THEN 1 ELSE 0 END) AS better"
+    )
+    tail = (
+        " WHERE t.closed_at >= ? AND t.exit_reason IS NOT NULL"
+        + (" AND t.closed_at < ?" if until else "")
+        + " GROUP BY t.exit_reason ORDER BY AVG(b.lift_r)"
+    )
+    attempts = (
+        f"{core}, AVG(a.fired_at) AS fired_at FROM management_baselines b"
+        " JOIN trades t ON t.id = b.trade_id"
+        f" LEFT JOIN ({fired}) a ON a.trade_id = t.id AND a.action = t.exit_reason{tail}",
+        f"{core}, NULL AS fired_at FROM management_baselines b"
+        f" JOIN trades t ON t.id = b.trade_id{tail}",
+    )
+    for statement in attempts:
+        try:
+            return db.execute(statement, window).fetchall()
+        except sqlite3.OperationalError:
+            continue
+    return []
 
 
 def ratcheted(
@@ -622,20 +653,30 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print("  DID STEPPING IN BEAT LEAVING IT ALONE")
         print("  Each early close replayed against its own untouched stop and target.")
-        print(f"  {'':22}{'trades':>7}{'got':>9}{'holding':>9}{'lift':>9}{'better':>8}")
-        print("  " + "-" * 66)
+        head = f"{'':22}{'trades':>7}{'got':>9}{'holding':>9}{'lift':>9}"
+        print(f"  {head}{'better':>8}{'fired at':>10}")
+        print("  " + "-" * 76)
         for row in interventions:
             if int(row["trades"]) < args.min_sample:
                 continue
             lift = float(row["lift"])
+            at = row["fired_at"]
+            fired = f"{float(at):+.2f}R" if at is not None else "—"
             print(
                 f"  {row['name']!s:<22}{int(row['trades']):>7}"
                 f"{float(row['actual']):>+8.2f}R{float(row['baseline']):>+8.2f}R"
                 f"{lift:>+8.2f}R{int(row['better']):>5}/{int(row['trades'])}"
+                f"{fired:>10}"
             )
         print()
         print("  A negative lift means the rule paid to do worse than nothing. A losing")
         print("  record with a positive lift is a rule earning its keep on bad trades.")
+        print("  `fired at` is the R the rule acted at, and it is the column that says")
+        print("  what to CHANGE. A lift near zero on a losing rule means those trades")
+        print("  were reaching their stop either way — and for a trade doomed regardless,")
+        print("  acting earlier is strictly cheaper: same baseline, smaller loss. So a")
+        print("  rule firing at -0.80R on a -1.00R stop arrived after the damage; one")
+        print("  firing at -0.30R did its job and the loss came from somewhere else.")
 
     if stop_moves:
         print()
