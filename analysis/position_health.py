@@ -85,6 +85,19 @@ _RUN_BARS = 6
 #: Severity thresholds for the combined read. Chosen so that "broken" is out of
 #: reach for any single reader at full strength, which is what makes the
 #: two-signal rule structural rather than a comment.
+#:
+#: `BROKEN_AT` is now only the DEFAULT for the `broken_at` argument of `assess`,
+#: not the number the account runs on — that lives in
+#: `trade_management.health_broken_at`. It was a constant while nothing needed
+#: to tune it, which meant the only way to change how early a losing trade gets
+#: cut was to edit source.
+#:
+#: `MINIMUM_BROKEN_AT` is the floor and it is not a taste. No single family may
+#: be able to reach the exit threshold, because that is what makes the
+#: two-family rule structural rather than advisory. The heaviest family is
+#: `trajectory` at 0.50, so anything above that preserves the guarantee; below
+#: it, "this trade is down" could close a trade on its own.
+MINIMUM_BROKEN_AT = 0.55
 BROKEN_AT = 0.75
 DETERIORATING_AT = 0.45
 WATCH_AT = 0.20
@@ -464,6 +477,7 @@ def assess_position(
     secure_at_r: float = 0.5,
     tighten_at_r: float = 0.2,
     thesis_invalidation_at_r: float = 0.35,
+    broken_at: float = BROKEN_AT,
     fast_bar_minutes: float = 1.0,
 ) -> PositionHealth:
     """Combine the readers into one verdict and one permitted action.
@@ -537,7 +551,11 @@ def assess_position(
         strongest[signal.family] = max(strongest.get(signal.family, 0.0), signal.severity)
     severity = min(1.0, sum(value * weights.of(family) for family, value in strongest.items()))
     verdict: Verdict = "healthy"
-    if severity >= BROKEN_AT:
+    # Clamped rather than trusted. This is the one number whose whole job is to
+    # sit above the heaviest single family, and a config value below that would
+    # silently turn the two-family rule into a suggestion.
+    broken_at = max(MINIMUM_BROKEN_AT, broken_at)
+    if severity >= broken_at:
         verdict = "broken"
     elif severity >= DETERIORATING_AT:
         verdict = "deteriorating"
