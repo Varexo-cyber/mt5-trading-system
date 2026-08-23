@@ -867,3 +867,47 @@ class TestTheDetectorsAreTunedByWhatTheyEarned:
 
         for module in confluence.live_enabled_modules:
             assert live.get(module, 0.0) > 0.0, module
+
+
+class TestOilIsRefusedANewEntryButNotAbandoned:
+    """UKOUSD was 4 trades, 0 won, -18.05 EUR — 84% of a two-day -21.57 loss.
+    Without oil those same two days come to -2.29.
+
+    Four trades is not proof, and the reason to act anyway is the asymmetry:
+    being wrong by blocking costs a handful of missed oil trades, being wrong
+    by not blocking costs perhaps another 18 EUR on an account of 214.
+    """
+
+    def _settings(self):  # type: ignore[no-untyped-def]
+        return load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+    def test_no_new_oil_position_is_opened(self) -> None:
+        allowed, reason = self._settings().symbol_allowed_at_equity("UKOUSD", 214.0)
+
+        assert not allowed
+        assert reason == "SYMBOL_BLOCKLISTED"
+
+    def test_both_barrels_are_named(self) -> None:
+        """Brent and WTI track each other, so blocking only UKOUSD moves the
+        same trade to USOUSD and buys nothing. The claim is about oil."""
+        blocklist = {s.upper() for s in self._settings().instruments.blocklist}
+
+        assert {"UKOUSD", "USOUSD"} <= blocklist
+
+    def test_an_open_oil_ticket_is_still_managed(self) -> None:
+        """`blocklist` refuses an entry; `ignored_symbols` makes Jarvis behave
+        as if the instrument does not exist — including for an open position,
+        which would leave a live ticket unmanaged. Only gold, which the owner
+        holds outside Jarvis on purpose, belongs in the second list."""
+        instruments = self._settings().instruments
+
+        assert not instruments.is_ignored("UKOUSD")
+        assert not instruments.is_ignored("USOUSD")
+        assert instruments.is_ignored("XAUUSD")
+
+    def test_nothing_else_was_caught_by_it(self) -> None:
+        allowed, reason = self._settings().symbol_allowed_at_equity("EURUSD.i", 214.0)
+
+        assert allowed and reason == "OK"

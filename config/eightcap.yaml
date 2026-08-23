@@ -19,7 +19,36 @@ instruments:
   # contract (2% in Experimental Live) is still skipped as
   # TRADE_SKIPPED_UNDERCAPITALIZED.
   universe_mode: affordable
-  blocklist: []
+  # OLIE ERUIT, tijdelijk en op een dunne steekproef. Dat laatste staat er
+  # expliciet bij omdat het de zwakte van dit besluit is.
+  #
+  # UKOUSD: 4 trades, 0 gewonnen, -18,05 EUR. Dat is 84% van een verlies van
+  # -21,57 EUR over twee dagen; zonder olie komen diezelfde twee dagen uit op
+  # -2,29 EUR. Eén instrument, vier trades, vier vijfde van de schade.
+  #
+  # VIER TRADES IS GEEN BEWIJS. Bij een boek dat rond de 70% wint is 0 uit 4
+  # ongeveer 1 op de 123 puur door pech — opvallend, niet vaststaand. Waarom
+  # dan toch nu en niet na meer data: de kosten staan scheef. Blokkeren en
+  # ongelijk hebben kost een handvol gemiste olietrades. Niet blokkeren en
+  # ongelijk hebben kost mogelijk nog eens 18 EUR op een rekening van 214, en
+  # dat is 8%. Bij die verhouding wacht je niet op zekerheid.
+  #
+  # USOUSD staat er OOK op, ook al is die nooit gemeten. Brent en WTI lopen
+  # vrijwel gelijk: alleen UKOUSD blokkeren verplaatst dezelfde trade naar
+  # USOUSD en levert precies niets op. De stelling is "olie gedroeg zich
+  # anders", niet "Brent gedroeg zich anders".
+  #
+  # `blocklist` en niet `ignored_symbols`: dit weigert alleen een NIEUWE
+  # entry. Een openstaande olieticket blijft gewoon beheerd, met stop, met
+  # health-monitoring. `ignored_symbols` zou hem laten vallen.
+  #
+  # WANNEER DIT ERAF MAG. Twee vragen, allebei te beantwoorden met
+  # `scripts/scorecard.py --days 7 --exclude-regime transition`:
+  #   1. Zaten die vier trades in `transition`? Dan zijn ze al geweigerd door
+  #      de regimeblokkade en is deze regel overbodig.
+  #   2. Wat zegt `WHICH DETECTOR, IN WHICH REGIME` over olie op meer data?
+  # Een gemeten reden om hem terug te zetten weegt zwaarder dan deze regel.
+  blocklist: [UKOUSD, USOUSD]
   # Gold is deliberately owned outside Jarvis. It is not scanned, opened,
   # adopted, managed, closed, flattened or counted by Jarvis. This is stronger
   # than a blocklist entry: even an already-open XAUUSD ticket remains untouched.
