@@ -928,3 +928,164 @@ class TestConfidenceBands:
         a bucket rather than inventing one off the end of the scale."""
         assert confidence_band(-0.2) == "0.00-0.05"
         assert confidence_band(1.4) == "1.00-1.05"
+
+
+class TestWhenTheExitRuleActuallyFired:
+    """`lift` says whether a rule was right to act. It cannot say whether it
+    acted in time, and those are different repairs.
+
+    HEALTH_EXIT read 12 trades, 0 won, -36.82 EUR at a lift of -0.06R —
+    stepping in was a wash, which means those trades reached their stop either
+    way. For a trade doomed regardless, leaving earlier is strictly cheaper:
+    the same baseline against a smaller actual. So the question stops being
+    "should it exit" and becomes "where does it currently exit", and
+    `management_actions.r_at_action` has recorded that on every close since the
+    table existed without anything ever reading it.
+    """
+
+    def _journal(self, journal: Path, rows) -> Path:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS management_baselines (
+                trade_id INTEGER PRIMARY KEY, observed_at TEXT, resolved_at TEXT,
+                outcome TEXT, baseline_pnl_r REAL, actual_pnl_r REAL, lift_r REAL);
+            CREATE TABLE IF NOT EXISTS management_actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER, ts TEXT,
+                action TEXT, old_sl REAL, new_sl REAL, old_tp REAL, new_tp REAL,
+                volume_closed REAL, r_at_action REAL, note TEXT);
+        """)
+        now = datetime.now(UTC)
+        for trade_id, reason, actual, baseline, actions in rows:
+            db.execute(
+                "INSERT INTO trades (id, symbol, direction, pnl_r, pnl_money, mfe_r, "
+                "exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (
+                    trade_id,
+                    "EURUSD",
+                    "LONG",
+                    actual,
+                    actual,
+                    0.2,
+                    reason,
+                    (now - timedelta(hours=6)).isoformat(),
+                    (now - timedelta(hours=2)).isoformat(),
+                ),
+            )
+            db.execute(
+                "INSERT INTO management_baselines (trade_id, observed_at, resolved_at, "
+                "outcome, baseline_pnl_r, actual_pnl_r, lift_r) VALUES (?,?,?,?,?,?,?)",
+                (
+                    trade_id,
+                    now.isoformat(),
+                    now.isoformat(),
+                    "SL",
+                    baseline,
+                    actual,
+                    actual - baseline,
+                ),
+            )
+            for action, r_at in actions:
+                db.execute(
+                    "INSERT INTO management_actions (trade_id, ts, action, r_at_action, note)"
+                    " VALUES (?,?,?,?,?)",
+                    (trade_id, now.isoformat(), action, r_at, ""),
+                )
+        db.commit()
+        db.close()
+        return journal
+
+    def test_the_r_the_rule_acted_at_is_reported(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        path = self._journal(
+            journal,
+            [
+                (60, "HEALTH_EXIT", -0.80, -1.00, [("HEALTH_EXIT", -0.80)]),
+                (61, "HEALTH_EXIT", -0.80, -1.00, [("HEALTH_EXIT", -0.80)]),
+            ],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "fired at" in out
+        assert "-0.80R" in out
+
+    def test_an_earlier_stop_move_is_not_mistaken_for_the_close(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """The same position carries several management actions. Reading the
+        first would report the break-even move as the moment the exit rule
+        acted, which is the opposite of the number being asked for."""
+        path = self._journal(
+            journal,
+            [
+                (
+                    62,
+                    "HEALTH_EXIT",
+                    -0.70,
+                    -1.00,
+                    [("BREAK_EVEN", 0.30), ("HEALTH_EXIT", -0.70)],
+                ),
+            ],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if "HEALTH_EXIT" in ln]
+
+        assert lines and "-0.70R" in lines[0]
+        assert "+0.30R" not in lines[0]
+
+    def test_a_close_with_no_recorded_action_leaves_the_column_blank(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """A broker stop is not a decision this system made, so it has no
+        management action. The column must be blank rather than zero — zero
+        would read as "the rule fired at break-even"."""
+        path = self._journal(journal, [(63, "BROKER_SL", -1.0, -1.0, [])])
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+        section = out.split("DID STEPPING IN BEAT LEAVING IT ALONE")[1]
+        line = next(ln for ln in section.splitlines() if "BROKER_SL" in ln)
+
+        assert line.endswith("—")
+
+    def test_an_older_journal_keeps_the_whole_section(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """The `fired at` column must not be able to delete the table it was
+        added to. `management_actions` and `management_baselines` go missing
+        independently, and this section has condemned and acquitted exit rules
+        since before the new column existed."""
+        db = sqlite3.connect(journal)
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS management_baselines (
+                trade_id INTEGER PRIMARY KEY, observed_at TEXT, resolved_at TEXT,
+                outcome TEXT, baseline_pnl_r REAL, actual_pnl_r REAL, lift_r REAL);
+        """)
+        now = datetime.now(UTC)
+        db.execute(
+            "INSERT INTO trades (id, symbol, direction, pnl_r, pnl_money, mfe_r, "
+            "exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                64,
+                "EURUSD",
+                "LONG",
+                -0.4,
+                -0.4,
+                0.2,
+                "HEALTH_EXIT",
+                (now - timedelta(hours=6)).isoformat(),
+                (now - timedelta(hours=2)).isoformat(),
+            ),
+        )
+        db.execute(
+            "INSERT INTO management_baselines VALUES (?,?,?,?,?,?,?)",
+            (64, now.isoformat(), now.isoformat(), "SL", -1.0, -0.4, 0.6),
+        )
+        db.commit()
+        db.close()
+
+        main(["--db", str(journal), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "DID STEPPING IN BEAT LEAVING IT ALONE" in out
+        assert "+0.60R" in out  # the lift survived
+        assert "DID MOVING THE STOP PAY" not in out  # that one genuinely cannot run
