@@ -15,7 +15,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.scorecard import conviction_band, main, score_band, session_of
+from scripts.scorecard import (
+    confidence_band,
+    conviction_band,
+    main,
+    score_band,
+    session_of,
+)
 
 
 @pytest.fixture
@@ -790,3 +796,135 @@ class TestWhetherMovingTheStopPaid:
 
         assert main(["--db", str(journal), "--days", "2"]) == 0
         assert "DID MOVING THE STOP PAY" not in capsys.readouterr().out
+
+
+class TestGradingTheFloorThatWasJustLowered:
+    """The lone-module floor dropped from 0.65 to 0.55 for the detectors that
+    earned it — and the setups that releases are NOT the setups they earned
+    their record on.
+
+    `ema_pullback_resume` made +2.08 EUR a trade firing at 0.65 and above. What
+    the new floor admits is the 0.55-0.65 band underneath it, which has never
+    been traded and therefore never measured. Extrapolating from the confident
+    firings to the unconfident ones is the assumption the change rests on, and
+    this is the column that checks it.
+    """
+
+    def _journal(self, journal: Path, rows) -> Path:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.executescript(
+            "CREATE TABLE IF NOT EXISTS analysis_cycles "
+            "(id INTEGER PRIMARY KEY, total_score REAL, score_threshold REAL,"
+            " volatility_regime TEXT);"
+            "CREATE TABLE IF NOT EXISTS module_scores "
+            "(id INTEGER PRIMARY KEY, cycle_pk INTEGER, module TEXT, score REAL,"
+            " confidence REAL, weight REAL);"
+            "ALTER TABLE trades ADD COLUMN cycle_pk INTEGER;"
+        )
+        now = datetime.now(UTC)
+        for i, (pnl, modules) in enumerate(rows, start=800):
+            db.execute("INSERT INTO analysis_cycles VALUES (?,?,?,?)", (i, 55.0, 26.0, "trend_up"))
+            for module, score, confidence in modules:
+                db.execute(
+                    "INSERT INTO module_scores (cycle_pk, module, score, confidence, weight)"
+                    " VALUES (?,?,?,?,?)",
+                    (i, module, score, confidence, 0.6),
+                )
+            db.execute(
+                "INSERT INTO trades (id, cycle_pk, symbol, direction, pnl_r, pnl_money, "
+                "mfe_r, exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    i,
+                    i,
+                    "EURUSD",
+                    "LONG",
+                    pnl,
+                    pnl * 10,
+                    0.5,
+                    "BROKER_TP",
+                    (now - timedelta(hours=8)).isoformat(),
+                    (now - timedelta(hours=3)).isoformat(),
+                ),
+            )
+        db.commit()
+        db.close()
+        return journal
+
+    def test_the_released_band_is_reported_apart_from_the_one_above_it(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        path = self._journal(
+            journal,
+            [
+                (+1.5, [("ema_pullback_resume", 60.0, 0.70)]),
+                (-1.0, [("ema_pullback_resume", 60.0, 0.57)]),
+            ],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "HOW SURE THE LONE DETECTOR WAS" in out
+        assert "ema_pullback_resume at 0.70-0.75" in out
+        assert "ema_pullback_resume at 0.55-0.60" in out
+
+    def test_a_setup_with_company_is_not_counted(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """With a second detector agreeing, the lone floor never applied — so
+        the trade says nothing about where to set it, and counting it would
+        credit the floor for a decision it took no part in."""
+        path = self._journal(
+            journal,
+            [
+                (
+                    +1.5,
+                    [("ema_pullback_resume", 60.0, 0.57), ("impulse_break", 55.0, 0.80)],
+                ),
+            ],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+
+        assert "HOW SURE THE LONE DETECTOR WAS" not in capsys.readouterr().out
+
+    def test_a_detector_pointing_the_other_way_does_not_count_as_company(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """A module scoring negative on a LONG never agreed, so the trade WAS
+        carried alone and the floor did decide it."""
+        path = self._journal(
+            journal,
+            [
+                (
+                    -1.0,
+                    [("ema_pullback_resume", 60.0, 0.57), ("mean_reversion", -40.0, 0.90)],
+                ),
+            ],
+        )
+
+        main(["--db", str(path), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "ema_pullback_resume at 0.55-0.60" in out
+        assert "mean_reversion at" not in out
+
+
+class TestConfidenceBands:
+    """Banded at 0.05, because every floor this is read against sits there:
+    0.45 module, 0.55 and 0.60 and 0.75 per-detector, 0.65 global. A 0.10 band
+    would put the released setups and the ones that earned the release into one
+    bucket, which is the comparison the slice exists to make."""
+
+    def test_the_released_band_and_the_old_floor_do_not_share_a_bucket(self) -> None:
+        assert confidence_band(0.57) != confidence_band(0.66)
+
+    def test_a_reading_exactly_on_a_floor_opens_its_band(self) -> None:
+        assert confidence_band(0.55) == "0.55-0.60"
+        assert confidence_band(0.65) == "0.65-0.70"
+
+    def test_an_impossible_reading_cannot_escape_the_scale(self) -> None:
+        """Confidence is journalled, not recomputed, so a bad row must land in
+        a bucket rather than inventing one off the end of the scale."""
+        assert confidence_band(-0.2) == "0.00-0.05"
+        assert confidence_band(1.4) == "1.00-1.05"

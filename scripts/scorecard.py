@@ -132,6 +132,19 @@ def score_band(score: float | None) -> str:
     return f"score {floor}-{floor + 5}"
 
 
+def confidence_band(confidence: float) -> str:
+    """A detector's own confidence, in the five-point bands the floors sit on.
+
+    Banded at 0.05 rather than 0.10 because every decision this reads against
+    is at that resolution: the global lone floor is 0.65, the module floor is
+    0.45, and the per-detector entries are 0.55, 0.60 and 0.75. A 0.10 band
+    would put the released setups and the ones that earned the release in the
+    same bucket, which is the exact comparison the slice exists to make.
+    """
+    floor = int(max(0.0, min(1.0, confidence)) * 20) / 20
+    return f"{floor:.2f}-{floor + 0.05:.2f}"
+
+
 def taken(
     db: sqlite3.Connection,
     since: datetime,
@@ -204,20 +217,36 @@ def taken(
     # It matters more than the offline table does, because this is the account's
     # own money at its own sizes with its own costs, and because the offline
     # table cannot see how a detector behaved on the 845 markets this scans.
-    modules_by_cycle: dict[int, list[tuple[str, float]]] = {}
+    modules_by_cycle: dict[int, list[tuple[str, float, float]]] = {}
     if scored:
         try:
             for row in db.execute(
-                "SELECT m.cycle_pk, m.module, m.score FROM module_scores m "
+                "SELECT m.cycle_pk, m.module, m.score, m.confidence FROM module_scores m "
                 "JOIN trades t ON t.cycle_pk = m.cycle_pk "
                 "WHERE m.weight > 0 AND m.score != 0 "
                 "AND t.closed_at IS NOT NULL AND t.closed_at >= ?" + bound,
                 window,
             ).fetchall():
                 modules_by_cycle.setdefault(int(row["cycle_pk"]), []).append(
-                    (str(row["module"]), float(row["score"]))
+                    (str(row["module"]), float(row["score"]), float(row["confidence"] or 0.0))
                 )
             slices["which detector was behind it"] = {}
+            # HOW SURE THE LONE DETECTOR WAS, when it was the only one.
+            #
+            # The lone-module floor moved from 0.65 to 0.55 for the detectors
+            # that earned it, and the setups that releases are NOT the setups
+            # those detectors earned their record on. `ema_pullback_resume`
+            # made +2.08 EUR a trade firing at 0.65 and above; what the new
+            # floor admits is the 0.55-0.65 band underneath, which has never
+            # been measured because it was never traded.
+            #
+            # This grades exactly that. A row for the released band that pays
+            # like the band above it says the floor was set too high; one that
+            # loses says the confidence reading means something and the floor
+            # goes back. Either way it is an answer rather than an argument,
+            # and it is only readable for LONE setups — with company the floor
+            # never applied.
+            slices["how sure the lone detector was"] = {}
         except sqlite3.OperationalError:
             modules_by_cycle = {}
         # Fetched on its own rather than added to the join above, so a journal
@@ -308,11 +337,25 @@ def taken(
             # the same reading `backtest_modules.py` calls WHEN PRESENT, and it
             # is the honest one: a detector cannot be credited alone for a
             # decision three of them made.
-            for module, score in modules_by_cycle.get(int(row["cycle_pk"] or 0), ()):
-                if score * (1 if str(row["direction"]) == "LONG" else -1) > 0:
-                    into("which detector was behind it", module, row)
-                    if "which detector, in which regime" in slices:
-                        into("which detector, in which regime", f"{module} in {regime}", row)
+            sign = 1 if str(row["direction"]) == "LONG" else -1
+            agreeing = [
+                (module, confidence)
+                for module, score, confidence in modules_by_cycle.get(int(row["cycle_pk"] or 0), ())
+                if score * sign > 0
+            ]
+            for module, _ in agreeing:
+                into("which detector was behind it", module, row)
+                if "which detector, in which regime" in slices:
+                    into("which detector, in which regime", f"{module} in {regime}", row)
+            # Only when it was ALONE. With company the lone floor never
+            # applied, so those trades say nothing about where to set it.
+            if len(agreeing) == 1 and "how sure the lone detector was" in slices:
+                module, confidence = agreeing[0]
+                into(
+                    "how sure the lone detector was",
+                    f"{module} at {confidence_band(confidence)}",
+                    row,
+                )
     return slices
 
 
