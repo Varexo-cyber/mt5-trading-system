@@ -24,6 +24,11 @@ WHAT IT REFUSES TO CONCLUDE, which matters more than what it proposes:
   regime was the best on the card.
 * A module already at zero: nothing. Turning one back on is a decision with
   no evidence behind it by definition, and `ConfigControl` refuses it anyway.
+* A record whose two halves disagree: nothing. Asked to tune the settings
+  "until it is profitable", fitting the whole record is guaranteed to succeed
+  and guaranteed to mean nothing. Splitting it and requiring both halves to
+  agree is the cheapest test that catches a change which only works on the
+  stretch that produced it.
 
 WHAT IT PROPOSES is a nudge, never a verdict. The size of the step scales with
 how far the evidence sits from zero and is capped well inside the promotion
@@ -79,17 +84,56 @@ class ModuleEvidence:
     mean_r: float
     lower_r: float
     upper_r: float
+    #: The same mean over the older and newer halves of the record, in that
+    #: order. See `holds_out_of_sample`.
+    early_mean_r: float = 0.0
+    late_mean_r: float = 0.0
+
+    @property
+    def significant(self) -> bool:
+        """Does the interval sit entirely on one side of zero?"""
+        return self.lower_r > 0.0 or self.upper_r < 0.0
+
+    @property
+    def holds_out_of_sample(self) -> bool:
+        """Do both halves of the record say the same thing?
+
+        THE OWNER ASKED FOR THE PARAMETERS TO BE TUNED UNTIL THE RESULT IS
+        PROFITABLE. Tuned against the whole record that is guaranteed to
+        succeed and guaranteed to mean nothing: with enough knobs any past can
+        be made to look good, and what has been measured is which settings fit
+        that particular stretch.
+
+        The honest version is the same instruction with a holdout. Split the
+        record in two, and only act when the older and newer halves agree on
+        the sign. A detector that earned in one stretch and lost in the other
+        has no stable edge to weight — it has a good week and a bad one, and
+        averaging them into a single number hides exactly the thing that
+        decides whether tomorrow looks like either.
+
+        This is deliberately cheap and strict rather than clever. It is not a
+        proper walk-forward; it is the smallest test that catches a proposal
+        which only works on the half it was fitted to.
+        """
+        return (self.early_mean_r > 0) == (self.late_mean_r > 0)
 
     @property
     def decided(self) -> bool:
-        """Does the interval sit entirely on one side of zero?"""
-        return self.lower_r > 0.0 or self.upper_r < 0.0
+        return self.significant and self.holds_out_of_sample
 
     def describe(self) -> str:
         if not self.trades:
             return f"{self.module}: no attributed trades"
         band = f"[{self.lower_r:+.3f}, {self.upper_r:+.3f}]"
-        verdict = "decided" if self.decided else "inside the noise"
+        if not self.significant:
+            verdict = "inside the noise"
+        elif not self.holds_out_of_sample:
+            verdict = (
+                f"significant but unstable — {self.early_mean_r:+.3f}R then "
+                f"{self.late_mean_r:+.3f}R"
+            )
+        else:
+            verdict = "decided"
         return (
             f"{self.module}: {self.trades} trades, {self.mean_r:+.3f}R each, "
             f"95% {band} — {verdict}"
@@ -151,7 +195,19 @@ def measure(
     # strategy with wide outcomes can still have a well-determined average
     # once there are enough of them.
     half = NormalDist().inv_cdf(0.5 + confidence / 2.0) * sqrt(variance / count)
-    return ModuleEvidence(module, count, mean, mean - half, mean + half)
+    # `values` is newest-first, so the front half is the recent one.
+    cut = count // 2
+    late = values[:cut] or values
+    early = values[cut:] or values
+    return ModuleEvidence(
+        module,
+        count,
+        mean,
+        mean - half,
+        mean + half,
+        early_mean_r=sum(early) / len(early),
+        late_mean_r=sum(late) / len(late),
+    )
 
 
 def propose(
@@ -174,7 +230,7 @@ def propose(
             evidence,
             f"{evidence.trades} of the {minimum_trades} trades needed to judge it",
         )
-    if not evidence.decided:
+    if not evidence.significant:
         return WeightProposal(
             evidence.module,
             current,
@@ -182,6 +238,16 @@ def propose(
             evidence,
             f"{evidence.mean_r:+.3f}R each, but the interval crosses zero — "
             f"this is not yet distinguishable from luck",
+        )
+    if not evidence.holds_out_of_sample:
+        return WeightProposal(
+            evidence.module,
+            current,
+            current,
+            evidence,
+            f"{evidence.early_mean_r:+.3f}R then {evidence.late_mean_r:+.3f}R — the two "
+            f"halves of the record disagree, so this is a good stretch and a bad one "
+            f"rather than an edge",
         )
 
     # THE STEP SCALES WITH THE PART OF THE EVIDENCE THAT IS BEYOND DOUBT, not
