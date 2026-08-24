@@ -49,10 +49,27 @@ instruments:
   #   2. Wat zegt `WHICH DETECTOR, IN WHICH REGIME` over olie op meer data?
   # Een gemeten reden om hem terug te zetten weegt zwaarder dan deze regel.
   blocklist: [UKOUSD, USOUSD]
-  # Gold is deliberately owned outside Jarvis. It is not scanned, opened,
-  # adopted, managed, closed, flattened or counted by Jarvis. This is stronger
-  # than a blocklist entry: even an already-open XAUUSD ticket remains untouched.
-  ignored_symbols: [XAUUSD]
+  # Gold is deliberately owned outside Jarvis: not opened, adopted, managed,
+  # closed, flattened or counted. Stronger than a blocklist entry — even an
+  # already-open XAUUSD ticket remains untouched.
+  #
+  # It moved from `ignored_symbols` to `observation_only_symbols` on 24 August,
+  # on the owner's instruction to make gold readable for section six. Three of
+  # the four guarantees are unchanged and the fourth is the one that was in the
+  # way:
+  #
+  #   opened / adopted    still no — refused as SYMBOL_OBSERVATION_ONLY
+  #   managed / closed    still no — `is_hands_off` covers both lists
+  #   counted in risk     still no — same predicate
+  #   SCANNED             now YES, and that is the whole change
+  #
+  # A paper section needs a MarketContext for the symbol and an ignored symbol
+  # never gets one, so gold was invisible to the very thing meant to read it.
+  # Scanning it produces analysis rows in the journal and nothing else; no
+  # order can be built from it, because the entry gate refuses the symbol by
+  # name before sizing is ever reached.
+  ignored_symbols: []
+  observation_only_symbols: [XAUUSD]
 
   # No hand-written equity floors. They were a guess at what a small account
   # can afford — gold at EUR 500, indices at EUR 2000 — and a guess made before
