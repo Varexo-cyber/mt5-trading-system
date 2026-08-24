@@ -1009,6 +1009,19 @@ analysis:
       ema_pullback_resume: 0.8
       fast_ema_cross: 0.6
       session_breakout: 0.65
+      # SECTIE TWEE, meetbaar maar niet handelend.
+      #
+      # Een positief gewicht is wat een module laat MEETELLEN in de backtest;
+      # `live_enabled_modules` is de aparte lijst die bepaalt of hij live mag
+      # stemmen, en `drift_burst` staat daar bewust niet op. Live zet
+      # `effective_weights` hem dus op 0 en hij kan geen enkele beslissing
+      # raken. Precies dezelfde constructie als `trend_momentum` en
+      # `volatility_squeeze`.
+      #
+      # 0,7 en niet lager: als hij ooit live gaat is dit een eigen familie
+      # (`immediacy`) die niemand anders levert, en dan moet hij zwaar genoeg
+      # wegen om een van de negen prijsvormlezers tegen te kunnen spreken.
+      drift_burst: 0.7
 
     quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
     quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]

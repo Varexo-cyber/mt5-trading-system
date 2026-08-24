@@ -1,6 +1,7 @@
 """Replayable analysis modules. No connector, clock, or filesystem access."""
 
 from analysis.confluence import ConfluenceEngine, TradeIdea
+from analysis.drift_burst import DriftBurst
 from analysis.drift_continuation import DriftContinuation
 from analysis.ema_pullback_resume import EmaPullbackResume
 from analysis.entry_quality import (
@@ -34,6 +35,7 @@ from analysis.volatility_squeeze import VolatilitySqueeze
 
 __all__ = [
     "ConfluenceEngine",
+    "DriftBurst",
     "DriftContinuation",
     "EmaPullbackResume",
     "EntryTimingAssessment",

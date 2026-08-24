@@ -8,7 +8,7 @@ import math
 import os
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -36,6 +36,7 @@ from advisory.scout import ScoutThrottle
 from advisory.veto_patterns import readable as veto_readable
 from analysis import (
     ConfluenceEngine,
+    DriftBurst,
     DriftContinuation,
     EmaPullbackResume,
     EntryTimingDecision,
@@ -429,6 +430,11 @@ class JarvisRunner:
                 MeanReversion(self.settings.analysis.mean_reversion),
                 SessionBreakout(self.settings.analysis.session_breakout),
                 Seasonality(self.settings.analysis.seasonality),
+                # SECTION TWO, and the first reader here that is not looking at
+                # the shape of the price series. It runs a hypothesis test and
+                # it FADES, which is what makes it the only candidate that can
+                # ever be a genuine second family for the nine that follow.
+                DriftBurst(self.settings.analysis.drift_burst),
             ],
             self.settings.analysis.confluence,
         )
@@ -3874,6 +3880,13 @@ class JarvisRunner:
             signals=signals,
             weights=self.settings.analysis.confluence.effective_weights(self.settings.system.mode),
         )
+        # SECTION TWO observes here, and here specifically. `drift_burst`
+        # FADES, so it fires most often on exactly the symbols the engine
+        # declined — hooking it to the traded path would have measured it only
+        # on the setups it had nothing to do with. This runs once per symbol
+        # per cycle and cannot influence the decision above it, which is
+        # already made and already written.
+        self._observe_section_two(cycle_pk, symbol, signals)
         self.scan_activity.record_deep_decision(
             symbol,
             "DEEP_REJECTED",
@@ -3955,6 +3968,77 @@ class JarvisRunner:
             entry_price=idea.entry,
             sl=idea.stop_loss,
             tp=idea.take_profit,
+        )
+
+    def _observe_section_two(
+        self,
+        cycle_pk: int,
+        symbol: str,
+        signals: Sequence[Signal] | None,
+    ) -> None:
+        """Record what `drift_burst` WOULD have traded, and trade none of it.
+
+        SECTION TWO RUNS AS PAPER. The module is absent from
+        `live_enabled_modules`, so the engine zeroes its weight before scoring
+        and it cannot influence a single live decision. This writes the plan it
+        would have taken into `shadow_trades`, where the resolver already in
+        place settles it against real later prices — the same machinery that
+        has been grading blocked setups for months.
+
+        Why paper rather than a small live allocation: the research is measured
+        on TICK data and this account has M1 bars. The statistic survives that
+        coarsening in principle; whether it survives in practice is exactly
+        what is unknown, and that question is answerable for free.
+
+        THE PLAN COMES FROM THE BURST'S OWN NUMBERS, not from the swing engine,
+        because the swing engine is not involved here. The stop sits beyond the
+        burst's extreme — a fade is wrong precisely when the move keeps going,
+        and that is the level which says so — and the target is half the move
+        being faded. Both scale with what actually happened rather than with a
+        fixed ATR multiple, which is the whole point of fading a named event.
+        """
+        config = self.settings.analysis.drift_burst
+        if not config.enabled or not signals:
+            return
+        # The scan already built and kept this cycle's context for the symbol,
+        # so the observer costs no second fetch and reads exactly the bars the
+        # engine read rather than a set assembled separately and able to drift.
+        context = self._cycle_contexts.get(symbol)
+        if context is None or context.tick is None:
+            return
+        signal = next((item for item in signals if item.module == "drift_burst"), None)
+        if signal is None or not signal.score:
+            return
+        direction = Direction.LONG if signal.score > 0 else Direction.SHORT
+        if self.recorder.has_unresolved_shadow_trade(symbol, direction):
+            return
+
+        series = context.series.get(Timeframe.parse(config.timeframe))
+        if series is None or len(series.df) < config.drift_window + 1:
+            return
+        window = series.df.iloc[-config.drift_window :]
+        entry = float(context.tick.ask if direction is Direction.LONG else context.tick.bid)
+        if entry <= 0:
+            return
+        extreme = float(
+            window["low"].min() if direction is Direction.LONG else window["high"].max()
+        )
+        travelled = abs(entry - extreme)
+        if travelled <= 0:
+            return
+        sign = 1.0 if direction is Direction.LONG else -1.0
+        stop = extreme - sign * travelled * 0.10
+        target = entry + sign * travelled * 0.5
+        if min(entry, stop, target) <= 0:
+            return
+        self.recorder.record_shadow_trade(
+            cycle_pk=cycle_pk,
+            symbol=symbol,
+            direction=direction,
+            blocked_by=Reason.SECTION_2_OBSERVED,
+            entry_price=entry,
+            sl=stop,
+            tp=target,
         )
 
     def _resolve_counterfactuals(self) -> None:
