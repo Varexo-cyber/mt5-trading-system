@@ -152,6 +152,7 @@ from risk.position_sizer import PositionSizer, SizingResult
 from risk.posture import PostureAssessment, assess
 from risk.reasons import Reason, RiskDecision
 from risk.risk_manager import RiskManager
+from risk.section_breaker import BreakerVerdict, tripped_modules
 from scanner.universe import ScanBatch, UniverseScanner
 
 log = get_logger(__name__)
@@ -456,6 +457,10 @@ class JarvisRunner:
         #: Section five's peer readings, kept across the scan so comparing
         #: indices costs one pass over bars already fetched.
         self._basket_moves: dict[str, tuple[str, float, datetime]] = {}
+        #: Section breakers, recomputed once per cycle rather than per candidate.
+        self._breaker_cache: dict[str, BreakerVerdict] = {}
+        self._breaker_cache_cycle = -1
+        self._cycle_serial = 0
         self.shadow = ShadowRecorder(root, self.settings.learning)
         self.shadow_engine = self._shadow_engine()
         self.playbook_config = self.settings.analysis.playbooks
@@ -1760,6 +1765,11 @@ class JarvisRunner:
     ) -> CycleSummary:
         started_at = self.clock.now()
         self._reviews_this_cycle = 0
+        # Section breakers are read once per cycle, not once per candidate.
+        # Bumping the serial here is what expires that cache; without it the
+        # first verdict of the run would be reused forever and a section that
+        # tripped mid-session would keep trading until a restart.
+        self._cycle_serial += 1
         if self.kill_switch.is_engaged():
             self._flatten_owned_positions("operator hard STOP")
             return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
@@ -2844,6 +2854,23 @@ class JarvisRunner:
                 f"winner scalp conviction {candidate.conviction:.1f} is below the "
                 f"{pyramid_config.minimum_conviction:.1f} scalp floor; the existing "
                 "position remains managed",
+                signals=list(idea.signals),
+            )
+            return False
+        # A NEW SECTION THAT HAS STOPPED ITSELF CANNOT CARRY THIS TRADE.
+        #
+        # Checked here rather than by removing the module from the engine,
+        # because the engine's config is built once and a breaker has to be
+        # able to trip mid-session. The setup was never assessed on its merits
+        # — that is the point, and the journal says so with its own reason.
+        stopped = self._tripped_section(idea)
+        if stopped is not None:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.SECTION_BREAKER_TRIPPED,
+                stopped,
                 signals=list(idea.signals),
             )
             return False
@@ -4166,6 +4193,39 @@ class JarvisRunner:
             sl=stop,
             tp=target,
         )
+
+    def _tripped_section(self, idea: TradeIdea) -> str | None:
+        """Whether a section behind this idea has switched itself off.
+
+        The verdict is DERIVED from the journal every cycle rather than stored.
+        A stored flag would have to survive restarts, stay in step with trades
+        resolving out of order, and be reset by hand without anyone forgetting
+        — three ways to be wrong about whether real money is switched on. This
+        cannot disagree with the evidence because it is the evidence.
+
+        Recomputed once per cycle and cached: it is one query per watched
+        section and there are three of them.
+        """
+        breakers = self.settings.risk.section_breakers
+        if not breakers or idea.direction is None:
+            return None
+        if self._breaker_cache_cycle != self._cycle_serial:
+            self._breaker_cache = tripped_modules(self.journal.conn, breakers)
+            self._breaker_cache_cycle = self._cycle_serial
+        if not self._breaker_cache:
+            return None
+        sign = 1 if idea.direction is Direction.LONG else -1
+        for signal in idea.signals:
+            verdict = self._breaker_cache.get(signal.module)
+            if verdict is None or not signal.score:
+                continue
+            if (1 if signal.score > 0 else -1) != sign:
+                continue
+            return (
+                f"{signal.module} stopped itself: {verdict.reason}. Re-arm by "
+                f"editing live_enabled_modules."
+            )
+        return None
 
     def _observe_paper_sections(
         self,

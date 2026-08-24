@@ -310,7 +310,7 @@ class TestTheNewsBlackoutIsTheAccountsAndNotACopy:
         assert reward > risk
 
 
-class TestItObservesAndCannotTrade:
+class TestItIsLiveAndBraked:
     def _confluence(self):  # type: ignore[no-untyped-def]
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
@@ -318,14 +318,23 @@ class TestItObservesAndCannotTrade:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.confluence
 
-    def test_it_is_weighted_but_never_live(self) -> None:
+    def test_it_is_live_and_carries_its_own_stop(self) -> None:
+        """Live on the owner's authorisation with no measured trades behind
+        it, which is only defensible because of the breaker. A new section
+        reaching `live_enabled_modules` WITHOUT one is the failure this
+        asserts against — the report would read protected while the account is
+        not."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
         from core.types import TradingMode
 
-        confluence = self._confluence()
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        confluence = settings.analysis.confluence
 
-        assert confluence.weights["momentum_scalp"] > 0
-        assert "momentum_scalp" not in confluence.live_enabled_modules
-        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["momentum_scalp"] == 0.0
+        assert "momentum_scalp" in confluence.live_enabled_modules
+        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["momentum_scalp"] > 0
+        assert "momentum_scalp" in settings.risk.section_breakers
 
     def test_it_shares_the_momentum_family_rather_than_inventing_one(self) -> None:
         """It reads the same fact the other momentum readers read — price moved,

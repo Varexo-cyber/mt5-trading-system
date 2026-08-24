@@ -221,6 +221,12 @@ class Reason(StrEnum):
     #: is when that standing agreement becomes actionable.
     SECTION_6_OBSERVED = "SECTION_6_OBSERVED"
 
+    # -- a new section stopped itself --------------------------------------
+    #: The detector behind this setup has been going badly enough for long
+    #: enough that its own breaker switched it off. Not a judgement on THIS
+    #: setup — it was never assessed on its merits. Re-arming is manual.
+    SECTION_BREAKER_TRIPPED = "SECTION_BREAKER_TRIPPED"
+
     @property
     def is_halt(self) -> bool:
         """True for reasons that stop the whole system, not just one trade.
