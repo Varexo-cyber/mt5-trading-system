@@ -9,6 +9,7 @@ earns its keep.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1095,3 +1096,151 @@ class TestWhenTheExitRuleActuallyFired:
         assert "DID STEPPING IN BEAT LEAVING IT ALONE" in out
         assert "+0.60R" in out  # the lift survived
         assert "DID MOVING THE STOP PAY" not in out  # that one genuinely cannot run
+
+
+class TestWhereInItsRangeItWasBought:
+    """Ten trades died on HEALTH_EXIT and every one lost. Whose were they, and
+    had we already bought the top?
+
+    `analysis/entry_quality.py` measures the location on every candidate and
+    writes it to the cycle context. `postmortem.py` prints it for ONE trade.
+    Nothing ever added it up, so the gate that would refuse a top-of-range
+    entry — which fires only when the location is extreme AND an ATR limit is
+    breached, so location alone never refuses — could not be judged at all.
+    """
+
+    def _journal(self, journal: Path, rows) -> Path:  # type: ignore[no-untyped-def]
+        db = sqlite3.connect(journal)
+        db.executescript(
+            "CREATE TABLE IF NOT EXISTS analysis_cycles "
+            "(id INTEGER PRIMARY KEY, total_score REAL, score_threshold REAL,"
+            " volatility_regime TEXT, context_json TEXT);"
+            "CREATE TABLE IF NOT EXISTS module_scores "
+            "(id INTEGER PRIMARY KEY, cycle_pk INTEGER, module TEXT, score REAL,"
+            " confidence REAL, weight REAL);"
+            "ALTER TABLE trades ADD COLUMN cycle_pk INTEGER;"
+        )
+        now = datetime.now(UTC)
+        for i, (pnl, location, module, exit_reason) in enumerate(rows, start=700):
+            context = (
+                json.dumps({"entry_quality": {"directional_range_location": location}})
+                if location is not None
+                else "{}"
+            )
+            db.execute(
+                "INSERT INTO analysis_cycles VALUES (?,?,?,?,?)", (i, 55.0, 26.0, "range", context)
+            )
+            db.execute(
+                "INSERT INTO module_scores (cycle_pk, module, score, confidence, weight)"
+                " VALUES (?,?,?,?,?)",
+                (i, module, 60.0, 0.8, 0.7),
+            )
+            db.execute(
+                "INSERT INTO trades (id, cycle_pk, symbol, direction, pnl_r, pnl_money,"
+                " mfe_r, exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    i,
+                    i,
+                    "XAUUSD",
+                    "LONG",
+                    pnl,
+                    pnl * 4.3,
+                    0.4,
+                    exit_reason,
+                    (now - timedelta(hours=8)).isoformat(),
+                    (now - timedelta(hours=3)).isoformat(),
+                ),
+            )
+        db.commit()
+        db.close()
+        return journal
+
+    def _book(self, journal: Path) -> Path:
+        return self._journal(
+            journal,
+            [
+                (-0.22, 0.93, "drift_continuation", "HEALTH_EXIT"),
+                (-0.24, 0.97, "drift_continuation", "HEALTH_EXIT"),
+                (-0.25, 0.91, "impulse_break", "HEALTH_EXIT"),
+                (+0.11, 0.44, "impulse_break", "BROKER_SL"),
+                (+0.52, 0.38, "ema_pullback_resume", "BROKER_TP"),
+            ],
+        )
+
+    def test_the_top_of_the_range_gets_its_own_row(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        main(["--db", str(self._book(journal)), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "WHERE IN ITS OWN RANGE IT WAS BOUGHT" in out
+        assert "95-100% (the very top)" in out
+        assert "80-95% (extended)" in out
+
+    def test_a_trade_bought_mid_range_is_not_filed_as_extended(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        main(["--db", str(self._book(journal)), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "40-60% (middle)" in out
+
+    def test_the_exit_is_crossed_with_the_detector(
+        self, journal: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """ "Ten trades died on HEALTH_EXIT" is only actionable once it says
+        whose trades they were."""
+        main(["--db", str(self._book(journal)), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "WHAT CLOSED IT, BY DETECTOR" in out
+        assert "drift_continuation -> HEALTH_EXIT" in out
+        assert "ema_pullback_resume -> BROKER_TP" in out
+
+    def test_a_journal_without_the_column_keeps_every_other_section(
+        self, journal: Path, capsys
+    ) -> None:
+        """THE REGRESSION THIS COST ONCE. Reading the location out of the same
+        query as the regimes meant an older journal with no `context_json`
+        raised one OperationalError and lost all four regime tables — a new
+        optional column taking down sections that never needed it."""
+        db = sqlite3.connect(journal)
+        db.executescript(
+            "CREATE TABLE analysis_cycles (id INTEGER PRIMARY KEY, total_score REAL,"
+            " score_threshold REAL, volatility_regime TEXT);"
+            "CREATE TABLE module_scores (id INTEGER PRIMARY KEY, cycle_pk INTEGER,"
+            " module TEXT, score REAL, confidence REAL, weight REAL);"
+            "ALTER TABLE trades ADD COLUMN cycle_pk INTEGER;"
+        )
+        now = datetime.now(UTC)
+        db.execute("INSERT INTO analysis_cycles VALUES (?,?,?,?)", (700, 55.0, 26.0, "trend_up"))
+        db.execute(
+            "INSERT INTO module_scores (cycle_pk, module, score, confidence, weight)"
+            " VALUES (?,?,?,?,?)",
+            (700, "impulse_break", 60.0, 0.8, 0.7),
+        )
+        db.execute(
+            "INSERT INTO trades (id, cycle_pk, symbol, direction, pnl_r, pnl_money, mfe_r,"
+            " exit_reason, opened_at, closed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                700,
+                700,
+                "XAUUSD",
+                "LONG",
+                0.5,
+                2.0,
+                0.6,
+                "BROKER_TP",
+                (now - timedelta(hours=8)).isoformat(),
+                (now - timedelta(hours=3)).isoformat(),
+            ),
+        )
+        db.commit()
+        db.close()
+
+        main(["--db", str(journal), "--days", "2"])
+        out = capsys.readouterr().out
+
+        assert "THE REGIME AT ENTRY" in out
+        assert "WHICH DETECTOR, IN WHICH REGIME" in out
+        assert "WHERE IN ITS OWN RANGE IT WAS BOUGHT" not in out
