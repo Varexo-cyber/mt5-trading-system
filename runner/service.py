@@ -3221,6 +3221,7 @@ class JarvisRunner:
             self.recorder.record_sizing(cycle_pk, sizing)
             self._record_counterfactual(cycle_pk, idea, sizing.reason)
             return False
+        sizing = self._cap_scalp_volume(idea, spec, sizing)
         margin = self.risk.check_margin(
             state,
             symbol,
@@ -5746,6 +5747,83 @@ class JarvisRunner:
         # Positive means the market has moved against the intended direction.
         adverse = -travelled * int(idea.direction) / reference
         return adverse <= config.confirmation_max_adverse_atr, adverse
+
+    def _cap_scalp_volume(self, idea: TradeIdea, spec, sizing):  # type: ignore[no-untyped-def]
+        """Hold a candle scalp to a fixed lot, whatever the risk model sized.
+
+        THE OWNER'S INSTRUCTION, VERBATIM: "doe gwn MAX 0.01 lot met die
+        dingen op xauusd ... trade op candles ... GWN IN EN ERUIT".
+
+        He is right and the sizer was wrong for this. `PositionSizer` spends
+        the account's risk budget — 3% of equity — and on a scalp with a stop
+        four tenths of an M1 candle wide that buys a lot of lots. The whole
+        idea of this section is a position small enough that being wrong costs
+        cents, taken often. Those are opposite instructions to the same
+        function, so the section states its own size instead.
+
+        What it is worth, measured against his own fill: XAUUSD 0.01 lot,
+        4667.47 to 4671.25, EUR 3.24 — EUR 0.86 per dollar of gold. A stop of
+        roughly a dollar is EUR 0.86 of risk on a EUR 176 account. Half a
+        percent, where the sizer wanted three.
+
+        NEVER UPWARDS. `min` against what the sizer approved, so this can only
+        ever risk less. If the sizer refused outright the trade is already
+        gone before this runs, and if the account is too small even for the
+        broker minimum the existing TRADE_SKIPPED_UNDERCAPITALIZED refusal
+        still stands — rounding up to reach a minimum is forbidden here and
+        stays forbidden.
+        """
+        config = self.settings.analysis.candle_momentum
+        cap = config.maximum_lots
+        if cap <= 0 or not self._is_scalp_idea(idea):
+            return sizing
+        volume = spec.round_volume_down(min(cap, sizing.volume))
+        if volume <= 0 or volume >= sizing.volume:
+            return sizing
+        scale = volume / sizing.volume
+        log.info(
+            "scalp held to its fixed lot",
+            extra={
+                "event": "scalp_volume_capped",
+                "symbol": idea.symbol,
+                "sized_volume": sizing.volume,
+                "volume": volume,
+                "risk_pct": round(sizing.actual_risk_pct * scale, 3),
+            },
+        )
+        return replace(
+            sizing,
+            volume=volume,
+            actual_risk_money=sizing.actual_risk_money * scale,
+            actual_risk_pct=sizing.actual_risk_pct * scale,
+        )
+
+    def _is_scalp_idea(self, idea: TradeIdea) -> bool:
+        """Is the candle reader the one actually carrying this trade?
+
+        Carrying it, not merely present on it. A trade the swing engine formed
+        on its own evidence is a swing trade even when the candle reader
+        happened to agree, and shrinking it to a scalp's lot would quietly
+        take the account out of the setups it makes its money on.
+
+        So: this module scored, in the direction being taken, and no other
+        weighted module scored harder. That is the same reading the scorecard
+        and the section breaker use, which is deliberate — a trade cannot be
+        a scalp for the sizer and a swing for the report.
+        """
+        best = 0.0
+        mine = 0.0
+        weights = self.settings.analysis.confluence.effective_weights(self.settings.mode)
+        for signal in idea.signals:
+            if not signal.score or weights.get(signal.module, 0.0) <= 0:
+                continue
+            if (signal.score > 0) != (idea.direction is Direction.LONG):
+                continue
+            strength = abs(signal.score) * weights[signal.module]
+            if signal.module == "candle_momentum":
+                mine = strength
+            best = max(best, strength)
+        return mine > 0.0 and mine >= best
 
     def _attach_basket_peers(
         self,
