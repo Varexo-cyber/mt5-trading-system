@@ -21,8 +21,12 @@ def main() -> int:
     group.add_argument("--promote-shadow", action="store_true")
     group.add_argument("--restore", type=Path, metavar="SNAPSHOT_YAML")
     parser.add_argument("--confirm", default="")
+    # The file whose weights actually decide. The base config is not it on
+    # this account: `config/eightcap.yaml` overrides it, so a promotion that
+    # rewrote the base would pass every check and change nothing that trades.
+    parser.add_argument("--overlay", default="config/eightcap.yaml", help="the live config")
     args = parser.parse_args()
-    control = ConfigControl(ROOT)
+    control = ConfigControl(ROOT, live_path=ROOT / args.overlay)
     if args.snapshot:
         print(control.snapshot(args.snapshot))
     elif args.start_shadow:

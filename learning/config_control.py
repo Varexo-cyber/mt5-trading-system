@@ -28,9 +28,21 @@ def file_hash(path: Path) -> str:
 
 
 class ConfigControl:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, live_path: Path | None = None) -> None:
+        """`live_path` is the file whose weights actually decide.
+
+        IT IS NOT ALWAYS `config/config.yaml`, and assuming it was made this
+        whole pipeline a no-op on the live account. Weights are set in the
+        base config AND in `config/eightcap.yaml`, and the overlay wins. A
+        promotion that rewrote the base file would version it, shadow-test it,
+        pass, promote — and change nothing at all about what trades, because
+        the overlay still says what it always said.
+
+        Left defaulting to the base config so existing callers and their tests
+        are unchanged; the operator scripts pass the overlay they are running.
+        """
         self.root = root
-        self.live_path = root / "config" / "config.yaml"
+        self.live_path = live_path or root / "config" / "config.yaml"
         self.shadow_dir = root / "runtime" / "shadow"
         self.versions = root / "runtime" / "config_versions"
 
