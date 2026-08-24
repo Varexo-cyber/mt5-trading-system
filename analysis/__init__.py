@@ -29,6 +29,7 @@ from analysis.market_regime import MarketRegime
 from analysis.market_structure import MarketStructure
 from analysis.mean_reversion import MeanReversion
 from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, VolatilityRegime
+from analysis.momentum_scalp import MomentumScalp
 from analysis.seasonality import Seasonality
 from analysis.session_breakout import SessionBreakout
 from analysis.setup_lifecycle import LifecycleDecision, SetupLifecycleBook, SetupState
@@ -53,6 +54,7 @@ __all__ = [
     "MarketRegime",
     "MarketStructure",
     "MeanReversion",
+    "MomentumScalp",
     "OpportunityIntelligence",
     "PeerMove",
     "ReviewDriftAssessment",
