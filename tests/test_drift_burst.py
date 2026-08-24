@@ -215,7 +215,7 @@ class TestTheSignal:
         assert signal.score == 0.0
 
 
-class TestItCannotReachAnOrder:
+class TestItIsLiveAndBraked:
     """Section two runs as paper, and that is a property of the wiring rather
     than a promise in a comment."""
 
@@ -229,13 +229,23 @@ class TestItCannotReachAnOrder:
     def test_it_is_weighted_so_the_backtest_can_see_it(self) -> None:
         assert self._confluence().weights["drift_burst"] > 0
 
-    def test_live_zeroes_it_before_the_engine_scores_anything(self) -> None:
+    def test_it_is_live_and_carries_its_own_stop(self) -> None:
+        """Live on the owner's authorisation with no measured trades behind
+        it, which is only defensible because of the breaker. A new section
+        reaching `live_enabled_modules` WITHOUT one is the failure this
+        asserts against — the report would read protected while the account is
+        not."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
         from core.types import TradingMode
 
-        confluence = self._confluence()
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        confluence = settings.analysis.confluence
 
-        assert "drift_burst" not in confluence.live_enabled_modules
-        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["drift_burst"] == 0.0
+        assert "drift_burst" in confluence.live_enabled_modules
+        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["drift_burst"] > 0
+        assert "drift_burst" in settings.risk.section_breakers
 
     def test_it_is_its_own_evidence_family(self) -> None:
         """Filing it under an existing family would let it corroborate a reader

@@ -951,9 +951,23 @@ analysis:
     # live meetelt; het gewicht is wat de backtest hem laat meten. Zo blijft
     # `scripts/backtest_modules.py` hem volgen en staat hij met één woord weer
     # op deze regel als het beeld op meer data draait.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout]
-    # `basket_divergence` STOND hier en is er op 24 augustus weer afgehaald, op
-    # instructie: alle nieuwe secties kijken eerst mee zonder te vuren.
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, drift_burst, basket_divergence, momentum_scalp]
+    # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
+    # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
+    #
+    # Dat is de eerlijke samenvatting en hij hoort hier te staan: elk getal
+    # onder deze drie modules is beredeneerd, niet vastgesteld. Wat het
+    # verdedigbaar maakt is `risk.section_breakers` hierboven — elke sectie
+    # stopt zichzelf zodra zijn eigen record slecht genoeg is, en herwapenen
+    # kan alleen door deze regel te bewerken.
+    #
+    # Wat elk van de drie is, in één zin:
+    #   drift_burst        een koersuitschieter die groter is dan de eigen ruis
+    #                      van die markt is paniek, en twee van de drie keer
+    #                      komt hij terug — dus fade hem
+    #   basket_divergence  indices lopen samen; wie achterblijft haalt in
+    #   momentum_scalp     een besliste M1-kaars, maar alleen als M5 en M15 al
+    #                      dezelfde kant op stonden
     #
     # Dat is de juiste volgorde en het weerlegt niets van de reden dat hij live
     # kon. Het argument was dat hij geen open meetvraag heeft zoals sectie twee
@@ -1681,6 +1695,53 @@ risk:
   #
   # Nul is hier geen aanname maar een meting, en als de broker dit ooit
   # verandert is dat zichtbaar in de deals zelf.
+  # DE NOODREM PER SECTIE.
+  #
+  # Sectie 2, 5 en 6 gaan live met NUL gemeten trades tussen zich. Elk getal
+  # eronder is een redenering, en dit is wat er overblijft als die redenering
+  # fout is. Elk van de negen originele lezers heeft maanden staat van dienst
+  # en wordt als boek beoordeeld; deze drie hebben niets en dragen daarom elk
+  # hun eigen rem.
+  #
+  # Twee regels, en de reeks is de dringende. Een aandeel verliezers over een
+  # venster vangt een sectie die stilletjes fout zit; een reeks op rij vangt er
+  # een die NU fout zit, voordat het venster vol genoeg is om te bewegen.
+  #
+  # HERWAPENEN IS HANDWERK. Een rem die zichzelf terugzet, trips telkens
+  # opnieuw op dezelfde fout terwijl de rekening elke ronde betaalt. Terugzetten
+  # betekent `live_enabled_modules` bewerken, en dat is zichtbaar in een diff.
+  section_breakers:
+    # STRENG, op instructie: "10 trades op een rij verlies of 1 winnende en 8
+    # verloren — dan sluit sectie 6 automatisch."
+    #
+    # 6 op rij en niet 10, want deze doet meerdere trades per dag: tegen de
+    # tijd dat er tien op rij staan is er een halve dag verstreken. En 8 van de
+    # laatste 10 is precies het tweede geval dat genoemd werd.
+    momentum_scalp:
+      window: 10
+      minimum_trades: 10
+      maximum_loss_share: 0.75
+      losing_streak: 6
+
+    # RUIMER, want deze twee hebben tijd nodig. Sectie 2 fadet paniek en dat
+    # is per definitie een gok die vaak misgaat voordat hij goedmaakt; het
+    # onderzoek zegt twee van de drie, dus 70% verliezers over 30 trades is
+    # ruim onder wat er zou moeten gebeuren en toch onmiskenbaar verkeerd.
+    drift_burst:
+      window: 30
+      minimum_trades: 25
+      maximum_loss_share: 0.70
+      losing_streak: 10
+
+    # Sectie 5 wedt dat een gat dichtgaat. Als dat over 25 trades meer dan 70%
+    # van de tijd niet gebeurt, klopt de aanname over samenhang tussen indices
+    # niet en heeft doorgaan geen zin.
+    basket_divergence:
+      window: 30
+      minimum_trades: 25
+      maximum_loss_share: 0.70
+      losing_streak: 10
+
   commission_by_asset_class:
     index: 0.0
     metal: 0.0

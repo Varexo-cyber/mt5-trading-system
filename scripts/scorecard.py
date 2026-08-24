@@ -397,6 +397,30 @@ def refused(
 OBSERVED_PREFIX = "SECTION_"
 
 
+def section_health(db: sqlite3.Connection) -> list:  # type: ignore[type-arg]
+    """Where each new section stands with its own breaker.
+
+    Sections two, five and six went live with no measured trades between them,
+    each carrying an automatic stop. A breaker that has tripped is the single
+    most important line in this report and it was invisible: the section simply
+    stops appearing in the detector table, which reads exactly like a quiet
+    market.
+
+    Read from the same journal the breaker reads, so the report cannot say a
+    section is running while the runner has switched it off.
+    """
+    try:
+        from config.loader import load_settings
+        from risk.section_breaker import assess
+
+        breakers = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).risk.section_breakers
+    except Exception:  # noqa: BLE001 - a report must not die on a config problem
+        return []
+    return [assess(db, module, config) for module, config in sorted(breakers.items())]
+
+
 def observed(
     db: sqlite3.Connection, since: datetime, until: datetime | None = None
 ) -> dict[str, Bucket]:
@@ -662,6 +686,7 @@ def main(argv: list[str] | None = None) -> int:
         interventions = intervened(db, since, until)
         stop_moves = ratcheted(db, since, until)
         paper = observed(db, since, until)
+        sections = section_health(db)
     finally:
         db.close()
 
@@ -682,6 +707,24 @@ def main(argv: list[str] | None = None) -> int:
         print("\n  Nothing closed in this window.\n")
     for title, buckets in slices.items():
         show(title, buckets, args.min_sample)
+
+    if sections:
+        print()
+        print("  THE NEW SECTIONS, AND WHETHER THEY ARE STILL RUNNING")
+        print("  Each carries its own automatic stop. Re-arming is manual.")
+        print(f"  {'':22}{'trades':>7}{'won':>6}{'streak':>8}{'':>4}status")
+        print("  " + "-" * 60)
+        for row in sections:
+            mark = "STOPPED" if row.tripped else "running"
+            won = row.trades - row.losses
+            streak = f"-{row.streak}" if row.streak else "0"
+            head = f"{row.module:<22}{row.trades:>7}{won:>6}{streak:>8}"
+            print(f"  {head}    {mark}  ({row.reason})")
+        if any(row.tripped for row in sections):
+            print()
+            print("  A STOPPED section refuses every setup it is behind, with reason")
+            print("  SECTION_BREAKER_TRIPPED in the journal. It does not restart itself:")
+            print("  re-arm by editing analysis.confluence.live_enabled_modules.")
 
     if paper:
         print()

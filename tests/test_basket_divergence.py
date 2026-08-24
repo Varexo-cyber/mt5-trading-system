@@ -179,7 +179,7 @@ class TestTheSignal:
         assert module.analyze(context(5.0, [peer("A", 45.0), peer("B", 44.0)])).score == 0.0
 
 
-class TestItIsWiredToObserveAndToStandApart:
+class TestItIsWiredToTradeAndToStandApart:
     def _confluence(self):  # type: ignore[no-untyped-def]
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
@@ -187,25 +187,23 @@ class TestItIsWiredToObserveAndToStandApart:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.confluence
 
-    def test_every_new_section_observes_and_none_of_them_fire(self) -> None:
-        """It WAS live-enabled and was taken back off on 24 August: every new
-        section watches before it trades.
-
-        That does not weaken the argument for why it could have gone live —
-        unlike sections two and four it has no tick-versus-M1 question to
-        settle. What it never had, and still does not, is a measured number on
-        THIS account. The weight stays so the backtest and the shadow record
-        keep following it.
-        """
+    def test_it_is_live_and_carries_its_own_stop(self) -> None:
+        """Live on the owner's authorisation with no measured trades behind
+        it, which is only defensible because of the breaker. A new section
+        reaching `live_enabled_modules` WITHOUT one is the failure this
+        asserts against — the report would read protected while the account is
+        not."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
         from core.types import TradingMode
 
-        confluence = self._confluence()
-        live = confluence.effective_weights(TradingMode.MICRO_LIVE)
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        confluence = settings.analysis.confluence
 
-        for section in ("basket_divergence", "drift_burst", "momentum_scalp"):
-            assert section not in confluence.live_enabled_modules, section
-            assert live[section] == 0.0, section
-            assert confluence.weights[section] > 0, section
+        assert "basket_divergence" in confluence.live_enabled_modules
+        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["basket_divergence"] > 0
+        assert "basket_divergence" in settings.risk.section_breakers
 
     def test_it_is_its_own_evidence_family(self) -> None:
         """It is the only reader whose evidence is a RELATION between two

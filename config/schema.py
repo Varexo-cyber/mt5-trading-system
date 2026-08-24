@@ -412,6 +412,48 @@ class ConvictionRiskConfig(Base):
         return self
 
 
+class SectionBreakerConfig(Base):
+    """Stop a new section automatically when it is going badly.
+
+    Sections two, five and six went live with ZERO measured trades between
+    them. Every number behind them is reasoning, and this is what survives
+    that reasoning being wrong.
+
+    Two rules, and the streak is the urgent one. A share of losses over a
+    window catches a section that is quietly wrong; a run of consecutive
+    losses catches one that is wrong RIGHT NOW, before the window has filled
+    enough for the share to move. On a section taking a few trades a day that
+    is the difference between stopping today and stopping next week.
+
+    RE-ARMING IS MANUAL. A breaker that switches itself back on trips
+    repeatedly on the same fault while the account pays for every cycle of it.
+    Turning a section back on means editing `live_enabled_modules`, which shows
+    up in a diff.
+    """
+
+    enabled: bool = True
+    #: Recent closed trades this section was behind, judged as a group.
+    window: int = Field(default=30, ge=3, le=500)
+    #: Nothing trips before there is this much to judge. A section cannot be
+    #: condemned by its first three trades — that is noise, and switching a
+    #: section off on noise is the same mistake as switching one on for it.
+    minimum_trades: int = Field(default=25, ge=3, le=500)
+    #: Share of the window that may be losses before it stops.
+    maximum_loss_share: float = Field(default=0.70, gt=0.0, le=1.0)
+    #: Consecutive losses that stop it regardless of the window.
+    losing_streak: int = Field(default=10, ge=2, le=100)
+
+    @model_validator(mode="after")
+    def _window_can_reach_the_minimum(self) -> SectionBreakerConfig:
+        if self.minimum_trades > self.window:
+            raise ValueError(
+                "risk.section_breakers minimum_trades cannot exceed window — the "
+                "breaker would never see enough trades to judge anything and would "
+                "sit permanently disarmed while reading as armed"
+            )
+        return self
+
+
 class RiskConfig(Base):
     risk_per_trade_pct: Pct = 1.0
     #: Ceiling the sizer will never exceed regardless of setup quality.
@@ -473,6 +515,14 @@ class RiskConfig(Base):
     #: Per-asset-class overrides, for brokers that charge indices or metals
     #: differently from FX. Absent classes take the figure above.
     commission_by_asset_class: dict[str, float] = Field(default_factory=dict)
+
+    #: Automatic stop for a new section that is going badly, by module name.
+    #:
+    #: A section not listed here has no breaker, which is right for the nine
+    #: original readers: they have months of record and are judged as a book
+    #: rather than one at a time. The new sections have none, so each carries
+    #: its own.
+    section_breakers: dict[str, SectionBreakerConfig] = Field(default_factory=dict)
 
     max_concurrent_positions: int = Field(default=2, ge=1, le=10)
     #: Equity that buys one concurrent position. 0 keeps the flat cap above.
