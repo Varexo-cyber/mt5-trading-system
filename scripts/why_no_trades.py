@@ -300,6 +300,47 @@ _ADVICE = {
 }
 
 
+def _directional_modules(
+    conn: sqlite3.Connection, where: str, params: list[object]
+) -> list[sqlite3.Row]:
+    """Which readers saw a direction at all, over the window.
+
+    `INDEXED BY` is here on purpose and it is the entire fix.
+
+    `module_scores` carries two indexes, and grouping by module makes the one
+    on `module` look free — SQLite takes it, reads that index end to end, and
+    applies the `cycle_pk` bound afterwards as a filter. That is a full pass
+    over the largest table in the database to answer a question about the last
+    twelve hours of it. Measured on a 293 MB copy: 2.013s that way, 0.057s
+    pinned to the cycle index. The real journal is many times that size on a
+    machine with one core, which is why this stopped looking slow and started
+    looking hung.
+
+    The hint is a hint about SIZE, which the planner cannot know: the bound is
+    always a thin slice of a table that only grows. Wrong nowhere.
+
+    A journal old enough to lack the index gets the unpinned query rather than
+    an error. It will be slow, and slow beats a stack trace halfway through
+    `update.cmd`.
+    """
+    body = f"""
+        SELECT m.module,
+               SUM(CASE WHEN m.score > 0 AND m.weight > 0 THEN 1 ELSE 0 END) AS longs,
+               SUM(CASE WHEN m.score < 0 AND m.weight > 0 THEN 1 ELSE 0 END) AS shorts
+        FROM module_scores m {{index}}
+        WHERE {where}
+        GROUP BY m.module
+        HAVING longs > 0 OR shorts > 0
+        ORDER BY (longs + shorts) DESC
+        """
+    try:
+        return conn.execute(
+            body.format(index="INDEXED BY idx_module_scores_cycle"), params
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return conn.execute(body.format(index=""), params).fetchall()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hours", type=float, default=6.0, help="how far back to look")
@@ -314,43 +355,67 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     since = (datetime.now(UTC) - timedelta(hours=args.hours)).isoformat()
-    where = "ts >= ?"
-    params: list[object] = [since]
-    if args.symbol:
-        where += " AND symbol = ?"
-        params.append(args.symbol)
 
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
+
+        # THE WINDOW HAS A PRIMARY-KEY FLOOR, AND EVERYTHING BELOW DEPENDS ON
+        # USING IT.
+        #
+        # `id` is AUTOINCREMENT and rows are written in time order, so "the
+        # last twelve hours" is not only a range of `ts`, it is a range of
+        # `id`. Finding where it starts costs one seek on `idx_cycles_ts`.
+        #
+        # Cycles that overlap can land a row or two out of order at the very
+        # edge, so the floor can admit a couple of rows a few seconds older
+        # than asked for. On a funnel counting thousands of decisions that is
+        # not a number anyone reads, and the `ts` predicate still stands on the
+        # decisions query itself.
+        #
+        # Without that, both queries below degrade into full passes over
+        # tables that grow forever. On an account scanning 845 markets they
+        # had grown enough to make `update.cmd` look like it had hung — which
+        # is how this was found, not by anything reporting a slow query.
+        floor_row = conn.execute(
+            "SELECT MIN(id) FROM analysis_cycles WHERE ts >= ?", (since,)
+        ).fetchone()
+        floor = floor_row[0] if floor_row and floor_row[0] is not None else None
+
+        where = "ts >= ?"
+        params: list[object] = [since]
+        if floor is not None:
+            # Redundant as a filter and decisive as a plan: `ORDER BY id DESC`
+            # over a `ts` predicate makes SQLite scan the whole table in rowid
+            # order to avoid a sort. With the floor it walks the primary key
+            # backwards from the end and stops.
+            where = "id >= ? AND " + where
+            params.insert(0, floor)
+        if args.symbol:
+            where += " AND symbol = ?"
+            params.append(args.symbol)
+
         rows = conn.execute(
-            f"SELECT symbol, decision, reason, detail, total_score, score_threshold, "
+            "SELECT symbol, decision, reason, detail, total_score, score_threshold, "
             f"context_json FROM analysis_cycles WHERE {where} ORDER BY id DESC",
             params,
         ).fetchall()
+
         tables = {
             str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         directional_modules: list[sqlite3.Row] = []
-        if "module_scores" in tables:
-            module_where = "c.ts >= ?"
-            module_params: list[object] = [since]
+        if "module_scores" in tables and floor is not None:
+            module_where = "m.cycle_pk >= ?"
+            module_params: list[object] = [floor]
             if args.symbol:
-                module_where += " AND c.symbol = ?"
-                module_params.append(args.symbol)
-            directional_modules = conn.execute(
-                f"""
-                SELECT m.module,
-                       SUM(CASE WHEN m.score > 0 AND m.weight > 0 THEN 1 ELSE 0 END) AS longs,
-                       SUM(CASE WHEN m.score < 0 AND m.weight > 0 THEN 1 ELSE 0 END) AS shorts
-                FROM module_scores m
-                JOIN analysis_cycles c ON c.id = m.cycle_pk
-                WHERE {module_where}
-                GROUP BY m.module
-                HAVING longs > 0 OR shorts > 0
-                ORDER BY (longs + shorts) DESC
-                """,
-                module_params,
-            ).fetchall()
+                # Only when asked for, so the common case never reads
+                # `analysis_cycles` a second time.
+                module_where += (
+                    " AND m.cycle_pk IN"
+                    " (SELECT id FROM analysis_cycles WHERE id >= ? AND symbol = ?)"
+                )
+                module_params.extend([floor, args.symbol])
+            directional_modules = _directional_modules(conn, module_where, module_params)
 
     if not rows:
         print(f"No decisions recorded in the last {args.hours:g}h.")
