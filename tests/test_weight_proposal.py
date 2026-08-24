@@ -19,6 +19,7 @@ notice a losing module; the value is entirely in not acting on nine trades.
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 from learning.weight_proposal import MAX_STEP, measure, proposals, propose
 
@@ -31,6 +32,10 @@ def journal(outcomes: dict[str, list[float]]) -> sqlite3.Connection:
         "CREATE TABLE module_scores (id INTEGER PRIMARY KEY, cycle_pk INTEGER,"
         " module TEXT, score REAL, weight REAL);"
     )
+    # STRICTLY INCREASING TIMESTAMPS. `measure` orders by `closed_at` to read
+    # the record newest-first, so a fixture whose dates wrap around scrambles
+    # the two halves and the holdout tests silently measure nothing.
+    start = datetime(2026, 1, 1, tzinfo=UTC)
     cycle = 0
     for module, values in outcomes.items():
         for pnl in values:
@@ -38,7 +43,13 @@ def journal(outcomes: dict[str, list[float]]) -> sqlite3.Connection:
             db.execute(
                 "INSERT INTO trades (id, cycle_pk, direction, pnl_r, closed_at)"
                 " VALUES (?,?,?,?,?)",
-                (cycle, cycle, "LONG", pnl, f"2026-08-{1 + cycle % 27:02d}T10:00:00"),
+                (
+                    cycle,
+                    cycle,
+                    "LONG",
+                    pnl,
+                    (start + timedelta(minutes=cycle)).isoformat(),
+                ),
             )
             db.execute(
                 "INSERT INTO module_scores (cycle_pk, module, score, weight) VALUES (?,?,?,?)",
@@ -198,3 +209,56 @@ class TestAttributionMatchesEveryOtherReport:
         db.commit()
 
         assert measure(db, "impulse_break").trades == 30
+
+
+class TestTheHoldout:
+    """ "pas dan aan tot het winstgevend wordt" — the honest version.
+
+    Tuned against the whole record, "until it is profitable" is guaranteed to
+    succeed and guaranteed to mean nothing. Split the record and only act when
+    both halves agree, and the tuning has to survive data it was not fitted
+    to. It is not a proper walk-forward; it is the cheapest test that catches
+    a proposal working only on the stretch that produced it.
+    """
+
+    def test_a_module_that_turned_mid_record_moves_nothing(self) -> None:
+        """Forty good trades then forty bad ones average out to something
+        significant and mean nothing. This is the case the interval alone
+        cannot see."""
+        db = journal({"a": steady(-0.40, 40) + steady(0.20, 40)})
+        evidence = measure(db, "a")
+
+        assert evidence.significant
+        assert not evidence.holds_out_of_sample
+        assert not propose(evidence, 0.7).changed
+
+    def test_the_reason_names_both_halves(self) -> None:
+        db = journal({"a": steady(-0.40, 40) + steady(0.20, 40)})
+
+        why = propose(measure(db, "a"), 0.7).why
+
+        assert "the two halves of the record disagree" in why
+
+    def test_a_module_that_lost_in_both_halves_is_still_acted_on(self) -> None:
+        """The holdout must not become a way of never concluding anything. A
+        detector that lost in both stretches has a stable, measured problem."""
+        db = journal({"a": steady(-0.30, 40) + steady(-0.40, 40)})
+        evidence = measure(db, "a")
+
+        assert evidence.holds_out_of_sample
+        assert propose(evidence, 0.7).proposed < 0.7
+
+    def test_it_reads_the_halves_the_right_way_round(self) -> None:
+        """`measure` returns newest-first. Reading the split backwards would
+        report a recovering detector as a decaying one and vice versa, which
+        is worse than not splitting at all."""
+        db = journal({"a": steady(-0.40, 40) + steady(0.20, 40)})  # older, then newer
+        evidence = measure(db, "a")
+
+        assert evidence.early_mean_r < 0
+        assert evidence.late_mean_r > 0
+
+    def test_a_record_too_short_to_split_is_caught_by_the_sample_bar_first(self) -> None:
+        db = journal({"a": steady(-0.4, 3)})
+
+        assert "of the 30 trades needed" in propose(measure(db, "a"), 0.7).why
