@@ -3258,6 +3258,27 @@ class TradeManagementConfig(Base):
     #: the high is stopped out by ordinary noise, and strangling a winner is
     #: the single most expensive habit available here.
     profit_lock_fraction: float = Field(default=0.5, gt=0.0, lt=1.0)
+    #: How many spreads must fit between the peak and the stop the lock places.
+    #:
+    #: The fraction above is a share of the PEAK, so the gap it leaves shrinks
+    #: with the peak: 0.6 at a 0.20R peak leaves 0.08R, and on an index with a
+    #: nine-point stop that is under a point — inside the spread. A stop there
+    #: is taken by the next tick whatever the market does. That is not a
+    #: stop-out, it is a fee.
+    #:
+    #: 24 August measured it: 11 of 25 trades closed on BROKER_SL, all 11 in
+    #: profit, +1.22R between them. 0.11R each — the arming minimum, to the
+    #: cent. Eleven trades reached the lock and not one survived it, and
+    #: exactly one trade in 25 ever reached its take-profit.
+    #:
+    #: Two rather than one, and the two is a CHOICE, not a measurement: one
+    #: spread only covers the round trip, and price crosses its own book
+    #: without the market going anywhere. The next scorecard grades it — read
+    #: `DID MOVING THE STOP PAY`, where a stop-moved lift still negative means
+    #: this number is too small.
+    #:
+    #: Zero restores the old behaviour: lock wherever the fraction says.
+    profit_lock_minimum_spreads: float = Field(default=2.0, ge=0.0)
 
     #: A wide structural stop makes a material amount of money look small in R,
     #: and every protective rule here is written in R.

@@ -579,7 +579,9 @@ class PositionManager:
             # of leaving it parked at break-even all the way to 1.5R. Placed
             # after the partial close deliberately: banking real money outranks
             # adjusting a stop, and the guard comes round again in a second.
-            locked = self._profit_lock(position, r_now, peak_r, risk, risk_money=risk_money)
+            locked = self._profit_lock(
+                position, r_now, peak_r, risk, risk_money=risk_money, tick=tick
+            )
             if locked is not None:
                 events.append(locked)
                 continue
@@ -1602,6 +1604,7 @@ class PositionManager:
         risk: float,
         *,
         risk_money: float = 0.0,
+        tick=None,  # type: ignore[no-untyped-def]
     ) -> ManagementEvent | None:
         """Secure a share of the peak at the broker, once the trade has earned it.
 
@@ -1634,6 +1637,34 @@ class PositionManager:
 
         sign = int(position.direction)
         secured_r = peak_r * config.profit_lock_fraction
+        # THE STOP MUST BE FURTHER FROM THE PEAK THAN THE SPREAD IS.
+        #
+        # `profit_lock_fraction` says how much of the peak to keep, and it
+        # reads safe: 0.6 is nowhere near 1.0, and the docstring above warns
+        # only about tucking a stop "right under the high". But the gap it
+        # leaves is 40% OF THE PEAK, and at a 0.20R peak that is 0.08R —
+        # which on an index with a nine-point stop is under a point, less
+        # than the spread. The stop is then inside the bid/ask and the next
+        # tick takes it, having nothing to do with the market moving.
+        #
+        # 24 August measured it: 11 of 25 trades closed on BROKER_SL, all 11
+        # in profit, +1.22R between them — 0.11R each, the arming minimum, to
+        # the cent. Eleven trades reached the lock and none survived it. One
+        # trade in 25 reached its take-profit.
+        #
+        # So the gap gets a floor in the instrument's own cost rather than in
+        # R, and the lock waits until the trade has run far enough to clear
+        # it. Nothing else changes: it still secures a share of the peak, it
+        # still ratchets, it still lives at the broker.
+        spread = float(getattr(tick, "spread", 0.0) or 0.0) if tick is not None else 0.0
+        if spread > 0:
+            floor_gap_r = config.profit_lock_minimum_spreads * spread / risk
+            secured_r = min(secured_r, peak_r - floor_gap_r)
+            if secured_r <= 0.0:
+                # Nothing can be locked here that would survive a tick. The
+                # existing stop keeps the trade; this rule comes round again
+                # every second and arms as soon as the peak has the room.
+                return None
         target = position.price_open + secured_r * risk * sign
         if not self._worth_moving(position, target, risk):
             return None
