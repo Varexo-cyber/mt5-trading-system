@@ -934,7 +934,7 @@ analysis:
     # live meetelt; het gewicht is wat de backtest hem laat meten. Zo blijft
     # `scripts/backtest_modules.py` hem volgen en staat hij met één woord weer
     # op deze regel als het beeld op meer data draait.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout]
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence]
 
     # MEER SETUPS, MAAR ALLEEN VAN DE DETECTOREN DIE GELD VERDIENEN.
     #
@@ -1022,6 +1022,27 @@ analysis:
       # (`immediacy`) die niemand anders levert, en dan moet hij zwaar genoeg
       # wegen om een van de negen prijsvormlezers tegen te kunnen spreken.
       drift_burst: 0.7
+
+      # SECTIE VIJF, en deze gaat WEL live.
+      #
+      # Het verschil met sectie twee en vier: die rusten op een statistiek die
+      # het onderzoek op tickdata mat, en of die de grovere M1-bars overleeft
+      # is een open vraag. Daarom staan ze op papier. Een beweging tussen twee
+      # M1-slotkoersen heeft die vraag niet — die is op M1 net zo goed gemeten
+      # als op ticks. Er valt niks af te wachten.
+      #
+      # 0,75, tussen `ema_pullback_resume` (0,8) en `drift_continuation` (0,7).
+      # Hoog genoeg om een prijsvormlezer tegen te spreken, want dat is precies
+      # waar hij voor is: als vier indices omhoog lopen en een detector wil
+      # short op de vijfde, moet die tegenspraak gewicht hebben.
+      #
+      # WAT ER NIET IS: een gemeten cijfer op dit account. Dit is het eerste
+      # nieuwe live-gewicht sinds we begonnen en het is een beredeneerde gok,
+      # geen vaststelling. Hij staat in zijn eigen familie (`relative`), dus
+      # hij kan de corroboratie-eis vervullen die negen chartlezers elkaar
+      # structureel niet kunnen geven — en dat is ook precies het risico als de
+      # gok verkeerd is.
+      basket_divergence: 0.75
 
     quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
     quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]

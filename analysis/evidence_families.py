@@ -27,6 +27,11 @@ _FAMILIES = {
     # any existing family would let it corroborate a reader it has nothing
     # in common with, which is the exact failure the families exist to stop.
     "drift_burst": "immediacy",
+    # Also its own, and for the same reason: it is the only reader here
+    # whose evidence is a RELATION between two instruments rather than a
+    # property of one. Filing it beside a chart family would let it
+    # corroborate exactly the reading it exists to check.
+    "basket_divergence": "relative",
 }
 
 

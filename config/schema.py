@@ -1583,6 +1583,76 @@ class SeasonalityConfig(Base):
     significance_confidence_scale: float = Field(default=0.08, ge=0.0, le=1.0)
 
 
+class BasketDivergenceConfig(Base):
+    """SECTION FIVE. One index stepped out of line with the others.
+
+    The first reader here that is MEANINGLESS on a single chart, which is
+    exactly why it can corroborate the nine that all read one. Equity indices
+    run 80-95% together intraday; when the basket moves and one member has not,
+    the thing that moved four of them has not yet moved the fifth.
+
+    High hit rate by construction rather than by tuning: this does not forecast
+    the market, it bets a gap closes. Both sides may go up, down or nowhere.
+
+    Live-capable where sections two and four are not. Those rest on a statistic
+    the research measured on TICK data, and whether it survives M1 bars is an
+    open question. A move between two M1 closes has no such question.
+
+    NOT ARBITRAGE. There is no margin here for two legs, so this trades one
+    side — the laggard, toward the basket. A directional trade with a relative
+    trigger. When an index decouples for a real reason the gap widens instead
+    of closing, and that is where the losses live.
+    """
+
+    enabled: bool = True
+    timeframe: str = "M1"
+    #: Bars the comparison move is measured over. Long enough that a single
+    #: print does not read as a divergence, short enough that the gap has not
+    #: already closed by the time it is seen.
+    move_bars: int = Field(default=15, ge=3, le=240)
+    #: Fewest fresh peers before this says anything. Two, because a "basket" of
+    #: one is a pair and one halted or gapping instrument would then define the
+    #: whole reference.
+    minimum_peers: int = Field(default=2, ge=2, le=20)
+    #: How recent a peer's last bar must be.
+    #:
+    #: THIS IS THE SESSION GUARD, and it is deliberately a measurement rather
+    #: than a calendar. FRA40 does not keep SPX500's hours, and comparing a
+    #: closed market to an open one compares a stale price to a live one — it
+    #: manufactures gaps that will never close because one side stopped
+    #: printing hours ago. A session table can be wrong about a holiday or a
+    #: half-day; a last-bar timestamp cannot.
+    peer_max_age_seconds: float = Field(default=180.0, gt=0.0, le=3600.0)
+    #: How far out of line before it is a setup, in basis points.
+    minimum_gap_bp: float = Field(default=20.0, gt=0.0, le=1000.0)
+    #: The basket itself must have moved this far, or the "gap" is this market
+    #: running on its own while the peers sat still — the decoupling this
+    #: module is most wrong about, and the opposite trade.
+    minimum_basket_bp: float = Field(default=15.0, ge=0.0, le=1000.0)
+    #: Where the score saturates.
+    gap_saturation_bp: float = Field(default=60.0, gt=0.0, le=2000.0)
+    base_score: float = Field(default=50.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.50, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+    #: Asset classes whose members are compared with each other. Indices only
+    #: to begin with: they are the group whose co-movement is a fact about the
+    #: same underlying risk rather than a correlation that happens to hold.
+    grouped_asset_classes: tuple[str, ...] = ("index",)
+
+    @model_validator(mode="after")
+    def _bounds_are_coherent(self) -> BasketDivergenceConfig:
+        if self.gap_saturation_bp <= self.minimum_gap_bp:
+            raise ValueError(
+                "analysis.basket_divergence.gap_saturation_bp must exceed minimum_gap_bp"
+            )
+        if self.maximum_confidence < self.base_confidence:
+            raise ValueError(
+                "analysis.basket_divergence.maximum_confidence may not be below "
+                "base_confidence"
+            )
+        return self
+
+
 class DriftBurstConfig(Base):
     """SECTION TWO. Is this move real, or is it someone in a hurry?
 
@@ -2776,6 +2846,7 @@ class AnalysisConfig(Base):
     session_breakout: SessionBreakoutConfig = SessionBreakoutConfig()
     seasonality: SeasonalityConfig = SeasonalityConfig()
     drift_burst: DriftBurstConfig = DriftBurstConfig()
+    basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
