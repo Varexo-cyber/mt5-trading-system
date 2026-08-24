@@ -20,7 +20,7 @@ from config.schema import SectionBreakerConfig
 from risk.section_breaker import assess, tripped_modules
 
 
-def journal(outcomes: list[float], module: str = "momentum_scalp") -> sqlite3.Connection:
+def journal(outcomes: list[float], module: str = "candle_momentum") -> sqlite3.Connection:
     """A journal whose newest trade is the LAST element of `outcomes`."""
     db = sqlite3.connect(":memory:")
     db.executescript(
@@ -52,13 +52,13 @@ class TestItWillNotJudgeTooSoon:
     on for it."""
 
     def test_a_handful_of_losses_is_not_a_verdict(self) -> None:
-        verdict = assess(journal([-1.0] * 4), "momentum_scalp", STRICT)
+        verdict = assess(journal([-1.0] * 4), "candle_momentum", STRICT)
 
         assert not verdict.tripped
         assert "of the 10 trades needed" in verdict.reason
 
     def test_an_empty_journal_concludes_nothing(self) -> None:
-        verdict = assess(journal([]), "momentum_scalp", STRICT)
+        verdict = assess(journal([]), "candle_momentum", STRICT)
 
         assert not verdict.tripped
 
@@ -68,7 +68,7 @@ class TestItWillNotJudgeTooSoon:
         db = sqlite3.connect(":memory:")
         db.executescript("CREATE TABLE trades (id INTEGER PRIMARY KEY, pnl_r REAL);")
 
-        verdict = assess(db, "momentum_scalp", STRICT)
+        verdict = assess(db, "candle_momentum", STRICT)
 
         assert not verdict.tripped
         assert "no journal evidence" in verdict.reason
@@ -82,7 +82,7 @@ class TestTheTwoRules:
         # isolates the SHARE rule. The streak firing first would be correct
         # behaviour and would test the other rule twice.
         outcomes = [1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0]
-        verdict = assess(journal(outcomes), "momentum_scalp", STRICT)
+        verdict = assess(journal(outcomes), "candle_momentum", STRICT)
 
         assert verdict.tripped
         assert verdict.streak < STRICT.losing_streak
@@ -94,7 +94,7 @@ class TestTheTwoRules:
         taking several trades a day that is the difference between stopping
         today and stopping next week."""
         outcomes = [1.0] * 4 + [-1.0] * 6  # 6 losses, but only 60% of the window
-        verdict = assess(journal(outcomes), "momentum_scalp", STRICT)
+        verdict = assess(journal(outcomes), "candle_momentum", STRICT)
 
         assert verdict.tripped
         assert verdict.streak == 6
@@ -105,27 +105,27 @@ class TestTheTwoRules:
         one on a streak. Reading the streak from the wrong end would stop a
         section for something it already fixed."""
         outcomes = [-1.0] * 6 + [1.0]
-        verdict = assess(journal(outcomes), "momentum_scalp", STRICT)
+        verdict = assess(journal(outcomes), "candle_momentum", STRICT)
 
         assert verdict.streak == 0
 
     def test_a_healthy_section_keeps_running(self) -> None:
         outcomes = [1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0]
-        verdict = assess(journal(outcomes), "momentum_scalp", STRICT)
+        verdict = assess(journal(outcomes), "candle_momentum", STRICT)
 
         assert not verdict.tripped
         assert "7 of 10 won" in verdict.reason
 
     def test_break_even_counts_as_a_loss(self) -> None:
         """A trade that returned exactly nothing paid a spread to do it."""
-        verdict = assess(journal([0.0] * 10), "momentum_scalp", STRICT)
+        verdict = assess(journal([0.0] * 10), "candle_momentum", STRICT)
 
         assert verdict.tripped
 
     def test_a_disabled_breaker_never_trips(self) -> None:
         config = SectionBreakerConfig(enabled=False, window=10, minimum_trades=10, losing_streak=2)
 
-        assert not assess(journal([-1.0] * 10), "momentum_scalp", config).tripped
+        assert not assess(journal([-1.0] * 10), "candle_momentum", config).tripped
 
 
 class TestAttribution:
@@ -137,21 +137,21 @@ class TestAttribution:
     def test_another_modules_losses_do_not_count(self) -> None:
         db = journal([-1.0] * 10, module="impulse_break")
 
-        assert not assess(db, "momentum_scalp", STRICT).tripped
+        assert not assess(db, "candle_momentum", STRICT).tripped
 
     def test_a_module_that_pointed_the_other_way_is_not_blamed(self) -> None:
         db = journal([-1.0] * 10)
         db.execute("UPDATE module_scores SET score = -60.0")  # short call, long trade
         db.commit()
 
-        assert not assess(db, "momentum_scalp", STRICT).tripped
+        assert not assess(db, "candle_momentum", STRICT).tripped
 
     def test_a_module_carrying_no_weight_is_not_blamed(self) -> None:
         db = journal([-1.0] * 10)
         db.execute("UPDATE module_scores SET weight = 0.0")
         db.commit()
 
-        assert not assess(db, "momentum_scalp", STRICT).tripped
+        assert not assess(db, "candle_momentum", STRICT).tripped
 
 
 class TestTheShippedSettings:
@@ -169,13 +169,13 @@ class TestTheShippedSettings:
         against."""
         breakers = self._breakers()
 
-        for section in ("drift_burst", "basket_divergence", "momentum_scalp"):
+        for section in ("drift_burst", "basket_divergence", "candle_momentum"):
             assert section in breakers, section
 
     def test_the_scalp_is_the_strict_one(self) -> None:
         """It takes several trades a day, so ten losses in a row is half a day
         of paying for the same fault. Six, and eight of the last ten."""
-        scalp = self._breakers()["momentum_scalp"]
+        scalp = self._breakers()["candle_momentum"]
 
         assert scalp.losing_streak == 6
         assert scalp.window == 10
@@ -218,7 +218,7 @@ class TestATrippedSectionActuallyRefusesTheTrade:
         runner._cycle_serial = 1
         return runner
 
-    def _idea(self, module: str = "momentum_scalp"):  # type: ignore[no-untyped-def]
+    def _idea(self, module: str = "candle_momentum"):  # type: ignore[no-untyped-def]
         from analysis.confluence import TradeIdea
         from core.types import Direction, Signal
 
@@ -275,10 +275,10 @@ class TestTrippedModules:
     def test_it_names_only_the_sections_that_stopped(self) -> None:
         db = journal([-1.0] * 10)
         breakers = {
-            "momentum_scalp": STRICT,
+            "candle_momentum": STRICT,
             "drift_burst": SectionBreakerConfig(window=30, minimum_trades=25),
         }
 
         stopped = tripped_modules(db, breakers)
 
-        assert set(stopped) == {"momentum_scalp"}
+        assert set(stopped) == {"candle_momentum"}

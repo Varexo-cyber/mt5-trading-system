@@ -1669,7 +1669,7 @@ class SeasonalityConfig(Base):
     significance_confidence_scale: float = Field(default=0.08, ge=0.0, le=1.0)
 
 
-class MomentumScalpConfig(Base):
+class CandleMomentumConfig(Base):
     """SECTION SIX. The candle just moved — is everything else already there?
 
     The shape of the fast bots: watch M1, jump in when a candle goes, jump
@@ -1786,15 +1786,15 @@ class MomentumScalpConfig(Base):
     maximum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
-    def _bounds_are_coherent(self) -> MomentumScalpConfig:
+    def _bounds_are_coherent(self) -> CandleMomentumConfig:
         if self.body_saturation_multiple <= self.minimum_body_multiple:
             raise ValueError(
-                "analysis.momentum_scalp.body_saturation_multiple must exceed "
+                "analysis.candle_momentum.body_saturation_multiple must exceed "
                 "minimum_body_multiple"
             )
         if self.maximum_confidence < self.base_confidence:
             raise ValueError(
-                "analysis.momentum_scalp.maximum_confidence may not be below base_confidence"
+                "analysis.candle_momentum.maximum_confidence may not be below base_confidence"
             )
         return self
 
@@ -3063,7 +3063,7 @@ class AnalysisConfig(Base):
     seasonality: SeasonalityConfig = SeasonalityConfig()
     drift_burst: DriftBurstConfig = DriftBurstConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()
-    momentum_scalp: MomentumScalpConfig = MomentumScalpConfig()
+    candle_momentum: CandleMomentumConfig = CandleMomentumConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

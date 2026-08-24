@@ -1,6 +1,7 @@
 """Replayable analysis modules. No connector, clock, or filesystem access."""
 
 from analysis.basket_divergence import BASKET_META_KEY, BasketDivergence, PeerMove
+from analysis.candle_momentum import CandleMomentum
 from analysis.confluence import ConfluenceEngine, TradeIdea
 from analysis.drift_burst import DriftBurst
 from analysis.drift_continuation import DriftContinuation
@@ -29,7 +30,6 @@ from analysis.market_regime import MarketRegime
 from analysis.market_structure import MarketStructure
 from analysis.mean_reversion import MeanReversion
 from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, VolatilityRegime
-from analysis.momentum_scalp import MomentumScalp
 from analysis.seasonality import Seasonality
 from analysis.session_breakout import SessionBreakout
 from analysis.setup_lifecycle import LifecycleDecision, SetupLifecycleBook, SetupState
@@ -38,6 +38,7 @@ from analysis.volatility_squeeze import VolatilitySqueeze
 __all__ = [
     "BASKET_META_KEY",
     "BasketDivergence",
+    "CandleMomentum",
     "ConfluenceEngine",
     "DriftBurst",
     "DriftContinuation",
@@ -54,7 +55,6 @@ __all__ = [
     "MarketRegime",
     "MarketStructure",
     "MeanReversion",
-    "MomentumScalp",
     "OpportunityIntelligence",
     "PeerMove",
     "ReviewDriftAssessment",

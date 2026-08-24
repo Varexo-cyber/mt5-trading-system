@@ -18,8 +18,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from analysis.momentum_scalp import MomentumScalp, read_candle, slope_direction
-from config.schema import MomentumScalpConfig
+from analysis.candle_momentum import CandleMomentum, read_candle, slope_direction
+from config.schema import CandleMomentumConfig
 from core.types import MarketContext, Series, Timeframe
 
 BASE = 2400.0
@@ -131,7 +131,7 @@ class TestTheRefusalsThatMatter:
         times its own normal activity is a release, a headline or a stop
         cascade. It is the strongest-looking candle such a bot will ever print,
         and what follows it is a spread that takes the account apart."""
-        signal = MomentumScalp().analyze(
+        signal = CandleMomentum().analyze(
             context(m1_closes=rising(), last_body=4.0, last_volume=2000.0)
         )
 
@@ -139,7 +139,7 @@ class TestTheRefusalsThatMatter:
         assert "an event, not momentum" in signal.reasoning
 
     def test_a_mostly_wick_candle_is_refused(self) -> None:
-        signal = MomentumScalp().analyze(
+        signal = CandleMomentum().analyze(
             context(m1_closes=rising(), last_body=0.2, wick=6.0, last_close_at=0.5)
         )
 
@@ -147,13 +147,13 @@ class TestTheRefusalsThatMatter:
         assert "mostly wick" in signal.reasoning
 
     def test_an_ordinary_candle_is_not_a_move(self) -> None:
-        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=1.4, wick=0.15))
+        signal = CandleMomentum().analyze(context(m1_closes=rising(), last_body=1.4, wick=0.15))
 
         assert signal.score == 0.0
         assert "rather than a minute" in signal.reasoning
 
     def test_a_candle_closing_on_its_extreme_is_the_last_buyer(self) -> None:
-        signal = MomentumScalp().analyze(
+        signal = CandleMomentum().analyze(
             context(m1_closes=rising(), last_body=4.0, last_close_at=0.99)
         )
 
@@ -163,7 +163,7 @@ class TestTheRefusalsThatMatter:
     def test_two_out_of_three_is_a_disagreement(self) -> None:
         """A green M1 inside a falling M5 is not a majority. On a trade lasting
         minutes it is a coin flip with costs attached."""
-        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=4.0, m5_up=False))
+        signal = CandleMomentum().analyze(context(m1_closes=rising(), last_body=4.0, m5_up=False))
 
         assert signal.score == 0.0
         assert "disagreement" in signal.reasoning
@@ -171,14 +171,14 @@ class TestTheRefusalsThatMatter:
 
 class TestWhenItDoesFire:
     def test_all_three_agreeing_produces_a_long(self) -> None:
-        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=4.0))
+        signal = CandleMomentum().analyze(context(m1_closes=rising(), last_body=4.0))
 
         assert signal.score > 0
         assert signal.details["confirm_direction"] == 1
         assert signal.details["bias_direction"] == 1
 
     def test_all_three_agreeing_downward_produces_a_short(self) -> None:
-        signal = MomentumScalp().analyze(
+        signal = CandleMomentum().analyze(
             context(
                 m1_closes=falling(),
                 last_body=-4.0,
@@ -191,21 +191,21 @@ class TestWhenItDoesFire:
         assert signal.score < 0
 
     def test_a_bigger_body_scores_higher(self) -> None:
-        small = MomentumScalp().analyze(context(m1_closes=rising(), last_body=1.8))
-        large = MomentumScalp().analyze(context(m1_closes=rising(), last_body=5.0))
+        small = CandleMomentum().analyze(context(m1_closes=rising(), last_body=1.8))
+        large = CandleMomentum().analyze(context(m1_closes=rising(), last_body=5.0))
 
         assert abs(large.score) > abs(small.score)
 
     def test_the_reading_says_the_volume_was_normal(self) -> None:
         """The refusal is the headline of this module, so a firing signal has
         to state that the test was run and passed."""
-        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=4.0))
+        signal = CandleMomentum().analyze(context(m1_closes=rising(), last_body=4.0))
 
         assert "not an event" in signal.reasoning
         assert "volume_multiple" in signal.details
 
     def test_disabling_it_silences_it(self) -> None:
-        module = MomentumScalp(MomentumScalpConfig(enabled=False))
+        module = CandleMomentum(CandleMomentumConfig(enabled=False))
 
         assert module.analyze(context(m1_closes=rising(), last_body=4.0)).score == 0.0
 
@@ -243,7 +243,7 @@ class TestTheNewsBlackoutIsTheAccountsAndNotACopy:
         runner.broker = SimpleNamespace(  # type: ignore[assignment]
             spec=lambda _s: SimpleNamespace(asset_class=SimpleNamespace(value="metal"))
         )
-        return runner, [MomentumScalp().analyze(live)]
+        return runner, [CandleMomentum().analyze(live)]
 
     def test_a_clear_market_is_recorded(self) -> None:
         from risk.reasons import Reason
@@ -332,9 +332,9 @@ class TestItIsLiveAndBraked:
         )
         confluence = settings.analysis.confluence
 
-        assert "momentum_scalp" in confluence.live_enabled_modules
-        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["momentum_scalp"] > 0
-        assert "momentum_scalp" in settings.risk.section_breakers
+        assert "candle_momentum" in confluence.live_enabled_modules
+        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["candle_momentum"] > 0
+        assert "candle_momentum" in settings.risk.section_breakers
 
     def test_it_shares_the_momentum_family_rather_than_inventing_one(self) -> None:
         """It reads the same fact the other momentum readers read — price moved,
@@ -342,18 +342,18 @@ class TestItIsLiveAndBraked:
         on one observation seen twice, which is what families exist to stop."""
         from analysis.evidence_families import family_for
 
-        assert family_for("momentum_scalp") == "momentum"
+        assert family_for("candle_momentum") == "momentum"
         assert family_for("impulse_break") == "momentum"
 
 
 class TestTheConfigCannotBeIncoherent:
     def test_saturation_must_exceed_the_minimum_body(self) -> None:
         with pytest.raises(ValueError, match="must exceed"):
-            MomentumScalpConfig(minimum_body_multiple=4.0, body_saturation_multiple=3.0)
+            CandleMomentumConfig(minimum_body_multiple=4.0, body_saturation_multiple=3.0)
 
     def test_confidence_may_not_narrow_to_nothing(self) -> None:
         with pytest.raises(ValueError, match="below base_confidence"):
-            MomentumScalpConfig(base_confidence=0.9, maximum_confidence=0.4)
+            CandleMomentumConfig(base_confidence=0.9, maximum_confidence=0.4)
 
 
 class TestTheCandleMustPayForItself:
@@ -384,20 +384,20 @@ class TestTheCandleMustPayForItself:
         )
 
     def test_a_wide_spread_against_a_small_candle_is_refused(self) -> None:
-        signal = MomentumScalp().analyze(self._with_spread(3.0))
+        signal = CandleMomentum().analyze(self._with_spread(3.0))
 
         assert signal.score == 0.0
         assert "spreads wide" in signal.reasoning
 
     def test_a_normal_spread_lets_the_setup_through(self) -> None:
-        signal = MomentumScalp().analyze(self._with_spread(0.05))
+        signal = CandleMomentum().analyze(self._with_spread(0.05))
 
         assert signal.score > 0
 
     def test_the_reading_records_how_many_spreads_the_target_was(self) -> None:
         """So the next person can see whether a refusal was marginal or
         hopeless, instead of only that it happened."""
-        signal = MomentumScalp().analyze(self._with_spread(3.0))
+        signal = CandleMomentum().analyze(self._with_spread(3.0))
 
         assert "target_in_spreads" in signal.details
         assert signal.details["target_in_spreads"] < 5.0
@@ -405,7 +405,7 @@ class TestTheCandleMustPayForItself:
     def test_no_quote_does_not_crash_the_reading(self) -> None:
         """The module is replayed in backtests with no tick at all. A missing
         spread must mean the guard does not run, never that the module dies."""
-        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=4.0))
+        signal = CandleMomentum().analyze(context(m1_closes=rising(), last_body=4.0))
 
         assert signal.score > 0
 
@@ -414,7 +414,7 @@ class TestTheCandleMustPayForItself:
         the break-even sits near a third, which a selective multi-timeframe
         filter can plausibly beat — where the original 67% could not be
         reasoned about at all."""
-        config = MomentumScalpConfig()
+        config = CandleMomentumConfig()
         spread = 1.0
         span = spread * config.minimum_target_spreads / config.target_candle_spans
         win = config.target_candle_spans * span - spread
@@ -456,7 +456,7 @@ class TestWhereItIsAllowedToTradeAndHowMuchAtOnce:
         runner.broker = SimpleNamespace(  # type: ignore[assignment]
             spec=lambda _s: SimpleNamespace(asset_class=SimpleNamespace(value=asset_class))
         )
-        return runner, [MomentumScalp().analyze(live)], recorded
+        return runner, [CandleMomentum().analyze(live)], recorded
 
     def _observe(self, runner, signals):  # type: ignore[no-untyped-def]
         from risk.reasons import Reason
@@ -511,5 +511,5 @@ class TestWhereItIsAllowedToTradeAndHowMuchAtOnce:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
 
-        assert settings.analysis.momentum_scalp.max_concurrent == 2
-        assert settings.analysis.momentum_scalp.max_concurrent < 4
+        assert settings.analysis.candle_momentum.max_concurrent == 2
+        assert settings.analysis.candle_momentum.max_concurrent < 4

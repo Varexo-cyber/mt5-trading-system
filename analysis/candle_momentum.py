@@ -52,7 +52,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from config.schema import MomentumScalpConfig
+from config.schema import CandleMomentumConfig
 from core.types import MarketContext, Signal, Timeframe
 
 
@@ -124,13 +124,13 @@ def slope_direction(closes: pd.Series, bars: int) -> int:
     return 1 if change > 0 else -1 if change < 0 else 0
 
 
-class MomentumScalp:
+class CandleMomentum:
     """A closed M1 candle, taken only when M5 and M15 already agree."""
 
-    name = "momentum_scalp"
+    name = "candle_momentum"
 
-    def __init__(self, config: MomentumScalpConfig | None = None) -> None:
-        self.config = config or MomentumScalpConfig()
+    def __init__(self, config: CandleMomentumConfig | None = None) -> None:
+        self.config = config or CandleMomentumConfig()
 
     def analyze(self, ctx: MarketContext) -> Signal:
         config = self.config
