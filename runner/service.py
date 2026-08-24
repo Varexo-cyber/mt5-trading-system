@@ -3970,6 +3970,79 @@ class JarvisRunner:
             tp=idea.take_profit,
         )
 
+    def _section_for_burst(
+        self,
+        symbol: str,
+        context: MarketContext,
+        signal: Signal,
+    ) -> Reason | None:
+        """Which band this burst belongs to, or None when it is not one.
+
+        TWO BANDS, MEASURED RATHER THAN CHOSEN.
+
+        Section two is the strict reading, `t >= 4.0`: over 6,000 random walks
+        that threshold never once fired on noise, and it is correspondingly
+        rare — about one event a week per instrument.
+
+        Section four asks what a lower bar buys. At 3.5 the false-positive rate
+        is still one in six thousand while detection of a five-bar burst goes
+        from 18% to 46% and of a three-bar burst from 41% to 73% — two to three
+        times the events for the same reliability.
+
+        AND THEN THE CONDITION THAT DECIDES WHETHER ANY OF IT IS COLLECTABLE.
+        Studying intraday reversals, the finding is that on the NYSE "the large
+        widening of the bid-ask spread eliminates most of the profits that can
+        be achieved by a contrarian strategy", while on the NASDAQ the spread
+        stays almost constant and the same strategy yields significant abnormal
+        profits. The reversal is real in both markets. Only one of them lets
+        you keep it.
+
+        A burst IS a liquidity shock, so the spread widening alongside it is
+        the normal case and the expensive one. This compares the live spread
+        against the baseline the account has learned for that symbol at that
+        hour — a measurement sitting in `spread_observations` since the table
+        was written, and never once read for this. Without a baseline the burst
+        stays in section two: an unmeasured spread is not a stable one.
+        """
+        config = self.settings.analysis.drift_burst
+        t_stat = abs(float(signal.details.get("t_stat", 0.0)))
+        move_bp = abs(float(signal.details.get("move_bp", 0.0)))
+        if t_stat < config.wide_net_t_threshold or move_bp < config.minimum_move_bp:
+            return None
+        if t_stat >= config.t_threshold:
+            return Reason.SECTION_2_OBSERVED
+        if not config.wide_net_enabled:
+            return None
+        ratio = self._spread_ratio(symbol, context)
+        if ratio is None or ratio > config.wide_net_max_spread_ratio:
+            return None
+        return Reason.SECTION_4_OBSERVED
+
+    def _spread_ratio(self, symbol: str, context: MarketContext) -> float | None:
+        """Live spread over what this symbol normally costs at this hour."""
+        # The chain holds its filters in a list, so this finds the one that
+        # learned the baseline by name rather than assuming an attribute that
+        # does not exist. `baseline` is the only thing wanted from it.
+        spread_filter = next(
+            (
+                item
+                for item in getattr(self.filters, "filters", ())
+                if getattr(item, "name", "") == "spread" and hasattr(item, "baseline")
+            ),
+            None,
+        )
+        if spread_filter is None or context.tick is None:
+            return None
+        try:
+            spec = self.broker.spec(symbol)
+            live = float(spec.price_to_pips(context.tick.spread))
+            median, count = spread_filter.baseline(symbol, context.now.hour)
+        except Exception:  # noqa: BLE001 - a missing baseline is not a failure
+            return None
+        if median is None or median <= 0 or count < 5 or live <= 0:
+            return None
+        return live / float(median)
+
     def _observe_section_two(
         self,
         cycle_pk: int,
@@ -4007,9 +4080,13 @@ class JarvisRunner:
         if context is None or context.tick is None:
             return
         signal = next((item for item in signals if item.module == "drift_burst"), None)
-        if signal is None or not signal.score:
+        if signal is None:
             return
-        direction = Direction.LONG if signal.score > 0 else Direction.SHORT
+        label = self._section_for_burst(symbol, context, signal)
+        if label is None:
+            return
+        t_stat = float(signal.details.get("t_stat", 0.0))
+        direction = Direction.SHORT if t_stat > 0 else Direction.LONG
         if self.recorder.has_unresolved_shadow_trade(symbol, direction):
             return
 
@@ -4035,7 +4112,7 @@ class JarvisRunner:
             cycle_pk=cycle_pk,
             symbol=symbol,
             direction=direction,
-            blocked_by=Reason.SECTION_2_OBSERVED,
+            blocked_by=label,
             entry_price=entry,
             sl=stop,
             tp=target,
