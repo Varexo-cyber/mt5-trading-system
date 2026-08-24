@@ -36,7 +36,23 @@ EXPERIMENTAL_LIVE_PHRASE = "BEVESTIG EXPERIMENTEEL LIVE"
 # This is now the FLOOR of a ramp rather than the whole story. See
 # `EXPERIMENTAL_MAX_STAKE_PCT` below: an ordinary approval is still sized at
 # exactly this number, and only a reviewer confidence above 0.70 buys more.
-EXPERIMENTAL_RISK_PER_TRADE_PCT = 2.0
+#
+# 2.0 -> 3.0, 24 August, owner's instruction: "hij speelt nu continu met
+# centen". At 2% of a 174 EUR account an ordinary trade risks 3.48 EUR, and a
+# 1R winner nets a little over three euro after commission. The complaint is
+# accurate. This is the number that answers it — the ordinary trade, not the
+# exceptional one, is what "playing with cents" describes.
+#
+# WHAT IT DOES NOT DO. Commission is 5.50 EUR PER LOT, so a 1.5x position pays
+# 1.5x commission. Profit, loss and cost all scale by the same factor and the
+# ratio between them does not move at all. This makes outcomes bigger, not
+# better, and anyone reading it as a fix for the cost drag is misreading it.
+#
+# WHAT IT COSTS IN RUNWAY. The 50 EUR floor is the only unconditional stop
+# left. At 174 EUR that is 124 EUR of room: roughly 36 ordinary losers at 2%,
+# roughly 24 at 3%. A third of the distance to the floor, bought for 50% more
+# on each outcome.
+EXPERIMENTAL_RISK_PER_TRADE_PCT = 3.0
 
 # The most one trade may risk, reached only at maximum reviewer confidence.
 #
@@ -60,7 +76,19 @@ EXPERIMENTAL_RISK_PER_TRADE_PCT = 2.0
 # number in the chain that has not yet been disproven, and the ramp starts at
 # 0.70 — well above the 0.55 approval bar — so that an approval which merely
 # cleared the bar is sized exactly as it was before any of this existed.
-EXPERIMENTAL_MAX_STAKE_PCT = 6.0
+#
+# 6.0 -> 8.0, 24 August. The owner asked for "1.5x", which is 9. This is 8,
+# and the reason is written four paragraphs above: the authorisation on record
+# is "minimum 2%, up to 6-8% on a highly convincing setup", and 6 was chosen as
+# the conservative end of a range the owner had already approved. Eight is the
+# other end of that same range — the increment this file predicted in as many
+# words ("moving to eight is a one-line edit plus a re-arm"). Nine would be a
+# new authorisation rather than the use of an existing one, and the difference
+# between 8 and 9 is not worth taking that step without being asked twice.
+#
+# At 174 EUR a maximum-conviction trade now risks 13.92 EUR against a 50 EUR
+# floor. That is roughly nine such losers from the end of the experiment.
+EXPERIMENTAL_MAX_STAKE_PCT = 8.0
 
 # The most the whole book may risk at once, across every open position.
 #
@@ -73,7 +101,14 @@ EXPERIMENTAL_MAX_STAKE_PCT = 6.0
 #
 # Measured against the CURRENT stop of each open position, so banking a stop at
 # break-even genuinely frees capacity rather than merely appearing to.
-EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 12.0
+#
+# 12.0 -> 16.0, moved WITH the ceiling rather than independently. The number
+# was never a taste: it is two maximum-conviction trades, so that a third waits
+# for one of them to close or to reach break-even. At a 6% ceiling that meant
+# 12; at 8% it means 16. Leaving it at 12 would have quietly changed the design
+# to "one big trade and a fragment", which is a different decision about the
+# account and not one anybody made.
+EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 16.0
 # Zero: the automatic peak-to-current halt is off for this experiment.
 #
 # The operator turned it off after seeing what it left. At 88.28 EUR against a
@@ -110,7 +145,13 @@ EXPERIMENTAL_EQUITY_FLOOR = 50.0
 # that change describes an envelope this build no longer runs — it pins one
 # stake and knows nothing about a ceiling or an aggregate cap — so it must be
 # re-armed rather than silently reinterpreted.
-CONTRACT_VERSION = 2
+#
+# Bumped to 3 on 24 August with the whole envelope: 2/6/12 became 3/8/16. A
+# contract armed under version 2 describes a smaller account risk than this
+# build applies, and the difference is the operator's to approve rather than
+# this file's to assume. Live trading refuses until `rearm_experimental_live`
+# has been run.
+CONTRACT_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)

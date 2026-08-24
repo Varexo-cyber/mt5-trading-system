@@ -507,6 +507,16 @@ class TestTheAdviserMayOnlyCapTheEngineStake:
 
         return Advice(True, confidence, "test", provider="local_history", said_yes=True)
 
+    def _floor(self) -> float:
+        """The configured floor, not a literal.
+
+        These two assert a RULE — the lower of the two confidences decides, and
+        an adviser may cap but never inflate. Written against 2.0 they broke the
+        day the owner raised the ordinary stake to 3.0, which is a test failing
+        on a deliberate change to a number it was never about.
+        """
+        return self._runner().settings.risk.conviction_risk.floor_pct
+
     def test_a_lukewarm_final_review_caps_an_aggressive_engine(self) -> None:
         runner = self._runner()
 
@@ -514,7 +524,7 @@ class TestTheAdviserMayOnlyCapTheEngineStake:
             None, self._idea(confidence=0.70), self._advice(confidence=0.50)
         )
 
-        assert stake == pytest.approx(2.0)
+        assert stake == pytest.approx(self._floor())
         assert "effective conviction 0.50" in why
         assert "engine 0.70" in why
 
@@ -528,8 +538,10 @@ class TestTheAdviserMayOnlyCapTheEngineStake:
             None, self._idea(confidence=0.50), self._advice(confidence=0.95)
         )
 
-        assert stake == pytest.approx(2.0)
+        assert stake == pytest.approx(self._floor())
         assert "effective conviction 0.50" in why
+        # And the floor really is the floor: a 0.95 archive bought nothing.
+        assert stake < runner.settings.risk.conviction_risk.ceiling_pct
 
     def test_both_numbers_are_recorded_so_the_journal_shows_the_input(self) -> None:
         """A stake reason naming only the output cannot be audited later."""
@@ -609,3 +621,82 @@ class TestAFreeAdviserIsNotRationed:
         """One source for 'does this cost money', so the budget and the veto
         memories cannot disagree about whether the adviser bills."""
         assert self._runner(paid=False)._review_budget_left() is None
+
+
+class TestTheRaisedEnvelopeAgreesWithItselfEverywhere:
+    """2/6/12 became 3/8/16 on 24 August, and the number lives in four places
+    that all clamp independently.
+
+    Raising only `conviction_risk.ceiling_pct` is a silent no-op: the sizer
+    clamps against `risk.max_risk_per_trade_pct`, the mode limit clamps again,
+    and in Experimental Live the armed contract overrides all of it. The config
+    would read 8% while the account staked 6%, and nothing would say so.
+    """
+
+    def _settings(self):  # type: ignore[no-untyped-def]
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+    def test_the_ladder_runs_from_the_ordinary_stake_to_the_peak(self) -> None:
+        conviction = self._settings().risk.conviction_risk
+
+        assert conviction.floor_pct == 3.0
+        assert conviction.ceiling_pct == 8.0
+
+    def test_no_clamp_is_left_behind_at_the_old_ceiling(self) -> None:
+        """The trap this test exists for. Every ceiling the stake passes
+        through has to admit the new peak, or the raise never reaches a lot
+        size."""
+        settings = self._settings()
+        peak = settings.risk.conviction_risk.ceiling_pct
+
+        assert settings.risk.max_risk_per_trade_pct >= peak
+        for name, limits in settings.modes.items():
+            if limits.max_risk_per_trade_pct < settings.risk.risk_per_trade_pct:
+                continue  # a mode deliberately smaller than the ordinary stake
+            assert limits.max_risk_per_trade_pct >= peak, name
+
+    def test_the_armed_contract_matches_the_config(self) -> None:
+        """In Experimental Live the contract overrides config outright, so a
+        config the contract disagrees with does not trade — it refuses. These
+        must be raised together or the account stops."""
+        from promotion.experimental import (
+            EXPERIMENTAL_MAX_STAKE_PCT,
+            EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT,
+            EXPERIMENTAL_RISK_PER_TRADE_PCT,
+        )
+
+        risk = self._settings().risk
+
+        assert risk.conviction_risk.floor_pct == EXPERIMENTAL_RISK_PER_TRADE_PCT
+        assert risk.conviction_risk.ceiling_pct == EXPERIMENTAL_MAX_STAKE_PCT
+        assert risk.max_total_open_risk_pct == EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT
+
+    def test_two_peak_trades_still_fit_and_a_third_does_not(self) -> None:
+        """The aggregate cap was never a taste — it is exactly two maximum
+        conviction trades, so a third waits for one to close or reach
+        break-even. Moving the ceiling without it would have quietly turned
+        that into 'one big trade and a fragment'."""
+        risk = self._settings().risk
+        peak = risk.conviction_risk.ceiling_pct
+
+        assert 2 * peak <= risk.max_total_open_risk_pct
+        assert 3 * peak > risk.max_total_open_risk_pct
+
+    def test_the_contract_version_moved_with_the_envelope(self) -> None:
+        """A contract armed under the old numbers describes a smaller account
+        risk than this build applies. It must be re-armed rather than silently
+        reinterpreted, and the version is what forces that."""
+        from promotion.experimental import CONTRACT_VERSION
+
+        assert CONTRACT_VERSION >= 3
+
+    def test_the_capital_floor_did_not_move_with_it(self) -> None:
+        """The one number that must NOT scale with the stake. Raising risk
+        shortens the runway to this floor from roughly 36 ordinary losers to
+        24, and that shortening is the cost of the decision — hiding it by
+        lowering the floor would remove the only unconditional stop left."""
+        from promotion.experimental import EXPERIMENTAL_EQUITY_FLOOR
+
+        assert EXPERIMENTAL_EQUITY_FLOOR == 50.0
