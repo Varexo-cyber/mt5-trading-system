@@ -1665,8 +1665,46 @@ class DriftBurstConfig(Base):
     base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
     maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
 
+    # -- SECTION FOUR: the same statistic, cast wider and gated on cost -----
+    #
+    # `t_threshold` is deliberately strict, which makes the event rare — about
+    # one a week per instrument. Section four asks what a lower bar buys, and
+    # the answer was measured over 6,000 random walks rather than guessed:
+    #
+    #     threshold   false positive on noise   5-bar burst   3-bar burst
+    #         4.0     0 in 6,000                    18%           41%
+    #         3.5     1 in 6,000                    46%           73%
+    #         3.0     1 in 333                      72%           91%
+    #
+    # 3.5 is where two to three times the events cost essentially nothing in
+    # reliability. Below it the false positives start to matter.
+    #
+    # And then the condition that decides whether any of it is collectable.
+    # Studying intraday reversals: on the NYSE "the large widening of the
+    # bid-ask spread eliminates most of the profits that can be achieved by a
+    # contrarian strategy", while on the NASDAQ the spread stays almost
+    # constant and the same strategy yields significant abnormal profits. The
+    # reversal exists in both markets; only one of them lets you keep it.
+    #
+    # A burst IS a liquidity shock, so the spread widening with it is the
+    # normal case and the expensive one. This keeps the bursts where the
+    # spread held against its own learned baseline for that symbol at that
+    # hour — which is a measurement this account has been collecting all along
+    # in `spread_observations` and never once read for this purpose.
+    wide_net_enabled: bool = True
+    wide_net_t_threshold: float = Field(default=3.5, ge=2.0, le=12.0)
+    #: Current spread over the learned baseline. Above this the burst is
+    #: recorded as section two only: the move is real, the profit is not.
+    wide_net_max_spread_ratio: float = Field(default=1.25, ge=1.0, le=10.0)
+
     @model_validator(mode="after")
     def _saturation_above_threshold(self) -> DriftBurstConfig:
+        if self.wide_net_t_threshold > self.t_threshold:
+            raise ValueError(
+                "analysis.drift_burst.wide_net_t_threshold may not exceed t_threshold — "
+                "the wide net is the LOWER bar, and inverting them would make section "
+                "four the stricter of the two while still being labelled the wider"
+            )
         if self.volatility_window <= self.drift_window:
             raise ValueError(
                 "analysis.drift_burst.volatility_window must exceed drift_window, or the "

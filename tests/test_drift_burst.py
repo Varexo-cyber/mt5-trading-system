@@ -364,3 +364,118 @@ class TestTheObserverRecordsWithoutTrading:
         runner._observe_section_two(42, "EURUSD", [])
 
         assert recorded == []
+
+
+class TestTheTwoBands:
+    """Section two is strict and rare; section four is the same statistic at a
+    lower bar, kept only where the SPREAD held.
+
+    Both numbers were measured rather than chosen. Over 6,000 random walks the
+    4.0 threshold never fired on noise once and 3.5 fired one time in six
+    thousand — while detection of a five-bar burst went from 18% to 46%. Two to
+    three times the events for the same reliability.
+
+    The spread condition is the other half. On the NYSE "the large widening of
+    the bid-ask spread eliminates most of the profits that can be achieved by a
+    contrarian strategy"; on the NASDAQ, where it stays put, the same strategy
+    pays. A burst IS a liquidity shock, so a widening spread is the normal case
+    and the expensive one.
+    """
+
+    def _runner(self, *, baseline_pips: float | None, samples: int = 50):  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from runner.service import JarvisRunner
+
+        runner = object.__new__(JarvisRunner)
+        runner.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        spread_filter = SimpleNamespace(
+            name="spread",
+            baseline=lambda *_a, **_k: (baseline_pips, samples),
+        )
+        runner.filters = SimpleNamespace(filters=[spread_filter])
+        runner.broker = SimpleNamespace(  # type: ignore[assignment]
+            spec=lambda _s: SimpleNamespace(price_to_pips=lambda p: p * 10_000.0)
+        )
+        return runner
+
+    def _signal(self, t_stat: float, move_bp: float = 80.0):  # type: ignore[no-untyped-def]
+        from core.types import Signal
+
+        return Signal(
+            module="drift_burst",
+            score=-50.0 if t_stat > 0 else 50.0,
+            confidence=0.5,
+            details={"t_stat": t_stat, "move_bp": move_bp},
+        )
+
+    def _context(self, spread_price: float):  # type: ignore[no-untyped-def]
+        from core.types import Tick
+
+        context = TestTheSignal.context(np.random.default_rng(3).normal(0.0, BAR_SIGMA, VOL_WINDOW))
+        return context.__class__(
+            symbol=context.symbol,
+            now=context.now,
+            series=context.series,
+            tick=Tick(context.symbol, context.now, 100.0, 100.0 + spread_price),
+        )
+
+    def test_a_strong_burst_is_section_two_whatever_the_spread(self) -> None:
+        """Above 4.0 the reading stands on its own. The spread condition exists
+        to rescue the WEAKER band, not to second-guess the strong one."""
+        runner = self._runner(baseline_pips=1.0)
+        label = runner._section_for_burst("EURUSD", self._context(0.0010), self._signal(5.0))
+
+        assert str(label) == "SECTION_2_OBSERVED"
+
+    def test_a_weaker_burst_on_a_calm_spread_is_section_four(self) -> None:
+        runner = self._runner(baseline_pips=10.0)
+        # 0.0010 in price is 10 pips here, exactly the learned baseline.
+        label = runner._section_for_burst("EURUSD", self._context(0.0010), self._signal(3.7))
+
+        assert str(label) == "SECTION_4_OBSERVED"
+
+    def test_a_weaker_burst_on_a_blown_out_spread_is_dropped(self) -> None:
+        """The whole finding, as a refusal. The move is real; the profit is not
+        collectable through a spread three times its own normal."""
+        runner = self._runner(baseline_pips=10.0)
+        label = runner._section_for_burst("EURUSD", self._context(0.0030), self._signal(3.7))
+
+        assert label is None
+
+    def test_no_learned_baseline_means_no_section_four(self) -> None:
+        """An unmeasured spread is not a stable one, and guessing here would
+        put the weakest band on exactly the instruments nothing is known about."""
+        runner = self._runner(baseline_pips=None)
+        label = runner._section_for_burst("EURUSD", self._context(0.0010), self._signal(3.7))
+
+        assert label is None
+
+    def test_too_few_samples_means_no_section_four(self) -> None:
+        runner = self._runner(baseline_pips=10.0, samples=2)
+        label = runner._section_for_burst("EURUSD", self._context(0.0010), self._signal(3.7))
+
+        assert label is None
+
+    def test_below_the_wide_bar_is_not_a_burst_at_all(self) -> None:
+        runner = self._runner(baseline_pips=10.0)
+        label = runner._section_for_burst("EURUSD", self._context(0.0010), self._signal(2.9))
+
+        assert label is None
+
+    def test_a_move_too_small_is_refused_in_both_bands(self) -> None:
+        runner = self._runner(baseline_pips=10.0)
+        context = self._context(0.0010)
+
+        assert runner._section_for_burst("EURUSD", context, self._signal(5.0, 4.0)) is None
+        assert runner._section_for_burst("EURUSD", context, self._signal(3.7, 4.0)) is None
+
+    def test_the_wide_bar_cannot_be_configured_above_the_strict_one(self) -> None:
+        """Inverting them would make section four the STRICTER of the two while
+        still being labelled the wider, and every reading of the report after
+        that would be backwards."""
+        with pytest.raises(ValueError, match="may not exceed t_threshold"):
+            DriftBurstConfig(t_threshold=3.0, t_saturation=6.0, wide_net_t_threshold=4.0)

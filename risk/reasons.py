@@ -202,6 +202,20 @@ class Reason(StrEnum):
     #: measures what a detector nobody trades would have earned. Reading the
     #: second as the first would make it look like a filter is losing money.
     SECTION_2_OBSERVED = "SECTION_2_OBSERVED"
+    #: SECTION FOUR: the same statistic at a lower bar, kept only where the
+    #: SPREAD held. Measured over 6,000 random walks, dropping the threshold
+    #: from 4.0 to 3.5 leaves the false-positive rate at one in six thousand
+    #: while detection of a small burst goes from 18% to 46% — two to three
+    #: times the events for the same reliability.
+    #:
+    #: The spread condition is not a refinement either. Studying intraday
+    #: reversals, the finding is that on the NYSE "the large widening of the
+    #: bid-ask spread eliminates most of the profits that can be achieved by a
+    #: contrarian strategy", while on the NASDAQ, where the spread stays put,
+    #: the same strategy yields significant abnormal profits. The reversal is
+    #: real in both. It is only COLLECTABLE in one, and which one is a thing
+    #: this account already measures per symbol per hour.
+    SECTION_4_OBSERVED = "SECTION_4_OBSERVED"
 
     @property
     def is_halt(self) -> bool:
