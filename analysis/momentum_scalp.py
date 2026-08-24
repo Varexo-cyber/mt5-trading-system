@@ -227,6 +227,35 @@ class MomentumScalp:
                 details=details,
             )
 
+        # THE CANDLE HAS TO PAY FOR ITSELF, and this refusal was documented
+        # above and never built until the arithmetic was actually run.
+        #
+        # The target here is deliberately SMALLER than the stop, so the
+        # break-even hit rate starts at 58% before any cost. On a quiet minute
+        # the spread is most of what the target is reaching for and the
+        # required hit rate goes past 80%, which no filter delivers. That is
+        # not a trade with a thin edge, it is a trade with no edge available at
+        # any hit rate, and the only correct response is to refuse the market
+        # rather than to try harder on the entry.
+        spread = float(getattr(ctx.tick, "spread", 0.0) or 0.0) if ctx.tick else 0.0
+        if spread > 0 and config.minimum_target_spreads > 0:
+            last = fast.df.iloc[-1]
+            candle_span = float(last["high"]) - float(last["low"])
+            target = candle_span * config.target_candle_spans
+            details |= {"spread": spread, "target_in_spreads": target / spread}
+            if target < spread * config.minimum_target_spreads:
+                return Signal(
+                    module=self.name,
+                    score=0.0,
+                    confidence=0.0,
+                    reasoning=(
+                        f"the target is {target / spread:.1f} spreads wide, under the "
+                        f"{config.minimum_target_spreads:.0f} it needs — at this range the "
+                        f"spread is most of the move and no hit rate pays for it"
+                    ),
+                    details=details,
+                )
+
         span = max(1e-9, config.body_saturation_multiple - config.minimum_body_multiple)
         strength = min(1.0, (candle.body_multiple - config.minimum_body_multiple) / span)
         score = candle.direction * (config.base_score + strength * (100.0 - config.base_score))
