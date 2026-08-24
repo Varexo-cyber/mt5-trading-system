@@ -538,16 +538,22 @@ class TestWhenItTurned:
     def test_a_window_can_be_bounded_at_both_ends(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
         """The point of the whole thing: run the good stretch alone."""
         path = self._two_days(journal)
-        cut = (datetime.now(UTC) - timedelta(hours=12)).isoformat()
+        # ANCHORED TO THE SAME NOON THE FIXTURE USES, not to the wall clock.
+        # `_two_days` places its trades relative to today at 12:00 UTC while
+        # this bounded the window on the real `now`, so the two drifted apart
+        # by however far the clock happened to be from midday — and after
+        # about 18:00 UTC the window swallowed a third trade and the test
+        # failed for the time of day rather than for anything in the code.
+        anchor = datetime.now(UTC).replace(hour=12, minute=0, second=0, microsecond=0)
 
         main(
             [
                 "--db",
                 str(path),
                 "--since",
-                (datetime.now(UTC) - timedelta(days=2)).isoformat(),
+                (anchor - timedelta(days=2)).isoformat(),
                 "--until",
-                cut,
+                (anchor - timedelta(hours=12)).isoformat(),
             ]
         )
         out = capsys.readouterr().out

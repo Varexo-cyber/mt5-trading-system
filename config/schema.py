@@ -1781,6 +1781,25 @@ class CandleMomentumConfig(Base):
     #: overall concurrency cap rather than beside it. Enforced on paper too,
     #: or the record measures a book the account has no room to hold.
     max_concurrent: int = Field(default=2, ge=1, le=10)
+    #: The largest position a candle scalp may take, in lots, regardless of
+    #: what the risk model sized.
+    #:
+    #: The owner's instruction and he is right: "doe gwn MAX 0.01 lot met die
+    #: dingen op xauusd ... trade op candles ... GWN IN EN ERUIT". The sizer
+    #: spends 3% of equity, and on a stop four tenths of an M1 candle wide
+    #: that buys a great many lots. This section's whole premise is a position
+    #: small enough that being wrong costs cents, taken often — the opposite
+    #: instruction to the same function.
+    #:
+    #: What 0.01 is worth, from his own fill: XAUUSD 4667.47 to 4671.25 paid
+    #: EUR 3.24, so EUR 0.86 per dollar of gold. A stop of about a dollar
+    #: risks EUR 0.86 on a EUR 176 account. Half a percent, where the sizer
+    #: wanted three.
+    #:
+    #: Applied as a ceiling, never a floor. It can only ever reduce what the
+    #: sizer approved, and rounding UP to reach the broker minimum remains
+    #: forbidden. Zero disables the cap.
+    maximum_lots: float = Field(default=0.01, ge=0.0, le=100.0)
     base_score: float = Field(default=45.0, ge=0.0, le=100.0)
     base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
     maximum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)

@@ -491,6 +491,51 @@ analysis:
   # aantoonbaar haalt, een spread die in de stop past, kosten onder 25% van het
   # risico, genoeg margin, en Claude's veto. Wat weg is, is de aanname dat "ver
   # gelopen" hetzelfde is als "te laat".
+  # SECTIE 6 — DE KAARSEN-SCALP, OP VASTE 0,01 LOT.
+  #
+  # "doe gwn MAX 0.01 lot met die dingen op xauusd ... trade op candles ...
+  # GWN IN EN ERUIT". Dat is de opdracht en die klopt: 0,01 lot goud is
+  # EUR 0,86 per dollar beweging, dus een stop van een dollar riskeert
+  # EUR 0,86 op een rekening van EUR 176. Een half procent, geen drie.
+  #
+  # DIT IS DE REDEN DAT DE DREMPELS OMLAAG MOGEN EN ANDERS NIET.
+  #
+  # Op 24 augustus vuurde deze module 24 keer in 12 uur en werd dat 0 trades.
+  # Gemeten over 20.000 gesimuleerde marktsituaties door de echte module:
+  #
+  #     vuurt op        116 / 20.000  =  0,58% van de kaarsen
+  #     geweigerd om:   mostly wick      87,2%   <- deze
+  #                     body te klein     8,8%
+  #                     frames oneens     3,0%
+  #                     sluit op extreem  0,4%
+  #
+  # 87% van alle weigeringen is één drempel. Op 0,70 vuurt hij 0,58% van de
+  # kaarsen; op 0,60 vuurt hij 1,24%. Over de markten zonder commissie — goud,
+  # de indices, crypto — is dat het verschil tussen een handvol per dag en
+  # tientallen per uur.
+  #
+  # WAT DIT VERANTWOORD MAAKT en zonder deze drie dingen zou ik het niet doen:
+  #
+  #   1. De inzet is vast en klein. Ongelijk hebben kost centen, niet procenten.
+  #   2. De geometrie heeft 41% nodig om quitte te spelen (stop 0,4 kaars,
+  #      target 1,2 kaars) — zie docs/hypotheses/candle_momentum.md. Dat is een
+  #      getal dat een driedubbele tijdframe-filter kan halen.
+  #   3. Er staat een automatische stop op: 6 verliezers op rij of 8 van de
+  #      laatste 10 en de sectie zet zichzelf uit.
+  #
+  # Wat NIET omlaag gaat, en dat is bewust: `extreme_volume_multiple` blijft
+  # 3,0. Dat is de red-folder-kaars, en dat is precies hoe dit soort systemen
+  # sterft. Losser maken is niet meer trades, dat is de verkeerde trades.
+  candle_momentum:
+    # 87% van de weigeringen zat hier. 0,70 -> 0,60.
+    minimum_body_share: 0.60
+    # Tweede filter, 8,8% van de weigeringen. 2,2 -> 1,8: nog steeds bijna
+    # twee keer de gemiddelde kaars, dus nog steeds een beweging en geen minuut.
+    minimum_body_multiple: 1.8
+    body_saturation_multiple: 3.5
+    # De vaste inzet. Dit is de reden dat de rest hierboven mag.
+    maximum_lots: 0.01
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
