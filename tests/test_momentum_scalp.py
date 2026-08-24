@@ -336,3 +336,69 @@ class TestTheConfigCannotBeIncoherent:
     def test_confidence_may_not_narrow_to_nothing(self) -> None:
         with pytest.raises(ValueError, match="below base_confidence"):
             MomentumScalpConfig(base_confidence=0.9, maximum_confidence=0.4)
+
+
+class TestTheCandleMustPayForItself:
+    """The refusal that was documented in the module docstring and not built,
+    which the arithmetic then said was the most important one here.
+
+    With a target smaller than the stop the break-even hit rate starts at 58%
+    before a cent of cost. Adding a realistic spread:
+
+        XAUUSD, M1 range 1.50, spread 0.25  ->  67% needed
+        SPX500, M1 range 1.00, spread 0.50  ->  84%, unreachable
+
+    That last case is not a thin edge. It is no edge at any hit rate, and the
+    only correct response is to refuse the market rather than try harder on the
+    entry.
+    """
+
+    @staticmethod
+    def _with_spread(spread: float):  # type: ignore[no-untyped-def]
+        from core.types import Tick
+
+        ctx = context(m1_closes=rising(), last_body=4.0)
+        return ctx.__class__(
+            symbol=ctx.symbol,
+            now=ctx.now,
+            series=ctx.series,
+            tick=Tick(ctx.symbol, ctx.now, BASE, BASE + spread),
+        )
+
+    def test_a_wide_spread_against_a_small_candle_is_refused(self) -> None:
+        signal = MomentumScalp().analyze(self._with_spread(3.0))
+
+        assert signal.score == 0.0
+        assert "spreads wide" in signal.reasoning
+
+    def test_a_normal_spread_lets_the_setup_through(self) -> None:
+        signal = MomentumScalp().analyze(self._with_spread(0.05))
+
+        assert signal.score > 0
+
+    def test_the_reading_records_how_many_spreads_the_target_was(self) -> None:
+        """So the next person can see whether a refusal was marginal or
+        hopeless, instead of only that it happened."""
+        signal = MomentumScalp().analyze(self._with_spread(3.0))
+
+        assert "target_in_spreads" in signal.details
+        assert signal.details["target_in_spreads"] < 5.0
+
+    def test_no_quote_does_not_crash_the_reading(self) -> None:
+        """The module is replayed in backtests with no tick at all. A missing
+        spread must mean the guard does not run, never that the module dies."""
+        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=4.0))
+
+        assert signal.score > 0
+
+    def test_the_configured_floor_is_the_one_the_arithmetic_asked_for(self) -> None:
+        """5 spreads of clearance puts the break-even near 66%, which is at
+        least a number a selective filter can plausibly reach. Below it the
+        required hit rate climbs out of range."""
+        config = MomentumScalpConfig()
+        spread = 1.0
+        span = spread * config.minimum_target_spreads / config.target_candle_spans
+        win = config.target_candle_spans * span - spread
+        loss = config.stop_candle_spans * span + spread
+
+        assert loss / (win + loss) == pytest.approx(0.66, abs=0.02)

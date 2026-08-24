@@ -1665,6 +1665,24 @@ class MomentumScalpConfig(Base):
     #: A candle closing this far into its own extreme is the last buyer
     #: finishing the move rather than the first one starting it.
     exhaustion_close_position: float = Field(default=0.92, ge=0.5, le=1.0)
+    #: THE CANDLE MUST BE BIG ENOUGH TO PAY FOR ITSELF, in multiples of the
+    #: live spread. This was promised in the module docstring and not built,
+    #: which is the exact defect this codebase keeps producing: a refusal that
+    #: exists in prose and not in an `if`.
+    #:
+    #: The arithmetic says it is the most important guard here, not a detail.
+    #: With a target smaller than the stop the break-even hit rate is already
+    #: 58% before a cent of cost. Adding a realistic spread:
+    #:
+    #:     XAUUSD, M1 range 1.50, spread 0.25    ->  67% needed
+    #:     XAUUSD, M1 range 1.50, spread 0.40    ->  72%
+    #:     SPX500, M1 range 1.00, spread 0.50    ->  84%   unreachable
+    #:
+    #: The last row is the point. On a quiet minute the spread is most of the
+    #: target and no hit rate saves it. At 5 spreads of clearance the floor
+    #: settles near 66%, which is at least a number a selective filter can
+    #: plausibly reach.
+    minimum_target_spreads: float = Field(default=5.0, ge=0.0, le=100.0)
     #: Minutes of clear air required before a release. Read from the calendar
     #: the rest of the account already uses; this module has no calendar of its
     #: own, on purpose.
