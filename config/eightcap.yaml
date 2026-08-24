@@ -934,7 +934,19 @@ analysis:
     # live meetelt; het gewicht is wat de backtest hem laat meten. Zo blijft
     # `scripts/backtest_modules.py` hem volgen en staat hij met één woord weer
     # op deze regel als het beeld op meer data draait.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence]
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout]
+    # `basket_divergence` STOND hier en is er op 24 augustus weer afgehaald, op
+    # instructie: alle nieuwe secties kijken eerst mee zonder te vuren.
+    #
+    # Dat is de juiste volgorde en het weerlegt niets van de reden dat hij live
+    # kon. Het argument was dat hij geen open meetvraag heeft zoals sectie twee
+    # en vier — geen tickdata-kwestie — en dat klopt nog steeds. Wat er niet
+    # was en nog steeds niet is: een gemeten cijfer op DEZE rekening. Het
+    # gewicht van 0,75 blijft een beredeneerde gok tot de scorecard hem
+    # naast de andere zet.
+    #
+    # Zijn gewicht blijft staan, dus de backtest en de shadow-observatie
+    # blijven hem volgen. Eén woord op deze regel zet hem terug.
 
     # MEER SETUPS, MAAR ALLEEN VAN DE DETECTOREN DIE GELD VERDIENEN.
     #
@@ -1043,6 +1055,16 @@ analysis:
       # structureel niet kunnen geven — en dat is ook precies het risico als de
       # gok verkeerd is.
       basket_divergence: 0.75
+
+      # SECTIE ZES, ook meekijkend. Zelfde constructie: gewicht zodat de
+      # backtest hem meet, niet op `live_enabled_modules` dus live op 0.
+      #
+      # 0,6, gelijk aan `impulse_break` en `fast_ema_cross` — de andere twee
+      # snelle lezers. Bewust NIET hoger: dit is de vorm waarmee de meeste
+      # kleine accounts zichzelf opblazen, en de enige reden dat deze variant
+      # anders is, is dat de kaars hier is teruggezet van these naar trigger.
+      # Dat is een redenering, geen meting.
+      momentum_scalp: 0.6
 
     quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
     quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]

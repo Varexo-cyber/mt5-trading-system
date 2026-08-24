@@ -444,6 +444,11 @@ class JarvisRunner:
                 # and this one measures a move between two M1 closes, which has
                 # no open question about surviving the coarsening.
                 BasketDivergence(self.settings.analysis.basket_divergence),
+                # SECTION SIX. The fast-bot shape, with the candle demoted from
+                # thesis to trigger: M15 decides the side, M5 must not
+                # contradict, and the M1 close is when that agreement becomes
+                # actionable. Observing, like two, four and five.
+                MomentumScalp(self.settings.analysis.momentum_scalp),
             ],
             self.settings.analysis.confluence,
         )
@@ -3900,7 +3905,7 @@ class JarvisRunner:
         # on the setups it had nothing to do with. This runs once per symbol
         # per cycle and cannot influence the decision above it, which is
         # already made and already written.
-        self._observe_section_two(cycle_pk, symbol, signals)
+        self._observe_paper_sections(cycle_pk, symbol, signals, reason, extra)
         self.scan_activity.record_deep_decision(
             symbol,
             "DEEP_REJECTED",
@@ -4056,6 +4061,99 @@ class JarvisRunner:
         if median is None or median <= 0 or count < 5 or live <= 0:
             return None
         return live / float(median)
+
+    #: Skip reasons that mean the market is not in a state any paper section
+    #: should be pretending to trade. Recording an observation here would
+    #: measure a strategy nobody would ever run.
+    _NEWS_BLOCKS = frozenset(
+        {
+            Reason.NEWS_BLACKOUT,
+            Reason.NEWS_CALENDAR_UNAVAILABLE,
+            Reason.HEADLINE_PRESSURE,
+            Reason.HEADLINES_UNAVAILABLE,
+        }
+    )
+
+    def _observe_scalp(
+        self,
+        cycle_pk: int,
+        symbol: str,
+        signals: Sequence[Signal],
+        reason: Reason,
+        extra: dict | None,
+    ) -> None:
+        """SECTION SIX on paper: the M1 scalp, never inside a news window.
+
+        THE BLACKOUT IS ENFORCED HERE AND NOT IN THE MODULE, and that is the
+        whole point. The module reads bars; it has no calendar. A second copy
+        of the news rules living next to it would be a copy that eventually
+        disagrees with the real one, and the direction it would disagree in is
+        "traded through a release nobody meant to trade through".
+
+        So the observer uses the rules already in force: if this cycle was
+        stopped by the news filter, the headline filter, or a calendar that
+        could not be reached, no scalp is recorded. The fail-closed case is
+        included deliberately — an unreachable calendar is the state the whole
+        account already refuses to trade in, and a paper section that quietly
+        kept going would be measuring a strategy nobody would run.
+        """
+        config = self.settings.analysis.momentum_scalp
+        if not config.enabled or reason in self._NEWS_BLOCKS:
+            return
+        context = self._cycle_contexts.get(symbol)
+        if context is None or context.tick is None:
+            return
+        signal = next((item for item in signals if item.module == "momentum_scalp"), None)
+        if signal is None or not signal.score:
+            return
+        minutes = (extra or {}).get("minutes_to_news")
+        if minutes is not None and float(minutes) <= config.news_clearance_minutes:
+            return
+        direction = Direction.LONG if signal.score > 0 else Direction.SHORT
+        if self.recorder.has_unresolved_shadow_trade(symbol, direction):
+            return
+
+        series = context.series.get(Timeframe.parse(config.trigger_timeframe))
+        if series is None or series.df.empty:
+            return
+        candle = series.df.iloc[-1]
+        entry = float(context.tick.ask if direction is Direction.LONG else context.tick.bid)
+        span = float(candle["high"]) - float(candle["low"])
+        if entry <= 0 or span <= 0:
+            return
+        # IN SMALL, OUT SMALL, which is the owner's whole description of this:
+        # "als het maar een haartje verkeerd gaat eruit, gaat het maar ietsjes
+        # goed ook gelijk eruit". The stop is the other side of the candle that
+        # triggered it — the level that says the minute was read wrong — and the
+        # target is a fraction of that. A scalp that reaches for more is not a
+        # scalp, it is a swing trade with a scalp's stop.
+        sign = 1.0 if direction is Direction.LONG else -1.0
+        stop = entry - sign * span * config.stop_candle_spans
+        target = entry + sign * span * config.target_candle_spans
+        if min(entry, stop, target) <= 0:
+            return
+        self.recorder.record_shadow_trade(
+            cycle_pk=cycle_pk,
+            symbol=symbol,
+            direction=direction,
+            blocked_by=Reason.SECTION_6_OBSERVED,
+            entry_price=entry,
+            sl=stop,
+            tp=target,
+        )
+
+    def _observe_paper_sections(
+        self,
+        cycle_pk: int,
+        symbol: str,
+        signals: Sequence[Signal] | None,
+        reason: Reason = Reason.NO_SIGNAL,
+        extra: dict | None = None,
+    ) -> None:
+        """Every section that is measured and never traded."""
+        if signals:
+            self._observe_scalp(cycle_pk, symbol, signals, reason, extra)
+        self._observe_section_two(cycle_pk, symbol, signals)
 
     def _observe_section_two(
         self,

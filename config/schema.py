@@ -1583,6 +1583,81 @@ class SeasonalityConfig(Base):
     significance_confidence_scale: float = Field(default=0.08, ge=0.0, le=1.0)
 
 
+class MomentumScalpConfig(Base):
+    """SECTION SIX. The candle just moved — is everything else already there?
+
+    The shape of the fast bots: watch M1, jump in when a candle goes, jump
+    straight back out. What makes those lose is that the candle is the whole
+    thesis, and a green minute happens about half the time.
+
+    Here the candle is only the TRIGGER. M15 decides the side, M5 must not
+    contradict it, and the M1 close is the moment that standing agreement
+    becomes actionable. All three or nothing: two out of three is a
+    disagreement, and a disagreement on a trade lasting minutes is a coin flip
+    with costs attached.
+
+    The news blackout is deliberately NOT here. This module reads bars and has
+    no calendar; inventing one would put a second, divergent copy of the news
+    rules beside the real one. `news_filter`, `headline_filter` and the runner's
+    observer hold that.
+    """
+
+    enabled: bool = True
+    trigger_timeframe: str = "M1"
+    confirm_timeframe: str = "M5"
+    bias_timeframe: str = "M15"
+    #: Bars the trigger candle is measured against. Thirty minutes of its own
+    #: recent history is enough to say whether this one is unusual.
+    candle_lookback: int = Field(default=30, ge=5, le=500)
+    confirm_bars: int = Field(default=6, ge=1, le=200)
+    bias_bars: int = Field(default=4, ge=1, le=200)
+    #: Body as a share of the whole candle. Below this it is mostly wick, which
+    #: means nobody finished the minute in control of it.
+    minimum_body_share: float = Field(default=0.55, ge=0.0, le=1.0)
+    #: Body against the recent average body. This is the "it actually moved"
+    #: test, scaled to the instrument instead of stated in pips.
+    minimum_body_multiple: float = Field(default=1.6, gt=0.0, le=20.0)
+    body_saturation_multiple: float = Field(default=4.0, gt=0.0, le=50.0)
+    #: WHERE THE ACCOUNT-ENDING TRADE IS REFUSED.
+    #:
+    #: A minute carrying this many times its own normal activity is not
+    #: momentum, it is an event — a release, a headline, a stop cascade. It
+    #: produces the strongest-looking candle a fast bot will ever see, and what
+    #: follows is a spread that takes the account apart. The owner's
+    #: instruction was explicit: when the volume is extreme, do not trade.
+    extreme_volume_multiple: float = Field(default=4.0, gt=1.0, le=100.0)
+    #: A candle closing this far into its own extreme is the last buyer
+    #: finishing the move rather than the first one starting it.
+    exhaustion_close_position: float = Field(default=0.92, ge=0.5, le=1.0)
+    #: Minutes of clear air required before a release. Read from the calendar
+    #: the rest of the account already uses; this module has no calendar of its
+    #: own, on purpose.
+    news_clearance_minutes: float = Field(default=15.0, ge=0.0, le=240.0)
+    #: The stop is the far side of the candle that triggered it — the level
+    #: that says the minute was read wrong — plus a little room.
+    stop_candle_spans: float = Field(default=1.1, gt=0.0, le=10.0)
+    #: And the target is a fraction of that. IN SMALL, OUT SMALL. A scalp
+    #: reaching for more is not a scalp, it is a swing trade wearing a scalp's
+    #: stop, and it will be stopped like one.
+    target_candle_spans: float = Field(default=0.8, gt=0.0, le=10.0)
+    base_score: float = Field(default=45.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _bounds_are_coherent(self) -> MomentumScalpConfig:
+        if self.body_saturation_multiple <= self.minimum_body_multiple:
+            raise ValueError(
+                "analysis.momentum_scalp.body_saturation_multiple must exceed "
+                "minimum_body_multiple"
+            )
+        if self.maximum_confidence < self.base_confidence:
+            raise ValueError(
+                "analysis.momentum_scalp.maximum_confidence may not be below base_confidence"
+            )
+        return self
+
+
 class BasketDivergenceConfig(Base):
     """SECTION FIVE. One index stepped out of line with the others.
 
@@ -2847,6 +2922,7 @@ class AnalysisConfig(Base):
     seasonality: SeasonalityConfig = SeasonalityConfig()
     drift_burst: DriftBurstConfig = DriftBurstConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()
+    momentum_scalp: MomentumScalpConfig = MomentumScalpConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

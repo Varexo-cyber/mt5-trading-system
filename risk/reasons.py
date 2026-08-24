@@ -216,6 +216,10 @@ class Reason(StrEnum):
     #: real in both. It is only COLLECTABLE in one, and which one is a thing
     #: this account already measures per symbol per hour.
     SECTION_4_OBSERVED = "SECTION_4_OBSERVED"
+    #: SECTION SIX: the fast-bot shape, with the candle demoted from thesis to
+    #: trigger — M15 decides the side, M5 must not contradict, and the M1 close
+    #: is when that standing agreement becomes actionable.
+    SECTION_6_OBSERVED = "SECTION_6_OBSERVED"
 
     @property
     def is_halt(self) -> bool:

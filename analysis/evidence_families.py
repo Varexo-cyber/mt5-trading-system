@@ -32,6 +32,12 @@ _FAMILIES = {
     # property of one. Filing it beside a chart family would let it
     # corroborate exactly the reading it exists to check.
     "basket_divergence": "relative",
+    # `momentum`, deliberately, and NOT a family of its own. It reads the
+    # same fact the other momentum readers read — price moved, hard, just
+    # now — and giving it its own label would let it "corroborate"
+    # `impulse_break` on one observation seen twice, which is the exact
+    # failure families exist to prevent.
+    "momentum_scalp": "momentum",
 }
 
 
