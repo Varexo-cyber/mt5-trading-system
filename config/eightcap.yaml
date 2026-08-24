@@ -1635,6 +1635,42 @@ risk:
   # pips een afrondingsfout.
   commission_per_lot_per_side: 2.75
 
+  # EN DIT GELDT ALLEEN VOOR FOREX. Alle andere klassen betalen NUL.
+  #
+  # De 2,75 hierboven is correct gemeten en werd vervolgens op de hele
+  # catalogus toegepast, want deze tabel stond leeg en dan valt elke klasse
+  # terug op dat ene getal. Eightcap rekent bij indices, metalen, crypto en
+  # aandelen geen aparte commissie — dat zit in de spread.
+  #
+  # BEWIJS, uit de rekening zelf op 24 augustus. Negen gesloten trades met in
+  # totaal EUR 0,67 commissie. De enige forex erin was USDJPY 0,07 + 0,05 =
+  # 0,12 lot, en 0,12 x 5,50 = EUR 0,66. Alle SPX500-, SG30-, BTCUSD- en
+  # XAUUSD-trades in datzelfde venster droegen samen NUL bij, en het
+  # detailpaneel van de SPX500-deal zei het met zoveel woorden:
+  # `Commission: 0.00`.
+  #
+  # WAT DE FOUT KOSTTE, en het is meer dan een cosmetisch getal, want deze
+  # waarde loopt door vier plekken die allemaal geld raken:
+  #
+  #   * `position_sizer` telt commissie bij de kosten per lot op, dus elke
+  #     index-, goud- en cryptotrade werd KLEINER gesized dan bedoeld
+  #   * `cost_share` weigert stops die te krap zijn voor hun kosten, en op een
+  #     verzonnen EUR 5,50 weigert hij stops die prima waren
+  #   * `round_trip_cost_price` gaat in `cost_r` van de doelzoeker, dus doelen
+  #     werden geweigerd die zichzelf wel degelijk terugverdienden
+  #   * `_worth_paying_to_leave` schat wat uitstappen kost. Op een verzonnen
+  #     commissie is uitstappen te duur en houdt het systeem een verliezer
+  #     vast tot de stop — precies het gedrag waar HEALTH_EXIT op stukliep.
+  #
+  # Nul is hier geen aanname maar een meting, en als de broker dit ooit
+  # verandert is dat zichtbaar in de deals zelf.
+  commission_by_asset_class:
+    index: 0.0
+    metal: 0.0
+    crypto: 0.0
+    commodity: 0.0
+    stock: 0.0
+
   # Slippage die een stop-out werkelijk oploopt, in pips per assetklasse.
   #
   # Gemeten: een AUDNZD-stop stond op 1.19722 en werd gevuld op 1.19705 —
