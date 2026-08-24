@@ -1649,10 +1649,13 @@ class MomentumScalpConfig(Base):
     bias_bars: int = Field(default=4, ge=1, le=200)
     #: Body as a share of the whole candle. Below this it is mostly wick, which
     #: means nobody finished the minute in control of it.
-    minimum_body_share: float = Field(default=0.55, ge=0.0, le=1.0)
+    #: Raised from 0.55. "Only when it is convincing" is not a slogan, it is
+    #: these three numbers, and the reason they can be this strict is that the
+    #: flipped exits no longer need a 67% hit rate to survive.
+    minimum_body_share: float = Field(default=0.70, ge=0.0, le=1.0)
     #: Body against the recent average body. This is the "it actually moved"
     #: test, scaled to the instrument instead of stated in pips.
-    minimum_body_multiple: float = Field(default=1.6, gt=0.0, le=20.0)
+    minimum_body_multiple: float = Field(default=2.2, gt=0.0, le=20.0)
     body_saturation_multiple: float = Field(default=4.0, gt=0.0, le=50.0)
     #: WHERE THE ACCOUNT-ENDING TRADE IS REFUSED.
     #:
@@ -1661,7 +1664,7 @@ class MomentumScalpConfig(Base):
     #: produces the strongest-looking candle a fast bot will ever see, and what
     #: follows is a spread that takes the account apart. The owner's
     #: instruction was explicit: when the volume is extreme, do not trade.
-    extreme_volume_multiple: float = Field(default=4.0, gt=1.0, le=100.0)
+    extreme_volume_multiple: float = Field(default=3.0, gt=1.0, le=100.0)
     #: A candle closing this far into its own extreme is the last buyer
     #: finishing the move rather than the first one starting it.
     exhaustion_close_position: float = Field(default=0.92, ge=0.5, le=1.0)
@@ -1682,18 +1685,52 @@ class MomentumScalpConfig(Base):
     #: target and no hit rate saves it. At 5 spreads of clearance the floor
     #: settles near 66%, which is at least a number a selective filter can
     #: plausibly reach.
-    minimum_target_spreads: float = Field(default=5.0, ge=0.0, le=100.0)
+    minimum_target_spreads: float = Field(default=8.0, ge=0.0, le=100.0)
     #: Minutes of clear air required before a release. Read from the calendar
     #: the rest of the account already uses; this module has no calendar of its
     #: own, on purpose.
     news_clearance_minutes: float = Field(default=15.0, ge=0.0, le=240.0)
-    #: The stop is the far side of the candle that triggered it — the level
-    #: that says the minute was read wrong — plus a little room.
-    stop_candle_spans: float = Field(default=1.1, gt=0.0, le=10.0)
-    #: And the target is a fraction of that. IN SMALL, OUT SMALL. A scalp
-    #: reaching for more is not a scalp, it is a swing trade wearing a scalp's
-    #: stop, and it will be stopped like one.
-    target_candle_spans: float = Field(default=0.8, gt=0.0, le=10.0)
+    #: CUT THE LOSER FAST. KEEP THE WINNER. These two numbers were the wrong
+    #: way round and the arithmetic is not close.
+    #:
+    #: The first shape was stop 1.1, target 0.8 — small in, small out — on the
+    #: reasoning that a scalp should take what it can get. On gold at a $0.25
+    #: spread that needs a 67% hit rate. Worse, the instinct taken further makes
+    #: it impossible: a $0.20 target is BELOW the spread, so the net win is
+    #: minus five cents and no hit rate on earth pays for it.
+    #:
+    #:     target   stop    net win   net loss   hit rate needed
+    #:       0.20   1.65      -0.05      -1.90   impossible
+    #:       1.20   1.90      +0.95      -2.15   69%
+    #:       1.20   0.60      +0.95      -0.85   47%
+    #:       1.20   0.40      +0.95      -0.65   41%
+    #:       0.50   0.40      +0.25      -0.65   72%
+    #:
+    #: Both middle rows are "get out fast" and they point in opposite
+    #: directions. Cutting the LOSER fast takes 69% down to 41%. Cutting the
+    #: WINNER fast takes it back up to 72%, because the spread does not shrink
+    #: with the target. Speed helps on one side of the trade only.
+    #:
+    #: So: the stop is a fraction of the trigger candle — if the minute was
+    #: read wrong, that is known almost immediately — and the target is larger
+    #: than the candle, because the winners are the only thing paying for all
+    #: of this.
+    stop_candle_spans: float = Field(default=0.4, gt=0.0, le=10.0)
+    target_candle_spans: float = Field(default=1.2, gt=0.0, le=10.0)
+    #: Asset classes this may trade, by the only rule that matters here:
+    #: WHERE COMMISSION IS ZERO.
+    #:
+    #: Empty means "every class whose round-trip commission is nil", derived
+    #: from `risk.commission_by_asset_class` rather than typed out. Naming
+    #: classes here would be a second list to keep in step with the first, and
+    #: the direction it would fall out of step is "scalping forex at EUR 5.50
+    #: a lot". A scalp's whole margin is a few spreads wide; a fixed fee per
+    #: lot is not a cost it can carry.
+    tradable_asset_classes: tuple[str, ...] = ()
+    #: At most this many section-six positions at once, inside the account's
+    #: overall concurrency cap rather than beside it. Enforced on paper too,
+    #: or the record measures a book the account has no room to hold.
+    max_concurrent: int = Field(default=2, ge=1, le=10)
     base_score: float = Field(default=45.0, ge=0.0, le=100.0)
     base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
     maximum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)

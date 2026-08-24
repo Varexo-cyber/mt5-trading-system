@@ -575,6 +575,21 @@ class Recorder:
         ).fetchone()
         return row is not None
 
+    def open_shadow_count(self, blocked_by: Reason) -> int:
+        """How many observations under this label are still running.
+
+        A paper section with a live concurrency limit has to respect it ON
+        PAPER too, or the record measures a strategy that could never have been
+        run. Section six is capped at two simultaneous positions; without this
+        the observation would happily carry twelve and report the returns of a
+        book the account has no room for.
+        """
+        row = self.journal.conn.execute(
+            "SELECT COUNT(*) FROM shadow_trades WHERE blocked_by = ? AND outcome IS NULL",
+            (str(blocked_by),),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def unresolved_shadow_trades(self, limit: int = 50) -> list[Any]:
         """Return a bounded oldest-first queue for passive outcome resolution."""
         return list(

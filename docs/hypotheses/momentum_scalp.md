@@ -87,22 +87,58 @@ Giving it a family of its own would let it "corroborate" the impulse reader on
 one observation seen twice, which is exactly the failure families exist to
 prevent.
 
-## In small, out small
+## Cut the loser fast, keep the winner
 
-The target is **smaller than the stop**, and that is a choice rather than an
-oversight about reward-to-risk.
+The first version had the exits the other way round — stop 1.1 spans, target
+0.8 — on the owner's description *"als het maar een haartje verkeerd gaat
+eruit, gaat het maar ietsjes goed ook gelijk eruit"*. Both halves of that are
+"get out fast", and running the arithmetic showed they point in opposite
+directions.
 
-The owner's description: *"als het maar een haartje verkeerd gaat eruit, gaat
-het maar ietsjes goed ook gelijk eruit"*. The stop is the far side of the
-candle that triggered it — the level that says the minute was read wrong — and
-the target is a fraction of that span. A scalp reaching for more is not a scalp;
-it is a swing trade wearing a scalp's stop, and it will be stopped like one.
+On gold at a $0.25 spread:
 
-The arithmetic this forces is worth stating plainly. At a reward-to-risk below
-1, the break-even hit rate `(1 + cost) / (1 + RR)` climbs fast: at 0.73 RR and
-a tenth of an R in cost it needs about **64%**, and every basis point of spread
-pushes it higher. This shape only works with a high hit rate, and the whole
-point of the multi-timeframe agreement is to buy one.
+| target | stop | net win | net loss | hit rate needed |
+|---|---|---|---|---|
+| 0.20 | 1.65 | −$0.05 | −$1.90 | impossible |
+| 1.20 | 1.90 | +$0.95 | −$2.15 | 69% |
+| 1.20 | 0.60 | +$0.95 | −$0.85 | 47% |
+| 1.20 | 0.40 | +$0.95 | −$0.65 | **41%** |
+| 0.50 | 0.40 | +$0.25 | −$0.65 | 72% |
+
+Cutting the **loser** fast takes 69% down to 41%. Cutting the **winner** fast
+takes it back up to 72%, because the spread does not shrink with the target.
+The first row is the instinct taken to its conclusion: a $0.20 target is below
+the spread, so the net win is minus five cents and no hit rate on earth pays
+for it.
+
+So the stop is a fraction of the trigger candle — if the minute was read wrong
+that is known almost immediately — and the target is larger than the candle,
+because the winners are the only thing paying for any of this. It is still
+fast; a trade that does not work is cut inside 0.4 of a candle span.
+
+## Where it may trade, and how much at once
+
+**Only where commission is zero.** Derived from `risk.commission_by_asset_class`
+rather than written out as a second list, because two lists of asset classes
+fall out of step and the direction they fall out of step in is "scalping forex
+at EUR 5.50 a lot". A scalp's whole margin is a few spreads wide; a fixed fee
+per lot does not fit inside it.
+
+**At most two positions at once**, inside the account's overall cap of four
+rather than beside it — and honoured on paper too, or the record measures the
+returns of a book the account has no room to hold.
+
+## Only when it is convincing
+
+Not a slogan. The entry thresholds were raised across the board once the
+flipped exits removed the need for a 67% hit rate:
+
+| | was | now |
+|---|---|---|
+| body as a share of the candle | 55% | **70%** |
+| body against its recent average | 1.6x | **2.2x** |
+| volume that counts as an event | 4.0x | **3.0x** |
+| target clearance over the spread | 5 | **8 spreads** |
 
 ## What has to be true before this trades
 
@@ -116,12 +152,17 @@ scripts/scorecard.py --days 30
 
 → `SECTION TWO, ON PAPER`, row `SECTION_6_OBSERVED`
 
-The expectation on record: **a hit rate above 64%, or it is not worth having.**
-Below that the arithmetic above says it loses money regardless of how good the
-setups look, and no amount of tuning the entry fixes a reward-to-risk that
-small. A hit rate in the high seventies would make it the strongest thing on
-the account; anything between 55% and 64% is the exact trap this shape is
-famous for — a strategy that wins most of the time and loses money.
+The expectation on record: **a hit rate above 41%**, which is what the shipped
+geometry needs to break even on gold at a typical spread. That is a number a
+selective multi-timeframe filter can plausibly beat, where the original 67%
+could not be reasoned about at all.
+
+Note what changed about the failure mode. The first version's danger zone was
+55-64% — winning most trades and losing money, which feels like success. The
+flipped exits move the danger somewhere far more visible: below 41% the losses
+show up immediately in the hit rate itself, because winners are now bigger than
+losers and a losing record means a genuinely losing strategy rather than an
+arithmetic trap.
 
 ## Related
 

@@ -4103,6 +4103,28 @@ class JarvisRunner:
         config = self.settings.analysis.momentum_scalp
         if not config.enabled or reason in self._NEWS_BLOCKS:
             return
+        # WHERE COMMISSION IS ZERO, AND NOWHERE ELSE.
+        #
+        # Derived from the commission table rather than typed out as a second
+        # list, because two lists of asset classes fall out of step and the
+        # direction they fall out of step in is "scalping forex at EUR 5.50 a
+        # lot". A scalp's whole margin is a few spreads wide and a fixed fee
+        # per lot is not a cost it can carry — the break-even hit rate goes
+        # past anything a filter delivers.
+        try:
+            asset_class = self.broker.spec(symbol).asset_class.value
+        except Exception:  # noqa: BLE001 - an unknown spec is not tradable here
+            return
+        allowed = config.tradable_asset_classes
+        if allowed:
+            if asset_class not in allowed:
+                return
+        elif self.settings.risk.commission_per_lot(asset_class) > 0:
+            return
+        # The live concurrency cap, honoured on paper. Without it the record
+        # would measure a book the account has no room to hold.
+        if self.recorder.open_shadow_count(Reason.SECTION_6_OBSERVED) >= config.max_concurrent:
+            return
         context = self._cycle_contexts.get(symbol)
         if context is None or context.tick is None:
             return
