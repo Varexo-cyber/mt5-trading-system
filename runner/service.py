@@ -35,6 +35,8 @@ from advisory.local_history import entry_features, supervision_features
 from advisory.scout import ScoutThrottle
 from advisory.veto_patterns import readable as veto_readable
 from analysis import (
+    BASKET_META_KEY,
+    BasketDivergence,
     ConfluenceEngine,
     DriftBurst,
     DriftContinuation,
@@ -51,6 +53,7 @@ from analysis import (
     MarketStructure,
     MeanReversion,
     OpportunityIntelligence,
+    PeerMove,
     Seasonality,
     SessionBreakout,
     SetupLifecycleBook,
@@ -435,9 +438,19 @@ class JarvisRunner:
                 # it FADES, which is what makes it the only candidate that can
                 # ever be a genuine second family for the nine that follow.
                 DriftBurst(self.settings.analysis.drift_burst),
+                # SECTION FIVE, and the first reader that is MEANINGLESS on a
+                # single chart. Unlike sections two and four it can go live:
+                # those rest on a statistic the research measured on tick data
+                # and this one measures a move between two M1 closes, which has
+                # no open question about surviving the coarsening.
+                BasketDivergence(self.settings.analysis.basket_divergence),
             ],
             self.settings.analysis.confluence,
         )
+        #: symbol -> (asset class, recent move in bp, its last bar's time).
+        #: Section five's peer readings, kept across the scan so comparing
+        #: indices costs one pass over bars already fetched.
+        self._basket_moves: dict[str, tuple[str, float, datetime]] = {}
         self.shadow = ShadowRecorder(root, self.settings.learning)
         self.shadow_engine = self._shadow_engine()
         self.playbook_config = self.settings.analysis.playbooks
@@ -2661,6 +2674,7 @@ class JarvisRunner:
             # risk and the lot size are identical. What changes is that the
             # target and the reach measurement are now about that trade.
             self._attach_cost_floor(symbol, context)
+            self._attach_basket_peers(symbol, asset_class, context)
             idea = self.engine.evaluate(context, self.settings.mode)
             self._cycle_contexts[symbol] = context
             # The scan reads every symbol anyway, including the ones we are
@@ -5527,6 +5541,61 @@ class JarvisRunner:
         # Positive means the market has moved against the intended direction.
         adverse = -travelled * int(idea.direction) / reference
         return adverse <= config.confirmation_max_adverse_atr, adverse
+
+    def _attach_basket_peers(
+        self,
+        symbol: str,
+        asset_class,  # type: ignore[no-untyped-def]
+        context: MarketContext,
+    ) -> None:
+        """Put what the OTHER indices just did where the analysis can see it.
+
+        A module receives one MarketContext and cannot reach a second
+        instrument, which is the whole reason nothing on this account has ever
+        compared two markets. `context.meta` is the existing route around that
+        — the cost floor arrives the same way — so this writes each peer's
+        recent move there before the engine runs.
+
+        THE READINGS ARE FROM THIS SCAN, WHICH MEANS SOME ARE A FEW SECONDS
+        OLD. That is not a defect to apologise for: 845 markets cannot be read
+        simultaneously by anything, and a real desk comparing indices is always
+        looking at prices of slightly different ages. What matters is that the
+        age is MEASURED and travels with the reading, so the module can refuse
+        a peer that has gone quiet rather than silently treating a closed
+        market's last print as current.
+
+        Stored per symbol rather than recomputed, so the cost is one pass over
+        a handful of index bars per cycle and not a second data fetch.
+        """
+        config = self.settings.analysis.basket_divergence
+        if not config.enabled:
+            return
+        group = str(getattr(asset_class, "value", asset_class))
+        if group not in config.grouped_asset_classes:
+            return
+        series = context.series.get(Timeframe.parse(config.timeframe))
+        if series is not None and len(series.df) >= config.move_bars + 1:
+            closes = series.df["close"]
+            start = float(closes.iloc[-(config.move_bars + 1)])
+            last = float(closes.iloc[-1])
+            if start > 0 and last > 0:
+                self._basket_moves[symbol] = (
+                    group,
+                    (last / start - 1.0) * 10_000.0,
+                    series.df.index[-1].to_pydatetime(),
+                )
+        now = context.now
+        peers = [
+            PeerMove(
+                symbol=other,
+                move_bp=move_bp,
+                age_seconds=max(0.0, (now - stamp).total_seconds()),
+            )
+            for other, (other_group, move_bp, stamp) in self._basket_moves.items()
+            if other != symbol and other_group == group
+        ]
+        if peers:
+            context.meta[BASKET_META_KEY] = peers
 
     def _attach_cost_floor(self, symbol: str, context: MarketContext) -> None:
         """Put what a round trip costs where the analysis can see it.
