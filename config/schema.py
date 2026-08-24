@@ -193,6 +193,25 @@ class InstrumentsConfig(Base):
     #: management, emergency flattening and Jarvis' risk/trade counters. This
     #: is for an instrument owned by another system or by the account owner.
     ignored_symbols: tuple[str, ...] = ()
+    #: Scanned so paper sections can measure them; never tradable.
+    #:
+    #: `ignored_symbols` is total: absent from scanning, adoption, position
+    #: management, emergency flattening and the risk counters. That is right
+    #: for an instrument the owner holds themselves, and it is too much when
+    #: the only thing wanted is a READING. A section running on paper needs a
+    #: MarketContext for the symbol, and an ignored symbol never gets one.
+    #:
+    #: So this list splits the four guarantees apart and keeps three of them.
+    #: The symbol IS scanned, so an observer can record what a paper section
+    #: would have done. It is refused at `symbol_allowed_at_equity`, so no
+    #: entry can ever be opened. And it stays out of position management and
+    #: out of the risk counters exactly as before, so an existing ticket the
+    #: owner opened themselves is still never touched, moved, closed or
+    #: counted against the account's exposure.
+    #:
+    #: The one thing that changes for such a symbol is that it appears in the
+    #: journal as analysis. Nothing reaches the broker.
+    observation_only_symbols: tuple[str, ...] = ()
     #: Asset classes the scanner will look at. Empty means all of them.
     #:
     #: This is a horizon control, not a quality one. The stop is 1.5 ATR and the
@@ -254,6 +273,23 @@ class InstrumentsConfig(Base):
         if suffix and broker_symbol.endswith(suffix):
             return broker_symbol[: -len(suffix)]
         return broker_symbol
+
+    def is_observation_only(self, symbol: str) -> bool:
+        """Scanned for measurement, never tradable, never managed."""
+        canonical = self.canonical_symbol(symbol)
+        watched = {item.upper() for item in self.observation_only_symbols}
+        return symbol.upper() in watched or canonical.upper() in watched
+
+    def is_hands_off(self, symbol: str) -> bool:
+        """Whether Jarvis may touch an OPEN position in this symbol.
+
+        Both lists say no. They differ only on whether the symbol is scanned,
+        and scanning has nothing to do with whether a live ticket is managed.
+        Keeping that distinction in one method rather than at each call site is
+        what stops the two drifting apart later — and the direction they would
+        drift is "started managing a position the owner said not to touch".
+        """
+        return self.is_ignored(symbol) or self.is_observation_only(symbol)
 
     def is_ignored(self, symbol: str) -> bool:
         """Whether Jarvis must behave as if this broker symbol does not exist."""
@@ -4140,6 +4176,8 @@ class Settings(Base):
         bare = self.instruments.canonical_symbol(symbol)
         if self.instruments.is_ignored(symbol):
             return False, "SYMBOL_IGNORED"
+        if self.instruments.is_observation_only(symbol):
+            return False, "SYMBOL_OBSERVATION_ONLY"
         if bare in self.instruments.blocklist or symbol in self.instruments.blocklist:
             return False, "SYMBOL_BLOCKLISTED"
         if self.instruments.universe_mode == "whitelist" and symbol not in self.active_whitelist:

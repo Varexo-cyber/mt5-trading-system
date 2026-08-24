@@ -177,7 +177,7 @@ class RiskManager:
         participating = tuple(
             position
             for position in positions
-            if not self.settings.instruments.is_ignored(position.symbol)
+            if not self.settings.instruments.is_hands_off(position.symbol)
         )
         ignored = tuple(self.settings.instruments.ignored_symbols)
 

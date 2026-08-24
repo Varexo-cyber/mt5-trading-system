@@ -1506,7 +1506,10 @@ class JarvisRunner:
     def _symbol_ignored(self, symbol: str) -> bool:
         """Compatibility-safe access to the complete instrument opt-out."""
         instruments = getattr(self.settings, "instruments", None)
-        predicate = getattr(instruments, "is_ignored", None)
+        # `is_hands_off`, not `is_ignored`: an observation-only symbol IS
+        # scanned so a paper section can read it, and must still never have an
+        # open position touched.
+        predicate = getattr(instruments, "is_hands_off", None)
         return bool(predicate(symbol)) if callable(predicate) else False
 
     @staticmethod

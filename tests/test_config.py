@@ -85,8 +85,16 @@ class TestShippedConfig:
         assert settings.scanner.batch_size == 240
         assert settings.scanner.priority_every_cycle
         assert settings.scanner.deep_candidates >= 847
-        assert settings.instruments.ignored_symbols == ("XAUUSD",)
-        assert settings.instruments.is_ignored("XAUUSD")
+        # Gold moved from a total opt-out to observation-only on 24 August so
+        # section six can READ it. Everything that kept it safe is unchanged;
+        # only the scan now sees it. `is_hands_off` is the assertion that
+        # still matters, because it is the one about an open ticket.
+        assert settings.instruments.observation_only_symbols == ("XAUUSD",)
+        assert settings.instruments.is_hands_off("XAUUSD")
+        # And NOT ignored any more, which is the whole change: the universe
+        # filter excludes on `is_ignored`, so this is what lets a context for
+        # gold exist for a paper section to read.
+        assert not settings.instruments.is_ignored("XAUUSD")
         assert settings.scanner.priority_asset_classes == ("forex", "crypto")
         assert {"EURUSD", "BTCUSD", "XAUUSD"} <= set(settings.scanner.priority_symbols)
         assert settings.scanner.priority_spread_weight > 0
@@ -531,14 +539,17 @@ class TestTradeFrequency:
         # One module plus Claude. Two modules cannot agree in practice: the two
         # heaviest look for opposite market states.
         assert settings.analysis.confluence.minimum_directional_modules == 1
-        # Hand-written equity floors remain absent. Gold is deliberately a
-        # complete Jarvis opt-out; silver and indices still use exact sizing.
+        # Hand-written equity floors remain absent. Gold is deliberately never
+        # tradable by Jarvis; silver and indices still use exact sizing.
         assert settings.instruments.min_equity_for_symbol == {}
         assert settings.risk.release_slots_when_unmanageable
         assert not settings.trade_management.bank_enabled
+        # Refused by name before sizing is ever reached. The reason changed
+        # from SYMBOL_IGNORED to SYMBOL_OBSERVATION_ONLY when gold became
+        # readable for section six; what did not change is that it is refused.
         assert settings.symbol_allowed_at_equity("XAUUSD", 100.0) == (
             False,
-            "SYMBOL_IGNORED",
+            "SYMBOL_OBSERVATION_ONLY",
         )
         for symbol in ("US30", "BTCUSD"):
             allowed, reason = settings.symbol_allowed_at_equity(symbol, 100.0)
@@ -903,9 +914,12 @@ class TestOilIsRefusedANewEntryButNotAbandoned:
         holds outside Jarvis on purpose, belongs in the second list."""
         instruments = self._settings().instruments
 
-        assert not instruments.is_ignored("UKOUSD")
-        assert not instruments.is_ignored("USOUSD")
-        assert instruments.is_ignored("XAUUSD")
+        assert not instruments.is_hands_off("UKOUSD")
+        assert not instruments.is_hands_off("USOUSD")
+        # Gold is hands-off through `observation_only_symbols` now rather than
+        # `ignored_symbols`. The distinction being drawn here is unchanged: oil
+        # is refused a new ENTRY and still managed; gold is never touched.
+        assert instruments.is_hands_off("XAUUSD")
 
     def test_nothing_else_was_caught_by_it(self) -> None:
         allowed, reason = self._settings().symbol_allowed_at_equity("EURUSD.i", 214.0)
@@ -950,3 +964,62 @@ class TestCommissionIsChargedWhereItIsActuallyPaid:
         """A class the broker adds later must price as forex does — the
         conservative direction — instead of silently becoming free."""
         assert self._risk().commission_per_lot("something_new") == pytest.approx(5.50)
+
+
+class TestGoldIsReadableWithoutBeingTradable:
+    """`ignored_symbols` gives four guarantees at once — not scanned, not
+    opened, not managed, not counted — and a paper section needs the first one
+    broken and the other three kept.
+
+    A section running on paper needs a MarketContext for the symbol, and an
+    ignored symbol never gets one, so gold was invisible to the very thing
+    meant to read it. `observation_only_symbols` splits the four apart.
+    """
+
+    def _settings(self):  # type: ignore[no-untyped-def]
+        return load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        )
+
+    def test_gold_is_scanned_now(self) -> None:
+        """The one thing that changed. The universe filter excludes on
+        `is_ignored`, so this is what lets a context exist at all."""
+        assert not self._settings().instruments.is_ignored("XAUUSD")
+
+    def test_gold_can_never_be_opened(self) -> None:
+        allowed, reason = self._settings().symbol_allowed_at_equity("XAUUSD", 174.0)
+
+        assert not allowed
+        assert reason == "SYMBOL_OBSERVATION_ONLY"
+
+    def test_an_open_gold_ticket_is_still_never_touched(self) -> None:
+        """The guarantee that matters most: the owner holds gold themselves.
+        Position management and the risk counters both read `is_hands_off`,
+        which covers observation-only exactly as it covered ignored."""
+        assert self._settings().instruments.is_hands_off("XAUUSD")
+
+    def test_both_lists_mean_hands_off_so_the_two_cannot_drift(self) -> None:
+        """They differ only on scanning, and scanning has nothing to do with
+        whether a live ticket is managed. One predicate, so the direction they
+        could drift — 'started managing a position the owner said not to
+        touch' — is not reachable."""
+        from config.schema import InstrumentsConfig
+
+        instruments = InstrumentsConfig(
+            whitelist={},
+            ignored_symbols=("XAUUSD",),
+            observation_only_symbols=("BTCUSD",),
+        )
+
+        assert instruments.is_hands_off("XAUUSD")
+        assert instruments.is_hands_off("BTCUSD")
+        assert not instruments.is_hands_off("EURUSD")
+        # And only one of them is kept out of the scan.
+        assert instruments.is_ignored("XAUUSD")
+        assert not instruments.is_ignored("BTCUSD")
+
+    def test_nothing_else_became_observation_only(self) -> None:
+        settings = self._settings()
+
+        for symbol in ("EURUSD.i", "SPX500", "NDX100"):
+            assert not settings.instruments.is_observation_only(symbol), symbol
