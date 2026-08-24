@@ -911,3 +911,42 @@ class TestOilIsRefusedANewEntryButNotAbandoned:
         allowed, reason = self._settings().symbol_allowed_at_equity("EURUSD.i", 214.0)
 
         assert allowed and reason == "OK"
+
+
+class TestCommissionIsChargedWhereItIsActuallyPaid:
+    """Eightcap charges commission on FOREX and on nothing else — it is in the
+    spread everywhere else. The measured 2.75 per side was correct and was then
+    applied to the whole catalogue, because `commission_by_asset_class` was
+    empty and every class falls through to that one number.
+
+    Evidence from the account, 24 August: nine closed trades, EUR 0.67 total
+    commission. The only forex in it was USDJPY 0.07 + 0.05 = 0.12 lot, and
+    0.12 x 5.50 = EUR 0.66. The SPX500, SG30, BTCUSD and XAUUSD trades in the
+    same window contributed nothing, and the SPX500 deal's detail panel said
+    `Commission: 0.00` in as many words.
+    """
+
+    def _risk(self):  # type: ignore[no-untyped-def]
+        return load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        ).risk
+
+    def test_forex_still_pays_what_was_measured(self) -> None:
+        assert self._risk().commission_per_lot("forex") == pytest.approx(5.50)
+
+    def test_nothing_else_pays_a_commission_it_is_not_charged(self) -> None:
+        risk = self._risk()
+
+        for asset_class in ("index", "metal", "crypto", "commodity", "stock"):
+            assert risk.commission_per_lot(asset_class) == 0.0, asset_class
+
+    def test_the_forex_figure_reproduces_the_account_statement(self) -> None:
+        """0.12 lot of USDJPY against a statement showing EUR 0.67."""
+        charged = self._risk().commission_per_lot("forex") * 0.12
+
+        assert charged == pytest.approx(0.67, abs=0.02)
+
+    def test_an_unknown_asset_class_still_falls_back_rather_than_crashing(self) -> None:
+        """A class the broker adds later must price as forex does — the
+        conservative direction — instead of silently becoming free."""
+        assert self._risk().commission_per_lot("something_new") == pytest.approx(5.50)
