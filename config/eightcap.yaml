@@ -1440,14 +1440,31 @@ risk:
   # De houding knijpt niet meer af na verliezen. Zie risk/posture.py.
   posture_throttle: false
 
-  # De inzet van een GEWONE trade. Ongewijzigd — dit is nog steeds wat een
-  # goedkeuring krijgt die niets bijzonders is.
-  risk_per_trade_pct: 2.0
-  # Het absolute plafond dat geen enkele modus mag overschrijden. Van 2 naar 6
-  # omdat de conviction-ladder hieronder daar bovenaan uitkomt. Dit VERHOOGT de
-  # gewone inzet niet; het staat alleen toe dat een zeer overtuigende setup
-  # erboven uitkomt, en de sizer klemt elke inzet hier alsnog tegenaan.
-  max_risk_per_trade_pct: 6.0
+  # De inzet van een GEWONE trade. Van 2,0 naar 3,0 op eigenaarsinstructie:
+  # "hij speelt nu continu met centen". Op EUR 174 is 2% een risico van EUR
+  # 3,48, en na EUR 0,22 commissie houdt een winnaar van 1R daar ruim drie euro
+  # van over. Dat is de klacht, en die is terecht.
+  #
+  # WAT DIT NIET OPLOST, en dat hoort hier te staan omdat de verleiding groot
+  # is: commissie is EUR 5,50 PER LOT. Groter handelen schaalt winst, verlies
+  # en commissie alledrie met dezelfde factor. De verhouding tussen kosten en
+  # opbrengst verandert hier geen millimeter van. Dit maakt de uitkomsten
+  # groter, niet beter.
+  #
+  # De meting blijft wel zuiver: R is de breedte van de stop, dus elke
+  # R-kolom in de scorecard is voor en na deze wijziging vergelijkbaar. Alleen
+  # de eurokolom schaalt mee. Grootte en edge staan los van elkaar.
+  risk_per_trade_pct: 3.0
+  # Het absolute plafond dat geen enkele modus mag overschrijden. Van 6 naar 9,
+  # mee met het plafond van de conviction-ladder hieronder.
+  #
+  # DIT IS EEN VAN DRIE PLAFONDS EN ZE MOETEN SAMEN OMHOOG. Alleen
+  # `conviction.ceiling_pct` verhogen doet niets: de sizer klemt elke inzet
+  # tegen dit getal, en `modes.experimental_live.max_risk_per_trade_pct` klemt
+  # er nog een derde keer overheen. Een validator eist bovendien dat de modus
+  # deze waarde niet overschrijdt. Twee van de drie verhogen levert een stille
+  # no-op op — de config zegt 9%, de rekening handelt 6%.
+  max_risk_per_trade_pct: 8.0
 
   # Van 2.0x naar 1.5x de door MT5 berekende ordermargin. De echte broker-
   # margin moet nog steeds volledig beschikbaar zijn; alleen de extra reserve
@@ -1494,7 +1511,7 @@ risk:
   # Zero disables it. In Experimental Live the armed contract overrides this
   # value outright — see promotion/experimental.py — so an edit here cannot
   # widen what the live account is allowed to stake.
-  max_total_open_risk_pct: 12.0
+  max_total_open_risk_pct: 16.0
 
   # De inzet schaalt mee met hoe overtuigd de reviewer is. Zie
   # config/schema.py ConvictionRiskConfig voor waarom het op ZIJN vertrouwen
@@ -1517,8 +1534,8 @@ risk:
   # reviews meer zijn en de spreiding verschoven blijkt.
   conviction_risk:
     enabled: true
-    floor_pct: 2.0
-    ceiling_pct: 6.0
+    floor_pct: 3.0
+    ceiling_pct: 8.0
     confidence_floor: 0.50
     confidence_ceiling: 0.70
 
@@ -1670,7 +1687,7 @@ modes:
     # The per-trade CEILING, not the ordinary stake. An ordinary approval is
     # still sized at `risk.risk_per_trade_pct`; this is the most that
     # conviction scaling may reach, and the sizer clamps to it.
-    max_risk_per_trade_pct: 6.0
+    max_risk_per_trade_pct: 8.0
     max_sl_pips: 30
     max_trades_per_day: 0
     daily_loss_limit_pct: 0
