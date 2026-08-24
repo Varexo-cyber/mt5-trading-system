@@ -32,6 +32,7 @@ tuned to noise.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
 from dataclasses import dataclass, field
@@ -109,6 +110,33 @@ def conviction_band(score: float | None, threshold: float | None) -> str:
     if over < 20:
         return "10-20 over the bar"
     return "20+ over the bar"
+
+
+def location_band(location: float) -> str:
+    """How far into its own recent range the price had already run.
+
+    1.00 is the very top of the last twelve bars IN THE DIRECTION TRADED — a
+    long buying the high, a short selling the low. 0.50 is the middle.
+
+    Banded rather than continuous because the decision this feeds is a
+    threshold: `directional_extreme_location` sits at 0.80 and does nothing on
+    its own, since the gate only refuses when the location is extreme AND an
+    ATR limit is breached. If the 80-100% band loses money while the rest of
+    the book does not, that AND becomes an OR and there is a measurement
+    behind it. If it does not, the gate is right as it stands and the tempting
+    change is one nobody should make.
+    """
+    if location >= 0.95:
+        return "95-100% (the very top)"
+    if location >= 0.80:
+        return "80-95% (extended)"
+    if location >= 0.60:
+        return "60-80%"
+    if location >= 0.40:
+        return "40-60% (middle)"
+    if location >= 0.20:
+        return "20-40%"
+    return "0-20% (against the move)"
 
 
 def score_band(score: float | None) -> str:
@@ -259,6 +287,34 @@ def taken(
                     "SELECT id, volatility_regime FROM analysis_cycles"
                 ).fetchall()
             }
+            # WHERE IN ITS OWN RANGE THE PRICE WAS WHEN WE BOUGHT IT.
+            #
+            # `analysis/entry_quality.py` measures this on every candidate and
+            # writes it to the cycle context. `postmortem.py` prints it for ONE
+            # trade. Nothing has ever added it up over the book, so "do the
+            # trades we bought at the top lose?" has never been asked -- while
+            # the gate that would refuse them fires only when the location is
+            # extreme AND an ATR limit is breached, so location alone never
+            # refuses anything and nobody could say whether it should.
+            #
+            # ATTEMPTED SEPARATELY, AND DROPPED ON ITS OWN. Reading this out of
+            # the same query as the regimes is what a first pass did, and a
+            # journal without a `context_json` column then lost every regime
+            # table to one OperationalError — a new column taking down four
+            # sections that never needed it. One optional reading, one guard.
+            locations: dict[int, float] = {}
+            try:
+                quality_rows = db.execute("SELECT id, context_json FROM analysis_cycles").fetchall()
+            except sqlite3.OperationalError:
+                quality_rows = []
+            for row in quality_rows:
+                try:
+                    quality = (json.loads(row["context_json"] or "{}") or {}).get("entry_quality")
+                    value = (quality or {}).get("directional_range_location")
+                except (ValueError, AttributeError, TypeError):
+                    continue
+                if value is not None:
+                    locations[int(row["id"])] = float(value)
             if regimes:
                 slices["the regime at entry"] = {}
                 # And the same regimes split by which way the trade faced.
@@ -283,6 +339,16 @@ def taken(
                     # deserves — let it fire only where it works — is invisible
                     # until the two are crossed.
                     slices["which detector, in which regime"] = {}
+                    # WHICH DETECTOR'S TRADES GET KILLED, AND BY WHAT.
+                    #
+                    # `what closed it` says ten trades died on HEALTH_EXIT and
+                    # every one of them lost. It cannot say WHOSE trades those
+                    # were, so the only available reading is "the exit is bad"
+                    # -- when a thesis breaking at -0.22R is far more likely to
+                    # be a bad entry than a bad exit.
+                    slices["what closed it, by detector"] = {}
+                if locations:
+                    slices["where in its own range it was bought"] = {}
         except sqlite3.OperationalError:
             regimes = {}
     if scored:
@@ -347,6 +413,16 @@ def taken(
                 into("which detector was behind it", module, row)
                 if "which detector, in which regime" in slices:
                     into("which detector, in which regime", f"{module} in {regime}", row)
+                if "what closed it, by detector" in slices:
+                    into(
+                        "what closed it, by detector",
+                        f"{module} -> {row['exit_reason'] or 'unknown'}",
+                        row,
+                    )
+            if "where in its own range it was bought" in slices:
+                location = locations.get(int(row["cycle_pk"] or 0))
+                if location is not None:
+                    into("where in its own range it was bought", location_band(location), row)
             # Only when it was ALONE. With company the lone floor never
             # applied, so those trades say nothing about where to set it.
             if len(agreeing) == 1 and "how sure the lone detector was" in slices:
