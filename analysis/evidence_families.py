@@ -37,7 +37,7 @@ _FAMILIES = {
     # now — and giving it its own label would let it "corroborate"
     # `impulse_break` on one observation seen twice, which is the exact
     # failure families exist to prevent.
-    "momentum_scalp": "momentum",
+    "candle_momentum": "momentum",
 }
 
 

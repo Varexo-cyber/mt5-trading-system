@@ -37,6 +37,7 @@ from advisory.veto_patterns import readable as veto_readable
 from analysis import (
     BASKET_META_KEY,
     BasketDivergence,
+    CandleMomentum,
     ConfluenceEngine,
     DriftBurst,
     DriftContinuation,
@@ -371,6 +372,66 @@ class CycleSummary:
     universe_size: int
 
 
+def build_analysis_modules(settings: Settings) -> list[object]:
+    """Every reader the confluence engine votes with, in one place.
+
+    THIS LIVED INLINE IN `JarvisRunner.__init__` AND THAT IS HOW SECTION SIX
+    REACHED PRODUCTION BROKEN. `MomentumScalp` is the name of a playbook as
+    well as of a detector, the playbook import came later in the file and won,
+    and the engine was handed a playbook object with no `analyze` method. Every
+    candidate of every cycle then failed analysis — not section six's
+    candidates, ALL of them — and the account traded nothing while the log said
+    "continuing with the rest of the batch".
+
+    Nothing caught it because no test ever built this list. It is a function so
+    that one can, and `tests/test_analysis_modules.py` now does: every reader
+    answers to `analyze`, no two answer to the same name, and every name the
+    config gives weight to is a reader that actually exists.
+    """
+    analysis = settings.analysis
+    return [
+        MarketStructure(analysis.market_structure),
+        TrendMomentum(analysis.trend_momentum),
+        LiquiditySweep(analysis.liquidity_sweep),
+        LevelReaction(analysis.level_reaction),
+        VolatilityRegime(analysis.volatility_regime),
+        MarketRegime(analysis.market_regime),
+        DriftContinuation(analysis.drift_continuation),
+        FastEmaCross(analysis.fast_ema_cross),
+        ImpulseBreak(analysis.impulse_break),
+        EmaPullbackResume(analysis.ema_pullback_resume),
+        M1MicroBreakout(analysis.m1_micro_breakout),
+        # Constructed but not on `live_enabled_modules`, so live mode zeroes
+        # their weight and they cannot move a trade. They are here so the
+        # module backtest measures the same readers the account runs, rather
+        # than a different set assembled in a script — which is how two copies
+        # of a thing that must agree start to disagree.
+        VolatilitySqueeze(analysis.volatility_squeeze),
+        MeanReversion(analysis.mean_reversion),
+        SessionBreakout(analysis.session_breakout),
+        Seasonality(analysis.seasonality),
+        # SECTION TWO, and the first reader here that is not looking at the
+        # shape of the price series. It runs a hypothesis test and it FADES,
+        # which is what makes it the only candidate that can ever be a genuine
+        # second family for the nine that follow.
+        DriftBurst(analysis.drift_burst),
+        # SECTION FIVE, and the first reader that is MEANINGLESS on a single
+        # chart. It measures a move between two M1 closes, which has no open
+        # question about surviving the coarsening.
+        BasketDivergence(analysis.basket_divergence),
+        # SECTION SIX. The fast-bot shape, with the candle demoted from thesis
+        # to trigger: M15 decides the side, M5 must not contradict, and the M1
+        # close is when that agreement becomes actionable.
+        #
+        # NOT called `momentum_scalp`, deliberately. That name belongs to a
+        # playbook with a measured record of -0.561R over 307 trades, switched
+        # off on purpose. Reusing it would have put a new reader live under the
+        # name of a known loser, in the same config file that documents why the
+        # loser is off.
+        CandleMomentum(analysis.candle_momentum),
+    ]
+
+
 class JarvisRunner:
     """One deterministic service around an optional bounded AI adviser."""
 
@@ -412,46 +473,7 @@ class JarvisRunner:
         )
         self.data = DataManager(self.broker, self.settings.data, self.clock)
         self.engine = ConfluenceEngine(
-            [
-                MarketStructure(self.settings.analysis.market_structure),
-                TrendMomentum(self.settings.analysis.trend_momentum),
-                LiquiditySweep(self.settings.analysis.liquidity_sweep),
-                LevelReaction(self.settings.analysis.level_reaction),
-                VolatilityRegime(self.settings.analysis.volatility_regime),
-                MarketRegime(self.settings.analysis.market_regime),
-                DriftContinuation(self.settings.analysis.drift_continuation),
-                FastEmaCross(self.settings.analysis.fast_ema_cross),
-                ImpulseBreak(self.settings.analysis.impulse_break),
-                EmaPullbackResume(self.settings.analysis.ema_pullback_resume),
-                M1MicroBreakout(self.settings.analysis.m1_micro_breakout),
-                # Constructed but not on `live_enabled_modules`, so live mode
-                # zeroes their weight and they cannot move a trade. They are
-                # here so the module backtest measures the same eleven readers
-                # the account runs, rather than a different set assembled in a
-                # script — which is how two copies of a thing that must agree
-                # start to disagree.
-                VolatilitySqueeze(self.settings.analysis.volatility_squeeze),
-                MeanReversion(self.settings.analysis.mean_reversion),
-                SessionBreakout(self.settings.analysis.session_breakout),
-                Seasonality(self.settings.analysis.seasonality),
-                # SECTION TWO, and the first reader here that is not looking at
-                # the shape of the price series. It runs a hypothesis test and
-                # it FADES, which is what makes it the only candidate that can
-                # ever be a genuine second family for the nine that follow.
-                DriftBurst(self.settings.analysis.drift_burst),
-                # SECTION FIVE, and the first reader that is MEANINGLESS on a
-                # single chart. Unlike sections two and four it can go live:
-                # those rest on a statistic the research measured on tick data
-                # and this one measures a move between two M1 closes, which has
-                # no open question about surviving the coarsening.
-                BasketDivergence(self.settings.analysis.basket_divergence),
-                # SECTION SIX. The fast-bot shape, with the candle demoted from
-                # thesis to trigger: M15 decides the side, M5 must not
-                # contradict, and the M1 close is when that agreement becomes
-                # actionable. Observing, like two, four and five.
-                MomentumScalp(self.settings.analysis.momentum_scalp),
-            ],
-            self.settings.analysis.confluence,
+            build_analysis_modules(self.settings), self.settings.analysis.confluence
         )
         #: symbol -> (asset class, recent move in bp, its last bar's time).
         #: Section five's peer readings, kept across the scan so comparing
@@ -4127,7 +4149,7 @@ class JarvisRunner:
         account already refuses to trade in, and a paper section that quietly
         kept going would be measuring a strategy nobody would run.
         """
-        config = self.settings.analysis.momentum_scalp
+        config = self.settings.analysis.candle_momentum
         if not config.enabled or reason in self._NEWS_BLOCKS:
             return
         # WHERE COMMISSION IS ZERO, AND NOWHERE ELSE.
@@ -4155,7 +4177,7 @@ class JarvisRunner:
         context = self._cycle_contexts.get(symbol)
         if context is None or context.tick is None:
             return
-        signal = next((item for item in signals if item.module == "momentum_scalp"), None)
+        signal = next((item for item in signals if item.module == "candle_momentum"), None)
         if signal is None or not signal.score:
             return
         minutes = (extra or {}).get("minutes_to_news")

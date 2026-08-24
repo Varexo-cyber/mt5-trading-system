@@ -951,7 +951,7 @@ analysis:
     # live meetelt; het gewicht is wat de backtest hem laat meten. Zo blijft
     # `scripts/backtest_modules.py` hem volgen en staat hij met één woord weer
     # op deze regel als het beeld op meer data draait.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, drift_burst, basket_divergence, momentum_scalp]
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, drift_burst, basket_divergence, candle_momentum]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -966,7 +966,7 @@ analysis:
     #                      van die markt is paniek, en twee van de drie keer
     #                      komt hij terug — dus fade hem
     #   basket_divergence  indices lopen samen; wie achterblijft haalt in
-    #   momentum_scalp     een besliste M1-kaars, maar alleen als M5 en M15 al
+    #   candle_momentum     een besliste M1-kaars, maar alleen als M5 en M15 al
     #                      dezelfde kant op stonden
     #
     # Dat is de juiste volgorde en het weerlegt niets van de reden dat hij live
@@ -1095,7 +1095,7 @@ analysis:
       # kleine accounts zichzelf opblazen, en de enige reden dat deze variant
       # anders is, is dat de kaars hier is teruggezet van these naar trigger.
       # Dat is een redenering, geen meting.
-      momentum_scalp: 0.6
+      candle_momentum: 0.6
 
     quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
     quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
@@ -1717,7 +1717,7 @@ risk:
     # 6 op rij en niet 10, want deze doet meerdere trades per dag: tegen de
     # tijd dat er tien op rij staan is er een halve dag verstreken. En 8 van de
     # laatste 10 is precies het tweede geval dat genoemd werd.
-    momentum_scalp:
+    candle_momentum:
       window: 10
       minimum_trades: 10
       maximum_loss_share: 0.75

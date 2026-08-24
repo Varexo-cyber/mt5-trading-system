@@ -1,4 +1,4 @@
-# Hypothesis: momentum_scalp
+# Hypothesis: candle_momentum
 
 ## The claim
 
