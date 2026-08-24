@@ -29,11 +29,11 @@ def frame(
     closes: list[float],
     *,
     body: float = 1.0,
-    wick: float = 0.2,
+    wick: float = 0.5,
     volume: float = 100.0,
     last_volume: float | None = None,
     last_body: float | None = None,
-    last_close_at: float = 0.6,
+    last_close_at: float = 0.85,
     freq: str = "1min",
 ) -> pd.DataFrame:
     """Bars whose final candle can be shaped independently of the rest."""
@@ -139,13 +139,15 @@ class TestTheRefusalsThatMatter:
         assert "an event, not momentum" in signal.reasoning
 
     def test_a_mostly_wick_candle_is_refused(self) -> None:
-        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=0.2, wick=6.0))
+        signal = MomentumScalp().analyze(
+            context(m1_closes=rising(), last_body=0.2, wick=6.0, last_close_at=0.5)
+        )
 
         assert signal.score == 0.0
         assert "mostly wick" in signal.reasoning
 
     def test_an_ordinary_candle_is_not_a_move(self) -> None:
-        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=1.0))
+        signal = MomentumScalp().analyze(context(m1_closes=rising(), last_body=1.4, wick=0.15))
 
         assert signal.score == 0.0
         assert "rather than a minute" in signal.reasoning
@@ -180,7 +182,7 @@ class TestWhenItDoesFire:
             context(
                 m1_closes=falling(),
                 last_body=-4.0,
-                last_close_at=0.4,
+                last_close_at=0.15,
                 m5_up=False,
                 m15_up=False,
             )
@@ -235,7 +237,11 @@ class TestTheNewsBlackoutIsTheAccountsAndNotACopy:
         runner._cycle_contexts = {"XAUUSD": live}
         runner.recorder = SimpleNamespace(  # type: ignore[assignment]
             has_unresolved_shadow_trade=lambda *_: False,
+            open_shadow_count=lambda *_: 0,
             record_shadow_trade=lambda **kw: recorded.append(kw) or 1,
+        )
+        runner.broker = SimpleNamespace(  # type: ignore[assignment]
+            spec=lambda _s: SimpleNamespace(asset_class=SimpleNamespace(value="metal"))
         )
         return runner, [MomentumScalp().analyze(live)]
 
@@ -283,11 +289,14 @@ class TestTheNewsBlackoutIsTheAccountsAndNotACopy:
 
         assert recorded == []
 
-    def test_in_small_out_small(self) -> None:
-        """The owner's whole description of this: a hair wrong and out, a
-        little right and also out. So the target is SMALLER than the stop, and
-        that is a deliberate choice about what a scalp is rather than an
-        oversight about reward-to-risk."""
+    def test_the_loser_is_cut_fast_and_the_winner_is_not(self) -> None:
+        """The exits were the wrong way round and the arithmetic was not close.
+
+        "Get out fast" points in opposite directions on the two sides of a
+        trade. Cutting the LOSER fast takes the required hit rate from 69% to
+        41%; cutting the WINNER fast takes it back to 72%, because the spread
+        does not shrink with the target. So the stop is a fraction of the
+        trigger candle and the target is larger than it."""
         from risk.reasons import Reason
 
         recorded: list = []
@@ -298,7 +307,7 @@ class TestTheNewsBlackoutIsTheAccountsAndNotACopy:
         plan = recorded[0]
         reward = abs(plan["tp"] - plan["entry_price"])
         risk = abs(plan["entry_price"] - plan["sl"])
-        assert reward < risk
+        assert reward > risk
 
 
 class TestItObservesAndCannotTrade:
@@ -391,14 +400,107 @@ class TestTheCandleMustPayForItself:
 
         assert signal.score > 0
 
-    def test_the_configured_floor_is_the_one_the_arithmetic_asked_for(self) -> None:
-        """5 spreads of clearance puts the break-even near 66%, which is at
-        least a number a selective filter can plausibly reach. Below it the
-        required hit rate climbs out of range."""
+    def test_the_shipped_geometry_needs_a_hit_rate_a_filter_can_reach(self) -> None:
+        """The whole reason the exits were flipped. At the configured clearance
+        the break-even sits near a third, which a selective multi-timeframe
+        filter can plausibly beat — where the original 67% could not be
+        reasoned about at all."""
         config = MomentumScalpConfig()
         spread = 1.0
         span = spread * config.minimum_target_spreads / config.target_candle_spans
         win = config.target_candle_spans * span - spread
         loss = config.stop_candle_spans * span + spread
 
-        assert loss / (win + loss) == pytest.approx(0.66, abs=0.02)
+        assert loss / (win + loss) < 0.45
+
+
+class TestWhereItIsAllowedToTradeAndHowMuchAtOnce:
+    """Two limits the owner asked for, and one of them is arithmetic rather
+    than preference: a scalp's whole margin is a few spreads wide, and a fixed
+    fee per lot is not a cost that fits inside it."""
+
+    def _runner(self, *, asset_class: str, open_count: int = 0):  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.types import Tick
+        from runner.service import JarvisRunner
+
+        recorded: list = []
+        runner = object.__new__(JarvisRunner)
+        runner.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        ctx = context(m1_closes=rising(), last_body=4.0)
+        live = ctx.__class__(
+            symbol=ctx.symbol,
+            now=ctx.now,
+            series=ctx.series,
+            tick=Tick(ctx.symbol, ctx.now, BASE, BASE + 0.05),
+        )
+        runner._cycle_contexts = {"XAUUSD": live}
+        runner.recorder = SimpleNamespace(  # type: ignore[assignment]
+            has_unresolved_shadow_trade=lambda *_: False,
+            open_shadow_count=lambda *_: open_count,
+            record_shadow_trade=lambda **kw: recorded.append(kw) or 1,
+        )
+        runner.broker = SimpleNamespace(  # type: ignore[assignment]
+            spec=lambda _s: SimpleNamespace(asset_class=SimpleNamespace(value=asset_class))
+        )
+        return runner, [MomentumScalp().analyze(live)], recorded
+
+    def _observe(self, runner, signals):  # type: ignore[no-untyped-def]
+        from risk.reasons import Reason
+
+        runner._observe_scalp(1, "XAUUSD", signals, Reason.NO_SIGNAL, {"minutes_to_news": 90.0})
+
+    def test_a_zero_commission_class_is_allowed(self) -> None:
+        runner, signals, recorded = self._runner(asset_class="metal")
+
+        self._observe(runner, signals)
+
+        assert len(recorded) == 1
+
+    def test_forex_is_refused_because_it_pays_a_fee_per_lot(self) -> None:
+        """EUR 5.50 a lot against a margin measured in a few spreads. The gate
+        is DERIVED from the commission table rather than typed out, so the two
+        cannot fall out of step — and the direction they would fall out of step
+        in is exactly this."""
+        runner, signals, recorded = self._runner(asset_class="forex")
+
+        self._observe(runner, signals)
+
+        assert recorded == []
+
+    def test_every_other_zero_commission_class_is_allowed_too(self) -> None:
+        for asset_class in ("index", "crypto", "commodity", "stock"):
+            runner, signals, recorded = self._runner(asset_class=asset_class)
+            self._observe(runner, signals)
+            assert len(recorded) == 1, asset_class
+
+    def test_the_two_position_cap_is_honoured_on_paper(self) -> None:
+        """A paper section with a live concurrency limit has to respect it on
+        paper too, or the record measures the returns of a book the account has
+        no room to hold."""
+        runner, signals, recorded = self._runner(asset_class="metal", open_count=2)
+
+        self._observe(runner, signals)
+
+        assert recorded == []
+
+    def test_one_open_position_still_leaves_room(self) -> None:
+        runner, signals, recorded = self._runner(asset_class="metal", open_count=1)
+
+        self._observe(runner, signals)
+
+        assert len(recorded) == 1
+
+    def test_the_cap_sits_inside_the_accounts_own_concurrency_limit(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert settings.analysis.momentum_scalp.max_concurrent == 2
+        assert settings.analysis.momentum_scalp.max_concurrent < 4
