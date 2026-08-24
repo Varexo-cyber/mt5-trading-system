@@ -377,9 +377,56 @@ def refused(
     ).fetchall()
     gates: dict[str, Bucket] = {}
     for row in rows:
-        gate = gates.setdefault(str(row["blocked_by"]), Bucket(str(row["blocked_by"])))
+        name = str(row["blocked_by"])
+        # OBSERVATIONS ARE NOT REFUSALS AND MUST NOT SHARE A TABLE WITH THEM.
+        #
+        # This section answers "what did refusing cost", and every row in it is
+        # read that way: a positive net means the gate is losing money. A
+        # section-two label means something else entirely — a detector nobody
+        # trades, recorded to find out what it WOULD have earned. Left in the
+        # gate table a profitable observation would read as an expensive filter,
+        # which is the opposite of what it says.
+        if name.startswith(OBSERVED_PREFIX):
+            continue
+        gate = gates.setdefault(name, Bucket(name))
         gate.add(float(row["pnl_r"]), 0.0, None)
     return gates
+
+
+#: Shadow labels that record a detector rather than a refusal. See `refused`.
+OBSERVED_PREFIX = "SECTION_"
+
+
+def observed(
+    db: sqlite3.Connection, since: datetime, until: datetime | None = None
+) -> dict[str, Bucket]:
+    """Detectors that ran as paper: what they would have made, had they traded.
+
+    SECTION TWO is `drift_burst`, and it cannot reach an order — it is absent
+    from `live_enabled_modules`, so live mode zeroes its weight before the
+    engine scores anything. The runner records the plan it would have taken and
+    the existing resolver settles it against real later prices, which is the
+    same machinery that has graded blocked setups for months.
+
+    The reason it is here rather than in a backtest: the research behind it is
+    measured on TICK data and this account has M1 bars. Whether the statistic
+    survives that coarsening is not answerable from a paper, and it is
+    answerable for free from this column.
+    """
+    bound = " AND opened_at < ?" if until else ""
+    window = (since.isoformat(), until.isoformat()) if until else (since.isoformat(),)
+    seen: dict[str, Bucket] = {}
+    for row in db.execute(
+        "SELECT blocked_by, outcome, pnl_r FROM shadow_trades "
+        "WHERE opened_at >= ? AND pnl_r IS NOT NULL AND outcome IS NOT NULL" + bound,
+        window,
+    ).fetchall():
+        name = str(row["blocked_by"])
+        if not name.startswith(OBSERVED_PREFIX):
+            continue
+        bucket = seen.setdefault(name, Bucket(name))
+        bucket.add(float(row["pnl_r"]), 0.0, None)
+    return seen
 
 
 def intervened(
@@ -614,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
         pending = unresolved(db, since, until)
         interventions = intervened(db, since, until)
         stop_moves = ratcheted(db, since, until)
+        paper = observed(db, since, until)
     finally:
         db.close()
 
@@ -634,6 +682,24 @@ def main(argv: list[str] | None = None) -> int:
         print("\n  Nothing closed in this window.\n")
     for title, buckets in slices.items():
         show(title, buckets, args.min_sample)
+
+    if paper:
+        print()
+        print("  SECTION TWO, ON PAPER — WHAT IT WOULD HAVE MADE")
+        print("  Detectors that cannot reach an order, recorded and resolved against")
+        print("  real later prices. Nothing here risked a cent.")
+        print(f"  {'':22}{'setups':>7}{'won':>6}{'net':>10}")
+        print("  " + "-" * 45)
+        for row in sorted(paper.values(), key=lambda b: -b.net_r):
+            if row.trades < args.min_sample:
+                continue
+            hit = row.wins / row.trades if row.trades else 0.0
+            line = f"{row.name:<22}{row.trades:>7}{row.wins:>6}{row.net_r:>+9.2f}R"
+            print(f"  {line}   {hit:.0%} hit")
+        print()
+        print("  The research behind drift_burst reports two thirds reverting, measured")
+        print("  on tick data. This account has M1 bars, so the hit rate here is the")
+        print("  number that says whether the statistic survived the coarsening.")
 
     if gates:
         print()

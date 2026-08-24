@@ -186,6 +186,23 @@ class Reason(StrEnum):
     KILL_SWITCH = "KILL_SWITCH_ENGAGED"
     SYSTEM_HALTED = "SYSTEM_HALTED"
 
+    # -- observed, never acted on -------------------------------------------
+    #: SECTION TWO, running as paper with no money behind it.
+    #:
+    #: Not a gate and not a refusal, which is why it sits apart from everything
+    #: above. `drift_burst` cannot reach an order — it is absent from
+    #: `live_enabled_modules`, so live mode zeroes its weight before the engine
+    #: sees it. This label exists so the shadow recorder registers what it
+    #: WOULD have done and the existing resolver settles that against real
+    #: later prices. That is the only way to find out whether the statistic
+    #: survives being computed on M1 bars instead of the paper's tick data.
+    #:
+    #: The scorecard reports it in its own section rather than beside the
+    #: gates: a gate's blocked setups measure what REFUSING costs, and this
+    #: measures what a detector nobody trades would have earned. Reading the
+    #: second as the first would make it look like a filter is losing money.
+    SECTION_2_OBSERVED = "SECTION_2_OBSERVED"
+
     @property
     def is_halt(self) -> bool:
         """True for reasons that stop the whole system, not just one trade.

@@ -20,6 +20,13 @@ _FAMILIES = {
     "mean_reversion": "mean_reversion",
     "volatility_squeeze": "volatility",
     "session_breakout": "session",
+    # Its own family, and that is the entire point of the module. Every
+    # other reader here belongs to trend, momentum, structure or liquidity
+    # — four ways of reading one price series. This one runs a hypothesis
+    # test on whether the move is real and then fades it. Filing it under
+    # any existing family would let it corroborate a reader it has nothing
+    # in common with, which is the exact failure the families exist to stop.
+    "drift_burst": "immediacy",
 }
 
 

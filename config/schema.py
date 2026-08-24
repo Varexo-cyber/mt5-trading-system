@@ -1583,6 +1583,107 @@ class SeasonalityConfig(Base):
     significance_confidence_scale: float = Field(default=0.08, ge=0.0, le=1.0)
 
 
+class DriftBurstConfig(Base):
+    """SECTION TWO. Is this move real, or is it someone in a hurry?
+
+    Every other module here reads the SHAPE of the price series. This one runs
+    a hypothesis test on it: is the local mean return larger than the local
+    volatility can explain? Christensen, Oomen and Renò (Journal of
+    Econometrics, 2022) call a reading above roughly 4 a DRIFT BURST, and
+    measured on tick data across equities, fixed income, currencies and
+    commodities they find about one per week per instrument, 25 to 200 basis
+    points apiece, with TWO THIRDS followed by price reversion.
+
+    So this module fades. That is the point of it: nine detectors follow and
+    none of them can be the second family the corroboration rule needs, because
+    they all read the same chart. The reversion is not a repeating pattern — it
+    is payment for supplying immediacy to someone who overpaid to get out, which
+    is also where the short-term reversal literature independently lands.
+
+    IT DOES NOT TRADE. Deliberately absent from `live_enabled_modules` while its
+    weight lets the offline backtest measure it, and the runner records what it
+    would have done as a shadow trade the resolver settles against real later
+    prices. The paper works on ticks and this account has M1 bars; whether the
+    statistic survives that coarsening is the open question this exists to
+    answer, and it is not a question worth answering with money.
+    """
+
+    enabled: bool = True
+    #: The fastest series the account keeps. A burst is short-lived by
+    #: definition, so a slower frame averages the explosive part away.
+    timeframe: str = "M1"
+    #: Bars the DRIFT is measured over. Short, because a burst is short.
+    drift_window: int = Field(default=10, ge=2, le=200)
+    #: Bars the VOLATILITY is measured over, and it must be much longer.
+    #:
+    #: TWO WINDOWS, AND THE SECOND IS NOT A REFINEMENT. Built with one window
+    #: the test could not see the events it exists for: measured over 3,000
+    #: synthetic paths, a 20-bar burst fired 68% of the time while a 5-bar
+    #: burst covering 127 basis points — harder and faster — fired 0.0%. Never
+    #: once. The burst was inflating the very denominator meant to judge it.
+    #:
+    #: With the volatility taken over 120 bars that are mostly the calm BEFORE
+    #: the move, the same 5-bar burst fires 96-100%. Separate bandwidths are
+    #: what the paper does; collapsing them was the bug.
+    volatility_window: int = Field(default=120, ge=20, le=2000)
+    #: Half the drift kernel's weight sits in the last N bars. A burst is LOCAL,
+    #: and flat weighting inside the drift window mixes the explosion with
+    #: whatever preceded it.
+    half_life_bars: float = Field(default=5.0, gt=0.0, le=200.0)
+    #: Autocovariance lags in the volatility correction.
+    #:
+    #: Not cosmetic. Bid-ask bounce makes consecutive returns negatively
+    #: autocorrelated, which inflates a naive variance — and an inflated
+    #: denominator SHRINKS the statistic, so the test would go blind exactly on
+    #: the noisiest instruments, which are the ones bursting most often.
+    noise_lags: int = Field(default=2, ge=0, le=20)
+    #: Where a burst starts, and it is CALIBRATED rather than borrowed.
+    #:
+    #: Over 4,000 pure random walks at these settings the statistic reached a
+    #: 99th percentile of 2.58 and a maximum of 3.55. So 4.0 is a false-positive
+    #: rate under one in four thousand on noise — and real bursts of 75bp and
+    #: up fire 96-100% of the time. The paper's threshold is also near 4, which
+    #: is reassuring, but this one was measured on THIS estimator and M1 bars
+    #: rather than inherited from tick data.
+    #:
+    #: Caveat worth keeping: one in four thousand per reading is not one in
+    #: four thousand per day. Across 845 instruments read every minute the
+    #: false positives add up, which is one more reason this observes before it
+    #: trades.
+    t_threshold: float = Field(default=4.0, ge=2.0, le=12.0)
+    #: Where the score saturates. Between the threshold and here the fade grows
+    #: from `base_score` to 100.
+    t_saturation: float = Field(default=8.0, ge=3.0, le=30.0)
+    #: A burst too small to be the paper's event is not the paper's event.
+    #:
+    #: The statistic is a RATIO, so a dead-quiet instrument that twitches
+    #: produces a large t on a two-basis-point move. The research describes
+    #: 25-200bp events; under this floor the reversion has nothing in it to
+    #: collect and the spread takes what is left.
+    minimum_move_bp: float = Field(default=25.0, ge=0.0, le=1000.0)
+    base_score: float = Field(default=45.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _saturation_above_threshold(self) -> DriftBurstConfig:
+        if self.volatility_window <= self.drift_window:
+            raise ValueError(
+                "analysis.drift_burst.volatility_window must exceed drift_window, or the "
+                "burst inflates the very denominator meant to judge it"
+            )
+        if self.t_saturation <= self.t_threshold:
+            raise ValueError(
+                "analysis.drift_burst.t_saturation must exceed t_threshold, or the "
+                "score has no range to grow across"
+            )
+        if self.maximum_confidence < self.base_confidence:
+            raise ValueError(
+                "analysis.drift_burst.maximum_confidence may not be below base_confidence"
+            )
+        return self
+
+
 class M1MicroBreakoutConfig(Base):
     """A discrete closed-M1 range break aligned with M5 structure."""
 
@@ -2636,6 +2737,7 @@ class AnalysisConfig(Base):
     mean_reversion: MeanReversionConfig = MeanReversionConfig()
     session_breakout: SessionBreakoutConfig = SessionBreakoutConfig()
     seasonality: SeasonalityConfig = SeasonalityConfig()
+    drift_burst: DriftBurstConfig = DriftBurstConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
