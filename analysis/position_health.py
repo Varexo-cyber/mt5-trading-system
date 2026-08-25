@@ -568,9 +568,37 @@ def assess_position(
     elif verdict == "deteriorating":
         if r_now >= secure_at_r:
             action = "secure"
-        elif abs(r_now) >= tighten_at_r:
-            # Was `elif r_now >= tighten_at_r`, and that floor is why a losing
-            # trade had nothing between its entry and its stop.
+        elif r_now >= tighten_at_r:
+            # BACK TO A PROFIT FLOOR ON 25 AUGUST. This read `abs(r_now)` for
+            # two weeks, so a deteriorating trade already under water had its
+            # stop pulled in. The argument for it was explicit and is quoted
+            # here because the measurement rejects it:
+            #
+            #     "it costs nothing when the read is wrong -- the trade
+            #      continues, with less at stake"
+            #
+            # It does not continue. It is taken out by the tightened stop. From
+            # `DID MOVING THE STOP PAY`, two days and 30 closed trades:
+            #
+            #     stop moved, then closed   6 trades   lift -0.80R   moved at -0.27R
+            #     stop untouched            2 trades   lift +0.82R
+            #
+            # Acting returned -0.28R where holding would have returned +0.52R.
+            # Closing WITHOUT having touched the stop was the good half of the
+            # rule; tightening at a loss was the whole of the damage. Those six
+            # were not saved from a full stop, they were denied a recovery.
+            #
+            # WHAT THIS GIVES BACK, and it was a real finding: three trades on
+            # 15 August ran from entry to the full stop with no rule able to
+            # speak -- CHFJPY peaked at 0.12R, UK100 at 0.00R, ENR at 0.47R.
+            # That problem returns. It is the smaller one: a full stop is the
+            # loss the trade was sized for, while a stop pulled to -0.27R turns
+            # a survivable position into a booked loss the plan never asked
+            # for.
+            #
+            # A losing trade still has the exit rung above this one when the
+            # read is genuinely broken and corroborated. What it no longer has
+            # is a stop walked toward it while the thesis is merely uncertain.
             #
             # A deteriorating read on a position already under water fell
             # through to `hold`. Not "hold because the thesis survives" — hold

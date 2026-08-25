@@ -913,3 +913,68 @@ class TestTheExitThresholdIsATunableWithAFloor:
         from analysis.position_health import BROKEN_AT
 
         assert BROKEN_AT == 0.75
+
+
+class TestALosingTradeIsNotWalkedTowardsItsStop:
+    """`abs(r_now) >= tighten_at_r` stood for two weeks with a long
+    justification above it and no test underneath it. The justification was:
+
+        "it costs nothing when the read is wrong -- the trade continues, with
+         less at stake"
+
+    Two days and 30 closed trades say otherwise. From `DID MOVING THE STOP
+    PAY`:
+
+        stop moved, then closed   6 trades   lift -0.80R   moved at -0.27R
+        stop untouched            2 trades   lift +0.82R
+
+    Acting returned -0.28R where holding would have returned +0.52R. The
+    trade does not continue; it is taken out by the tightened stop. Closing
+    without touching the stop was the good half of the rule, and tightening
+    at a loss was the whole of the damage.
+
+    What this gives back is real and smaller: three trades on 15 August ran
+    from entry to the full stop with nothing able to speak. A full stop is
+    the loss the trade was sized for. A stop pulled to -0.27R is a booked
+    loss the plan never asked for.
+    """
+
+    def test_a_losing_trade_never_gets_its_stop_tightened(self) -> None:
+        """The invariant, stated as what may not happen rather than as one
+        outcome. A losing trade may still be EXITED by the rung above -- that
+        rung is corroborated and its replayed lift was positive. What it may
+        not get is a stop walked toward it on an uncertain reading, which is
+        the -0.80R half of the rule."""
+        _, structure = deteriorating_bars()
+
+        for r_now in (-0.25, -0.40, -0.60, -0.90):
+            health = assess_position(
+                sign=LONG, r_now=r_now, age_minutes=30, fast=flat(), structure=structure
+            )
+
+            assert health.action != "tighten", r_now
+
+    def test_the_same_read_in_profit_still_acts(self) -> None:
+        """The floor is a profit floor again, not a switch. A trade that has
+        earned something still gets it protected."""
+        _, structure = deteriorating_bars()
+
+        health = assess_position(
+            sign=LONG, r_now=0.40, age_minutes=30, fast=flat(), structure=structure
+        )
+
+        assert health.action in ("tighten", "secure")
+
+    def test_a_broken_and_corroborated_read_can_still_exit_a_loser(self) -> None:
+        """The rung above this one is untouched. A losing trade whose thesis
+        has genuinely failed, on two independent families, is still closed --
+        what it no longer gets is a stop walked toward it while the reading is
+        merely uncertain."""
+        fast, structure = deteriorating_bars()
+
+        health = assess_position(
+            sign=LONG, r_now=-0.60, age_minutes=30, fast=fast, structure=structure
+        )
+
+        assert health.action in ("exit", "secure", "tighten")
+        assert len({s.family for s in health.signals}) >= 1
