@@ -1312,7 +1312,7 @@ class TestARegimeThisAccountRefusesToTrade:
 
         assert engine.evaluate(context(), TradingMode.PAPER).approved
 
-    def test_no_regime_is_refused_on_the_shipped_config(self) -> None:
+    def test_range_is_refused_and_transition_is_not(self) -> None:
         """`transition` was blocked on -EUR 20.86 over 44 trades and unblocked
         again on 25 August, on the owner's instruction and on two numbers.
 
@@ -1324,14 +1324,22 @@ class TestARegimeThisAccountRefusesToTrade:
         while transition finished 24 August as the best regime on the card at
         7 winners from 8.
 
-        Pinned so a future block has to be argued rather than drifted into."""
+        `range` took its place on the same day, and the difference is the
+        evidence rather than the verdict. Transition was blocked on one summed
+        number; range is negative under four detectors independently --
+        drift_continuation 1 from 6, impulse_break 0 from 4, session_breakout 0
+        from 2, fast_ema_cross 1 from 3 -- for -EUR 10.04 of an -EUR 11.50 two
+        days. Fisher exact against the rest of the book: p = 0.0502.
+
+        Ten trades is thin and the p-value is on the line. Pinned so both
+        decisions have to be argued rather than drifted into."""
         from config.loader import load_settings
 
         settings = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         )
 
-        assert settings.analysis.confluence.refused_regimes == ()
+        assert settings.analysis.confluence.refused_regimes == ("range",)
 
     def test_an_empty_list_trades_every_regime(self) -> None:
         engine = ConfluenceEngine(self._modules("transition"), self._config())

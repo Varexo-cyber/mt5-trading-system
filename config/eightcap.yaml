@@ -663,7 +663,39 @@ analysis:
     #
     # Dit is dus geen terugdraaien van een meting. Het is dezelfde vraag
     # opnieuw stellen aan een andere machine, met een veel hogere lat ervoor.
-    refused_regimes: []
+    refused_regimes:
+      - range
+    # RANGE ERUIT OP 25 AUGUSTUS, en transition er tegelijk weer in. Dat is
+    # geen aarzeling, het zijn twee verschillende metingen.
+    #
+    #     range          10 trades    2 gewonnen   20%   -EUR 10,04
+    #     al het andere  20 trades   13 gewonnen   65%   -EUR  1,46
+    #
+    # Fisher exact p = 0,0502. Op het randje, en tien trades is dun -- precies
+    # de dunte waarop transition ten onrechte werd geblokkeerd. Wat dit geval
+    # anders maakt is dat de steun niet uit het totaal komt maar uit vier
+    # detectoren die er los van elkaar in verliezen:
+    #
+    #     drift_continuation in range   6 trades   1 won   -EUR 7,33
+    #     impulse_break in range        4 trades   0 won   -EUR 6,71
+    #     session_breakout in range     2 trades   0 won   -EUR 2,14
+    #     fast_ema_cross in range       3 trades   1 won   -EUR 1,94
+    #     candle_momentum in range      1 trade    1 won   +EUR 1,07
+    #
+    # Vier onafhankelijke lezers, elk negatief. Bij transition kwam het bezwaar
+    # uit een enkel opgeteld getal; hier zegt elke detector afzonderlijk
+    # hetzelfde. En het is geen kant die te redden valt: range SHORT is 1 uit 6
+    # en range LONG 1 uit 4.
+    #
+    # DIT REPAREERT OOK `drift_continuation` ZONDER ZIJN GEWICHT AAN TE RAKEN.
+    # Die staat over twee dagen op -EUR 8,79, en -EUR 7,33 daarvan is range.
+    # In trend_up doet hij 5 trades met 3 winnaars. Het probleem was nooit de
+    # detector, het was waar hij mocht kijken.
+    #
+    # WAT DIT NIET IS: een oordeel over chop in het algemeen. Het is tien
+    # trades. Als `range` over een week met dertig trades weer positief staat
+    # in de scorecard, dan gaat dit terug -- en dan is dat opnieuw een meting
+    # en geen mening.
 
     # Measured, not guessed: fed a textbook uptrend, every symbol came back
     # NO_SIGNAL — "too few independent directional modules". Three modules carry
@@ -1111,7 +1143,27 @@ analysis:
     # live meetelt; het gewicht is wat de backtest hem laat meten. Zo blijft
     # `scripts/backtest_modules.py` hem volgen en staat hij met één woord weer
     # op deze regel als het beeld op meer data draait.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, drift_burst, basket_divergence, candle_momentum]
+    # `drift_burst` IS HIER OP 25 AUGUSTUS AFGEHAALD, een dag nadat hij erop
+    # kwam. Zijn eigen papieren record verwerpt zijn eigen hypothese.
+    #
+    # Het onderzoek achter sectie twee (Christensen, Oomen, Reno) meet dat twee
+    # derde van de drift bursts terugkeert. Dat is de hele stelling. Wat de
+    # observer sinds gisteren opschreef:
+    #
+    #     7 setups, 1 raak = 14%, samen -5,44R
+    #
+    # De kans daarop als die 67% zou kloppen is p = 0,0065, ongeveer een op de
+    # 154. Zeven setups is dun voor bijna elke vraag, maar niet voor deze: het
+    # verschil tussen 14% en 67% is zo groot dat zeven waarnemingen volstaan.
+    #
+    # Dat is ook precies de open vraag die bij het bouwen is opgeschreven --
+    # de statistiek is op TICKDATA gemeten en dit account leest M1-bars, dus of
+    # hij de vergroving overleeft was nooit bekend. Het antwoord is nu: nee.
+    #
+    # Het gewicht blijft 0,7 zodat hij gemeten blijft worden en de backtest hem
+    # meeneemt. Hij mag alleen geen geld meer aanraken. Terugzetten vraagt een
+    # papieren record dat wel klopt, niet een besluit.
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence, candle_momentum]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
