@@ -475,7 +475,16 @@ class PositionManager:
             # broken would be a worse failure than the one this fixes.
             settled = age_hours * 60.0 >= config.min_discretionary_exit_minutes
             stalled = (
-                self._peak_stall_exit(position, r_now, peak_r, now, health, risk_money=risk_money)
+                self._peak_stall_exit(
+                    position,
+                    r_now,
+                    peak_r,
+                    now,
+                    health,
+                    risk_money=risk_money,
+                    tick=tick,
+                    risk=risk,
+                )
                 if settled
                 else None
             )
@@ -1668,6 +1677,8 @@ class PositionManager:
         health: PositionHealth,
         *,
         risk_money: float = 0.0,
+        tick=None,  # type: ignore[no-untyped-def]
+        risk: float = 0.0,
     ) -> ManagementEvent | None:
         """Bank a profit whose move has stopped advancing, while it is still there.
 
@@ -1745,6 +1756,20 @@ class PositionManager:
         if standing_minutes < wait:
             return None
 
+        # AND IS IT WORTH CROSSING THE SPREAD TO DO IT? This was the one
+        # discretionary exit in this file that never asked, and its own record
+        # above says what that cost: it banked +0.54R where holding returned
+        # +1.17R, a lift of -0.64R. The answer to a negative lift was to make
+        # it wait longer, which changes when it fires and not what it pays.
+        #
+        # The case it misses is specific and common. `_profit_lock` has usually
+        # already ratcheted a stop up under the price by the time a peak
+        # stalls -- the same trade, seen by two rules. Closing at market then
+        # buys the distance between here and a stop that was sitting there for
+        # free, and on a tight lock that distance is smaller than the spread it
+        # costs to collect.
+        if tick is not None and risk > 0 and not self._worth_paying_to_leave(position, risk, tick):
+            return None
         result = self.broker.close_position(position)
         if not result.ok:
             return None

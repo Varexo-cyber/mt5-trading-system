@@ -2315,3 +2315,107 @@ class TestTheEntryGateIsAuditableOnWhatItLETTHROUGH:
             "ema_distance_atr",
         ):
             assert key in source, key
+
+
+class TestPeakStallAsksWhatLeavingCosts:
+    """The one discretionary exit in this file that never asked, and its own
+    docstring records what that cost: PEAK_STALL banked +0.54R where leaving
+    the position alone returned +1.17R, a lift of -0.64R. The answer to a
+    negative lift was to make it wait longer, which changes when it fires and
+    not what it pays.
+
+    The case it misses is specific and common. `_profit_lock` has usually
+    already ratcheted a stop up under the price by the time a peak stalls --
+    the same trade, seen by two rules. Closing at market then buys the distance
+    between here and a stop sitting there for free, and on a tight lock that
+    distance is smaller than the spread it costs to collect.
+    """
+
+    def _manager(self, sl: float, spread: float):  # type: ignore[no-untyped-def]
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+
+        from analysis.position_health import PositionHealth
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.instrument import InstrumentSpec
+        from core.types import Direction, Position
+        from execution.manager import PositionManager
+        from tests.fakes.fake_mt5 import eurusd_spec
+
+        closed: list = []
+        manager = PositionManager.__new__(PositionManager)
+        manager.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        manager.equity = 176.0
+        manager._peak_seen = {}
+        manager.broker = SimpleNamespace(
+            spec=lambda symbol: InstrumentSpec.from_mt5(eurusd_spec()),
+            close_position=lambda position: (
+                closed.append(position),
+                SimpleNamespace(ok=True, filled_price=1.0810),
+            )[1],
+        )
+        position = Position(
+            ticket=1,
+            symbol="EURUSD",
+            direction=Direction.LONG,
+            volume=0.01,
+            price_open=1.0800,
+            sl=sl,
+            tp=1.0850,
+            profit=1.0,
+            swap=0.0,
+            opened_at=datetime(2026, 8, 26, 8, 0, tzinfo=UTC),
+            magic=1,
+        )
+        tick = SimpleNamespace(bid=1.0810, ask=1.0810 + spread, spread=spread)
+        health = PositionHealth(verdict="watch", action="hold", severity=0.4, signals=())
+        return manager, position, tick, health, closed
+
+    @staticmethod
+    def _at(minutes: int):  # type: ignore[no-untyped-def]
+        from datetime import UTC, datetime, timedelta
+
+        return datetime(2026, 8, 26, 9, 0, tzinfo=UTC) + timedelta(minutes=minutes)
+
+    def test_a_stall_with_the_stop_far_away_is_still_banked(self) -> None:
+        """The ordinary case. The stop is 10 pips below, the spread is half a
+        pip, and crossing it to leave at a chosen price is clearly worth it."""
+        manager, position, tick, health, closed = self._manager(sl=1.0800, spread=0.00005)
+
+        assert (
+            manager._peak_stall_exit(
+                position, 0.90, 0.92, self._at(0), health, tick=tick, risk=0.0010
+            )
+            is None
+        )
+        event = manager._peak_stall_exit(
+            position, 0.90, 0.92, self._at(7), health, tick=tick, risk=0.0010
+        )
+
+        assert event is not None and closed
+
+    def test_a_stall_with_the_stop_already_under_the_price_is_left_alone(self) -> None:
+        """The profit lock has ratcheted the stop to within a fraction of a pip
+        of the price. There is nothing left to buy and the spread still has to
+        be paid, so the free exit at the broker keeps the trade."""
+        manager, position, tick, health, closed = self._manager(sl=1.08098, spread=0.00020)
+
+        manager._peak_stall_exit(position, 0.90, 0.92, self._at(0), health, tick=tick, risk=0.0010)
+        event = manager._peak_stall_exit(
+            position, 0.90, 0.92, self._at(7), health, tick=tick, risk=0.0010
+        )
+
+        assert event is None
+        assert closed == []
+
+    def test_a_caller_without_a_quote_keeps_the_old_behaviour(self) -> None:
+        """Older call sites and replays must not silently get a stricter rule
+        than the one they were written against."""
+        manager, position, _tick, health, closed = self._manager(sl=1.08098, spread=0.00020)
+
+        manager._peak_stall_exit(position, 0.90, 0.92, self._at(0), health)
+        event = manager._peak_stall_exit(position, 0.90, 0.92, self._at(7), health)
+
+        assert event is not None and closed
