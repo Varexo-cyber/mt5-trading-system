@@ -119,6 +119,25 @@ class Advice:
     #: The threshold `confidence` was compared against, recorded alongside it so
     #: a row remains readable after the setting changes.
     threshold: float = 0.0
+    #: Whether this confidence is the adviser's OWN reading, or the engine's
+    #: number handed back because the adviser had no view.
+    #:
+    #: THE CAP IT GUARDS WAS A NO-OP AND NOBODY COULD SEE IT. The conviction
+    #: ladder sizes on `min(engine_confidence, advice.confidence)`, and its
+    #: docstring explains why: "engine conviction bought 5.74% of equity while
+    #: the final adviser only reported 0.47 confidence. Taking the minimum
+    #: preserves every approved trade and changes only its size."
+    #:
+    #: But `local_history` returns `idea.confidence` whenever it lacks enough
+    #: comparable setups to form an opinion -- which needs five neighbours
+    #: against a journal holding a few dozen trades, so it is the normal path
+    #: and not the edge case. `min(x, x)` is `x`. The second opinion that was
+    #: supposed to restrain the stake was the first opinion wearing a hat, and
+    #: a trade could take 12% of the account on one detector's say-so.
+    #:
+    #: False means: there is no second opinion here. A caller sizing on
+    #: corroboration must then use its ordinary stake, not its convinced one.
+    independent: bool = True
     #: Token counts for this call. Carried on the verdict because that is what
     #: reaches the audit ledger; nothing else in the pipeline sees the response.
     usage: dict[str, int] = field(default_factory=dict)

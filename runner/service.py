@@ -2340,6 +2340,28 @@ class JarvisRunner:
         """
         config = self.settings.risk.conviction_risk
         engine_confidence = idea.confidence
+        # NO SECOND OPINION, NO CONVINCED STAKE.
+        #
+        # The line below used to be `min(engine_confidence, advice.confidence)`
+        # and the docstring above explains what that was for. It was a no-op.
+        # `local_history` returns the ENGINE'S OWN confidence whenever it has
+        # too few comparable setups to form a view -- five neighbours against a
+        # journal holding a few dozen trades, so the normal path, not the edge
+        # case -- and `min(x, x)` is `x`. The cap that was supposed to restrain
+        # the stake was the same number wearing a hat, and one detector's
+        # reading could take 12% of the account unchallenged.
+        #
+        # The ladder exists to pay for CORROBORATED conviction. Without a
+        # second voice there is nothing to corroborate, so the trade gets the
+        # ordinary stake and is still taken.
+        if not getattr(advice, "independent", True):
+            wanted = config.floor_pct
+            allowed = self.risk.room_for_more_risk(state, wanted, self.broker.spec)
+            if allowed >= wanted:
+                return wanted, (
+                    f"engine {engine_confidence:.2f} with no independent second "
+                    f"opinion; ordinary stake {wanted:.1f}%"
+                )
         conviction = min(engine_confidence, advice.confidence)
         wanted = config.stake_for(conviction)
         allowed = self.risk.room_for_more_risk(state, wanted, self.broker.spec)
