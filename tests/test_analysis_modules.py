@@ -90,3 +90,30 @@ class TestTheConfigAndTheEngineAgree:
         watched = set(settings().risk.section_breakers)
 
         assert watched <= names, sorted(watched - names)
+
+
+def test_the_module_backtest_grades_the_modules_the_account_runs() -> None:
+    """A report headed "which detector actually makes money" has to be about
+    the detectors that are running.
+
+    `scripts/backtest_modules.py` named its modules by hand. The account built
+    eighteen and the script built fifteen, so three were graded by nothing at
+    all: `drift_burst`, `basket_divergence`, and `candle_momentum` -- section
+    six, the newest thing on the account and the one most in need of an answer.
+    Nothing was wrong with the report; the three simply were not in it, and a
+    missing row looks exactly like a module with no trades.
+
+    `build_analysis_modules` was extracted so this file could stop keeping a
+    second copy, and its docstring says so. This test is what makes that true
+    rather than intended.
+    """
+    from scripts.backtest_modules import build_engine
+
+    settings = load_settings(
+        DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+    )
+
+    graded = [module.name for module in build_engine(settings).modules]
+    running = [module.name for module in build_analysis_modules(settings)]
+
+    assert graded == running
