@@ -64,6 +64,13 @@ import pandas as pd
 
 from analysis import ConfluenceEngine
 from backtesting.engine import BacktestOrder, PessimisticBacktester
+from backtesting.exit_study import (
+    give_back_curve,
+    render_give_back,
+    render_policies,
+    study,
+    sweep_policies,
+)
 from backtesting.playbook_replay import (
     compare_to_chance,
     evidence_by_playbook,
@@ -235,6 +242,19 @@ def render(title: str, evidence: list[ModuleEvidence], note: str) -> str:
     return "\n".join(lines)
 
 
+def by_module_symbol(orders: list[BacktestOrder]) -> dict[str, list[BacktestOrder]]:
+    """Every order the detectors proposed, grouped by symbol.
+
+    Pooled across detectors on purpose: the exit question is about what a
+    position does after it is open, and a stop that should move at 0.3R does
+    not care which reader argued for the entry.
+    """
+    grouped: dict[str, list[BacktestOrder]] = defaultdict(list)
+    for order in orders:
+        grouped[order.symbol].append(order)
+    return grouped
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=float, default=120.0, help="how far back to replay")
@@ -251,6 +271,14 @@ def main(argv: list[str] | None = None) -> int:
         help="also split every detector by what `market_regime` read at the "
         "deciding bar. Answers whether a detector loses everywhere or only "
         "outside the conditions it was written for",
+    )
+    parser.add_argument(
+        "--exits",
+        action="store_true",
+        help="walk every position bar by bar and sweep exit rules over them. "
+        "Answers the question the tables above raise but cannot settle: these "
+        "trades win 45-57%% of the time and still lose, so would banking "
+        "earlier have paid?",
     )
     parser.add_argument(
         "--no-baseline",
@@ -381,6 +409,33 @@ def main(argv: list[str] | None = None) -> int:
                     "it. Splitting five ways divides the sample five ways.",
                 )
             )
+
+    if args.exits:
+        # THE QUESTION THE TABLES ABOVE RAISE AND CANNOT SETTLE.
+        #
+        # Every detector wins 45-57% of its trades and still loses money, so
+        # the winners are smaller than the losers, and the backtester models
+        # NO management at all -- fixed stop, fixed target, time limit. The
+        # obvious objection is the right one: that is what a profit lock and a
+        # ratcheting stop are for. This measures whether that is true on these
+        # trades instead of assuming it either way.
+        #
+        # `HOLD_EVERYTHING` is in the sweep as the control, so every row is
+        # read against doing nothing rather than against a hope.
+        #
+        # This has existed since the playbook study and was only ever pointed
+        # at the five dead playbooks. It had never been run on the detectors
+        # the account actually trades.
+        walked = []
+        for symbol, group in sorted(by_module_symbol(everything).items()):
+            frame = execution_frames.get(symbol)
+            if frame is not None:
+                walked.extend(study(group, frame))
+        if walked:
+            print(render_give_back(give_back_curve(walked)))
+            print(render_policies(sweep_policies(walked)))
+        else:
+            print("\n  Nothing reached a closed position to walk.\n")
 
     if not args.no_baseline:
         # Run on the ALONE population, where `modules[0]` is the module and the

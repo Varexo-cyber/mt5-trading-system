@@ -19,7 +19,14 @@ echo.
 echo  No orders. No Claude API. Nothing written anywhere. It only costs time,
 echo  and 120 days of six symbols takes a while - leave it running.
 echo.
+echo  The default run now also sweeps EXIT RULES. These trades win 45-57%% of
+echo  the time and still lose money, so the winners are smaller than the
+echo  losers - and the backtest models no profit lock and no trailing stop at
+echo  all. The sweep says whether banking earlier would have paid, measured
+echo  against doing nothing rather than assumed.
+echo.
 echo  modules.cmd --days 240              longer history, smaller error bars
+echo  modules.cmd --no-baseline           skip the coin flip, faster
 echo  modules.cmd --by-regime             split every detector by regime
 echo  modules.cmd --stride 2              faster, coarser
 echo.
@@ -32,7 +39,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 )
 
 if "%~1"=="" (
-  ".venv-live\Scripts\python.exe" scripts\backtest_modules.py --days 120
+  ".venv-live\Scripts\python.exe" scripts\backtest_modules.py --days 240 --exits
 ) else (
   ".venv-live\Scripts\python.exe" scripts\backtest_modules.py %*
 )
