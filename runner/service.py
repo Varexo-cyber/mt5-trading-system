@@ -3969,7 +3969,7 @@ class JarvisRunner:
         # same decision twice, once against the shadow resolver and once
         # against the account -- and the two would disagree the moment a fill
         # differed from the plan.
-        if signals and self._run_scalp_lane(cycle_id, symbol, signals, reason, extra):
+        if signals and self._scalp_lane_took_it(cycle_id, symbol, signals, reason, extra):
             self.scan_activity.record_deep_decision(
                 symbol,
                 "SCALP_OPENED",
@@ -4317,6 +4317,42 @@ class JarvisRunner:
             )
         return None
 
+    def _scalp_lane_took_it(
+        self,
+        cycle_id: str,
+        symbol: str,
+        signals: Sequence[Signal],
+        reason: Reason,
+        extra: dict | None,
+    ) -> bool:
+        """The lane, wrapped so it can never take section one down with it.
+
+        THIS BOUNDARY WAS BOUGHT WITH A LIVE INCIDENT. A single malformed log
+        call inside the lane raised after the order had already gone through,
+        the exception travelled up into `_analyse_candidate`, and the account
+        printed "candidate analysis failed; continuing with the rest of the
+        batch" -- the same line a genuinely broken detector produces -- on
+        every scalp it opened.
+
+        A newly added second path must not be able to do that. Section six is
+        an experiment at 0.01 lot; section one is the account. So anything the
+        lane raises is logged and dropped here, and the swing decision that was
+        already made and already written carries on untouched.
+
+        Deliberately not silent, and deliberately not narrow: an unexpected
+        exception from a path that sends live orders is worth an ERROR line
+        every single time, and catching only the failures already imagined is
+        how the next unimagined one gets through.
+        """
+        try:
+            return self._run_scalp_lane(cycle_id, symbol, signals, reason, extra)
+        except Exception:
+            log.exception(
+                "section six lane failed",
+                extra={"event": "scalp_lane_failed", "symbol": symbol},
+            )
+            return False
+
     def _run_scalp_lane(
         self,
         cycle_id: str,
@@ -4504,12 +4540,20 @@ class JarvisRunner:
             spec=spec,
             equity=account.equity,
         )
+        # `extra=`, not keyword arguments. This is a stdlib logger, not
+        # structlog, and it took a live crash to find out: Python 3.11 never
+        # reaches the bad call because the level is off in tests, while 3.14 on
+        # the VPS raises TypeError the moment INFO is enabled. The test suite
+        # was green and the account was throwing a traceback on every scalp.
         log.info(
             "section six scalp opened",
-            symbol=symbol,
-            direction=direction.name,
-            volume=volume,
-            entry=result.filled_price,
+            extra={
+                "event": "scalp_opened",
+                "symbol": symbol,
+                "direction": direction.name,
+                "volume": volume,
+                "entry": result.filled_price,
+            },
         )
         return True
 

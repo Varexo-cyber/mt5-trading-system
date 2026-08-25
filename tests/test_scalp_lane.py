@@ -266,3 +266,50 @@ def test_the_lane_is_wired_into_the_runner(attribute: str) -> None:
     from runner.service import JarvisRunner
 
     assert hasattr(JarvisRunner, attribute)
+
+
+class TestTheLaneCanNeverTakeSectionOneDown:
+    """Bought with a live incident. A malformed log call inside the lane raised
+    AFTER the order had gone through, the exception travelled up into
+    `_analyse_candidate`, and the account printed "candidate analysis failed;
+    continuing with the rest of the batch" -- the line a genuinely broken
+    detector produces -- on every scalp it opened.
+
+    Section six is an experiment at 0.01 lot. Section one is the account.
+    """
+
+    def test_an_exception_in_the_lane_is_contained(self) -> None:
+        service = runner()
+
+        def explode(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("anything at all")
+
+        service._run_scalp_lane = explode  # type: ignore[assignment]
+
+        assert (
+            service._scalp_lane_took_it("cycle-1", "XAUUSD", [SIGNAL], Reason.NO_SIGNAL, {})
+            is False
+        )
+
+    def test_a_contained_failure_is_still_reported(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        """Dropped, never silent. An unexpected exception from a path that
+        sends live orders is worth an ERROR line every single time."""
+        import logging
+
+        service = runner()
+
+        def explode(*args, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("anything at all")
+
+        service._run_scalp_lane = explode  # type: ignore[assignment]
+
+        with caplog.at_level(logging.ERROR):
+            service._scalp_lane_took_it("cycle-1", "XAUUSD", [SIGNAL], Reason.NO_SIGNAL, {})
+
+        assert "section six lane failed" in caplog.text
+
+    def test_a_working_lane_still_reports_that_it_took_the_trade(self) -> None:
+        service = runner()
+
+        assert service._scalp_lane_took_it("cycle-1", "XAUUSD", [SIGNAL], Reason.NO_SIGNAL, {})
+        assert len(service.sent) == 1
