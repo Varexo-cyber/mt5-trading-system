@@ -313,3 +313,98 @@ class TestTheLaneCanNeverTakeSectionOneDown:
 
         assert service._scalp_lane_took_it("cycle-1", "XAUUSD", [SIGNAL], Reason.NO_SIGNAL, {})
         assert len(service.sent) == 1
+
+
+class TestAScalpBanksWhatItHasWhenItsMinuteIsOver:
+    """26 August, live: +EUR 1.20 against a EUR 3.00 target, then back to
+    -EUR 0.90 against a EUR 1.01 stop. A round trip of more than 2R.
+
+    The thesis had an expiry and the exit did not. Section six enters on one
+    decisive M1 candle, and its own hypothesis says the flow lasts only while
+    the participant is still working their order -- after a few minutes there
+    is nothing left to ride. `_giveback_exit` would have closed it at +0.60R
+    and never saw the peak, because management samples on the cycle and a gold
+    candle travels further between two samples than the whole trade is worth.
+
+    A clock does not need to see the peak. It only needs to know the reason is
+    gone.
+    """
+
+    def manager(self, **overrides):  # type: ignore[no-untyped-def]
+        from datetime import UTC, datetime
+
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.instrument import InstrumentSpec
+        from core.types import Direction, Position
+        from execution.manager import PositionManager
+        from tests.fakes.fake_mt5 import xauusd_spec
+
+        closed: list = []
+        service = PositionManager.__new__(PositionManager)
+        service.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        service.broker = SimpleNamespace(  # type: ignore[attr-defined]
+            spec=lambda symbol: InstrumentSpec.from_mt5(xauusd_spec()),
+            close_position=lambda position: (
+                closed.append(position),
+                SimpleNamespace(ok=True, filled_price=2401.0),
+            )[1],
+        )
+        opened = datetime(2026, 8, 26, 9, 0, tzinfo=UTC)
+        position = Position(
+            ticket=1,
+            symbol="XAUUSD",
+            direction=Direction.LONG,
+            volume=0.01,
+            price_open=2400.0,
+            sl=2398.8,
+            tp=2403.6,
+            profit=overrides.get("profit", 1.20),
+            swap=0.0,
+            opened_at=opened,
+            magic=1,
+            comment=overrides.get("comment", "jarvis-scalp"),
+        )
+        now = opened.replace(minute=overrides.get("minutes", 6))
+        tick = SimpleNamespace(spread=overrides.get("spread", 0.25))
+        return service, position, tick, now, closed
+
+    def test_a_winning_scalp_past_its_minute_is_banked(self) -> None:
+        service, position, tick, now, closed = self.manager()
+
+        event = service._stale_scalp_exit(position, 1.19, tick, now)
+
+        assert event is not None
+        assert event.action == "SCALP_EXPIRED"
+        assert closed
+
+    def test_a_losing_scalp_keeps_its_stop(self) -> None:
+        """Closing a loser early pays a spread to book a loss the stop books
+        for free. The clock is for winners."""
+        service, position, tick, now, closed = self.manager(profit=-0.90)
+
+        assert service._stale_scalp_exit(position, -0.89, tick, now) is None
+        assert closed == []
+
+    def test_a_young_scalp_is_left_alone(self) -> None:
+        service, position, tick, now, closed = self.manager(minutes=2)
+
+        assert service._stale_scalp_exit(position, 1.19, tick, now) is None
+        assert closed == []
+
+    def test_a_gain_that_has_not_cleared_the_round_trip_is_left_alone(self) -> None:
+        """A few cents of profit is not a gain, it is the spread not yet paid.
+        Banking it hands the difference to the broker."""
+        service, position, tick, now, closed = self.manager(profit=0.02)
+
+        assert service._stale_scalp_exit(position, 0.02, tick, now) is None
+        assert closed == []
+
+    def test_it_never_touches_a_swing_trade(self) -> None:
+        """Section one's positions are not scalps and have no expiring thesis.
+        The clock is keyed on the lane's own order comment."""
+        service, position, tick, now, closed = self.manager(comment="jarvis-exp-live")
+
+        assert service._stale_scalp_exit(position, 1.19, tick, now) is None
+        assert closed == []

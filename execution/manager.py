@@ -121,6 +121,15 @@ def _risk_money(row) -> float:  # type: ignore[no-untyped-def]
         return 0.0
 
 
+def _aligned_times(first: datetime, second: datetime) -> tuple[datetime, datetime]:
+    """Both tz-aware or both naive, so an older journal cannot raise here."""
+    if first.tzinfo is None and second.tzinfo is not None:
+        return first.replace(tzinfo=second.tzinfo), second
+    if first.tzinfo is not None and second.tzinfo is None:
+        return first, second.replace(tzinfo=first.tzinfo)
+    return first, second
+
+
 class PositionManager:
     def __init__(
         self,
@@ -574,6 +583,14 @@ class PositionManager:
                             )
                         )
                         continue
+
+            # A SCALP WHOSE MINUTE IS OVER TAKES WHAT IT HAS. Checked before
+            # every stop rule below, because those all reason about a trade
+            # that still has a thesis and this one no longer does.
+            stale = self._stale_scalp_exit(position, r_now, tick, now)
+            if stale is not None:
+                events.append(stale)
+                continue
 
             # Walk the stop up behind a trade that has proved itself, instead
             # of leaving it parked at break-even all the way to 1.5R. Placed
@@ -1209,6 +1226,66 @@ class PositionManager:
         if money > 0:
             cost += per_side / money
         return cost
+
+    def _stale_scalp_exit(
+        self, position: Position, r_now: float, tick, now: datetime
+    ) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
+        """Bank a section-six scalp once the minute it traded on has passed.
+
+        THE THESIS HAD AN EXPIRY AND THE EXIT DID NOT. Section six enters on
+        one decisive M1 candle inside an agreement the slower frames already
+        had, and its own hypothesis says why the trade is short: the flow
+        continues only while the participant is still working their order.
+        After a few minutes there is no imbalance left to ride -- but the exit
+        was a price, so the position sat there waiting for a level the move was
+        never going to reach.
+
+        26 August, live: +EUR 1.20 against a EUR 3.00 target, then back to
+        -EUR 0.90 against a EUR 1.01 stop. A round trip of more than 2R on a
+        thesis that had expired. `_giveback_exit` would have closed it at
+        +0.60R and never saw the peak, because management samples on the cycle
+        and a gold candle travels further between two samples than the whole
+        trade is worth.
+
+        A clock does not need to see the peak. It only needs to know the reason
+        is gone.
+
+        ONLY IN PROFIT, and only past the round trip. Closing a losing scalp
+        early pays a spread to book a loss the stop would have booked for free,
+        which is the same mistake `_worth_paying_to_leave` exists to refuse. A
+        loser keeps its stop; the clock is for winners.
+        """
+        if not str(getattr(position, "comment", "")).startswith("jarvis-scalp"):
+            return None
+        config = self.settings.analysis.candle_momentum
+        age_minutes = getattr(config, "maximum_age_minutes", 0.0)
+        if age_minutes <= 0 or r_now <= 0:
+            return None
+        opened_at = getattr(position, "opened_at", None)
+        if opened_at is None:
+            return None
+        opened_at, moment = _aligned_times(opened_at, now)
+        if (moment - opened_at).total_seconds() < age_minutes * 60.0:
+            return None
+        # Worth banking? The profit has to clear the round trip it costs to
+        # take, or this is paying to give a gain away.
+        spread = float(getattr(tick, "spread", 0.0) or 0.0)
+        spec = self.broker.spec(position.symbol)
+        gained = abs(float(getattr(position, "profit", 0.0) or 0.0))
+        if spread > 0:
+            floor = spec.money_per_lot(spread) * position.volume * config.stale_minimum_spreads
+            if gained < floor:
+                return None
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "SCALP_EXPIRED",
+            f"the minute it traded on is {age_minutes:g} min gone; banked {r_now:.2f}R",
+            exit_price=result.filled_price,
+            r_at_action=r_now,
+        )
 
     def _worth_paying_to_leave(self, position: Position, risk: float, tick) -> bool:  # type: ignore[no-untyped-def]
         """Is closing at market worth more than letting the stop do it?

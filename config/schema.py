@@ -1832,6 +1832,33 @@ class CandleMomentumConfig(Base):
     #: a ceiling, not an override, so a symbol whose stop is too wide for the
     #: account is still refused rather than forced through.
     fixed_lots: float = Field(default=0.01, gt=0.0, le=1.0)
+
+    #: Minutes after which a scalp takes whatever profit it has.
+    #:
+    #: THE THESIS HAS AN EXPIRY AND THE TARGET DID NOT. This module enters on
+    #: one M1 candle inside an agreement the slower frames already had, and the
+    #: hypothesis document is explicit about why the trade is short: "the flow
+    #: continues while they are still working it... the trade is a few minutes
+    #: long because that is how long the imbalance lasts."
+    #:
+    #: The exit was a price, not a clock. A live scalp on 26 August reached
+    #: +EUR 1.20 against a EUR 3.00 target and came back to -EUR 0.90 against a
+    #: EUR 1.01 stop -- a round trip of more than 2R, on a thesis that had
+    #: expired minutes earlier. The give-back rule would have closed it at
+    #: +0.60R and never saw the peak: position management samples on the cycle,
+    #: and a gold candle moves further between two samples than the whole
+    #: trade is worth.
+    #:
+    #: So the clock closes it. Once the minutes the imbalance was claimed to
+    #: last have passed, a scalp in profit banks it rather than waiting for a
+    #: level the move was never going to reach.
+    #:
+    #: Zero disables it and restores the price-only exit.
+    maximum_age_minutes: float = Field(default=4.0, ge=0.0, le=120.0)
+    #: How much profit is worth banking when the clock runs out, as a multiple
+    #: of the spread. Below this the trade has not cleared its own round trip
+    #: and closing early just pays to lose slightly less.
+    stale_minimum_spreads: float = Field(default=1.5, ge=0.0)
     #: At most this many section-six positions at once, inside the account's
     #: overall concurrency cap rather than beside it. Enforced on paper too,
     #: or the record measures a book the account has no room to hold.
