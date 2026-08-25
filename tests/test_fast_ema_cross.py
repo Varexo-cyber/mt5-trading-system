@@ -239,19 +239,22 @@ class TestTheEngineTreatsItAsWhatItIs:
 
         assert ConfluenceConfig().trend_continuation_modules == ("trend_momentum",)
 
-    def test_a_clean_cross_can_clear_the_threshold_on_its_own(self) -> None:
-        """The arithmetic that kept every quick entry off the book.
+    def test_it_can_no_longer_carry_a_trade_on_its_own(self) -> None:
+        """THE OPPOSITE OF WHAT THIS TEST USED TO ASSERT, on purpose.
 
-        A lone module's confluence score is `raw score x confidence` — the
-        weight cancels out, because the denominator runs over the same firing
-        modules. At 50 points across a 0.45-0.80 confidence band this module
-        produces 22.5 to 40, so a threshold of 35 silently demanded 0.50 ATR of
-        separation while the module's own floor is 0.15. Everything in between
-        fired and was discarded as "confluence score below threshold" — 5,992
-        times in a single day, and not one quick entry ever reached the book.
+        It was written when the bar stood at 26 and the complaint was that a
+        clean cross scored above its own floor and was thrown away anyway. On
+        25 August the owner asked for the reverse: only trades where the
+        conviction is genuinely hard, however few that leaves.
 
-        The threshold has to sit below what a clean cross actually scores, or
-        this module is decoration.
+        For a lone module the confluence score IS `raw x confidence` -- the
+        weight cancels -- so a bar of 45 asks this module for 0.90 confidence
+        against a ceiling of 0.80. It cannot get there. This detector now only
+        contributes to a setup that something else is also reading.
+
+        Pinned in this direction so the consequence is visible rather than
+        discovered: raising the bar did not make this module stricter, it
+        retired it as a standalone reader.
         """
         from pathlib import Path
 
@@ -268,7 +271,11 @@ class TestTheEngineTreatsItAsWhatItIs:
         # floor, and nothing anyone would call remarkable.
         clean = module.base_confidence + 0.40 * module.separation_confidence_scale
 
-        assert module.score * clean > live.confluence.score_threshold
+        # Its own ceiling, not a clean reading: even at maximum confidence
+        # this module cannot reach the bar alone.
+        assert module.score * module.maximum_confidence < live.confluence.score_threshold
+        # And the reading the old test called clean is far short of it.
+        assert module.score * clean < live.confluence.score_threshold
 
     def test_it_is_registered_as_an_intraday_module(self) -> None:
         """Without this a five-minute signal is handed a swing plan: H1

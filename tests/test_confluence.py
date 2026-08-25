@@ -1312,18 +1312,26 @@ class TestARegimeThisAccountRefusesToTrade:
 
         assert engine.evaluate(context(), TradingMode.PAPER).approved
 
-    def test_trend_down_stays_open_on_the_shipped_config(self) -> None:
-        """It loses over the same four days and is deliberately NOT blocked:
-        eleven trades cannot condemn a direction, and closing it would close
-        every short in a falling market. Pinned so the reasoning has to be
-        re-argued rather than quietly reversed."""
+    def test_no_regime_is_refused_on_the_shipped_config(self) -> None:
+        """`transition` was blocked on -EUR 20.86 over 44 trades and unblocked
+        again on 25 August, on the owner's instruction and on two numbers.
+
+        The 44 trades were measured on a system that no longer exists --
+        seasonality gone, the phantom index commission gone, weights raised,
+        and the conviction bar moved from 26 to 60, which alone means most of
+        those trades would not be taken now. And the block cost 30,382 of
+        62,962 decisions in twelve hours, 48% of everything the system did,
+        while transition finished 24 August as the best regime on the card at
+        7 winners from 8.
+
+        Pinned so a future block has to be argued rather than drifted into."""
         from config.loader import load_settings
 
         settings = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         )
 
-        assert settings.analysis.confluence.refused_regimes == ("transition",)
+        assert settings.analysis.confluence.refused_regimes == ()
 
     def test_an_empty_list_trades_every_regime(self) -> None:
         engine = ConfluenceEngine(self._modules("transition"), self._config())

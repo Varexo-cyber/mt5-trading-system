@@ -52,7 +52,7 @@ EXPERIMENTAL_LIVE_PHRASE = "BEVESTIG EXPERIMENTEEL LIVE"
 # left. At 174 EUR that is 124 EUR of room: roughly 36 ordinary losers at 2%,
 # roughly 24 at 3%. A third of the distance to the floor, bought for 50% more
 # on each outcome.
-EXPERIMENTAL_RISK_PER_TRADE_PCT = 3.0
+EXPERIMENTAL_RISK_PER_TRADE_PCT = 5.0
 
 # The most one trade may risk, reached only at maximum reviewer confidence.
 #
@@ -88,7 +88,7 @@ EXPERIMENTAL_RISK_PER_TRADE_PCT = 3.0
 #
 # At 174 EUR a maximum-conviction trade now risks 13.92 EUR against a 50 EUR
 # floor. That is roughly nine such losers from the end of the experiment.
-EXPERIMENTAL_MAX_STAKE_PCT = 8.0
+EXPERIMENTAL_MAX_STAKE_PCT = 12.0
 
 # The most the whole book may risk at once, across every open position.
 #
@@ -108,7 +108,7 @@ EXPERIMENTAL_MAX_STAKE_PCT = 8.0
 # 12; at 8% it means 16. Leaving it at 12 would have quietly changed the design
 # to "one big trade and a fragment", which is a different decision about the
 # account and not one anybody made.
-EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 16.0
+EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 24.0
 # Zero: the automatic peak-to-current halt is off for this experiment.
 #
 # The operator turned it off after seeing what it left. At 88.28 EUR against a
@@ -151,7 +151,7 @@ EXPERIMENTAL_EQUITY_FLOOR = 50.0
 # build applies, and the difference is the operator's to approve rather than
 # this file's to assume. Live trading refuses until `rearm_experimental_live`
 # has been run.
-CONTRACT_VERSION = 3
+CONTRACT_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)
