@@ -4501,6 +4501,35 @@ class JarvisRunner:
             )
 
         state = self.risk.build_state(account, tuple(self._managed_positions()))
+        # THE TOTAL-EXPOSURE CEILING, which this lane was not asking about.
+        #
+        # An omission rather than a decision: the docstring above lists what
+        # this lane deliberately does not keep its own copy of, and the
+        # book-wide risk cap is not on that list. Every other route to an order
+        # goes through `room_for_more_risk`; this one sized a fixed lot, checked
+        # the margin, and sent it. Two scalps are small on their own -- about
+        # 3.3% of this account -- but they were landing ON TOP of whatever the
+        # swing book already carried rather than inside the same 24% ceiling.
+        #
+        # Refused rather than trimmed. A scalp is one fixed lot at the broker
+        # minimum, so there is nothing to shrink it to: the only honest answers
+        # are "there is room" and "there is not", which is the same rule the
+        # undercapitalized check applies a few lines up.
+        wanted = float(sizing.actual_risk_pct)
+        allowed = self.risk.room_for_more_risk(state, wanted, self.broker.spec)
+        if allowed + 1e-9 < wanted:
+            used = self.risk.open_risk_pct(state, self.broker.spec)
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.RISK_EXCEEDS_CAP,
+                f"scalp wants {wanted:.2f}% but the book already carries {used:.2f}% of the "
+                f"{self.settings.risk.max_total_open_risk_pct:.1f}% ceiling, leaving "
+                f"{allowed:.2f}%",
+                signals=list(signals),
+            )
+            return False
         margin = self.risk.check_margin(state, symbol, direction, volume, entry)
         if not margin.approved:
             self._record_skip(
