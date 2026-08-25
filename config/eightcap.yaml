@@ -623,6 +623,37 @@ analysis:
     scalp_claim_spreads: 1.0
     scalp_claim_minimum_spreads: 2.0
 
+    # EN DE LEIBAND GROEIT MEE, zelfde dag, na de vraag die de vorige alinea
+    # onderuit haalde: "het is niet vroeg claimen, het is vroeg VEILIG STELLEN
+    # en dan proberen zoveel uit te halen."
+    #
+    # Dat is een ander mechanisme. De vaste leiband van 1,0 spread hierboven
+    # haalt meer uit elke gegeven piek -- daarom leek hij goed -- en beeindigt
+    # de trade bij de eerste gewone terugtrek, op elke hoogte hetzelfde. Dertig
+    # dollarcent goud de verkeerde kant op sluit een positie die op weg was
+    # naar twee euro. De hoge pieken die hij zo netjes afleest zijn precies de
+    # pieken die hij de trade belet te bereiken.
+    #
+    #     piek        vaste leiband 1,0      leiband 40% van de piek
+    #      2 sp       EUR 0,25               EUR 0,25   (vloer wint)
+    #      4 sp       EUR 0,74               EUR 0,59
+    #      6 sp       EUR 1,24               EUR 0,89
+    #     12 sp       EUR 2,73               EUR 1,78
+    #
+    # De vaste kolom is hoger op elke regel en dat is de valstrik: hij komt
+    # nooit op regel drie of vier terecht, want bij 6 spreads mag hij maar 29
+    # cent ademen en een beweging van die grootte trekt onderweg verder terug.
+    # 40% geeft hem daar 70 cent, en op 12 spreads 1,39.
+    #
+    # VEILIG BLIJFT VEILIG, en dat is geen extra regel: elk aandeel onder 1,0
+    # houdt de uitstap boven de entry, dus een gewapende scalp kan niet meer
+    # als verlies terugkomen.
+    #
+    # 0,40 is een startpunt, geen meting. `mfe_r` staat bij elke gesloten
+    # trade: na een dag scalpen zegt de scorecard hoeveel deze trades ECHT
+    # terugtrekken voordat ze doorlopen, en dan komt dit getal daarvandaan.
+    scalp_giveback_share: 0.40
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #

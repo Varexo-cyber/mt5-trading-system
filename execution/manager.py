@@ -1395,19 +1395,36 @@ class PositionManager:
         # the whole way back. `given_back` is measured from the peak, so a
         # trade that is now NEGATIVE has given back more than any threshold and
         # leaves here, twelve spreads before its stop, instead of riding down.
+        # AND THE LEASH GROWS WITH THE MOVE. A fixed one-spread give-back
+        # extracts more from any given peak, which is exactly why it looked
+        # right — and it ends the trade on the first ordinary retracement, at
+        # every height equally. Thirty cents of gold going the wrong way closes
+        # a position that was on its way to two euro. The high peaks it reads
+        # so well are peaks it stops the trade from ever reaching.
+        #
+        # So a trade at two spreads is on a tight rein, because it has proved
+        # almost nothing, and a trade at twelve may breathe by nearly five,
+        # because a move that size pulls back that far on the way up. The
+        # spread figure stays as the floor: less than one spread of retreat is
+        # the bid and the ask taking turns.
+        #
+        # Being safe is not a separate rule and does not need to be. Any share
+        # below 1.0 keeps the exit above the entry, so an armed scalp cannot
+        # come back as a loss.
         gained_spreads = (price - position.price_open) * sign / spread
         peak_spreads = peak_r * risk / spread
         if peak_spreads >= config.scalp_claim_minimum_spreads:
             given_back = peak_spreads - gained_spreads
-            if given_back >= config.scalp_claim_spreads:
+            leash = max(config.scalp_claim_spreads, peak_spreads * config.scalp_giveback_share)
+            if given_back >= leash:
                 result = self.broker.close_position(position)
                 if not result.ok:
                     return None
                 return ManagementEvent(
                     position.ticket,
                     "SCALP_CLAIMED",
-                    f"peaked {peak_spreads:.1f} spreads up and came back "
-                    f"{given_back:.1f}; claimed {gained_spreads:.1f}",
+                    f"peaked {peak_spreads:.1f} spreads up and came back {given_back:.1f} "
+                    f"against a {leash:.1f} leash; claimed {gained_spreads:.1f}",
                     exit_price=result.filled_price,
                     r_at_action=r_now,
                 )

@@ -1876,7 +1876,30 @@ class CandleMomentumConfig(Base):
     #: is the smallest retreat that is not simply the bid and the ask taking
     #: turns.
     scalp_claim_spreads: float = Field(default=1.5, ge=0.0)
-    #: The gain has to be worth claiming before the rule above may act.
+    #: The leash as a SHARE OF THE PEAK, with the spread figure above as its
+    #: floor. The exit fires on whichever of the two is larger.
+    #:
+    #: WHY A SHARE AND NOT A FIXED DISTANCE. A fixed one-spread leash extracts
+    #: more from any given peak, which is exactly why it looked right. What it
+    #: also does is end the trade on the first ordinary retracement, at every
+    #: height equally -- thirty cents of gold going the wrong way closes a
+    #: position that was on its way to two euro. The high peaks it reads so
+    #: well are peaks it stops the trade from ever reaching.
+    #:
+    #: So the leash grows with the move. At two spreads the trade is on a tight
+    #: rein because it has proved almost nothing; at twelve it may breathe by
+    #: nearly five, because a move that size pulls back that far on the way up.
+    #: This is a hold rule, not a claim rule: "het is niet vroeg claimen, het
+    #: is vroeg veilig stellen en dan proberen zoveel uit te halen".
+    #:
+    #: SAFE IS STILL SAFE, and it falls out rather than being bolted on: any
+    #: share below 1.0 leaves the exit above the entry, so a scalp that has
+    #: armed can no longer come back as a loss.
+    scalp_giveback_share: float = Field(default=0.40, ge=0.0, lt=1.0)
+    #: The peak has to have been worth something before either rule above may
+    #: act. Read against the HIGH-WATER MARK and never the live price: testing
+    #: it against the live price is what let a trade fall out of claim range by
+    #: giving back exactly the profit the rule exists to protect.
     scalp_claim_minimum_spreads: float = Field(default=2.0, ge=0.0)
     #: How far the last closed trigger bar must run AGAINST an already-losing
     #: scalp before it is cut rather than left to the stop, in spreads.
