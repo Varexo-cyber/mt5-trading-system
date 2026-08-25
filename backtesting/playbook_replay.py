@@ -452,7 +452,23 @@ def render_targets(rows: list[TargetRow], *, window: str = "") -> str:
     return "\n".join(lines)
 
 
-def render_comparison(comparisons: list[Comparison], *, window: str = "") -> str:
+#: What "not one of them beat guessing" means for the five PLAYBOOKS. Passed in
+#: rather than hardcoded because `backtest_modules.py` renders the same table
+#: for the confluence detectors, where every one of these names is wrong: it
+#: printed "these five theories ... the compression, the shallow pullback, the
+#: rejection wick" under a list of detectors that share none of them.
+PLAYBOOK_CONCLUSION = (
+    "  That is the finding, and it is not about these five theories. Every\n"
+    "  pattern rule in them — the compression, the shallow pullback, the\n"
+    "  three-times-tested edge, the rejection wick — adds nothing a coin\n"
+    "  does not already give you. Writing a sixth would be writing a sixth\n"
+    "  coin. The approach itself has to change, not the rules inside it."
+)
+
+
+def render_comparison(
+    comparisons: list[Comparison], *, window: str = "", conclusion: str = PLAYBOOK_CONCLUSION
+) -> str:
     """The only table that answers whether the analysis is worth anything."""
     lines = [
         "",
@@ -483,13 +499,9 @@ def render_comparison(comparisons: list[Comparison], *, window: str = "") -> str
     beaten = [c.real.playbook for c in comparisons if c.beats_the_coin]
     lines.append("")
     if not beaten:
-        lines.append("  Not one theory beat guessing.")
+        lines.append("  Not one of them beat guessing.")
         lines.append("")
-        lines.append("  That is the finding, and it is not about these five theories. Every")
-        lines.append("  pattern rule in them — the compression, the shallow pullback, the")
-        lines.append("  three-times-tested edge, the rejection wick — adds nothing a coin")
-        lines.append("  does not already give you. Writing a sixth would be writing a sixth")
-        lines.append("  coin. The approach itself has to change, not the rules inside it.")
+        lines.append(conclusion)
     else:
         lines.append(f"  Outside what chance produced: {', '.join(beaten)}.")
         lines.append("  Necessary, nowhere near sufficient — a theory can beat a coin and")
