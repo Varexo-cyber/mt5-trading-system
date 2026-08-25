@@ -1800,6 +1800,38 @@ class CandleMomentumConfig(Base):
     #: a lot". A scalp's whole margin is a few spreads wide; a fixed fee per
     #: lot is not a cost it can carry.
     tradable_asset_classes: tuple[str, ...] = ()
+
+    #: Trade this section through its OWN path instead of the confluence vote.
+    #:
+    #: WHY IT NEEDS ONE. The confluence score is a weighted mean of (raw score
+    #: x confidence) over the agreeing modules, and this module's ceiling is
+    #: 45 x 0.75 = 33.75. Against a bar of 45 it can never open a trade alone,
+    #: and joining a strong reader makes things worse rather than better --
+    #: market_structure alone scores 70, and 56.4 with this agreeing. A scalp
+    #: voting in a swing engine drags every score it touches downward.
+    #:
+    #: That is not a threshold to tune. A scalp's evidence is small and
+    #: short-lived by construction, which is what a scalp IS, and a machine
+    #: built to weigh swing evidence will always price it low. So it gets its
+    #: own lane: its own entry, its own stop and target off the trigger candle,
+    #: its own concurrency limit and its own breaker.
+    #:
+    #: What it does NOT get its own copy of: the news blackout, the kill
+    #: switch, the capital floor, the margin check or the spread guard. Those
+    #: are account-wide and a second copy of any of them would eventually
+    #: disagree with the first.
+    own_lane_enabled: bool = False
+    #: Lots per scalp, fixed rather than risk-sized.
+    #:
+    #: On gold at 0.01 lot a dollar of movement is about EUR 0.86, and the stop
+    #: is 0.4 of an M1 candle -- so a losing scalp costs well under a euro on
+    #: this account. Risk-sizing it to 5% would put EUR 9 behind a stop measured
+    #: in seconds, which is not what anyone asked for.
+    #:
+    #: Never larger than what the ordinary sizer would allow: the fixed lot is
+    #: a ceiling, not an override, so a symbol whose stop is too wide for the
+    #: account is still refused rather than forced through.
+    fixed_lots: float = Field(default=0.01, gt=0.0, le=1.0)
     #: At most this many section-six positions at once, inside the account's
     #: overall concurrency cap rather than beside it. Enforced on paper too,
     #: or the record measures a book the account has no room to hold.

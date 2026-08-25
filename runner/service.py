@@ -173,6 +173,12 @@ _UNKNOWN_HEALTH: dict[str, object] = {
 RIO_POSITION_COMMENT = "jarvis-rio"
 
 
+#: Order comment that marks a position as section six's. The lane counts its
+#: own book by this rather than by a separate ledger, so a restart or a manual
+#: close cannot put the two out of step.
+_SCALP_COMMENT = "jarvis-scalp"
+
+
 def _is_rio_position(position: Position) -> bool:
     """True only for positions opened by the authenticated Rio route."""
     return str(getattr(position, "comment", "")).casefold() == RIO_POSITION_COMMENT
@@ -3958,6 +3964,20 @@ class JarvisRunner:
         # on the setups it had nothing to do with. This runs once per symbol
         # per cycle and cannot influence the decision above it, which is
         # already made and already written.
+        # SECTION SIX runs its own lane FIRST, and only observes what it did
+        # not take. A scalp recorded on paper AND opened live would grade the
+        # same decision twice, once against the shadow resolver and once
+        # against the account -- and the two would disagree the moment a fill
+        # differed from the plan.
+        if signals and self._run_scalp_lane(cycle_id, symbol, signals, reason, extra):
+            self.scan_activity.record_deep_decision(
+                symbol,
+                "SCALP_OPENED",
+                "section six",
+                "opened through its own lane",
+                self.clock.now(),
+            )
+            return None
         self._observe_paper_sections(cycle_pk, symbol, signals, reason, extra)
         self.scan_activity.record_deep_decision(
             symbol,
@@ -4150,9 +4170,43 @@ class JarvisRunner:
         account already refuses to trade in, and a paper section that quietly
         kept going would be measuring a strategy nobody would run.
         """
+        plan = self._scalp_plan(symbol, signals, reason, extra, live=False)
+        if plan is None:
+            return
+        direction, entry, stop, target = plan
+        self.recorder.record_shadow_trade(
+            cycle_pk=cycle_pk,
+            symbol=symbol,
+            direction=direction,
+            blocked_by=Reason.SECTION_6_OBSERVED,
+            entry_price=entry,
+            sl=stop,
+            tp=target,
+        )
+
+    def _scalp_plan(
+        self,
+        symbol: str,
+        signals: Sequence[Signal],
+        reason: Reason,
+        extra: dict | None,
+        *,
+        live: bool,
+    ) -> tuple[Direction, float, float, float] | None:
+        """The one decision, used by both the paper record and the live lane.
+
+        Split out so a scalp that trades and a scalp that is only written down
+        can never be different scalps. Two copies of this would drift, and the
+        direction they would drift in is "the paper record grades a strategy
+        the account does not run".
+
+        `live` changes exactly one thing: which book the concurrency cap counts
+        against -- open positions when trading, unresolved shadow rows when
+        observing. Everything above it is identical.
+        """
         config = self.settings.analysis.candle_momentum
         if not config.enabled or reason in self._NEWS_BLOCKS:
-            return
+            return None
         # WHERE COMMISSION IS ZERO, AND NOWHERE ELSE.
         #
         # Derived from the commission table rather than typed out as a second
@@ -4164,38 +4218,42 @@ class JarvisRunner:
         try:
             asset_class = self.broker.spec(symbol).asset_class.value
         except Exception:  # noqa: BLE001 - an unknown spec is not tradable here
-            return
+            return None
         allowed = config.tradable_asset_classes
         if allowed:
             if asset_class not in allowed:
-                return
+                return None
         elif self.settings.risk.commission_per_lot(asset_class) > 0:
-            return
-        # The live concurrency cap, honoured on paper. Without it the record
-        # would measure a book the account has no room to hold.
-        if self.recorder.open_shadow_count(Reason.SECTION_6_OBSERVED) >= config.max_concurrent:
-            return
+            return None
+        # The concurrency cap, counted against whichever book this scalp would
+        # join. Honoured on paper too, or the record measures a position list
+        # the account has no room to hold.
+        if live:
+            if self._open_scalp_count() >= config.max_concurrent:
+                return None
+        elif self.recorder.open_shadow_count(Reason.SECTION_6_OBSERVED) >= config.max_concurrent:
+            return None
         context = self._cycle_contexts.get(symbol)
         if context is None or context.tick is None:
-            return
+            return None
         signal = next((item for item in signals if item.module == "candle_momentum"), None)
         if signal is None or not signal.score:
-            return
+            return None
         minutes = (extra or {}).get("minutes_to_news")
         if minutes is not None and float(minutes) <= config.news_clearance_minutes:
-            return
+            return None
         direction = Direction.LONG if signal.score > 0 else Direction.SHORT
         if self.recorder.has_unresolved_shadow_trade(symbol, direction):
-            return
+            return None
 
         series = context.series.get(Timeframe.parse(config.trigger_timeframe))
         if series is None or series.df.empty:
-            return
+            return None
         candle = series.df.iloc[-1]
         entry = float(context.tick.ask if direction is Direction.LONG else context.tick.bid)
         span = float(candle["high"]) - float(candle["low"])
         if entry <= 0 or span <= 0:
-            return
+            return None
         # IN SMALL, OUT SMALL, which is the owner's whole description of this:
         # "als het maar een haartje verkeerd gaat eruit, gaat het maar ietsjes
         # goed ook gelijk eruit". The stop is the other side of the candle that
@@ -4206,16 +4264,25 @@ class JarvisRunner:
         stop = entry - sign * span * config.stop_candle_spans
         target = entry + sign * span * config.target_candle_spans
         if min(entry, stop, target) <= 0:
-            return
-        self.recorder.record_shadow_trade(
-            cycle_pk=cycle_pk,
-            symbol=symbol,
-            direction=direction,
-            blocked_by=Reason.SECTION_6_OBSERVED,
-            entry_price=entry,
-            sl=stop,
-            tp=target,
-        )
+            return None
+        return direction, entry, stop, target
+
+    def _open_scalp_count(self) -> int:
+        """Live scalp positions this lane is currently holding.
+
+        Counted by the order comment rather than by a separate ledger, because
+        a ledger would have to survive a restart and stay in step with manual
+        closes -- and the broker's own position list already answers the
+        question without either problem.
+        """
+        try:
+            return sum(
+                1
+                for position in self._managed_positions()
+                if str(getattr(position, "comment", "")).startswith(_SCALP_COMMENT)
+            )
+        except Exception:  # noqa: BLE001 - an unreadable book is not a free slot
+            return self.settings.analysis.candle_momentum.max_concurrent
 
     def _tripped_section(self, idea: TradeIdea) -> str | None:
         """Whether a section behind this idea has switched itself off.
@@ -4249,6 +4316,202 @@ class JarvisRunner:
                 f"editing live_enabled_modules."
             )
         return None
+
+    def _run_scalp_lane(
+        self,
+        cycle_id: str,
+        symbol: str,
+        signals: Sequence[Signal],
+        reason: Reason,
+        extra: dict | None,
+    ) -> bool:
+        """Section six's own route to an order, around the confluence vote.
+
+        WHY IT HAS ONE. The confluence score is a weighted mean of (raw score x
+        confidence) over the agreeing modules, and this module's ceiling is
+        45 x 0.75 = 33.75 against a bar of 45. It cannot open a trade alone,
+        and joining a strong reader makes matters worse rather than better:
+        market_structure alone scores 70, and 56.4 with this agreeing. A scalp
+        voting in a swing engine drags down every score it touches.
+
+        That is not a threshold to tune. A scalp's evidence is small and
+        short-lived because that is what a scalp IS, and a machine built to
+        weigh swing evidence will always price it low.
+
+        WHAT THIS LANE DOES NOT GET ITS OWN COPY OF, and the list matters more
+        than the list of what it does: the news blackout (`_scalp_plan` refuses
+        on the same `_NEWS_BLOCKS` the rest of the account uses), the kill
+        switch and capital floor (`_entry_still_allowed`), the margin check,
+        and the section breaker. A second copy of any of those would eventually
+        disagree with the first, and the direction it would disagree in is
+        "traded through something the account had already refused".
+
+        Sized at a FIXED lot, and never above what the ordinary sizer permits.
+        The fixed lot is a ceiling rather than an override, so an instrument
+        whose stop is too wide for this account is still refused instead of
+        forced through at a size the account cannot carry.
+        """
+        config = self.settings.analysis.candle_momentum
+        if not config.own_lane_enabled or not self.settings.mode.is_live:
+            return False
+        if self.operation is OperationMode.MONITOR:
+            return False
+        plan = self._scalp_plan(symbol, signals, reason, extra, live=True)
+        if plan is None:
+            return False
+        direction, entry, stop, target = plan
+
+        # The section's own breaker, asked before anything is spent. Built from
+        # the journal every cycle, so a section that stopped itself overnight is
+        # still stopped now.
+        signal = next((item for item in signals if item.module == "candle_momentum"), None)
+        if signal is None:
+            return False
+        blocked = self._tripped_section(
+            TradeIdea(
+                symbol=symbol,
+                approved=True,
+                direction=direction,
+                score=abs(signal.score),
+                confidence=signal.confidence,
+                entry=entry,
+                stop_loss=stop,
+                take_profit=target,
+                reason="section six scalp",
+                signals=(signal,),
+            )
+        )
+        if blocked is not None:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                self.broker.account().equity,
+                Reason.SECTION_BREAKER_TRIPPED,
+                blocked,
+                signals=list(signals),
+            )
+            return False
+
+        account = self.broker.account()
+        spec = self.broker.spec(symbol)
+        tick = getattr(self._cycle_contexts.get(symbol), "tick", None)
+        spread = float(getattr(tick, "spread", 0.0) or 0.0)
+        sizing = PositionSizer(self.settings).size(
+            spec=spec,
+            equity=account.equity,
+            direction=direction,
+            entry=entry,
+            sl=stop,
+            tp=target,
+            spread_price=spread,
+            # A scalp's reward-to-risk is set by the candle, not by the swing
+            # engine's floor, and it is already guarded by
+            # `minimum_target_spreads` in the module itself.
+            enforce_minimum_rr=False,
+        )
+        if not sizing.approved:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                sizing.reason,
+                sizing.decision.detail,
+                signals=list(signals),
+            )
+            return False
+
+        volume = spec.round_volume_down(min(config.fixed_lots, sizing.volume))
+        if volume < spec.volume_min:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.TRADE_SKIPPED_UNDERCAPITALIZED,
+                f"scalp lot {volume:g} is below the broker minimum {spec.volume_min:g}",
+                signals=list(signals),
+            )
+            return False
+        if volume != sizing.volume and sizing.volume > 0:
+            share = volume / sizing.volume
+            sizing = replace(
+                sizing,
+                volume=volume,
+                actual_risk_money=sizing.actual_risk_money * share,
+                actual_risk_pct=sizing.actual_risk_pct * share,
+            )
+
+        state = self.risk.build_state(account, tuple(self._managed_positions()))
+        margin = self.risk.check_margin(state, symbol, direction, volume, entry)
+        if not margin.approved:
+            self._record_skip(
+                cycle_id,
+                symbol,
+                account.equity,
+                Reason.INSUFFICIENT_MARGIN,
+                margin.detail,
+                signals=list(signals),
+            )
+            return False
+        self.risk.assert_not_forbidden(sizing, state)
+
+        cycle_pk = self.recorder.record_cycle(
+            cycle_id=cycle_id,
+            context=self._journal_cycle_context(symbol, account.equity, dict(extra or {})),
+            reason=Reason.OK,
+            detail=f"section six scalp; {signal.reasoning}",
+            traded=True,
+            direction=direction,
+            total_score=abs(signal.score) * signal.confidence,
+            score_threshold=self.settings.analysis.confluence.score_threshold,
+            signals=list(signals),
+            weights={"candle_momentum": 1.0},
+        )
+        self.recorder.record_sizing(cycle_pk, sizing)
+        # Re-asked here rather than earlier: the STOP file, the capital floor
+        # and the armed contract can all change while the work above runs, and
+        # this is the last moment before money moves.
+        if not self._entry_still_allowed():
+            return False
+        trade_id = self.recorder.record_entry_intent(
+            cycle_pk=cycle_pk, sizing=sizing, equity_before=account.equity
+        )
+        result = self.broker.order_send(
+            OrderRequest(
+                symbol=symbol,
+                direction=direction,
+                volume=volume,
+                sl=spec.normalize_price(stop),
+                tp=spec.normalize_price(target),
+                reference_price=entry,
+                deviation_points=self.settings.mt5.deviation_points,
+                magic=self.settings.system.magic_number,
+                comment=_SCALP_COMMENT,
+            ),
+            spec,
+        )
+        if not result.ok:
+            self.journal.abandon_pending_entry(
+                trade_id, f"scalp rejected: {result.retcode_name} {result.comment}"
+            )
+            self.recorder.record_order_attempt(
+                trade_id=None, kind="ENTRY", symbol=symbol, result=result
+            )
+            return False
+        self._promote_confirmed_entry(
+            trade_id=trade_id,
+            result=result,
+            sizing=sizing,
+            spec=spec,
+            equity=account.equity,
+        )
+        log.info(
+            "section six scalp opened",
+            symbol=symbol,
+            direction=direction.name,
+            volume=volume,
+            entry=result.filled_price,
+        )
+        return True
 
     def _observe_paper_sections(
         self,

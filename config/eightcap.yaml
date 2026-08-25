@@ -533,8 +533,25 @@ analysis:
     # twee keer de gemiddelde kaars, dus nog steeds een beweging en geen minuut.
     minimum_body_multiple: 1.8
     body_saturation_multiple: 3.5
-    # De vaste inzet. Dit is de reden dat de rest hierboven mag.
-    maximum_lots: 0.01
+    # EIGEN BAAN AAN, 25 augustus. Dit is de wijziging die sectie 6 weer laat
+    # handelen nadat de lat van 45 hem stilzette.
+    #
+    # De confluence-score is een gewogen gemiddelde, en het plafond van deze
+    # module is 45 x 0,75 = 33,75. Tegen een lat van 45 kon hij alleen niets
+    # meer openen, en meestemmen maakte het erger: market_structure alleen
+    # scoort 70, met deze erbij 56,4. Een scalper in een swing-motor trekt elke
+    # score omlaag die hij aanraakt, en dat is geen drempel die te stellen valt
+    # -- het bewijs van een scalp IS klein en kortlopend.
+    #
+    # Dus een eigen route naar de order. Wat hij NIET zelf krijgt: de
+    # nieuwsblokkade, de kill switch, de kapitaalvloer, de margecheck en zijn
+    # eigen noodstop komen allemaal uit de bestaande machinerie. Een tweede
+    # kopie daarvan zou ooit afwijken van de eerste.
+    own_lane_enabled: true
+    # De vaste inzet, en tegelijk een plafond: nooit meer dan wat de gewone
+    # sizer toestaat, zodat een te brede stop nog steeds geweigerd wordt in
+    # plaats van erdoorheen geduwd.
+    fixed_lots: 0.01
 
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
@@ -1163,7 +1180,17 @@ analysis:
     # Het gewicht blijft 0,7 zodat hij gemeten blijft worden en de backtest hem
     # meeneemt. Hij mag alleen geen geld meer aanraken. Terugzetten vraagt een
     # papieren record dat wel klopt, niet een besluit.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence, candle_momentum]
+    # `candle_momentum` STAAT HIER NIET MEER, en dat is geen degradatie.
+    #
+    # Zijn plafond is 45 x 0,75 = 33,75 tegen een lat van 45: in zijn eentje
+    # kon hij nooit meer een trade openen. En meestemmen maakte het erger, niet
+    # beter -- market_structure alleen scoort 70, met sectie 6 erbij 56,4. Een
+    # scalper in een swing-motor trekt elke score omlaag die hij aanraakt.
+    #
+    # Hij handelt nu via zijn eigen baan (`own_lane_enabled`), met eigen
+    # instap, stop, target en limiet. Hier weghalen is wat voorkomt dat hij
+    # ALLEBEI doet: stemmen in sectie 1 en zijn eigen trade openen.
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
