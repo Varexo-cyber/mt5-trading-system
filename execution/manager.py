@@ -188,88 +188,24 @@ class PositionManager:
         events: list[ManagementEvent] = []
         broker_tickets = {position.ticket for position in positions}
         for position in positions:
-            if not position.has_stop:
-                result = self.broker.close_position(position)
-                if not result.ok:
-                    events.append(
-                        ManagementEvent(
-                            position.ticket,
-                            "EMERGENCY_CLOSE_REJECTED",
-                            "position had no stop; broker rejected emergency exit: "
-                            f"{result.retcode_name}",
-                        )
-                    )
-                    continue
-                events.append(
-                    ManagementEvent(
-                        position.ticket,
-                        "EMERGENCY_CLOSE",
-                        "position had no stop",
-                        result.filled_price,
-                        position.profit + position.swap,
-                    )
+            # Contained per position, for the reason in `_manage_one`'s call
+            # site, and this is the one where it matters most. The first thing
+            # this body does is emergency-close a position that has NO STOP.
+            # An exception raised on an earlier position used to mean that
+            # close never happened -- an unprotected trade left open because a
+            # different trade's journal row was unreadable.
+            try:
+                events.extend(self._reconcile_one(position))
+            except Exception as exc:
+                log.exception(
+                    "reconciling one position failed",
+                    extra={
+                        "event": "reconcile_position_failed",
+                        "ticket": position.ticket,
+                        "symbol": position.symbol,
+                        "error": type(exc).__name__,
+                    },
                 )
-                continue
-            if self.journal.open_trade_by_ticket(position.ticket) is None:
-                adopted = self._adopt(position)
-                if adopted is not None:
-                    events.append(adopted)
-                    continue
-                result = self.broker.close_position(position)
-                if not result.ok:
-                    events.append(
-                        ManagementEvent(
-                            position.ticket,
-                            "ORPHAN_CLOSE_REJECTED",
-                            "strategy-magic orphan remained open because the broker rejected "
-                            f"the exit: {result.retcode_name}",
-                        )
-                    )
-                    continue
-                events.append(
-                    ManagementEvent(
-                        position.ticket,
-                        "ORPHAN_CLOSE",
-                        "strategy-magic position was absent from journal and matched no "
-                        "recorded entry intent",
-                        result.filled_price,
-                        position.profit + position.swap,
-                    )
-                )
-                continue
-            row = self.journal.open_trade_by_ticket(position.ticket)
-            assert row is not None
-            refreshed = self._refresh_fill_metrics(position, row)
-            if refreshed is not None:
-                events.append(refreshed)
-                row = self.journal.open_trade_by_ticket(position.ticket)
-                assert row is not None
-            journal_volume = float(row["volume"])
-            tolerance = self.broker.spec(position.symbol).volume_step / 2
-            partial_actions = ("PARTIAL_CLOSE", "PARTIAL_CLOSE_RECOVERED")
-            if (
-                position.volume < journal_volume - tolerance
-                and not self.journal.management_action_exists(position.ticket, partial_actions)
-            ):
-                closed = self.broker.closed_position(position.ticket)
-                if closed is None:
-                    events.append(
-                        ManagementEvent(
-                            position.ticket,
-                            "BROKER_CLOSED_PENDING_HISTORY",
-                            "position volume shrank but no partial-close deal is available",
-                        )
-                    )
-                else:
-                    events.append(
-                        ManagementEvent(
-                            position.ticket,
-                            "PARTIAL_CLOSE_RECOVERED",
-                            f"recovered broker partial from deals {closed.deal_tickets}",
-                            volume_closed=journal_volume - position.volume,
-                            remaining_volume=position.volume,
-                        )
-                    )
         for row in self.journal.open_trades():
             ticket = int(row["ticket"] or 0)
             if ticket and ticket not in broker_tickets:
@@ -295,6 +231,94 @@ class PositionManager:
                             closed.closed_at,
                         )
                     )
+        return events
+
+    def _reconcile_one(self, position: Position) -> list[ManagementEvent]:
+        """Reconciling one position against the journal. See `reconcile`."""
+        events: list[ManagementEvent] = []
+        if not position.has_stop:
+            result = self.broker.close_position(position)
+            if not result.ok:
+                events.append(
+                    ManagementEvent(
+                        position.ticket,
+                        "EMERGENCY_CLOSE_REJECTED",
+                        "position had no stop; broker rejected emergency exit: "
+                        f"{result.retcode_name}",
+                    )
+                )
+                return events
+            events.append(
+                ManagementEvent(
+                    position.ticket,
+                    "EMERGENCY_CLOSE",
+                    "position had no stop",
+                    result.filled_price,
+                    position.profit + position.swap,
+                )
+            )
+            return events
+        if self.journal.open_trade_by_ticket(position.ticket) is None:
+            adopted = self._adopt(position)
+            if adopted is not None:
+                events.append(adopted)
+                return events
+            result = self.broker.close_position(position)
+            if not result.ok:
+                events.append(
+                    ManagementEvent(
+                        position.ticket,
+                        "ORPHAN_CLOSE_REJECTED",
+                        "strategy-magic orphan remained open because the broker rejected "
+                        f"the exit: {result.retcode_name}",
+                    )
+                )
+                return events
+            events.append(
+                ManagementEvent(
+                    position.ticket,
+                    "ORPHAN_CLOSE",
+                    "strategy-magic position was absent from journal and matched no "
+                    "recorded entry intent",
+                    result.filled_price,
+                    position.profit + position.swap,
+                )
+            )
+            return events
+        row = self.journal.open_trade_by_ticket(position.ticket)
+        assert row is not None
+        refreshed = self._refresh_fill_metrics(position, row)
+        if refreshed is not None:
+            events.append(refreshed)
+            row = self.journal.open_trade_by_ticket(position.ticket)
+            assert row is not None
+        journal_volume = float(row["volume"])
+        tolerance = self.broker.spec(position.symbol).volume_step / 2
+        partial_actions = ("PARTIAL_CLOSE", "PARTIAL_CLOSE_RECOVERED")
+        if (
+            position.volume < journal_volume - tolerance
+            and not self.journal.management_action_exists(position.ticket, partial_actions)
+        ):
+            closed = self.broker.closed_position(position.ticket)
+            if closed is None:
+                events.append(
+                    ManagementEvent(
+                        position.ticket,
+                        "BROKER_CLOSED_PENDING_HISTORY",
+                        "position volume shrank but no partial-close deal is available",
+                    )
+                )
+            else:
+                events.append(
+                    ManagementEvent(
+                        position.ticket,
+                        "PARTIAL_CLOSE_RECOVERED",
+                        f"recovered broker partial from deals {closed.deal_tickets}",
+                        volume_closed=journal_volume - position.volume,
+                        remaining_volume=position.volume,
+                    )
+                )
+
         return events
 
     def _refresh_fill_metrics(self, position: Position, row) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
@@ -2315,73 +2339,99 @@ class PositionManager:
         """De-risk open positions once their configured news window begins."""
         events: list[ManagementEvent] = []
         for position in positions:
-            spec = self.broker.spec(position.symbol)
-            action = news_filter.position_action(
-                position,
-                spec.currency_base,
-                spec.currency_profit,
+            # Contained per position, for the reason in `_manage_one`'s call
+            # site. Sharper here than there: this de-risks trades ahead of a
+            # scheduled event, so a failure on one instrument would leave every
+            # other open trade facing the release with the stop it had before.
+            try:
+                events.extend(self._manage_news_one(position, news_filter))
+            except Exception as exc:
+                log.exception(
+                    "the news rule failed for one position",
+                    extra={
+                        "event": "manage_news_position_failed",
+                        "ticket": position.ticket,
+                        "symbol": position.symbol,
+                        "error": type(exc).__name__,
+                    },
+                )
+        return events
+
+    def _manage_news_one(
+        self,
+        position: Position,
+        news_filter: NewsFilter,
+    ) -> list[ManagementEvent]:
+        """The news rule for one position. See `manage_news`."""
+        events: list[ManagementEvent] = []
+        spec = self.broker.spec(position.symbol)
+        action = news_filter.position_action(
+            position,
+            spec.currency_base,
+            spec.currency_profit,
+        )
+        if action == "none":
+            return events
+        if action == "break_even":
+            offset = self._atr_offset(
+                position.symbol,
+                self.settings.trade_management.break_even_offset_atr,
+                position.direction,
             )
-            if action == "none":
-                continue
-            if action == "break_even":
-                offset = self._atr_offset(
-                    position.symbol,
-                    self.settings.trade_management.break_even_offset_atr,
-                    position.direction,
-                )
-                if offset is None:
-                    # Without an ATR the offset is zero, and a stop on the entry
-                    # price is a guaranteed loss of the spread rather than a
-                    # break-even. Leave the trade where it is; the supervisor
-                    # asks again next pass.
-                    continue
-                desired = spec.normalize_price(position.price_open + offset)
-                tick = self.broker.tick(position.symbol)
-                executable = tick.bid if position.direction is Direction.LONG else tick.ask
-                valid_now = (position.direction is Direction.LONG and desired < executable) or (
-                    position.direction is Direction.SHORT and desired > executable
-                )
-                improves = (position.direction is Direction.LONG and desired > position.sl) or (
-                    position.direction is Direction.SHORT and desired < position.sl
-                )
-                if not improves:
-                    continue
-                if valid_now and improves:
-                    result = self.broker.modify_stops(position, sl=desired, tp=position.tp)
-                    if result.ok:
-                        events.append(
-                            ManagementEvent(
-                                position.ticket,
-                                "NEWS_BREAK_EVEN",
-                                "news blackout started; stop moved beyond entry",
-                            )
-                        )
-                        continue
-                # A losing position cannot have a valid break-even stop. Keeping
-                # it exposed would silently turn the configured protection off.
-                action = "close"
-            if action == "close":
-                result = self.broker.close_position(position)
-                if not result.ok:
+            if offset is None:
+                # Without an ATR the offset is zero, and a stop on the entry
+                # price is a guaranteed loss of the spread rather than a
+                # break-even. Leave the trade where it is; the supervisor
+                # asks again next pass.
+                return events
+            desired = spec.normalize_price(position.price_open + offset)
+            tick = self.broker.tick(position.symbol)
+            executable = tick.bid if position.direction is Direction.LONG else tick.ask
+            valid_now = (position.direction is Direction.LONG and desired < executable) or (
+                position.direction is Direction.SHORT and desired > executable
+            )
+            improves = (position.direction is Direction.LONG and desired > position.sl) or (
+                position.direction is Direction.SHORT and desired < position.sl
+            )
+            if not improves:
+                return events
+            if valid_now and improves:
+                result = self.broker.modify_stops(position, sl=desired, tp=position.tp)
+                if result.ok:
                     events.append(
                         ManagementEvent(
                             position.ticket,
-                            "NEWS_EXIT_REJECTED",
-                            f"broker rejected protective exit: {result.retcode_name}",
+                            "NEWS_BREAK_EVEN",
+                            "news blackout started; stop moved beyond entry",
                         )
                     )
-                    continue
-                closed = self.broker.closed_position(position.ticket)
+                    return events
+            # A losing position cannot have a valid break-even stop. Keeping
+            # it exposed would silently turn the configured protection off.
+            action = "close"
+        if action == "close":
+            result = self.broker.close_position(position)
+            if not result.ok:
                 events.append(
                     ManagementEvent(
                         position.ticket,
-                        "NEWS_EXIT" if closed is not None else "NEWS_EXIT_SENT",
-                        "news blackout started; position closed",
-                        closed.exit_price if closed is not None else None,
-                        closed.pnl_money if closed is not None else None,
-                        closed.closed_at if closed is not None else None,
+                        "NEWS_EXIT_REJECTED",
+                        f"broker rejected protective exit: {result.retcode_name}",
                     )
                 )
+                return events
+            closed = self.broker.closed_position(position.ticket)
+            events.append(
+                ManagementEvent(
+                    position.ticket,
+                    "NEWS_EXIT" if closed is not None else "NEWS_EXIT_SENT",
+                    "news blackout started; position closed",
+                    closed.exit_price if closed is not None else None,
+                    closed.pnl_money if closed is not None else None,
+                    closed.closed_at if closed is not None else None,
+                )
+            )
+
         return events
 
     def _atr(self, symbol: str, period: int = 14) -> float:

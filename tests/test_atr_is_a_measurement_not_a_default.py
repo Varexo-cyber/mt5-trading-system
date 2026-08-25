@@ -229,3 +229,31 @@ def test_one_position_raising_does_not_cost_the_others_their_pass() -> None:
     # And the failure is recorded where an operator can see it, rather than
     # leaving a gap in the health map that reads as "is Jarvis even running".
     assert manager.last_health[poisoned.ticket].verdict == "unmanaged"
+
+
+def test_a_position_with_no_stop_is_still_closed_when_another_one_breaks() -> None:
+    """The same containment where it matters most.
+
+    `reconcile`'s first act on any position is to emergency-close it if it has
+    no stop at all. Running that inline meant an exception on an EARLIER
+    position -- an unreadable journal row, a spec that did not resolve -- left
+    the unprotected trade open, because the loop never reached it.
+    """
+    broker = BrokerStub()
+    journal = JournalStub()
+    real_row = journal.open_trade_by_ticket
+    poisoned = replace(position(), ticket=999)
+    naked = replace(position(), ticket=777, sl=0.0)
+
+    def row_for(ticket: int):  # type: ignore[no-untyped-def]
+        if ticket == poisoned.ticket:
+            raise RuntimeError("the journal row for this ticket is unreadable")
+        return real_row(ticket)
+
+    journal.open_trade_by_ticket = row_for  # type: ignore[assignment]
+    manager = manager_for(broker, journal)
+
+    events = manager.reconcile([poisoned, naked])
+
+    assert [event.action for event in events] == ["EMERGENCY_CLOSE"]
+    assert broker.closed == [(naked.ticket, None)]
