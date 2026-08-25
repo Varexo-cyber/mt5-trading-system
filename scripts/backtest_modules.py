@@ -62,24 +62,7 @@ sys.path.insert(0, str(ROOT))
 
 import pandas as pd
 
-from analysis import (
-    ConfluenceEngine,
-    DriftContinuation,
-    EmaPullbackResume,
-    FastEmaCross,
-    ImpulseBreak,
-    LevelReaction,
-    LiquiditySweep,
-    M1MicroBreakout,
-    MarketRegime,
-    MarketStructure,
-    MeanReversion,
-    Seasonality,
-    SessionBreakout,
-    TrendMomentum,
-    VolatilityRegime,
-    VolatilitySqueeze,
-)
+from analysis import ConfluenceEngine
 from backtesting.engine import BacktestOrder, PessimisticBacktester
 from backtesting.playbook_replay import (
     compare_to_chance,
@@ -96,27 +79,23 @@ DEFAULT_SYMBOLS = ("EURUSD.i", "GBPUSD.i", "USDJPY.i", "AUDUSD.i", "XAUUSD")
 
 
 def build_engine(settings):  # type: ignore[no-untyped-def]
-    """Every detector, at the settings the account is actually running."""
-    return ConfluenceEngine(
-        [
-            MarketStructure(settings.analysis.market_structure),
-            TrendMomentum(settings.analysis.trend_momentum),
-            LiquiditySweep(settings.analysis.liquidity_sweep),
-            LevelReaction(settings.analysis.level_reaction),
-            VolatilityRegime(settings.analysis.volatility_regime),
-            MarketRegime(settings.analysis.market_regime),
-            DriftContinuation(settings.analysis.drift_continuation),
-            FastEmaCross(settings.analysis.fast_ema_cross),
-            ImpulseBreak(settings.analysis.impulse_break),
-            EmaPullbackResume(settings.analysis.ema_pullback_resume),
-            M1MicroBreakout(settings.analysis.m1_micro_breakout),
-            VolatilitySqueeze(settings.analysis.volatility_squeeze),
-            MeanReversion(settings.analysis.mean_reversion),
-            SessionBreakout(settings.analysis.session_breakout),
-            Seasonality(settings.analysis.seasonality),
-        ],
-        settings.analysis.confluence,
-    )
+    """Every detector, at the settings the account is actually running.
+
+    THROUGH THE RUNNER'S OWN LIST, not a copy. This function used to name its
+    fifteen modules by hand, and the account builds eighteen -- so the three it
+    had drifted out of sync with were graded by nothing: `drift_burst`,
+    `basket_divergence`, and `candle_momentum`, which is section six. A report
+    headed "which detector actually makes money" simply did not mention them.
+
+    `build_analysis_modules` says in its own docstring that it exists so this
+    script stops keeping a second copy. It was written and this file never
+    adopted it. Two lists of the same thing disagree eventually; the only
+    question is which one you find out about first, and here it was the one
+    that decides what to believe about the other.
+    """
+    from runner.service import build_analysis_modules
+
+    return ConfluenceEngine(build_analysis_modules(settings), settings.analysis.confluence)
 
 
 def history(
