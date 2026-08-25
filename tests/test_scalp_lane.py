@@ -349,6 +349,14 @@ class TestAScalpBanksWhatItHasWhenItsMinuteIsOver:
 
         closed: list = []
         service = PositionManager.__new__(PositionManager)
+        # A scalp is now identified by the order comment OR by our own books,
+        # so the double needs both. The journal here says "not section six",
+        # which makes the comment the only positive marker in these tests --
+        # exactly the situation the fallback exists to survive.
+        service._scalp_tickets = {}
+        service.journal = SimpleNamespace(  # type: ignore[attr-defined]
+            trade_opened_by_section_six=lambda _ticket: False
+        )
         settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
@@ -453,6 +461,14 @@ class TestTheScalpIsJudgedEverySecondAndNotOnAClock:
 
         closed: list = []
         service = PositionManager.__new__(PositionManager)
+        # A scalp is now identified by the order comment OR by our own books,
+        # so the double needs both. The journal here says "not section six",
+        # which makes the comment the only positive marker in these tests --
+        # exactly the situation the fallback exists to survive.
+        service._scalp_tickets = {}
+        service.journal = SimpleNamespace(  # type: ignore[attr-defined]
+            trade_opened_by_section_six=lambda _ticket: False
+        )
         service.settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
@@ -592,3 +608,104 @@ class TestTheScalpIsJudgedEverySecondAndNotOnAClock:
 
         assert config.maximum_age_minutes == 0.0
         assert config.scalp_claim_spreads > 0
+
+
+class TestALaneIsNotIdentifiedByAFieldTheBrokerOwns:
+    """The order comment was the only marker, and it is not our field.
+
+    MT5 truncates it at 31 characters and brokers rewrite it -- on a stop-out
+    it commonly comes back as "[sl 4653.15]". If it does not survive the round
+    trip, every scalp rule declines every scalp it is handed and the position
+    drops through to the swing rules: break-even at 0.6R, partial close at
+    1.5R. A trade meant to be in and out inside a minute gets held like a swing
+    trade, nothing raises, and nothing logs.
+
+    So the journal answers too. It is ours, it is written before the order is
+    sent, and the broker cannot touch it.
+    """
+
+    def watcher(self, *, comment: str, in_journal: bool):  # type: ignore[no-untyped-def]
+        from datetime import UTC, datetime
+
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.instrument import InstrumentSpec
+        from core.types import Position
+        from execution.manager import PositionManager
+        from tests.fakes.fake_mt5 import xauusd_spec
+
+        closed: list = []
+        service = PositionManager.__new__(PositionManager)
+        service.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        service._scalp_tickets = {}
+        service.journal = SimpleNamespace(  # type: ignore[attr-defined]
+            trade_opened_by_section_six=lambda _ticket: in_journal
+        )
+        service.broker = SimpleNamespace(  # type: ignore[attr-defined]
+            spec=lambda symbol: InstrumentSpec.from_mt5(xauusd_spec()),
+            copy_rates=lambda symbol, tf, n: [{"close": 2400.0} for _ in range(n)],
+            close_position=lambda position: (
+                closed.append(position),
+                SimpleNamespace(ok=True, filled_price=2400.90),
+            )[1],
+        )
+        position = Position(
+            ticket=1,
+            symbol="XAUUSD",
+            direction=Direction.LONG,
+            volume=0.01,
+            price_open=2400.0,
+            sl=2398.0,
+            tp=2402.8,
+            profit=1.0,
+            swap=0.0,
+            opened_at=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
+            magic=1,
+            comment=comment,
+        )
+        tick = SimpleNamespace(bid=2400.90, ask=2401.15, spread=0.25)
+        return service, position, tick, closed
+
+    def test_a_scalp_whose_comment_the_broker_replaced_is_still_a_scalp(self) -> None:
+        """The failure this was written for. Same trade, same sag, and the only
+        difference is a field we never owned."""
+        service, position, tick, closed = self.watcher(comment="[sl 4653.15]", in_journal=True)
+
+        event = service._scalp_verdict(position, 0.45, 1.40 / 2.0, tick, 2.0)
+
+        assert event is not None, "a rewritten comment silently demoted it to a swing trade"
+        assert event.action == "SCALP_CLAIMED"
+        assert closed
+
+    def test_a_swing_trade_is_still_never_touched(self) -> None:
+        """Both markers have to be absent, and both are."""
+        service, position, tick, closed = self.watcher(comment="jarvis-exp-live", in_journal=False)
+
+        assert service._scalp_verdict(position, 0.45, 1.40 / 2.0, tick, 2.0) is None
+        assert closed == []
+
+    def test_the_comment_alone_is_still_enough(self) -> None:
+        """The cheap marker keeps working when the broker behaves, so the
+        journal is never consulted for the ordinary case."""
+        service, position, tick, _c = self.watcher(comment="jarvis-scalp", in_journal=False)
+
+        event = service._scalp_verdict(position, 0.45, 1.40 / 2.0, tick, 2.0)
+
+        assert event is not None and event.action == "SCALP_CLAIMED"
+
+    def test_an_unreadable_journal_does_not_freeze_the_answer(self) -> None:
+        """A lookup that raises must not be cached. One bad second would
+        otherwise mean the position is never treated as a scalp again."""
+
+        def boom(_ticket):  # type: ignore[no-untyped-def]
+            raise RuntimeError("journal is locked")
+
+        service, position, _tick, _closed = self.watcher(comment="", in_journal=False)
+        service.journal = SimpleNamespace(trade_opened_by_section_six=boom)
+
+        assert service._is_scalp(position) is False
+        assert position.ticket not in service._scalp_tickets
+
+        service.journal = SimpleNamespace(trade_opened_by_section_six=lambda _t: True)
+        assert service._is_scalp(position) is True
