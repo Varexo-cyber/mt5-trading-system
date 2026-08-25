@@ -318,23 +318,55 @@ class TestItIsLiveAndBraked:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.confluence
 
-    def test_it_is_live_and_carries_its_own_stop(self) -> None:
-        """Live on the owner's authorisation with no measured trades behind
-        it, which is only defensible because of the breaker. A new section
-        reaching `live_enabled_modules` WITHOUT one is the failure this
-        asserts against — the report would read protected while the account is
-        not."""
+    def test_it_trades_its_own_lane_and_not_the_confluence_vote(self) -> None:
+        """MOVED OUT OF THE VOTE ON 25 AUGUST, and this is not a demotion.
+
+        The confluence score is a weighted mean of (raw score x confidence)
+        over the agreeing modules. This module's ceiling is 45 x 0.75 = 33.75
+        against a bar of 45, so it could not open a trade alone -- and joining
+        a strong reader made things worse rather than better, because a mean
+        is dragged down by its weakest term: market_structure alone scores 70,
+        and 56.4 with this agreeing.
+
+        That is not a threshold anyone can set correctly. A scalp's evidence is
+        small and short-lived because that is what a scalp is, and an engine
+        built to weigh swing evidence will always price it low.
+
+        So it gets its own route to an order, and it is absent from
+        `live_enabled_modules` precisely so it cannot do both -- vote in
+        section one AND open its own trade on the same reading.
+        """
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
-        from core.types import TradingMode
 
         settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
-        confluence = settings.analysis.confluence
+        module = settings.analysis.candle_momentum
 
-        assert "candle_momentum" in confluence.live_enabled_modules
-        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["candle_momentum"] > 0
-        assert "candle_momentum" in settings.risk.section_breakers
+        assert module.own_lane_enabled
+        assert module.fixed_lots == 0.01
+        assert "candle_momentum" not in settings.analysis.confluence.live_enabled_modules
+        # Its own stop stays, and it is the strict one: this section takes
+        # several trades a day, so ten losses in a row is half a day paying
+        # for the same fault.
+        breaker = settings.risk.section_breakers["candle_momentum"]
+        assert breaker.enabled and breaker.losing_streak == 6
+
+    def test_its_ceiling_really_is_below_the_bar(self) -> None:
+        """The arithmetic the lane exists for, asserted rather than asserted
+        about. If a future change lifts this module's score above the
+        threshold, the lane is no longer the only way it can trade and that
+        decision deserves to be re-argued."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        module = settings.analysis.candle_momentum
+
+        ceiling = module.base_score * module.maximum_confidence
+
+        assert ceiling < settings.analysis.confluence.score_threshold
 
     def test_it_shares_the_momentum_family_rather_than_inventing_one(self) -> None:
         """It reads the same fact the other momentum readers read — price moved,
