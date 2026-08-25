@@ -316,7 +316,15 @@ class TestTheLaneCanNeverTakeSectionOneDown:
 
 
 class TestAScalpBanksWhatItHasWhenItsMinuteIsOver:
-    """26 August, live: +EUR 1.20 against a EUR 3.00 target, then back to
+    """THE FAR BACKSTOP, and it ships disabled -- `_scalp_verdict` replaced it.
+
+    A clock was the first answer to the give-back problem and the wrong one: it
+    closes a trade that is still running and holds one that has already turned.
+    It knows the time and nothing about the trade. Kept as a mechanism for a
+    position nothing else has an opinion about, and tested here with the clock
+    switched on explicitly.
+
+    26 August, live: +EUR 1.20 against a EUR 3.00 target, then back to
     -EUR 0.90 against a EUR 1.01 stop. A round trip of more than 2R.
 
     The thesis had an expiry and the exit did not. Section six enters on one
@@ -341,8 +349,22 @@ class TestAScalpBanksWhatItHasWhenItsMinuteIsOver:
 
         closed: list = []
         service = PositionManager.__new__(PositionManager)
-        service.settings = load_settings(
+        settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        # The clock ships DISABLED -- `_scalp_verdict` replaced it and it stays
+        # only as a far backstop. Enabled here because this class tests the
+        # mechanism, not the shipped default; that is asserted separately.
+        service.settings = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={
+                        "candle_momentum": settings.analysis.candle_momentum.model_copy(
+                            update={"maximum_age_minutes": 4.0}
+                        )
+                    }
+                )
+            }
         )
         service.broker = SimpleNamespace(  # type: ignore[attr-defined]
             spec=lambda symbol: InstrumentSpec.from_mt5(xauusd_spec()),
@@ -408,3 +430,117 @@ class TestAScalpBanksWhatItHasWhenItsMinuteIsOver:
 
         assert service._stale_scalp_exit(position, 1.19, tick, now) is None
         assert closed == []
+
+
+class TestTheScalpIsJudgedEverySecondAndNotOnAClock:
+    """The owner's rule, in his words: "hey dit gaat nog verder stijgen, ghalas
+    hold. En hey dit zakt al een beetje, ok laat me claimen. Hey dit staat
+    verlies, nee man dit gaat verder zakken, eruit."
+
+    A clock was the first answer and the wrong one -- it closes a trade that is
+    still running and holds one that has already turned. These ask the two
+    questions that matter instead, at the cadence the guard already runs.
+    """
+
+    def watcher(self, **overrides):  # type: ignore[no-untyped-def]
+        from datetime import UTC, datetime
+
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.instrument import InstrumentSpec
+        from core.types import Direction, Position
+        from execution.manager import PositionManager
+        from tests.fakes.fake_mt5 import xauusd_spec
+
+        closed: list = []
+        service = PositionManager.__new__(PositionManager)
+        service.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        service.broker = SimpleNamespace(  # type: ignore[attr-defined]
+            spec=lambda symbol: InstrumentSpec.from_mt5(xauusd_spec()),
+            copy_rates=lambda symbol, tf, n: [
+                {"close": overrides.get("last_close", 2400.0)} for _ in range(n)
+            ],
+            close_position=lambda position: (
+                closed.append(position),
+                SimpleNamespace(ok=True, filled_price=overrides.get("price", 2401.0)),
+            )[1],
+        )
+        position = Position(
+            ticket=1,
+            symbol="XAUUSD",
+            direction=Direction.LONG,
+            volume=0.01,
+            price_open=2400.0,
+            sl=2398.0,
+            tp=2402.8,
+            profit=1.0,
+            swap=0.0,
+            opened_at=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
+            magic=1,
+            comment=overrides.get("comment", "jarvis-scalp"),
+        )
+        price = overrides.get("price", 2401.0)
+        tick = SimpleNamespace(bid=price, ask=price + 0.25, spread=0.25)
+        return service, position, tick, closed
+
+    def test_it_holds_while_the_move_is_still_going_its_way(self) -> None:
+        """At its own high-water mark there is nothing given back, so it runs."""
+        service, position, tick, closed = self.watcher(price=2401.40)
+        # peak 5.6 spreads, price is AT the peak
+        peak_r = (1.40) / 2.0
+
+        assert service._scalp_verdict(position, 0.70, peak_r, tick, 2.0) is None
+        assert closed == []
+
+    def test_it_claims_once_the_gain_starts_sagging(self) -> None:
+        """Peaked 5.6 spreads up, now 3.6 -- two spreads given back, past the
+        1.5 it is allowed."""
+        service, position, tick, closed = self.watcher(price=2400.90)
+
+        event = service._scalp_verdict(position, 0.45, 1.40 / 2.0, tick, 2.0)
+
+        assert event is not None
+        assert event.action == "SCALP_CLAIMED"
+        assert closed
+
+    def test_a_gain_too_small_to_be_worth_claiming_is_left_alone(self) -> None:
+        """Under two spreads the profit has not cleared its own round trip."""
+        service, position, tick, closed = self.watcher(price=2400.20)
+
+        assert service._scalp_verdict(position, 0.10, 1.40 / 2.0, tick, 2.0) is None
+        assert closed == []
+
+    def test_it_cuts_a_loser_the_market_is_still_moving_away_from(self) -> None:
+        service, position, tick, closed = self.watcher(price=2399.00, last_close=2400.00)
+
+        event = service._scalp_verdict(position, -0.50, 0.0, tick, 2.0)
+
+        assert event is not None
+        assert event.action == "SCALP_CUT"
+        assert closed
+
+    def test_a_loser_that_has_stopped_falling_keeps_its_stop(self) -> None:
+        """Closing it pays a spread to book a loss the stop books for free."""
+        service, position, tick, closed = self.watcher(price=2399.50, last_close=2399.45)
+
+        assert service._scalp_verdict(position, -0.25, 0.0, tick, 2.0) is None
+        assert closed == []
+
+    def test_it_never_touches_a_swing_trade(self) -> None:
+        service, position, tick, closed = self.watcher(price=2400.90, comment="jarvis-exp-live")
+
+        assert service._scalp_verdict(position, 0.45, 1.40 / 2.0, tick, 2.0) is None
+        assert closed == []
+
+    def test_the_clock_is_off_by_default_now(self) -> None:
+        """A judgement replaced it. The clock stays only as a far backstop and
+        ships disabled."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        config = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.candle_momentum
+
+        assert config.maximum_age_minutes == 0.0
+        assert config.scalp_claim_spreads > 0

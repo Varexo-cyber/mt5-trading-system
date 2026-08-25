@@ -1854,7 +1854,39 @@ class CandleMomentumConfig(Base):
     #: level the move was never going to reach.
     #:
     #: Zero disables it and restores the price-only exit.
-    maximum_age_minutes: float = Field(default=4.0, ge=0.0, le=120.0)
+    #:
+    #: DEFAULTS TO OFF. A clock was the first answer and the wrong one: the
+    #: owner asked for a judgement, not a timer -- "hey dit gaat nog verder
+    #: stijgen, hold; hey dit zakt al een beetje, laat me claimen". That is
+    #: `scalp_claim_spreads` below. This stays only as a far backstop for a
+    #: position nothing else has an opinion about.
+    maximum_age_minutes: float = Field(default=0.0, ge=0.0, le=120.0)
+
+    #: How far a scalp may come back off its high-water mark before the gain is
+    #: taken, measured in SPREADS.
+    #:
+    #: This is the rule the owner actually described. While the move is still
+    #: going his way the position is held; the moment it starts sagging the
+    #: profit is claimed. Not a fraction of the peak and not a clock -- a
+    #: distance, in the only unit the market charges in.
+    #:
+    #: In spreads rather than in R because every level in this section that was
+    #: set in R or in candle spans turned out to sit inside its own costs: the
+    #: profit lock at 0.08R, the stop at 3.2 spreads. A give-back of one spread
+    #: is the smallest retreat that is not simply the bid and the ask taking
+    #: turns.
+    scalp_claim_spreads: float = Field(default=1.5, ge=0.0)
+    #: The gain has to be worth claiming before the rule above may act.
+    scalp_claim_minimum_spreads: float = Field(default=2.0, ge=0.0)
+    #: How far the last closed trigger bar must run AGAINST an already-losing
+    #: scalp before it is cut rather than left to the stop, in spreads.
+    #:
+    #: The other half of the same sentence: "hey dit staat verlies, nee man dit
+    #: gaat verder zakken, eruit". Not every loser -- only one the trigger
+    #: timeframe is still actively moving away from. A losing position that has
+    #: stopped falling keeps its stop, because closing it pays a spread to book
+    #: a loss the stop books for free.
+    scalp_cut_spreads: float = Field(default=3.0, ge=0.0)
     #: How much profit is worth banking when the clock runs out, as a multiple
     #: of the spread. Below this the trade has not cleared its own round trip
     #: and closing early just pays to lose slightly less.

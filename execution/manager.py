@@ -587,6 +587,10 @@ class PositionManager:
             # A SCALP WHOSE MINUTE IS OVER TAKES WHAT IT HAS. Checked before
             # every stop rule below, because those all reason about a trade
             # that still has a thesis and this one no longer does.
+            verdict = self._scalp_verdict(position, r_now, peak_r, tick, risk)
+            if verdict is not None:
+                events.append(verdict)
+                continue
             stale = self._stale_scalp_exit(position, r_now, tick, now)
             if stale is not None:
                 events.append(stale)
@@ -1226,6 +1230,94 @@ class PositionManager:
         if money > 0:
             cost += per_side / money
         return cost
+
+    def _scalp_verdict(
+        self, position: Position, r_now: float, peak_r: float, tick, risk: float
+    ) -> ManagementEvent | None:  # type: ignore[no-untyped-def]
+        """Hold while it runs, claim when it sags, cut when it keeps going wrong.
+
+        THE RULE THE OWNER ASKED FOR, in his words: "hey dit gaat nog verder
+        stijgen, ghalas hold. En hey dit zakt al een beetje, ok laat me
+        claimen. Hey dit staat verlies, nee man dit gaat verder zakken, eruit."
+
+        A clock was the first answer and the wrong one. A timer closes a trade
+        that is still running and holds one that has already turned; it knows
+        the time and nothing about the trade. This asks the only two questions
+        that matter and asks them every second, which is what
+        `guard_interval_seconds` already runs at.
+
+        MEASURED IN SPREADS, not in R and not as a fraction of the peak. Every
+        level in this section that was set in R or candle spans turned out to
+        sit inside its own costs -- the profit lock at 0.08R, the stop at 3.2
+        spreads. A retreat of less than a spread is the bid and the ask taking
+        turns, not the market changing its mind.
+
+        A LOSING POSITION THAT HAS STOPPED FALLING KEEPS ITS STOP. Closing it
+        pays a spread to book a loss the stop books for free, which is the
+        mistake `_worth_paying_to_leave` exists to refuse. Only a loser the
+        trigger frame is still actively moving away from is cut early.
+        """
+        if not str(getattr(position, "comment", "")).startswith("jarvis-scalp"):
+            return None
+        config = self.settings.analysis.candle_momentum
+        spread = float(getattr(tick, "spread", 0.0) or 0.0)
+        if spread <= 0 or risk <= 0:
+            return None
+        sign = int(position.direction)
+        price = float(getattr(tick, "bid" if sign > 0 else "ask", 0.0) or 0.0)
+        if price <= 0:
+            return None
+
+        # CLAIM. The high-water mark is `peak_r`, ratcheted every guard pass
+        # and persisted, so a restart cannot hand the trade a fresh peak.
+        gained_spreads = (price - position.price_open) * sign / spread
+        peak_spreads = peak_r * risk / spread
+        if gained_spreads >= config.scalp_claim_minimum_spreads:
+            given_back = peak_spreads - gained_spreads
+            if given_back >= config.scalp_claim_spreads:
+                result = self.broker.close_position(position)
+                if not result.ok:
+                    return None
+                return ManagementEvent(
+                    position.ticket,
+                    "SCALP_CLAIMED",
+                    f"peaked {peak_spreads:.1f} spreads up and came back "
+                    f"{given_back:.1f}; claimed {gained_spreads:.1f}",
+                    exit_price=result.filled_price,
+                    r_at_action=r_now,
+                )
+            return None
+
+        # CUT. Only while the trigger frame is still moving away from us: the
+        # last CLOSED bar against the live price, so a single tick cannot
+        # decide it.
+        if gained_spreads >= 0:
+            return None
+        last_close = self._last_close(position.symbol, config.trigger_timeframe)
+        if last_close is None:
+            return None
+        still_falling = (price - last_close) * sign / spread
+        if still_falling > -config.scalp_cut_spreads:
+            return None
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "SCALP_CUT",
+            f"still moving away: {still_falling:.1f} spreads under the last "
+            f"{config.trigger_timeframe} close, at {gained_spreads:.1f}",
+            exit_price=result.filled_price,
+            r_at_action=r_now,
+        )
+
+    def _last_close(self, symbol: str, timeframe: str) -> float | None:
+        """Close of the last completed bar on the trigger frame."""
+        try:
+            raw = self.broker.copy_rates(symbol, Timeframe.parse(timeframe).mt5_value, 2)
+            return float(pd.DataFrame(raw)["close"].iloc[-1])
+        except Exception:  # noqa: BLE001 - no bars is not a reason to close a position
+            return None
 
     def _stale_scalp_exit(
         self, position: Position, r_now: float, tick, now: datetime
