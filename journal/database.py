@@ -352,10 +352,8 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
             state_json      TEXT NOT NULL DEFAULT '{}'
         )
         """,
-        "CREATE INDEX idx_position_snapshots_trade_ts "
-        "ON position_state_snapshots(trade_id, ts)",
-        "CREATE INDEX idx_position_snapshots_ticket_ts "
-        "ON position_state_snapshots(ticket, ts)",
+        "CREATE INDEX idx_position_snapshots_trade_ts " "ON position_state_snapshots(trade_id, ts)",
+        "CREATE INDEX idx_position_snapshots_ticket_ts " "ON position_state_snapshots(ticket, ts)",
         "CREATE INDEX idx_position_snapshots_ts ON position_state_snapshots(ts)",
     ),
 }
@@ -531,15 +529,30 @@ class Journal:
         return streak
 
     def last_loss_closed_at(self, symbol: str) -> datetime | None:
-        """When the most recent losing trade on this instrument closed.
+        """When the most recent losing trade on this instrument closed."""
+        return self._last_close(symbol, " AND pnl_money < 0")
 
-        Losses only. A winner closing and a fresh setup appearing on the same
-        instrument is an ordinary sequence; a loser closing and the same
-        instrument being taken again a minute later is not.
+    def last_close_at(self, symbol: str) -> datetime | None:
+        """When the most recent trade on this instrument closed, either way.
+
+        The losses-only reading above was the original, and it left a hole the
+        live account walked straight into on 25 August: a USDJPY short closed
+        at 06:58:01 for +EUR 1.40 and another opened at 06:58:37. Thirty-six
+        seconds, and nothing objected, because the previous close had been a
+        winner.
+
+        The churn this guards against is a property of the CHART, not of the
+        last outcome. A window of bars is read, a trade consumes a few minutes
+        of it, and the window read next is mostly the window just read. A
+        winner consumes the same minutes as a loser.
         """
+        return self._last_close(symbol, "")
+
+    def _last_close(self, symbol: str, extra: str) -> datetime | None:
         row = self.conn.execute(
-            "SELECT closed_at FROM trades WHERE symbol = ? AND closed_at IS NOT NULL "
-            "AND pnl_money < 0 ORDER BY closed_at DESC LIMIT 1",
+            "SELECT closed_at FROM trades WHERE symbol = ? AND closed_at IS NOT NULL"
+            + extra
+            + " ORDER BY closed_at DESC LIMIT 1",
             (symbol,),
         ).fetchone()
         if row is None or not row["closed_at"]:
