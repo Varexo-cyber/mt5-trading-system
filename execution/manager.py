@@ -528,9 +528,14 @@ class PositionManager:
                     )
                 )
                 continue
-            atr = self._atr(position.symbol)
-            break_even = position.price_open + atr * config.break_even_offset_atr * int(
-                position.direction
+            # None when the ATR is unknown, and then break-even and the trail
+            # below are both skipped rather than run with a zero offset. See
+            # `_atr_offset`: a zero offset is not a neutral one.
+            be_offset = self._atr_offset(
+                position.symbol, config.break_even_offset_atr, position.direction
+            )
+            break_even = (
+                position.price_open + be_offset if be_offset is not None else position.price_open
             )
             # The R floor, or enough money that the R floor is the wrong
             # question. Same fault as the profit lock and peak stall: a wide
@@ -543,8 +548,10 @@ class PositionManager:
             # lock: this rule protects the entry, so what matters is whether
             # the money is on the table now, not whether it once was.
             worth_protecting = self._is_account_meaningful(r_now, risk_money)
-            if (r_now >= config.break_even_at_r or worth_protecting) and self._worth_moving(
-                position, break_even, risk
+            if (
+                be_offset is not None
+                and (r_now >= config.break_even_at_r or worth_protecting)
+                and self._worth_moving(position, break_even, risk)
             ):
                 result = self.broker.modify_stops(
                     position,
@@ -616,8 +623,13 @@ class PositionManager:
                 events.append(locked)
                 continue
 
-            if config.trailing_mode == "atr" and r_now >= config.partial_close_at_r:
-                trailing = price - atr * config.trailing_atr_multiple * int(position.direction)
+            trail_offset = (
+                self._atr_offset(position.symbol, config.trailing_atr_multiple, position.direction)
+                if config.trailing_mode == "atr" and r_now >= config.partial_close_at_r
+                else None
+            )
+            if trail_offset is not None:
+                trailing = self._with_stop_room(position, price - trail_offset, risk, tick)
                 if self._worth_moving(position, trailing, risk):
                     result = self.broker.modify_stops(
                         position,
@@ -836,16 +848,7 @@ class PositionManager:
         #
         # So the room must also be a share of the trade's own risk, which is
         # the only unit that means the same thing on every instrument.
-        trigger = tick.ask if position.direction is Direction.SHORT else tick.bid
-        room_floor = max(
-            max(getattr(tick, "spread", 0.0) or 0.0, 0.0) * config.min_stop_room_spreads,
-            risk * config.min_stop_room_r,
-        )
-        if room_floor > 0:
-            if position.direction is Direction.LONG:
-                locked = min(locked, trigger - room_floor)
-            else:
-                locked = max(locked, trigger + room_floor)
+        locked = self._with_stop_room(position, locked, risk, tick)
 
         improves = (position.direction is Direction.LONG and locked > position.sl) or (
             position.direction is Direction.SHORT and locked < position.sl
@@ -1587,6 +1590,52 @@ class PositionManager:
             return None
         return self._session_filter.minutes_of_runway(now, asset_class)
 
+    def _with_stop_room(
+        self,
+        position: Position,
+        candidate: float,
+        risk: float,
+        tick,  # type: ignore[no-untyped-def]
+    ) -> float:
+        """Push a candidate stop back until it is not sitting inside its costs.
+
+        A stop within one spread of the trigger price is not a stop, it is a
+        fill at a worse price waiting to happen. The trigger side is the one
+        that matters: a short is closed at the ask, a long at the bid.
+
+        TWO FLOORS, BECAUSE NEITHER IS A FLOOR ON ITS OWN. Measuring the room
+        in spreads works on FRA40, where 32 pips of spread makes two of them 64
+        pips of protection. On EURAUD the spread is 0.10 pips, so two of them
+        is 0.2 pips — no floor at all, and the ratchet ran unimpeded: seven
+        tightenings inside one minute on 20 August, closing at -0.66R on the
+        tightened stop while the real stop at -1.00R was never approached. A
+        loss the position had not taken and the rules manufactured. So the room
+        is also a share of the trade's own risk, the one unit that means the
+        same thing on every instrument.
+
+        Clamped rather than refused, so the risk reduction a reading earned is
+        kept; the caller's own `improves` test then declines the move outright
+        once the floor has caught up with the current stop, which is what
+        actually stops a ratchet.
+
+        Shared by `_health_tighten` and the ATR trail. The trail was written
+        without it and placed its stop straight off `price - atr * multiple`
+        with nothing but an improvement test in the way — the same exposure,
+        differing only in how often the offset happens to be wide enough to
+        hide it.
+        """
+        config = self.settings.trade_management
+        trigger = tick.ask if position.direction is Direction.SHORT else tick.bid
+        room_floor = max(
+            max(getattr(tick, "spread", 0.0) or 0.0, 0.0) * config.min_stop_room_spreads,
+            risk * config.min_stop_room_r,
+        )
+        if room_floor <= 0:
+            return candidate
+        if position.direction is Direction.LONG:
+            return min(candidate, trigger - room_floor)
+        return max(candidate, trigger + room_floor)
+
     def _worth_moving(self, position: Position, candidate: float, risk: float) -> bool:
         """Whether moving the stop to `candidate` is worth a broker round-trip.
 
@@ -2226,13 +2275,18 @@ class PositionManager:
             if action == "none":
                 continue
             if action == "break_even":
-                atr = self._atr(position.symbol)
-                desired = spec.normalize_price(
-                    position.price_open
-                    + atr
-                    * self.settings.trade_management.break_even_offset_atr
-                    * int(position.direction)
+                offset = self._atr_offset(
+                    position.symbol,
+                    self.settings.trade_management.break_even_offset_atr,
+                    position.direction,
                 )
+                if offset is None:
+                    # Without an ATR the offset is zero, and a stop on the entry
+                    # price is a guaranteed loss of the spread rather than a
+                    # break-even. Leave the trade where it is; the supervisor
+                    # asks again next pass.
+                    continue
+                desired = spec.normalize_price(position.price_open + offset)
                 tick = self.broker.tick(position.symbol)
                 executable = tick.bid if position.direction is Direction.LONG else tick.ask
                 valid_now = (position.direction is Direction.LONG and desired < executable) or (
@@ -2292,8 +2346,26 @@ class PositionManager:
         return value
 
     def _compute_atr(self, symbol: str, period: int = 14) -> float:
+        """Recent H1 volatility, or 0.0 meaning "no measurement".
+
+        NOT AN ERROR PATH, A MEANING. Zero here is never a real ATR: an
+        instrument that has not moved at all for fourteen hours does not exist,
+        and if it did there would be nothing to trade. So every caller must
+        read 0.0 as "I do not know", and the three that use it all refuse to
+        act on it — see `_atr_offset`.
+
+        It used to raise instead, and this runs inside the per-second guard
+        loop. `copy_rates` returning an empty list makes `frame["close"]` a
+        KeyError, which propagated out of `manage` and was caught by
+        `guard_tick` as one warning line — discarding the whole pass, for every
+        open position, every second, for as long as that one symbol's H1
+        history stayed unavailable. `_travel_time` already guards its own ATR
+        for exactly this reason; this one did not.
+        """
         raw = self.broker.copy_rates(symbol, Timeframe.H1.mt5_value, period + 2)
         frame = pd.DataFrame(raw)
+        if frame.empty or not {"high", "low", "close"} <= set(frame.columns):
+            return 0.0
         previous = frame["close"].shift(1)
         tr = pd.concat(
             [
@@ -2303,4 +2375,30 @@ class PositionManager:
             ],
             axis=1,
         ).max(axis=1)
-        return float(tr.tail(period).mean())
+        value = float(tr.tail(period).mean())
+        # NaN out of an all-NaN window, and NaN compares False against every
+        # threshold downstream — which reads as "do not act" at some call sites
+        # and slips through at others. Collapse it here to the one value that
+        # means the same thing everywhere.
+        return value if math.isfinite(value) and value > 0 else 0.0
+
+    def _atr_offset(self, symbol: str, multiple: float, direction: Direction) -> float | None:
+        """A price offset built from ATR, or None when there is no ATR.
+
+        The whole reason this exists is that `atr * multiple` silently becomes
+        zero when the ATR is unknown, and zero is a catastrophic offset rather
+        than a neutral one. The trail would place its stop at `price - 0`, the
+        current price — an instant stop-out, approved by `_worth_moving`
+        because it is a large improvement. Break-even would place its stop at
+        exactly the entry, which is not break-even at all: a long is closed on
+        the bid, so a stop sitting on the entry price is a guaranteed loss of
+        the spread. Covering that cost is the entire job of
+        `break_even_offset_atr`.
+
+        None rather than 0.0 so a caller cannot use the result without first
+        deciding what to do about not knowing.
+        """
+        atr = self._atr(symbol)
+        if atr <= 0:
+            return None
+        return atr * multiple * int(direction)
