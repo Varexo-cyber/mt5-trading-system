@@ -376,272 +376,321 @@ class PositionManager:
         for ticket in set(self._health_interventions) - live_tickets:
             self._health_interventions.pop(ticket, None)
         for position in positions:
-            row = self.journal.open_trade_by_ticket(position.ticket)
-            if row is None:
+            # ONE POSITION'S FAILURE IS NOT EVERY POSITION'S FAILURE.
+            #
+            # This body used to be inline, so anything that raised in it --
+            # a missing rate series, a tick that did not arrive, a journal
+            # row shaped unexpectedly -- propagated out of `manage` and was
+            # caught by `guard_tick` as a single warning line. That discarded
+            # the whole pass, including the events already collected for the
+            # positions read BEFORE the bad one. Every open trade went
+            # unmanaged for that second, and the guard is the only thing
+            # watching them second by second.
+            #
+            # The same shape cost a full day of analysis earlier: one
+            # detector raising took down the candidates for every symbol in
+            # the batch, and the log said only "candidate analysis failed".
+            # A per-item failure must cost that item and nothing else.
+            try:
+                events.extend(self._manage_one(position, now, config, patience))
+            except Exception as exc:
+                # `exception` rather than `warning`: the traceback is the only
+                # thing that says WHICH rule raised, and a per-second loop that
+                # swallows the cause silently is how a defect survives a month.
+                log.exception(
+                    "managing one position failed",
+                    extra={
+                        "event": "manage_position_failed",
+                        "ticket": position.ticket,
+                        "symbol": position.symbol,
+                        "error": type(exc).__name__,
+                    },
+                )
+                # Recorded rather than merely logged, so the deck says "this
+                # trade is held by its broker stop alone" instead of leaving a
+                # gap an operator has to interpret.
                 self._unmanaged(
                     position,
-                    "no open trade on record for this ticket, so there is no entry "
-                    "intent to measure R against; the broker stop is the only thing "
-                    "holding it",
+                    f"the rules raised {type(exc).__name__} on this position, so nothing "
+                    f"in this file is managing it; the broker stop is the only thing "
+                    f"holding it",
                 )
-                continue
-            original_sl = float(row["sl"])
-            risk = abs(position.price_open - original_sl)
-            # Read once here rather than at each call site: two rules now
-            # need it to convert a peak in R into a peak in money.
-            risk_money = _risk_money(row)
-            if risk <= 0:
-                self._unmanaged(
-                    position,
-                    f"journal records the stop at {original_sl:.5f}, the same as entry, "
-                    f"so 1R is zero and every rule here divides by it",
-                )
-                continue
-            tick = self.broker.tick(position.symbol)
-            price = tick.bid if position.direction is Direction.LONG else tick.ask
-            r_now = (price - position.price_open) * int(position.direction) / risk
-            peak_r = self._record_excursion(int(row["id"]), r_now, float(row["mfe_r"] or 0.0))
-            self.last_observation[position.ticket] = {
-                "bid": float(tick.bid),
-                "ask": float(tick.ask),
-                "current_price": float(price),
-                "spread": float(tick.spread),
-                "risk_price": float(risk),
-                "r_now": float(r_now),
-                "peak_r": float(peak_r),
-                "health_observed": False,
-            }
-            # Before anything else, because everything else assumes we intend to
-            # still be in the trade. Nothing that happens after 20:15 UTC is
-            # worth the spread it costs to be there.
-            wind_down = self._evening_flatten(position, now, r_now)
-            if wind_down is not None:
-                events.append(wind_down)
-                continue
-            # Before the hour-before-the-close rule and before every other
-            # profit rule, because it is the only one that acts while the money
-            # is plainly on the table rather than after something has started to
-            # go wrong.
-            banked = self._bank_worthwhile_profit(position, r_now, risk, risk_money)
-            if banked is not None:
-                events.append(banked)
-                continue
-            # Then the hour before that deadline. Placed above every other
-            # profit rule because none of them know the session is ending: the
-            # peak stall waits six minutes for a peak that will not come, and
-            # the give-back waits for a drain the closing spread supplies for
-            # free.
-            decaying = self._session_decay_exit(position, now, r_now, risk, tick)
-            if decaying is not None:
-                events.append(decaying)
-                continue
-            # Next, because it is about to happen to us rather than about what
-            # the trade is worth: a spread wide enough to trigger the stop on
-            # its own.
-            squeezed = self._spread_squeeze_exit(position, tick, r_now, now)
-            if squeezed is not None:
-                events.append(squeezed)
-                continue
-            age_hours = (now - position.opened_at).total_seconds() / 3600.0
-            # How the trade is actually behaving, not just what R it is at.
-            # Read before the give-back rule, because that rule now asks it
-            # whether the move is still working rather than acting on a number
-            # alone — see `_giveback_exit`.
-            health = self._read_health(position, r_now, age_hours * 60.0, risk, tick)
-            self.last_health[position.ticket] = health
-            self.last_observation[position.ticket]["health_observed"] = True
-            if health.action == "hold":
-                # Recovery is the boundary between evidence episodes. Only
-                # after it may the same family earn another intervention.
-                self._health_interventions.pop(position.ticket, None)
-            # Asked first, because it is the only exit here that can act while
-            # the money is still on the table. The two rules cannot both apply:
-            # this one needs price near the peak, the give-back needs it far
-            # from the peak.
-            # BOTH OF THESE NEED A PEAK, AND A FRESH TRADE HAS NOT GOT ONE.
-            #
-            # The chain ran from the first tick after the fill, so a trade
-            # opened on a full multi-timeframe analysis was immediately judged
-            # by rules written for one that has been running. The stall looks
-            # for a peak that has not formed; the give-back measures a decline
-            # from that same absent peak. Neither is an opinion about the
-            # trade — both are arithmetic on a number that does not exist yet.
-            #
-            # The health read below is NOT gated, deliberately. A trade that is
-            # genuinely broken after four minutes may leave, and should: a
-            # structure break is a discrete event, as real in minute four as in
-            # hour four, and that read already carries its own bar of two
-            # corroborating families. Holding a position the system can see is
-            # broken would be a worse failure than the one this fixes.
-            settled = age_hours * 60.0 >= config.min_discretionary_exit_minutes
-            stalled = (
-                self._peak_stall_exit(
-                    position,
-                    r_now,
-                    peak_r,
-                    now,
-                    health,
-                    risk_money=risk_money,
-                    tick=tick,
-                    risk=risk,
-                )
-                if settled
-                else None
+        return events
+
+    def _manage_one(
+        self,
+        position: Position,
+        now: datetime,
+        config: TradeManagementConfig,
+        patience: float,
+    ) -> list[ManagementEvent]:
+        """Every mechanical rule, for one position, in priority order.
+
+        Extracted from `manage` for one reason: so that a failure here is
+        contained to this position. See the call site.
+        """
+        events: list[ManagementEvent] = []
+        row = self.journal.open_trade_by_ticket(position.ticket)
+        if row is None:
+            self._unmanaged(
+                position,
+                "no open trade on record for this ticket, so there is no entry "
+                "intent to measure R against; the broker stop is the only thing "
+                "holding it",
             )
-            if stalled is not None:
-                events.append(stalled)
-                continue
-            giveback = self._giveback_exit(position, r_now, peak_r, health) if settled else None
-            if giveback is not None:
-                events.append(giveback)
-                continue
-            reacted = self._act_on_health(position, health, r_now, risk, tick)
-            if reacted is not None:
-                events.append(reacted)
-                if reacted.exit_price is not None:
-                    continue
-            deadline = (
-                config.time_exit_hours * patience if config.time_exit_hours is not None else None
+            return events
+        original_sl = float(row["sl"])
+        risk = abs(position.price_open - original_sl)
+        # Read once here rather than at each call site: two rules now
+        # need it to convert a peak in R into a peak in money.
+        risk_money = _risk_money(row)
+        if risk <= 0:
+            self._unmanaged(
+                position,
+                f"journal records the stop at {original_sl:.5f}, the same as entry, "
+                f"so 1R is zero and every rule here divides by it",
             )
-            expired = self._time_exit_verdict(config, age_hours, deadline, r_now, peak_r)
-            if expired is not None:
-                result = self.broker.close_position(position)
-                if not result.ok:
-                    events.append(
-                        ManagementEvent(
-                            position.ticket,
-                            "TIME_EXIT_REJECTED",
-                            f"broker rejected stalled-trade exit: {result.retcode_name}; "
-                            f"still open after {age_hours:.1f}h at {r_now:.2f}R",
-                            r_at_action=r_now,
-                        )
-                    )
-                    continue
+            return events
+        tick = self.broker.tick(position.symbol)
+        price = tick.bid if position.direction is Direction.LONG else tick.ask
+        r_now = (price - position.price_open) * int(position.direction) / risk
+        peak_r = self._record_excursion(int(row["id"]), r_now, float(row["mfe_r"] or 0.0))
+        self.last_observation[position.ticket] = {
+            "bid": float(tick.bid),
+            "ask": float(tick.ask),
+            "current_price": float(price),
+            "spread": float(tick.spread),
+            "risk_price": float(risk),
+            "r_now": float(r_now),
+            "peak_r": float(peak_r),
+            "health_observed": False,
+        }
+        # Before anything else, because everything else assumes we intend to
+        # still be in the trade. Nothing that happens after 20:15 UTC is
+        # worth the spread it costs to be there.
+        wind_down = self._evening_flatten(position, now, r_now)
+        if wind_down is not None:
+            events.append(wind_down)
+            return events
+        # Before the hour-before-the-close rule and before every other
+        # profit rule, because it is the only one that acts while the money
+        # is plainly on the table rather than after something has started to
+        # go wrong.
+        banked = self._bank_worthwhile_profit(position, r_now, risk, risk_money)
+        if banked is not None:
+            events.append(banked)
+            return events
+        # Then the hour before that deadline. Placed above every other
+        # profit rule because none of them know the session is ending: the
+        # peak stall waits six minutes for a peak that will not come, and
+        # the give-back waits for a drain the closing spread supplies for
+        # free.
+        decaying = self._session_decay_exit(position, now, r_now, risk, tick)
+        if decaying is not None:
+            events.append(decaying)
+            return events
+        # Next, because it is about to happen to us rather than about what
+        # the trade is worth: a spread wide enough to trigger the stop on
+        # its own.
+        squeezed = self._spread_squeeze_exit(position, tick, r_now, now)
+        if squeezed is not None:
+            events.append(squeezed)
+            return events
+        age_hours = (now - position.opened_at).total_seconds() / 3600.0
+        # How the trade is actually behaving, not just what R it is at.
+        # Read before the give-back rule, because that rule now asks it
+        # whether the move is still working rather than acting on a number
+        # alone — see `_giveback_exit`.
+        health = self._read_health(position, r_now, age_hours * 60.0, risk, tick)
+        self.last_health[position.ticket] = health
+        self.last_observation[position.ticket]["health_observed"] = True
+        if health.action == "hold":
+            # Recovery is the boundary between evidence episodes. Only
+            # after it may the same family earn another intervention.
+            self._health_interventions.pop(position.ticket, None)
+        # Asked first, because it is the only exit here that can act while
+        # the money is still on the table. The two rules cannot both apply:
+        # this one needs price near the peak, the give-back needs it far
+        # from the peak.
+        # BOTH OF THESE NEED A PEAK, AND A FRESH TRADE HAS NOT GOT ONE.
+        #
+        # The chain ran from the first tick after the fill, so a trade
+        # opened on a full multi-timeframe analysis was immediately judged
+        # by rules written for one that has been running. The stall looks
+        # for a peak that has not formed; the give-back measures a decline
+        # from that same absent peak. Neither is an opinion about the
+        # trade — both are arithmetic on a number that does not exist yet.
+        #
+        # The health read below is NOT gated, deliberately. A trade that is
+        # genuinely broken after four minutes may leave, and should: a
+        # structure break is a discrete event, as real in minute four as in
+        # hour four, and that read already carries its own bar of two
+        # corroborating families. Holding a position the system can see is
+        # broken would be a worse failure than the one this fixes.
+        settled = age_hours * 60.0 >= config.min_discretionary_exit_minutes
+        stalled = (
+            self._peak_stall_exit(
+                position,
+                r_now,
+                peak_r,
+                now,
+                health,
+                risk_money=risk_money,
+                tick=tick,
+                risk=risk,
+            )
+            if settled
+            else None
+        )
+        if stalled is not None:
+            events.append(stalled)
+            return events
+        giveback = self._giveback_exit(position, r_now, peak_r, health) if settled else None
+        if giveback is not None:
+            events.append(giveback)
+            return events
+        reacted = self._act_on_health(position, health, r_now, risk, tick)
+        if reacted is not None:
+            events.append(reacted)
+            if reacted.exit_price is not None:
+                return events
+        deadline = config.time_exit_hours * patience if config.time_exit_hours is not None else None
+        expired = self._time_exit_verdict(config, age_hours, deadline, r_now, peak_r)
+        if expired is not None:
+            result = self.broker.close_position(position)
+            if not result.ok:
                 events.append(
                     ManagementEvent(
                         position.ticket,
-                        "TIME_EXIT",
-                        f"{age_hours:.1f}h, {r_now:.2f}R (peak {peak_r:.2f}R) — {expired}"
-                        + (f"; drawdown posture: {deadline:.1f}h limit" if patience < 1.0 else ""),
-                        result.filled_price,
-                        position.profit + position.swap,
+                        "TIME_EXIT_REJECTED",
+                        f"broker rejected stalled-trade exit: {result.retcode_name}; "
+                        f"still open after {age_hours:.1f}h at {r_now:.2f}R",
+                        r_at_action=r_now,
                     )
                 )
-                continue
-            # None when the ATR is unknown, and then break-even and the trail
-            # below are both skipped rather than run with a zero offset. See
-            # `_atr_offset`: a zero offset is not a neutral one.
-            be_offset = self._atr_offset(
-                position.symbol, config.break_even_offset_atr, position.direction
+                return events
+            events.append(
+                ManagementEvent(
+                    position.ticket,
+                    "TIME_EXIT",
+                    f"{age_hours:.1f}h, {r_now:.2f}R (peak {peak_r:.2f}R) — {expired}"
+                    + (f"; drawdown posture: {deadline:.1f}h limit" if patience < 1.0 else ""),
+                    result.filled_price,
+                    position.profit + position.swap,
+                )
             )
-            break_even = (
-                position.price_open + be_offset if be_offset is not None else position.price_open
+            return events
+        # None when the ATR is unknown, and then break-even and the trail
+        # below are both skipped rather than run with a zero offset. See
+        # `_atr_offset`: a zero offset is not a neutral one.
+        be_offset = self._atr_offset(
+            position.symbol, config.break_even_offset_atr, position.direction
+        )
+        break_even = (
+            position.price_open + be_offset if be_offset is not None else position.price_open
+        )
+        # The R floor, or enough money that the R floor is the wrong
+        # question. Same fault as the profit lock and peak stall: a wide
+        # structural stop makes real money look like a small R, and the
+        # rule whose whole job is to stop a winner turning into a loser
+        # never sees it. The live CADCHF long sat on 2.2% of the account
+        # at 0.44R with its stop still twelve pips below entry.
+        #
+        # Measured on the LIVE price rather than the peak, unlike the
+        # lock: this rule protects the entry, so what matters is whether
+        # the money is on the table now, not whether it once was.
+        worth_protecting = self._is_account_meaningful(r_now, risk_money)
+        if (
+            be_offset is not None
+            and (r_now >= config.break_even_at_r or worth_protecting)
+            and self._worth_moving(position, break_even, risk)
+        ):
+            result = self.broker.modify_stops(
+                position,
+                sl=self.broker.spec(position.symbol).normalize_price(break_even),
+                tp=position.tp,
             )
-            # The R floor, or enough money that the R floor is the wrong
-            # question. Same fault as the profit lock and peak stall: a wide
-            # structural stop makes real money look like a small R, and the
-            # rule whose whole job is to stop a winner turning into a loser
-            # never sees it. The live CADCHF long sat on 2.2% of the account
-            # at 0.44R with its stop still twelve pips below entry.
-            #
-            # Measured on the LIVE price rather than the peak, unlike the
-            # lock: this rule protects the entry, so what matters is whether
-            # the money is on the table now, not whether it once was.
-            worth_protecting = self._is_account_meaningful(r_now, risk_money)
-            if (
-                be_offset is not None
-                and (r_now >= config.break_even_at_r or worth_protecting)
-                and self._worth_moving(position, break_even, risk)
-            ):
+            if result.ok:
+                events.append(
+                    ManagementEvent(
+                        position.ticket,
+                        "BREAK_EVEN",
+                        f"stop protected at {r_now:.2f}R"
+                        + (
+                            f" — {worth_protecting:.2f} is "
+                            f"{worth_protecting / self.equity * 100:.1f}% of the account, "
+                            f"so the {config.break_even_at_r:.2f}R floor was not the "
+                            f"right question"
+                            if worth_protecting and r_now < config.break_even_at_r
+                            else ""
+                        ),
+                    )
+                )
+                return events
+        partial_actions = ("PARTIAL_CLOSE", "PARTIAL_CLOSE_RECOVERED")
+        if r_now >= config.partial_close_at_r and not self.journal.management_action_exists(
+            position.ticket, partial_actions
+        ):
+            spec = self.broker.spec(position.symbol)
+            close_volume = spec.round_volume_down(position.volume * config.partial_close_fraction)
+            remaining = spec.round_volume_down(position.volume - close_volume)
+            if close_volume >= spec.volume_min and remaining >= spec.volume_min:
+                result = self.broker.close_position(position, close_volume)
+                if result.ok:
+                    events.append(
+                        ManagementEvent(
+                            position.ticket,
+                            "PARTIAL_CLOSE",
+                            f"closed {result.filled_volume:g} lots at {r_now:.2f}R",
+                            exit_price=result.filled_price,
+                            volume_closed=result.filled_volume,
+                            remaining_volume=remaining,
+                            r_at_action=r_now,
+                        )
+                    )
+                    return events
+
+        # A SCALP WHOSE MINUTE IS OVER TAKES WHAT IT HAS. Checked before
+        # every stop rule below, because those all reason about a trade
+        # that still has a thesis and this one no longer does.
+        verdict = self._scalp_verdict(position, r_now, peak_r, tick, risk)
+        if verdict is not None:
+            events.append(verdict)
+            return events
+        stale = self._stale_scalp_exit(position, r_now, tick, now)
+        if stale is not None:
+            events.append(stale)
+            return events
+
+        # Walk the stop up behind a trade that has proved itself, instead
+        # of leaving it parked at break-even all the way to 1.5R. Placed
+        # after the partial close deliberately: banking real money outranks
+        # adjusting a stop, and the guard comes round again in a second.
+        locked = self._profit_lock(position, r_now, peak_r, risk, risk_money=risk_money, tick=tick)
+        if locked is not None:
+            events.append(locked)
+            return events
+
+        trail_offset = (
+            self._atr_offset(position.symbol, config.trailing_atr_multiple, position.direction)
+            if config.trailing_mode == "atr" and r_now >= config.partial_close_at_r
+            else None
+        )
+        if trail_offset is not None:
+            trailing = self._with_stop_room(position, price - trail_offset, risk, tick)
+            if self._worth_moving(position, trailing, risk):
                 result = self.broker.modify_stops(
                     position,
-                    sl=self.broker.spec(position.symbol).normalize_price(break_even),
+                    sl=self.broker.spec(position.symbol).normalize_price(trailing),
                     tp=position.tp,
                 )
                 if result.ok:
                     events.append(
                         ManagementEvent(
-                            position.ticket,
-                            "BREAK_EVEN",
-                            f"stop protected at {r_now:.2f}R"
-                            + (
-                                f" — {worth_protecting:.2f} is "
-                                f"{worth_protecting / self.equity * 100:.1f}% of the account, "
-                                f"so the {config.break_even_at_r:.2f}R floor was not the "
-                                f"right question"
-                                if worth_protecting and r_now < config.break_even_at_r
-                                else ""
-                            ),
+                            position.ticket, "ATR_TRAIL", f"stop trailed at {r_now:.2f}R"
                         )
                     )
-                    continue
-            partial_actions = ("PARTIAL_CLOSE", "PARTIAL_CLOSE_RECOVERED")
-            if r_now >= config.partial_close_at_r and not self.journal.management_action_exists(
-                position.ticket, partial_actions
-            ):
-                spec = self.broker.spec(position.symbol)
-                close_volume = spec.round_volume_down(
-                    position.volume * config.partial_close_fraction
-                )
-                remaining = spec.round_volume_down(position.volume - close_volume)
-                if close_volume >= spec.volume_min and remaining >= spec.volume_min:
-                    result = self.broker.close_position(position, close_volume)
-                    if result.ok:
-                        events.append(
-                            ManagementEvent(
-                                position.ticket,
-                                "PARTIAL_CLOSE",
-                                f"closed {result.filled_volume:g} lots at {r_now:.2f}R",
-                                exit_price=result.filled_price,
-                                volume_closed=result.filled_volume,
-                                remaining_volume=remaining,
-                                r_at_action=r_now,
-                            )
-                        )
-                        continue
 
-            # A SCALP WHOSE MINUTE IS OVER TAKES WHAT IT HAS. Checked before
-            # every stop rule below, because those all reason about a trade
-            # that still has a thesis and this one no longer does.
-            verdict = self._scalp_verdict(position, r_now, peak_r, tick, risk)
-            if verdict is not None:
-                events.append(verdict)
-                continue
-            stale = self._stale_scalp_exit(position, r_now, tick, now)
-            if stale is not None:
-                events.append(stale)
-                continue
-
-            # Walk the stop up behind a trade that has proved itself, instead
-            # of leaving it parked at break-even all the way to 1.5R. Placed
-            # after the partial close deliberately: banking real money outranks
-            # adjusting a stop, and the guard comes round again in a second.
-            locked = self._profit_lock(
-                position, r_now, peak_r, risk, risk_money=risk_money, tick=tick
-            )
-            if locked is not None:
-                events.append(locked)
-                continue
-
-            trail_offset = (
-                self._atr_offset(position.symbol, config.trailing_atr_multiple, position.direction)
-                if config.trailing_mode == "atr" and r_now >= config.partial_close_at_r
-                else None
-            )
-            if trail_offset is not None:
-                trailing = self._with_stop_room(position, price - trail_offset, risk, tick)
-                if self._worth_moving(position, trailing, risk):
-                    result = self.broker.modify_stops(
-                        position,
-                        sl=self.broker.spec(position.symbol).normalize_price(trailing),
-                        tp=position.tp,
-                    )
-                    if result.ok:
-                        events.append(
-                            ManagementEvent(
-                                position.ticket, "ATR_TRAIL", f"stop trailed at {r_now:.2f}R"
-                            )
-                        )
         return events
 
     def _bars(self, symbol: str, timeframe: Timeframe, count: int) -> pd.DataFrame | None:
