@@ -229,23 +229,35 @@ class TestItIsLiveAndBraked:
     def test_it_is_weighted_so_the_backtest_can_see_it(self) -> None:
         assert self._confluence().weights["drift_burst"] > 0
 
-    def test_it_is_live_and_carries_its_own_stop(self) -> None:
-        """Live on the owner's authorisation with no measured trades behind
-        it, which is only defensible because of the breaker. A new section
-        reaching `live_enabled_modules` WITHOUT one is the failure this
-        asserts against — the report would read protected while the account is
-        not."""
+    def test_it_is_back_on_paper_and_still_measured(self) -> None:
+        """LIVE ON 24 AUGUST, OFF AGAIN ON 25. Its own paper record rejects
+        its own hypothesis.
+
+        The research behind this section measures that two thirds of drift
+        bursts revert. That is the entire claim. What the observer recorded in
+        the first day: 7 setups, 1 hit, 14%, -5.44R between them. If the true
+        rate were 67% the chance of one or fewer from seven is p = 0.0065 --
+        about one in 154. Seven observations is thin for almost any question,
+        but not for this one: the gap between 14% and 67% is wide enough that
+        seven settles it.
+
+        And it is exactly the open question written down when this was built.
+        The statistic was measured on TICK data and this account reads M1
+        bars, so whether it survives the coarsening was never known. It does
+        not.
+
+        The weight stays at 0.7 so it keeps being measured and the backtest
+        keeps including it. It simply may not touch money. Going live again
+        needs a paper record that holds up, not a decision.
+        """
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
-        from core.types import TradingMode
 
-        settings = load_settings(
+        confluence = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
-        )
-        confluence = settings.analysis.confluence
+        ).analysis.confluence
 
-        assert "drift_burst" in confluence.live_enabled_modules
-        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["drift_burst"] > 0
-        assert "drift_burst" in settings.risk.section_breakers
+        assert "drift_burst" not in confluence.live_enabled_modules
+        assert confluence.weights["drift_burst"] > 0
 
     def test_it_is_its_own_evidence_family(self) -> None:
         """Filing it under an existing family would let it corroborate a reader
