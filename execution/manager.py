@@ -1353,11 +1353,39 @@ class PositionManager:
         if price <= 0:
             return None
 
-        # CLAIM. The high-water mark is `peak_r`, ratcheted every guard pass
-        # and persisted, so a restart cannot hand the trade a fresh peak.
+        # CLAIM, ARMED BY THE HIGH-WATER MARK AND NOT BY THE CURRENT PRICE.
+        #
+        # WHAT THIS COST, on XAUUSD on 25 August. The minimum was tested
+        # against the LIVE gain and the give-back against the peak, so both had
+        # to hold at the same instant:
+        #
+        #     gained >= 2.0            and     peak - gained >= 1.5
+        #
+        # With a peak of 3.6 spreads that is only true for gained between 2.0
+        # and 2.1 -- a window one tenth of a spread wide, three cents of gold,
+        # on an instrument falling a dollar a minute. The price crossed it
+        # between two guard ticks, dropped under the 2.0 floor, and the claim
+        # was then PERMANENTLY disqualified for that excursion: the branch
+        # below needs `gained >= 0` to consider cutting, so the trade simply
+        # held to its stop. Up 1.03 euro, closed at -2.33.
+        #
+        # The rule that exists to stop a scalp giving back its profit was
+        # switched off BY the profit being given back.
+        #
+        # The high-water mark is what proves the trade earned something; the
+        # live price only decides when to take it. So the peak arms the claim,
+        # once, and nothing disarms it. The trade then leaves on the first
+        # meaningful sag from wherever it got to -- which is the rule as it was
+        # asked for: "hey dit zakt al een beetje, ok laat me claimen."
+        #
+        # And because the arming is permanent, this also catches the case the
+        # old shape could never reach: a proved scalp that has round-tripped
+        # the whole way back. `given_back` is measured from the peak, so a
+        # trade that is now NEGATIVE has given back more than any threshold and
+        # leaves here, twelve spreads before its stop, instead of riding down.
         gained_spreads = (price - position.price_open) * sign / spread
         peak_spreads = peak_r * risk / spread
-        if gained_spreads >= config.scalp_claim_minimum_spreads:
+        if peak_spreads >= config.scalp_claim_minimum_spreads:
             given_back = peak_spreads - gained_spreads
             if given_back >= config.scalp_claim_spreads:
                 result = self.broker.close_position(position)

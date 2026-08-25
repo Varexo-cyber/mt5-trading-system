@@ -597,6 +597,32 @@ analysis:
     stop_candle_spans: 1.0
     target_candle_spans: 1.4
 
+    # DE CLAIM, 25 augustus, na twee XAUUSD-trades die piekten en alles
+    # teruggaven. De logica-fout zit in `_scalp_verdict` en staat daar
+    # beschreven: de claim werd gewapend door de LIVE winst in plaats van door
+    # de piek, dus onder de vloer zakken zette hem permanent uit. Piek 3,6
+    # spreads, venster om te claimen 2,0 tot 2,1 -- drie cent goud, op een
+    # markt die een dollar per minuut viel. +EUR 1,03 werd -EUR 2,33.
+    #
+    # Dit getal is het tweede deel. 1,5 spreads teruggave stond hier omdat het
+    # nooit iets deed: met die vloer kon de regel structureel niet vuren, dus
+    # de waarde is nooit getest. Nu hij wel vuurt is 1,5 spreads op goud echt
+    # geld -- op een piek van 3,6 spreads geef je 42% van de beweging terug
+    # voordat je iets pakt.
+    #
+    # 1,0 is de ondergrens die dit systeem zelf al benoemt: minder dan een
+    # spread terug is de bid en de ask die elkaar afwisselen, niet de markt die
+    # van gedachten verandert. Lager gaan zou tegen die redenering ingaan.
+    #
+    #     piek 3,6 spreads, teruggave 1,5  ->  claim op 2,1 = EUR 0,52
+    #     piek 3,6 spreads, teruggave 1,0  ->  claim op 2,6 = EUR 0,64
+    #
+    # De vloer van 2,0 blijft staan en betekent nu wat hij hoort te betekenen:
+    # de piek moet minstens twee spreads waard zijn geweest voordat dit de
+    # moeite waard is.
+    scalp_claim_spreads: 1.0
+    scalp_claim_minimum_spreads: 2.0
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #

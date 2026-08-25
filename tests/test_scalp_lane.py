@@ -504,11 +504,59 @@ class TestTheScalpIsJudgedEverySecondAndNotOnAClock:
         assert event.action == "SCALP_CLAIMED"
         assert closed
 
-    def test_a_gain_too_small_to_be_worth_claiming_is_left_alone(self) -> None:
-        """Under two spreads the profit has not cleared its own round trip."""
+    def test_a_peak_that_was_never_worth_two_spreads_is_left_alone(self) -> None:
+        """What the minimum means now: the PEAK has to have been worth
+        something, not the live price at the instant we happen to look.
+
+        This test used to say the opposite. It fed a trade that had peaked 5.6
+        spreads up and sagged to 0.8, and asserted it should be held -- the
+        defect, written down and pinned green. The floor was tested against the
+        live gain, so a trade fell out of claim range by giving back exactly
+        the profit the rule exists to protect.
+        """
+        service, position, tick, closed = self.watcher(price=2400.20)
+        never_ran = 0.30 / 2.0  # peaked 1.2 spreads, under the 2.0 floor
+
+        assert service._scalp_verdict(position, 0.10, never_ran, tick, 2.0) is None
+        assert closed == []
+
+    def test_a_scalp_that_peaked_and_sagged_all_the_way_back_is_claimed(self) -> None:
+        """The case above, corrected. Peaked 5.6 spreads, now 0.8: there is
+        still money on the table and the move is plainly over."""
         service, position, tick, closed = self.watcher(price=2400.20)
 
-        assert service._scalp_verdict(position, 0.10, 1.40 / 2.0, tick, 2.0) is None
+        event = service._scalp_verdict(position, 0.10, 1.40 / 2.0, tick, 2.0)
+
+        assert event is not None
+        assert event.action == "SCALP_CLAIMED"
+        assert closed
+
+    def test_the_live_xauusd_trade_that_gave_back_one_euro_three(self) -> None:
+        """25 August, and the reason any of this changed.
+
+        BUY XAUUSD 0.01 at 4656.56, stop 4653.15, spread 0.29. It ran to about
+        3.6 spreads -- 1.05 dollars, 0.90 euro on the phone -- and then gold
+        fell a dollar a minute back through the entry. The old rule needed the
+        LIVE gain to sit between 2.0 and 2.1 spreads at the moment it was
+        asked: a window three cents wide, crossed between two guard ticks.
+        Below 2.0 the claim was disqualified for good, so the trade held all
+        the way to its stop and closed at -2.33.
+        """
+        service, position, tick, _closed = self.watcher(price=2400.20)
+        risk, spread = 2.0, 0.25
+        peak_r = 3.6 * spread / risk  # the 3.6-spread high-water mark
+
+        event = service._scalp_verdict(position, 0.10, peak_r, tick, risk)
+
+        assert event is not None, "this is the trade that rode to its stop"
+        assert event.action == "SCALP_CLAIMED"
+
+    def test_a_scalp_still_at_its_peak_is_never_claimed(self) -> None:
+        """Arming on the peak must not turn into "close as soon as it is
+        armed". Nothing given back, nothing to claim."""
+        service, position, tick, closed = self.watcher(price=2401.40)
+
+        assert service._scalp_verdict(position, 0.70, 1.40 / 2.0, tick, 2.0) is None
         assert closed == []
 
     def test_it_cuts_a_loser_the_market_is_still_moving_away_from(self) -> None:
