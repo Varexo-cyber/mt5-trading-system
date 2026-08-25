@@ -581,6 +581,44 @@ class Journal:
             "SELECT * FROM trades WHERE ticket = ? AND closed_at IS NULL", (ticket,)
         ).fetchone()
 
+    #: What `_run_scalp_lane` writes as the cycle detail for every order it
+    #: sends. Matched as a prefix because the module's reasoning is appended
+    #: after it.
+    SECTION_SIX_DETAIL = "section six scalp"
+
+    def trade_opened_by_section_six(self, ticket: int) -> bool:
+        """Whether section six opened this position, according to our own books.
+
+        WHY THIS EXISTS. The scalp rules identified their own positions by the
+        ORDER COMMENT the broker reports back. That is the one field in a
+        position that does not belong to us: MT5 truncates it at 31 characters,
+        and brokers rewrite it — on a stop-out it commonly becomes "[sl
+        4653.15]". If it is ever not returned verbatim, `_scalp_verdict`
+        declines every scalp it is asked about, the position falls through to
+        the swing rules, and a trade meant to be in and out inside a minute is
+        held to break-even at 0.6R and a partial close at 1.5R.
+
+        There is no error in that path and nothing logs. It looks exactly like
+        section six deciding to hold.
+
+        The journal is ours and the broker cannot touch it. The lane records
+        its cycle with a fixed detail prefix before the order is ever sent, so
+        the answer is already written down by the time there is a position to
+        ask about.
+        """
+        row = self.conn.execute(
+            """
+            SELECT 1
+              FROM trades t
+              JOIN analysis_cycles c ON c.id = t.cycle_pk
+             WHERE t.ticket = ?
+               AND c.detail LIKE ? || '%'
+             LIMIT 1
+            """,
+            (ticket, self.SECTION_SIX_DETAIL),
+        ).fetchone()
+        return row is not None
+
     def supervision_context(self, ticket: int) -> dict[str, Any]:
         """Reconstruct why an open trade exists and what has happened to it.
 

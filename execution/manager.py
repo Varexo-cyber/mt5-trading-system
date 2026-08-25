@@ -66,6 +66,12 @@ class HealthIntervention:
 #: bars: within a minute it cannot have meaningfully changed.
 ATR_CACHE_SECONDS = 60.0
 
+#: What section six stamps on its orders. Defined here rather than in the
+#: runner because both files must agree on it and this is the one they can
+#: both import — the runner already imports from this module, so the constant
+#: can only travel in this direction.
+SCALP_COMMENT = "jarvis-scalp"
+
 #: How long recent bars stay usable, in seconds.
 #:
 #: Much shorter than the ATR's, because shape is what the health readers work
@@ -183,6 +189,10 @@ class PositionManager:
         #: healthy/watch reading rearms it, and genuinely new independent
         #: evidence may act again.
         self._health_interventions: dict[int, HealthIntervention] = {}
+        #: ticket -> is this section six's. Cached because a trade cannot
+        #: change lane, and the alternative is a journal round trip per open
+        #: position per second. Pruned with the position in `manage`.
+        self._scalp_tickets: dict[int, bool] = {}
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -399,6 +409,8 @@ class PositionManager:
         live_tickets = {position.ticket for position in positions}
         for ticket in set(self._health_interventions) - live_tickets:
             self._health_interventions.pop(ticket, None)
+        for ticket in set(self._scalp_tickets) - live_tickets:
+            self._scalp_tickets.pop(ticket, None)
         for position in positions:
             # ONE POSITION'S FAILURE IS NOT EVERY POSITION'S FAILURE.
             #
@@ -1342,7 +1354,7 @@ class PositionManager:
         mistake `_worth_paying_to_leave` exists to refuse. Only a loser the
         trigger frame is still actively moving away from is cut early.
         """
-        if not str(getattr(position, "comment", "")).startswith("jarvis-scalp"):
+        if not self._is_scalp(position):
             return None
         config = self.settings.analysis.candle_momentum
         spread = float(getattr(tick, "spread", 0.0) or 0.0)
@@ -1460,7 +1472,7 @@ class PositionManager:
         which is the same mistake `_worth_paying_to_leave` exists to refuse. A
         loser keeps its stop; the clock is for winners.
         """
-        if not str(getattr(position, "comment", "")).startswith("jarvis-scalp"):
+        if not self._is_scalp(position):
             return None
         config = self.settings.analysis.candle_momentum
         age_minutes = getattr(config, "maximum_age_minutes", 0.0)
@@ -1690,6 +1702,45 @@ class PositionManager:
         if self._session_filter is None:
             return None
         return self._session_filter.minutes_of_runway(now, asset_class)
+
+    def _is_scalp(self, position: Position) -> bool:
+        """Whether section six opened this position. Asked two ways.
+
+        THE ORDER COMMENT IS NOT OUR FIELD. It was the only marker, and it is
+        the one part of a position that belongs to the broker: MT5 truncates it
+        at 31 characters, and brokers rewrite it — on a stop-out it commonly
+        comes back as "[sl 4653.15]". If it ever fails to survive the round
+        trip, every scalp rule declines every scalp it is handed, the position
+        drops through to the swing rules, and a trade meant to be in and out
+        inside a minute is held to break-even at 0.6R and a partial close at
+        1.5R. Nothing raises and nothing logs. It is indistinguishable from
+        section six deciding to hold, which is exactly the complaint that sent
+        me looking.
+
+        So the journal answers too, and the journal is ours. Either marker is
+        enough: the comment costs nothing and is right whenever the broker
+        behaves, and the books settle it when it does not.
+
+        A failed lookup is NOT cached. Caching it would turn one bad second
+        into a position that is never treated as a scalp again.
+        """
+        cached = self._scalp_tickets.get(position.ticket)
+        if cached is not None:
+            return cached
+        if str(getattr(position, "comment", "")).startswith(SCALP_COMMENT):
+            self._scalp_tickets[position.ticket] = True
+            return True
+        try:
+            verdict = bool(self.journal.trade_opened_by_section_six(position.ticket))
+        except Exception:
+            # An unreadable journal is not an answer, and not a crash either.
+            log.exception(
+                "could not ask the journal which lane opened this position",
+                extra={"event": "scalp_lane_lookup_failed", "ticket": position.ticket},
+            )
+            return False
+        self._scalp_tickets[position.ticket] = verdict
+        return verdict
 
     def _with_stop_room(
         self,

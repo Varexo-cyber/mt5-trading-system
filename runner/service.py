@@ -112,7 +112,7 @@ from core.types import (
     Timeframe,
     TradingMode,
 )
-from execution.manager import ManagementEvent, PositionManager
+from execution.manager import SCALP_COMMENT, ManagementEvent, PositionManager
 from execution.paper_broker import PaperBroker
 from external_signals import (
     ExternalSignalEvent,
@@ -176,7 +176,8 @@ RIO_POSITION_COMMENT = "jarvis-rio"
 #: Order comment that marks a position as section six's. The lane counts its
 #: own book by this rather than by a separate ledger, so a restart or a manual
 #: close cannot put the two out of step.
-_SCALP_COMMENT = "jarvis-scalp"
+#: One definition, in `execution.manager`, imported rather than repeated.
+_SCALP_COMMENT = SCALP_COMMENT
 
 
 def _is_rio_position(position: Position) -> bool:
@@ -4290,19 +4291,22 @@ class JarvisRunner:
     def _open_scalp_count(self) -> int:
         """Live scalp positions this lane is currently holding.
 
-        Counted by the order comment rather than by a separate ledger, because
-        a ledger would have to survive a restart and stay in step with manual
-        closes -- and the broker's own position list already answers the
-        question without either problem.
+        Counted off the broker's own position list rather than a separate
+        ledger, because a ledger would have to survive a restart and stay in
+        step with manual closes.
+
+        Which position belongs to this lane is asked the same two ways the
+        manager asks it, and for the same reason: the order comment is the
+        broker's field, not ours, and a broker that rewrites it would make this
+        count zero for ever. That failure is silent and it opens the cap rather
+        than closing it -- `max_concurrent` would stop limiting anything, and
+        the lane would keep adding scalps while believing it holds none.
         """
         try:
-            return sum(
-                1
-                for position in self._managed_positions()
-                if str(getattr(position, "comment", "")).startswith(_SCALP_COMMENT)
-            )
+            positions = self._managed_positions()
         except Exception:  # noqa: BLE001 - an unreadable book is not a free slot
             return self.settings.analysis.candle_momentum.max_concurrent
+        return sum(1 for position in positions if self.manager._is_scalp(position))
 
     def _tripped_section(self, idea: TradeIdea) -> str | None:
         """Whether a section behind this idea has switched itself off.
