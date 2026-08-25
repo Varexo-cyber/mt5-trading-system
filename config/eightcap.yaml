@@ -938,7 +938,42 @@ analysis:
     # (`total_score=100.0` voor externe signalen). Tot dat uitgezocht is, staat
     # het 7-uit-7 resultaat waarop deze verhoging is voorgesteld op losse
     # schroeven, en dat is de reden dat hier 60 staat en niet iets hogers.
-    score_threshold: 45.0
+    # NAAR 35 OP 26 AUGUSTUS. 45 heeft een hele dag NUL trades opgeleverd.
+    #
+    # De reden staat in de rekensom die ik er niet bij maakte. Voor een paar is
+    # de score het gewogen gemiddelde, en op gemiddelde zekerheid haalt maar
+    # 9 van de 36 paren de 45 -- en ELK van die negen bevat `market_structure`
+    # of `liquidity_sweep`, de enige twee lezers met een plafond boven de 60.
+    #
+    # Die twee vuren bijna nooit. Van de 62.962 beslissingen in twaalf uur was
+    # `market_structure` er 261, en over twee dagen handelen stond hij op NUL
+    # trades. Net als `liquidity_sweep`. Alles wat wel handelde --
+    # drift_continuation 11, impulse_break 4, fast_ema_cross 4 -- zit onder de
+    # 51 en kan die lat met geen enkele partner halen.
+    #
+    # Een lat die alleen door twee detectoren gehaald kan worden die nooit
+    # vuren is geen filter, het is een uitknop. Dat was niet de bedoeling en
+    # het was ook niet zichtbaar tot er een dag overheen was.
+    #
+    # 35 EN NIET 40, en dit is de enige snede in de scorecard waar het bewijs
+    # eenduidig is:
+    #
+    #     score 25-30    1 trade    0 gewonnen   -EUR 0,77
+    #     score 30-35    3 trades   0 gewonnen   -EUR 3,44
+    #     ----------------------------------------------------
+    #     onder 35       4 trades   0 gewonnen   -EUR 4,21
+    #
+    #     score 35-40    6 trades   3 gewonnen   -EUR 0,76
+    #     score 40-45    4 trades   2 gewonnen   -EUR 3,29
+    #
+    # Nul uit vier onder de 35, en daarboven wint ongeveer de helft. Dat is
+    # waar de band ophoudt iets te betekenen, en het is nog steeds een derde
+    # hoger dan de 26 die er stond.
+    #
+    # De 80+ band waarop ik gisteren 45 voorstelde bestond niet: met een tweede
+    # dag erbij was het 12 trades, 8 gewonnen, -EUR 1,11. Dat cijfer is weg en
+    # deze snede staat op iets dat wel overeind blijft.
+    score_threshold: 35.0
 
     # EEN EENZAME LEZER MOET BIJNA ZEKER ZIJN. Dit is de knop die de eigenaar
     # bedoelde toen hij om 80 vroeg.
