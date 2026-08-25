@@ -102,3 +102,85 @@ def test_a_naive_timestamp_does_not_take_the_filter_down() -> None:
 def test_it_can_be_switched_off() -> None:
     assert filter_for(CLOSED, enabled=False).check(context(CLOSED)).passed
     assert filter_for(CLOSED, minutes=0).check(context(CLOSED)).passed
+
+
+WON = datetime(2026, 8, 25, 6, 58, 1, tzinfo=UTC)
+
+
+def filter_after(
+    last_loss: datetime | None, last_close: datetime | None, **overrides
+):  # type: ignore[no-untyped-def]
+    return LossCooldownFilter(
+        LossCooldownConfig(**overrides),
+        lambda _symbol: last_loss,
+        lambda _symbol: last_close,
+    )
+
+
+class TestTheSameChurnAfterAWinner:
+    """25 August, live:
+
+        06:58:01  USDJPY short closed, +EUR 1.40
+        06:58:37  USDJPY short opened again
+        07:08:01  USDJPY short closed, -EUR 1.81, EUR 1.32 of it commission
+
+    Thirty-six seconds, and nothing objected, because the previous close was a
+    winner. The mechanism this filter exists to stop is a statement about the
+    CHART, not about the last outcome: a winner consumes exactly the same few
+    minutes of the window, and the window read next is exactly as stale.
+    """
+
+    def test_the_thirty_six_second_re_entry_is_refused(self) -> None:
+        verdict = filter_after(None, WON).check(
+            context(datetime(2026, 8, 25, 6, 58, 37, tzinfo=UTC), "USDJPY.i")
+        )
+
+        assert not verdict.passed
+        assert verdict.reason is Reason.LOSS_COOLDOWN
+        assert "closed a winner" in verdict.detail
+
+    def test_the_window_after_a_win_is_shorter_than_after_a_loss(self) -> None:
+        """After a loss the market has demonstrably disagreed; after a win it
+        has not, and a continuation on a fresh leg is a real thing to allow."""
+        six_minutes = WON + timedelta(minutes=6)
+
+        assert filter_after(None, WON).check(context(six_minutes, "USDJPY.i")).passed
+        assert not filter_after(WON, WON).check(context(six_minutes, "USDJPY.i")).passed
+
+    def test_a_loss_is_still_reported_as_a_loss(self) -> None:
+        """Both readings see the same row when the last close lost. Describing
+        it as an ordinary close would put the wrong reason in the journal and
+        the wrong window in the report."""
+        verdict = filter_after(CLOSED, CLOSED).check(context(CLOSED + timedelta(minutes=1)))
+
+        assert not verdict.passed
+        assert "closed a loser" in verdict.detail
+        assert verdict.data["cooldown_minutes"] == 20.0
+
+    def test_an_older_loss_does_not_hide_a_recent_win(self) -> None:
+        """A loss last week and a win a minute ago: the win is what makes the
+        chart stale, and the long window has expired."""
+        stale_loss = WON - timedelta(days=3)
+
+        verdict = filter_after(stale_loss, WON).check(
+            context(WON + timedelta(seconds=36), "USDJPY.i")
+        )
+
+        assert not verdict.passed
+        assert "closed a winner" in verdict.detail
+
+    def test_zero_restores_the_losses_only_behaviour(self) -> None:
+        verdict = filter_after(None, WON, minutes_after_a_win=0.0).check(
+            context(WON + timedelta(seconds=36), "USDJPY.i")
+        )
+
+        assert verdict.passed
+
+    def test_a_caller_that_passes_no_reader_is_unchanged(self) -> None:
+        """Older wiring must keep the filter it asked for rather than silently
+        getting a stricter one."""
+        verdict = LossCooldownFilter(LossCooldownConfig(), lambda _symbol: None).check(
+            context(WON + timedelta(seconds=36), "USDJPY.i")
+        )
+
+        assert verdict.passed

@@ -340,7 +340,11 @@ def build_filter_chain(
             # changes the answer. The reason recorded then names the real
             # objection rather than whichever measurement happened to fail
             # second.
-            LossCooldownFilter(settings.filters.loss_cooldown, journal.last_loss_closed_at),
+            LossCooldownFilter(
+                settings.filters.loss_cooldown,
+                journal.last_loss_closed_at,
+                journal.last_close_at,
+            ),
             LivelinessFilter(
                 settings.filters.liveliness,
                 lambda symbol, timeframe: data.get_series(symbol, timeframe),

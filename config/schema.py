@@ -1102,6 +1102,29 @@ class LossCooldownConfig(Base):
     #: Not "the observed 75 seconds plus a margin". That would fix the one case
     #: in the log and nothing standing next to it.
     minutes: float = Field(default=20.0, ge=0.0, le=1440.0)
+    #: The same rule after a WINNING close, and shorter.
+    #:
+    #: 25 August, live:
+    #:
+    #:     06:58:01  USDJPY short closed, +EUR 1.40
+    #:     06:58:37  USDJPY short opened again
+    #:     07:08:01  USDJPY short closed, -EUR 1.81 (EUR 1.32 of it commission)
+    #:
+    #: Thirty-six seconds. The loss cooldown said nothing because the previous
+    #: close was a winner — and the mechanism this filter exists to stop has
+    #: nothing to do with which way the last one went. A window of history is
+    #: read, a trade consumes a few minutes of it, and the window read next is
+    #: mostly the window just read. The setup is not re-evaluated so much as
+    #: re-encountered. A winner consumes exactly the same minutes.
+    #:
+    #: Shorter than the loss window because the evidence is weaker. After a
+    #: loss the market has demonstrably disagreed; after a win it has not, and
+    #: a genuine continuation on a fresh leg is a real thing to allow. Five
+    #: minutes stops the same M1 close being traded twice while leaving a
+    #: setup that has actually moved on.
+    #:
+    #: Zero disables it and restores the losses-only behaviour.
+    minutes_after_a_win: float = Field(default=5.0, ge=0.0, le=1440.0)
 
 
 class HeadlineFilterConfig(Base):
@@ -1882,8 +1905,7 @@ class BasketDivergenceConfig(Base):
             )
         if self.maximum_confidence < self.base_confidence:
             raise ValueError(
-                "analysis.basket_divergence.maximum_confidence may not be below "
-                "base_confidence"
+                "analysis.basket_divergence.maximum_confidence may not be below " "base_confidence"
             )
         return self
 
