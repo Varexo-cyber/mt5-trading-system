@@ -539,16 +539,41 @@ class TestTheScalpIsJudgedEverySecondAndNotOnAClock:
         assert service._scalp_verdict(position, 0.70, peak_r, tick, 2.0) is None
         assert closed == []
 
-    def test_it_claims_once_the_gain_starts_sagging(self) -> None:
-        """Peaked 5.6 spreads up, now 3.6 -- two spreads given back, past the
-        1.5 it is allowed."""
-        service, position, tick, closed = self.watcher(price=2400.90)
+    def test_it_claims_once_the_gain_sags_past_its_leash(self) -> None:
+        """Peaked 5.6 spreads, now 2.8. That is 2.8 given back against a leash
+        of max(1.0, 5.6 x 0.40) = 2.24, so the move is done."""
+        service, position, tick, closed = self.watcher(price=2400.70)
 
-        event = service._scalp_verdict(position, 0.45, 1.40 / 2.0, tick, 2.0)
+        event = service._scalp_verdict(position, 0.35, 1.40 / 2.0, tick, 2.0)
 
         assert event is not None
         assert event.action == "SCALP_CLAIMED"
         assert closed
+
+    def test_a_sag_inside_the_leash_is_held_so_the_move_can_continue(self) -> None:
+        """THE CHANGE, and the reason for it. Peaked 5.6 spreads, now 3.6 --
+        two spreads given back, which a fixed one-spread leash would have
+        closed. An ordinary retracement is not the end of a move, and closing
+        on it is how a trade on its way to twelve spreads is capped at four.
+        """
+        service, position, tick, closed = self.watcher(price=2400.90)
+
+        assert service._scalp_verdict(position, 0.45, 1.40 / 2.0, tick, 2.0) is None
+        assert closed == []
+
+    def test_the_leash_is_never_tighter_than_a_spread(self) -> None:
+        """At a small peak the share is smaller than the noise floor, and the
+        floor wins. Below a spread of retreat is the bid and the ask taking
+        turns."""
+        service, position, tick, _closed = self.watcher(price=2400.20)
+        peak_spreads = 2.0
+        peak_r = peak_spreads * 0.25 / 2.0
+
+        # gained 0.8, so 1.2 given back: past the 1.0 floor, but 2.0 x 0.40 =
+        # 0.8 would not have been.
+        event = service._scalp_verdict(position, 0.10, peak_r, tick, 2.0)
+
+        assert event is not None and event.action == "SCALP_CLAIMED"
 
     def test_a_peak_that_was_never_worth_two_spreads_is_left_alone(self) -> None:
         """What the minimum means now: the PEAK has to have been worth
@@ -654,7 +679,7 @@ class TestALaneIsNotIdentifiedByAFieldTheBrokerOwns:
     sent, and the broker cannot touch it.
     """
 
-    def watcher(self, *, comment: str, in_journal: bool):  # type: ignore[no-untyped-def]
+    def watcher(self, *, comment: str, in_journal: bool, price: float = 2400.70):  # type: ignore[no-untyped-def]
         from datetime import UTC, datetime
 
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
@@ -694,7 +719,7 @@ class TestALaneIsNotIdentifiedByAFieldTheBrokerOwns:
             magic=1,
             comment=comment,
         )
-        tick = SimpleNamespace(bid=2400.90, ask=2401.15, spread=0.25)
+        tick = SimpleNamespace(bid=price, ask=price + 0.25, spread=0.25)
         return service, position, tick, closed
 
     def test_a_scalp_whose_comment_the_broker_replaced_is_still_a_scalp(self) -> None:
@@ -720,7 +745,7 @@ class TestALaneIsNotIdentifiedByAFieldTheBrokerOwns:
         journal is never consulted for the ordinary case."""
         service, position, tick, _c = self.watcher(comment="jarvis-scalp", in_journal=False)
 
-        event = service._scalp_verdict(position, 0.45, 1.40 / 2.0, tick, 2.0)
+        event = service._scalp_verdict(position, 0.35, 1.40 / 2.0, tick, 2.0)
 
         assert event is not None and event.action == "SCALP_CLAIMED"
 
