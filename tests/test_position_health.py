@@ -835,14 +835,36 @@ class TestTheExitThresholdIsATunableWithAFloor:
     excluded: drift + liquidity sums to 0.65 and nothing else fell short.
     """
 
-    def test_the_account_runs_the_lower_threshold(self) -> None:
+    def test_the_account_runs_the_higher_threshold(self) -> None:
+        """RAISED ON 25 AUGUST, reversing the 0.65 set the day before.
+
+        0.65 let the weakest pair of evidence families close a trade. Over the
+        two days that followed, HEALTH_EXIT closed 13 positions and won none
+        of them for -EUR 20.33, while everything else on the book made
+        +EUR 8.83 across 17.
+
+        Thirteen losers proves nothing on its own -- the rule fires on trades
+        whose thesis broke, so of course they are losing. What proves it is
+        the counterfactual column: acting returned -0.26R where holding would
+        have returned +0.14R, a lift of -0.40R over the 8 that could be
+        replayed. Doing nothing was profitable and intervening was not.
+
+        And the damage is concentrated: closing after having first tightened
+        the stop (at -0.27R, while the trade was already losing) ran a lift of
+        -0.80R over 6, while closing without touching the stop ran +0.82R over
+        2. Paying twice to be rid of the same position.
+
+        Not back to 0.75 either -- the lift was negative there too, -0.06R
+        over 12 in the window before. Two settings, twenty trades, both
+        negative, and lowering it made it six times worse.
+        """
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
         settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
 
-        assert settings.trade_management.health_broken_at == 0.65
+        assert settings.trade_management.health_broken_at == 0.85
         # And a corroborated failure may act sooner on a losing trade.
         assert settings.trade_management.thesis_invalidation_at_r == 0.15
 

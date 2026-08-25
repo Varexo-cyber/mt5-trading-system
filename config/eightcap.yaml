@@ -2101,7 +2101,45 @@ trade_management:
   # staat op 0,55 en `assess` klemt daar nogmaals op. Bovendien degradeert de
   # corroboratieregel een exit van één familie sowieso naar een stopverkrapping.
   # "Deze trade staat op verlies" sluit dus nog altijd niks.
-  health_broken_at: 0.65
+  # NAAR 0,85, EN DIT DRAAIT MIJN EIGEN WIJZIGING VAN 24 AUGUSTUS TERUG.
+  #
+  # Op 0,65 mocht het zwakste paar families (drift + liquidity) een trade
+  # sluiten. Dat was de redenering: twee onafhankelijke families die het eens
+  # zijn horen dat te kunnen. De meting sindsdien is niet ambigu.
+  #
+  #     HEALTH_EXIT   13 trades   0 gewonnen   -EUR 20,33
+  #     al het andere 17 trades  15 gewonnen   +EUR  8,83
+  #
+  # Dertien sluitingen, nul winnaars. Dat op zichzelf bewijst niets -- de regel
+  # vuurt per definitie op trades waarvan de these brak, dus dat het verliezers
+  # zijn is geen verrassing. Wat het wel bewijst staat in `DID STEPPING IN BEAT
+  # LEAVING IT ALONE`, de enige kolom die de tegenfeitelijke vraag stelt:
+  #
+  #     ingrijpen leverde    -0,26R
+  #     niets doen was       +0,14R
+  #     lift                 -0,40R   over 8 na te rekenen trades
+  #
+  # Niets doen was WINSTGEVEND en ingrijpen niet. En het is nog scherper als de
+  # regel eerst de stop verzet, wat hij deed op -0,27R -- dus terwijl de trade
+  # al verloor:
+  #
+  #     stop verzet, dan gesloten    6 trades   lift -0,80R
+  #     stop onaangeroerd            2 trades   lift +0,82R
+  #
+  # De schade zit volledig in de tighten-dan-sluiten volgorde. Een stop
+  # aanhalen naar een verlies en de trade daarna alsnog dichtgooien is twee
+  # keer betalen om dezelfde positie kwijt te raken.
+  #
+  # 0,85 laat alleen het sterkste paar (trajectory + drift) nog sluiten en
+  # sluit de rest uit. Niet terug naar 0,75, want daar was de lift OOK negatief
+  # -- -0,06R over 12 trades in het venster ervoor. Twee instellingen, twintig
+  # trades, allebei negatief, en lager zetten maakte het zes keer erger.
+  #
+  # WAT ER GEBEURT ALS DIT NIET HELPT: dan is de regel zelf het probleem en
+  # gaat hij uit, niet omhoog. De rij om te lezen is `HEALTH_EXIT` onder `DID
+  # STEPPING IN BEAT LEAVING IT ALONE`. Blijft `lift` negatief, dan is er geen
+  # instelling die dit repareert.
+  health_broken_at: 0.85
   # DE PROFIT-LOCK NAAR WAAR DEZE TRADES ECHT LEVEN.
   #
   # Hij armeerde op 0,7R en borgde de helft van de top. Over 39 gesloten
