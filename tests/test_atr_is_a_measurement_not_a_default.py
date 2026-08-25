@@ -194,3 +194,38 @@ def test_the_room_floor_reads_the_short_side_of_the_book() -> None:
     roomed = manager._with_stop_room(short, tick.ask, risk, tick)
 
     assert roomed == tick.ask + expected_floor
+
+
+def test_one_position_raising_does_not_cost_the_others_their_pass() -> None:
+    """The structural half of the same failure.
+
+    Every rule in `manage` used to run inline in the position loop, so anything
+    that raised took the whole pass down -- including the events already
+    collected for the positions read BEFORE the bad one. `guard_tick` caught it
+    as one warning line, and every open trade went unmanaged for that second,
+    once a second, for as long as the cause persisted. The guard is the only
+    thing watching those trades between cycles.
+    """
+    broker = BrokerStub(spread=0.02)
+    journal = JournalStub()
+    healthy = position()
+    poisoned = replace(position(), ticket=999)
+    real_row = journal.open_trade_by_ticket
+
+    def row_for(ticket: int):  # type: ignore[no-untyped-def]
+        if ticket == poisoned.ticket:
+            raise RuntimeError("the journal row for this ticket is unreadable")
+        return real_row(ticket)
+
+    journal.open_trade_by_ticket = row_for  # type: ignore[assignment]
+    manager = manager_for(broker, journal)
+    at(broker, 1.0)
+
+    # The bad one FIRST, so this cannot pass by luck of ordering.
+    events = manager.manage([poisoned, healthy], NOW)
+
+    assert [event.action for event in events] == ["BREAK_EVEN"]
+    assert events[0].ticket == healthy.ticket
+    # And the failure is recorded where an operator can see it, rather than
+    # leaving a gap in the health map that reads as "is Jarvis even running".
+    assert manager.last_health[poisoned.ticket].verdict == "unmanaged"
