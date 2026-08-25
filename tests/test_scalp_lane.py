@@ -112,6 +112,10 @@ def runner(**overrides):  # type: ignore[no-untyped-def]
             approved=overrides.get("margin_ok", True), detail="no margin"
         ),
         assert_not_forbidden=lambda sizing, state: None,
+        # The book-wide ceiling. `room` is what the cap still allows, so a
+        # value under the scalp's own risk means the book is full.
+        room_for_more_risk=lambda state, wanted, spec=None: overrides.get("room", wanted),
+        open_risk_pct=lambda state, spec=None: overrides.get("used", 0.0),
     )
     service.journal = SimpleNamespace(abandon_pending_entry=lambda *a: None)  # type: ignore[assignment]
     return service
@@ -178,6 +182,32 @@ class TestEveryGuardThatStopsTheMainPathStopsThisOne:
 
         assert run(service) is False
         assert service.sent == []
+
+    def test_a_full_book_still_refuses(self) -> None:
+        """The book-wide risk ceiling, which this lane was not asking about.
+
+        An omission rather than a decision: the lane's docstring lists what it
+        deliberately keeps no copy of -- news, kill switch, capital floor,
+        margin, its own breaker -- and `max_total_open_risk_pct` is not on that
+        list. Every other route to an order goes through `room_for_more_risk`.
+        This one sized a fixed lot, checked the margin and sent it, so two
+        scalps landed ON TOP of whatever the swing book carried instead of
+        inside the same ceiling.
+        """
+        service = runner(room=0.0, used=24.0)
+
+        assert run(service) is False
+        assert service.sent == []
+        assert service.recorder.skips, "a refusal has to be recorded, not silent"
+        assert service.recorder.skips[0][3] is Reason.RISK_EXCEEDS_CAP
+
+    def test_room_for_exactly_this_scalp_is_still_room(self) -> None:
+        """Refused only when the book is genuinely too full. A lane that
+        refuses whenever anything else is open would never trade again."""
+        service = runner()  # room defaults to exactly what the scalp wants
+
+        assert run(service) is True
+        assert len(service.sent) == 1
 
     def test_a_news_window_still_refuses(self) -> None:
         """Enforced by `_scalp_plan`, which reads the same `_NEWS_BLOCKS` the
