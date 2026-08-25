@@ -193,11 +193,17 @@ class TestTheEngineTreatsItAsWhatItIs:
 
         assert "impulse_break" not in ConfluenceConfig().trend_continuation_modules
 
-    def test_its_weakest_signal_still_clears_the_live_threshold(self) -> None:
-        """The arithmetic that `fast_ema_cross` got wrong. A lone module's
-        confluence score is `raw x confidence` — the weight cancels — so a
-        module whose floor scores below the threshold can never trade alone
-        and is decoration."""
+    def test_only_its_strongest_reading_can_carry_a_trade_alone(self) -> None:
+        """REVERSED ON 25 AUGUST, deliberately.
+
+        This asserted that even the module's WEAKEST reading cleared the bar,
+        which at 26 it did -- and the HK50 short that cost EUR 3.13 was exactly
+        that: fired alone at 0.45, the floor exactly, scoring 27.0 against 26.0.
+
+        A lone module's confluence score is `raw x confidence`, so a bar of 45
+        asks this module for 0.75 confidence against a ceiling of 0.80. The
+        weakest reading is refused and only a genuinely convinced one stands
+        alone, which is what the owner asked for in as many words."""
         from pathlib import Path
 
         from config.loader import load_settings
@@ -208,4 +214,8 @@ class TestTheEngineTreatsItAsWhatItIs:
         ).analysis
         module = live.impulse_break
 
-        assert module.score * module.base_confidence > live.confluence.score_threshold
+        bar = live.confluence.score_threshold
+        # The HK50 reading -- lone, at the floor -- is now refused.
+        assert module.score * module.base_confidence < bar
+        # And a convinced one still gets through, or the module is decoration.
+        assert module.score * module.maximum_confidence > bar

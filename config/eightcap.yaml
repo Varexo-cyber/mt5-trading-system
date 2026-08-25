@@ -647,8 +647,23 @@ analysis:
     # scorecard splitst regime nu op richting, dus zodra de steekproef groot
     # genoeg is kan dit teruggebracht worden tot de helft die echt verliest,
     # in plaats van in één keer weggegooid.
-    refused_regimes:
-      - transition
+    # TRANSITION WEER AAN, op instructie van de eigenaar, en met een reden die
+    # niet alleen instructie is.
+    #
+    # De -EUR 20,86 over 44 trades waarop dit geblokkeerd werd, is gemeten op
+    # een systeem dat niet meer bestaat: seasonality eruit, de fantoomcommissie
+    # op indices weg, gewichten omhoog, en nu een overtuigingsdrempel van 80 in
+    # plaats van 26. Dat laatste alleen al betekent dat de transition-trades
+    # die toen gemeten zijn grotendeels niet meer genomen zouden worden.
+    #
+    # En het blok kostte meer dan het opleverde: 30.382 van de 62.962
+    # beslissingen in twaalf uur -- 48% van alles wat het systeem deed -- werd
+    # hierdoor geweigerd, terwijl transition op 24 augustus met 8 trades en
+    # 7 winnaars het BESTE regime van de dag was.
+    #
+    # Dit is dus geen terugdraaien van een meting. Het is dezelfde vraag
+    # opnieuw stellen aan een andere machine, met een veel hogere lat ervoor.
+    refused_regimes: []
 
     # Measured, not guessed: fed a textbook uptrend, every symbol came back
     # NO_SIGNAL — "too few independent directional modules". Three modules carry
@@ -780,7 +795,107 @@ analysis:
     # stilzwijgend "nee, 0,22" overheen. Een van de twee is overbodig, en het
     # hoort de module te zijn die de vraag begrijpt. Op 26 is zijn eigen vloer
     # weer het enige antwoord.
-    score_threshold: 26.0
+    # NAAR 80, EN DIT IS DE METING WAAR DE NOTITIE HIERBOVEN OM VROEG.
+    #
+    # "Onder 30 heeft niemand ooit gemeten of de score iets scheidt... over
+    # twee dagen is af te lezen of de band 26-35 slechter presteert dan 35-40.
+    # Zo ja, dan gaat hij terug en is dat een meting." 24 augustus, 25 gesloten
+    # trades, uit `WHAT THE RAW SCORE WAS`:
+    #
+    #     score onder 50    17 trades    6 gewonnen    -EUR 3,58
+    #     score 80 en hoger  7 trades    7 gewonnen    +EUR 5,05
+    #
+    # 7 van de 7 tegen 6 van de 17. Fisher exact p = 0,0059 -- ongeveer een op
+    # de 170 als score en uitkomst niets met elkaar te maken hadden. Dat is het
+    # enige signaal in dit journaal dat een significantietoets overleeft.
+    #
+    # DE EIGENAAR VROEG 80. DAT KAN NIET, EN HIER IS DE REKENSOM.
+    #
+    # De score is een GEWOGEN GEMIDDELDE van (|ruwe score| x zekerheid) over de
+    # detectoren die het eens zijn. Een gemiddelde kan zijn sterkste term nooit
+    # overtreffen, dus het plafond van de hele engine is de beste enkele lezer:
+    #
+    #     market_structure     70 x 1.00  =  70.0   <- het plafond
+    #     liquidity_sweep      75 x 0.90  =  67.5
+    #     m1_micro_breakout    62 x 0.82  =  50.8
+    #     impulse_break        60 x 0.80  =  48.0
+    #     ema_pullback_resume  58 x 0.80  =  46.4
+    #     drift_continuation   55 x 0.85  =  46.8
+    #     basket_divergence    50 x 0.85  =  42.5
+    #     fast_ema_cross       50 x 0.80  =  40.0
+    #     session_breakout     50 x 0.80  =  40.0
+    #     drift_burst          45 x 0.80  =  36.0
+    #     candle_momentum      45 x 0.75  =  33.8
+    #
+    # Op 80 handelt dit systeem NOOIT MEER. Niet zelden - nooit.
+    #
+    # 60 is het hoogste getal dat nog iets doorlaat en toch hard filtert. Het
+    # eist market_structure boven 0,86 zekerheid of liquidity_sweep boven 0,80,
+    # eventueel met een derde die meelift. Ruim tweemaal de 26 die er stond, en
+    # boven de 55 die de code zelf als standaard hanteert.
+    #
+    # WAT DIT KOST: reken op een handvol trades per dag in plaats van twintig.
+    # Dat is precies wat gevraagd is - "dan zijn het maar weinig trades prima".
+    #
+    # WAT HIER NOG NIET KLOPT, en het hoort opgeschreven omdat het de aanleiding
+    # was: de scorecard van 24 augustus toont trades in de banden 80-85, 85-90
+    # en 90-95, alle zeven gewonnen. Met een plafond van 70 KAN dat deze
+    # grootheid niet zijn. Of `analysis_cycles.total_score` meet iets anders dan
+    # de poort, of die rijen komen uit een pad dat zijn eigen score journaliseert
+    # (`total_score=100.0` voor externe signalen). Tot dat uitgezocht is, staat
+    # het 7-uit-7 resultaat waarop deze verhoging is voorgesteld op losse
+    # schroeven, en dat is de reden dat hier 60 staat en niet iets hogers.
+    score_threshold: 45.0
+
+    # EEN EENZAME LEZER MOET BIJNA ZEKER ZIJN. Dit is de knop die de eigenaar
+    # bedoelde toen hij om 80 vroeg.
+    #
+    # WAAROM NIET DE DREMPEL. De score is een GEWOGEN GEMIDDELDE van (kracht x
+    # zekerheid) over de detectoren die het eens zijn, dus elke extra module
+    # die meestemt trekt hem OMLAAG:
+    #
+    #     market_structure alleen, op zijn best        70,0
+    #     + liquidity_sweep het ook eens               68,9
+    #     + impulse_break het OOK eens                 63,7
+    #     + ema_pullback_resume het OOK eens           59,4
+    #
+    # Vier detectoren die het op hun best eens zijn scoren LAGER dan een
+    # eenzame lezer. Een hoge drempel selecteert op deze formule dus niet op
+    # overtuiging maar op eenzaamheid. En boven 70 bestaat er niets: dat is het
+    # plafond van de hele engine, dus op 80 handelt dit systeem nooit meer.
+    #
+    # WAAROM OOK NIET `minimum_directional_modules: 2`. Geprobeerd, en
+    # teruggedraaid: `TestALoneDetectorHasToBeSureOfItself` legt vast waarom.
+    # Dat zou ook elke eenzame lezing op 0,90 wegnemen, en dat is juist het
+    # sterkste enkele bewijs dat deze engine kan produceren. De echte fout is
+    # niet EENZAAM, het is EENZAAM EN ONZEKER.
+    #
+    # OOK NIET DE EENZAME-VLOER OP 0,80. Geprobeerd, en teruggedraaid toen er
+    # twaalf tests omvielen die per detector een GEMETEN vloer vastleggen --
+    # `ema_pullback_resume` op 0,55 staat daar omdat hij EUR 2,08 per trade
+    # verdiende, niet omdat het mooi stond. Die volgorde weggooien om een
+    # absolute lat te halen wisselt bewijs in voor een getal.
+    #
+    # WAT DE DREMPEL VAN 45 ER AL VOOR DOET. Voor een eenzame lezer IS de score
+    # `ruwe score x zekerheid`, dus 45 legt zijn eigen vloer op:
+    #
+    #     impulse_break        60 -> heeft 0,75 zekerheid nodig (plafond 0,80)
+    #     fast_ema_cross       50 -> 0,90 nodig, plafond is 0,80: KAN NIET MEER
+    #     session_breakout     50 -> 0,90 nodig, plafond is 0,80: KAN NIET MEER
+    #     ema_pullback_resume  58 -> 0,78 nodig (plafond 0,80)
+    #     drift_continuation   55 -> 0,82 nodig (plafond 0,85)
+    #     candle_momentum      45 -> 1,00 nodig: KAN NIET MEER
+    #     drift_burst          45 -> 1,00 nodig: KAN NIET MEER
+    #     market_structure     70 -> 0,64 nodig
+    #     liquidity_sweep      75 -> 0,60 nodig
+    #
+    # Dat is de HK50-fout uit de test hierboven -- impulse_break dat alleen
+    # vuurde op 0,45 en EUR 3,13 kostte -- en hij is nu onmogelijk zonder een
+    # enkele gemeten vloer aan te raken.
+    #
+    # DE ECHTE FIX ZIT HIER NIET. Zolang de score een gemiddelde is, straft dit
+    # systeem instemming af in plaats van hem te belonen. Dat is een wijziging
+    # aan de formule en niet aan een getal, en die staat nog open.
 
     # NAAR 3.0, EN DIT IS EEN PLAFOND OP EEN ZOEKTOCHT - GEEN DOEL.
     #
@@ -1586,7 +1701,33 @@ risk:
   # De meting blijft wel zuiver: R is de breedte van de stop, dus elke
   # R-kolom in de scorecard is voor en na deze wijziging vergelijkbaar. Alleen
   # de eurokolom schaalt mee. Grootte en edge staan los van elkaar.
-  risk_per_trade_pct: 3.0
+  # NAAR 5 / 12 / 24, en de drempel van 80 is waarom dit kan.
+  #
+  # Op instructie: "zet de lotsize maar ook veel hoger". Dit is twee derde
+  # erbij, niet de verdubbeling die de woorden suggereren, en dit is waarom.
+  #
+  # WAT ERVOOR PLEIT. Op een drempel van 80 is elke trade per definitie een
+  # overtuigde trade -- de conviction-ladder had 8% al beschikbaar en kwam er
+  # bijna nooit aan toe. En het aantal trades zakt van twintig naar vier a zes
+  # per dag, dus de blootstelling PER DAG stijgt veel minder dan die per
+  # trade: 20 x 3% en 5 x 12% liggen niet ver uit elkaar.
+  #
+  # WAT ERTEGEN PLEIT, en dat is een cijfer en geen gevoel. De zeven trades
+  # van 24 augustus die 80+ scoorden wonnen alle zeven -- en maakten samen
+  # +0,69R, ofwel +0,099R per stuk. Zeven van de zeven is bovendien geen 100%:
+  # de Wilson-ondergrens op 7/7 is 65%. Op 65% winrate met winnaars van 0,10R
+  # en verliezers van 0,22R is de verwachting NUL, en een grotere inzet
+  # vermenigvuldigt een nul.
+  #
+  # Daarom deze stap en niet meer. Die winnaars werden afgeknipt door de
+  # profit lock, die pas sinds gisteren gerepareerd is; tot er een week draait
+  # met winnaars die mogen doorlopen is het echte rendement per trade
+  # onbekend. Wordt de band 80+ groter dan +0,3R per trade, dan draagt een
+  # meting het verder verhogen. Blijft hij rond +0,1R, dan is dit al te veel.
+  #
+  # De dagelijkse verliesrem en de EUR 50 vloer blijven staan: dit verhoogt de
+  # inzet per trade, niet hoeveel pijn een dag mag doen.
+  risk_per_trade_pct: 5.0
   # Het absolute plafond dat geen enkele modus mag overschrijden. Van 6 naar 9,
   # mee met het plafond van de conviction-ladder hieronder.
   #
@@ -1596,7 +1737,7 @@ risk:
   # er nog een derde keer overheen. Een validator eist bovendien dat de modus
   # deze waarde niet overschrijdt. Twee van de drie verhogen levert een stille
   # no-op op — de config zegt 9%, de rekening handelt 6%.
-  max_risk_per_trade_pct: 8.0
+  max_risk_per_trade_pct: 12.0
 
   # Van 2.0x naar 1.5x de door MT5 berekende ordermargin. De echte broker-
   # margin moet nog steeds volledig beschikbaar zijn; alleen de extra reserve
@@ -1643,7 +1784,7 @@ risk:
   # Zero disables it. In Experimental Live the armed contract overrides this
   # value outright — see promotion/experimental.py — so an edit here cannot
   # widen what the live account is allowed to stake.
-  max_total_open_risk_pct: 16.0
+  max_total_open_risk_pct: 24.0
 
   # De inzet schaalt mee met hoe overtuigd de reviewer is. Zie
   # config/schema.py ConvictionRiskConfig voor waarom het op ZIJN vertrouwen
@@ -1666,8 +1807,8 @@ risk:
   # reviews meer zijn en de spreiding verschoven blijkt.
   conviction_risk:
     enabled: true
-    floor_pct: 3.0
-    ceiling_pct: 8.0
+    floor_pct: 5.0
+    ceiling_pct: 12.0
     confidence_floor: 0.50
     confidence_ceiling: 0.70
 
@@ -1902,7 +2043,7 @@ modes:
     # The per-trade CEILING, not the ordinary stake. An ordinary approval is
     # still sized at `risk.risk_per_trade_pct`; this is the most that
     # conviction scaling may reach, and the sizer clamps to it.
-    max_risk_per_trade_pct: 8.0
+    max_risk_per_trade_pct: 12.0
     max_sl_pips: 30
     max_trades_per_day: 0
     daily_loss_limit_pct: 0

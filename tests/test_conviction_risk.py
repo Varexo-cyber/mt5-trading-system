@@ -641,8 +641,8 @@ class TestTheRaisedEnvelopeAgreesWithItselfEverywhere:
     def test_the_ladder_runs_from_the_ordinary_stake_to_the_peak(self) -> None:
         conviction = self._settings().risk.conviction_risk
 
-        assert conviction.floor_pct == 3.0
-        assert conviction.ceiling_pct == 8.0
+        assert conviction.floor_pct == 5.0
+        assert conviction.ceiling_pct == 12.0
 
     def test_no_clamp_is_left_behind_at_the_old_ceiling(self) -> None:
         """The trap this test exists for. Every ceiling the stake passes
