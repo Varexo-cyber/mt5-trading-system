@@ -53,7 +53,7 @@ import argparse
 import contextlib
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -76,6 +76,18 @@ from core.mt5_connector import MT5Connector
 from core.types import Timeframe
 
 DEFAULT_SYMBOLS = ("EURUSD.i", "GBPUSD.i", "USDJPY.i", "AUDUSD.i", "XAUUSD")
+
+#: The same sentence for the detectors, in their own terms. The shared renderer
+#: defaults to the playbook wording, which names five pattern rules none of
+#: these modules contain.
+_MODULE_CONCLUSION = (
+    "  These are the detectors the live account trades on, and on this sample\n"
+    "  their direction calls are worth about what a coin is worth. Read the\n"
+    "  avg win and avg loss columns above before deciding what to do: a\n"
+    "  detector whose winners are smaller than its losers is not failing to\n"
+    "  read the market, it is failing to get paid for reading it, and those\n"
+    "  are opposite repairs."
+)
 
 
 def build_engine(settings):  # type: ignore[no-untyped-def]
@@ -113,7 +125,14 @@ def history(
 
 @dataclass(frozen=True, slots=True)
 class ModuleEvidence:
-    """One detector's record over the replayed window."""
+    """One detector's record over the replayed window.
+
+    HOW THE TRADES ENDED IS PART OF THE RECORD, and it used to be dropped.
+    A table that says only "negative" cannot be acted on: a detector losing
+    because its stops are inside the noise and a detector losing because its
+    targets are never reached are the same row and opposite repairs. The
+    backtester already labels every exit SL, TP or TIME; nothing read it.
+    """
 
     module: str
     proposals: int
@@ -122,18 +141,30 @@ class ModuleEvidence:
     win_rate: float
     expectancy_r: float
     max_drawdown_r: float
+    #: Share of closed trades ending each way. TIME is the time limit, which is
+    #: neither the plan working nor the plan failing -- it is the plan not
+    #: resolving, and a population dominated by it is being graded on drift.
+    tp_share: float = 0.0
+    sl_share: float = 0.0
+    time_share: float = 0.0
+    #: What a winner and a loser are actually worth. The pair says whether a
+    #: win rate above 50% can pay for itself at all.
+    average_win_r: float = 0.0
+    average_loss_r: float = 0.0
 
     def row(self) -> str:
         return (
-            f"  {self.module:<22}{self.proposals:>9}{self.trades:>8}"
-            f"{self.win_rate:>8.0%}{self.total_r:>+10.2f}R{self.expectancy_r:>+9.3f}R"
-            f"{self.max_drawdown_r:>10.2f}R"
+            f"  {self.module:<22}{self.trades:>7}"
+            f"{self.win_rate:>7.0%}{self.expectancy_r:>+9.3f}R"
+            f"{self.average_win_r:>+9.2f}R{self.average_loss_r:>+9.2f}R"
+            f"{self.tp_share:>7.0%}{self.sl_share:>6.0%}{self.time_share:>7.0%}"
+            f"{self.total_r:>+9.2f}R"
         )
 
 
 HEADER = (
-    f"  {'module':<22}{'proposals':>9}{'trades':>8}{'win':>8}"
-    f"{'total':>11}{'per trade':>10}{'max dd':>10}"
+    f"  {'module':<22}{'trades':>7}{'win':>7}{'per trade':>10}"
+    f"{'avg win':>10}{'avg loss':>10}{'TP':>7}{'SL':>6}{'TIME':>7}{'total':>10}"
 )
 
 
@@ -158,6 +189,9 @@ def evidence_for(
         total_r = 0.0
         wins = 0
         worst = 0.0
+        outcomes: dict[str, int] = defaultdict(int)
+        won_r: list[float] = []
+        lost_r: list[float] = []
         for symbol, group in by_symbol.items():
             frame = frames.get(symbol)
             if frame is None:
@@ -167,6 +201,11 @@ def evidence_for(
             total_r += result.total_r
             wins += round(result.win_rate * result.sample_size)
             worst = max(worst, result.max_drawdown_r)
+            for trade in result.trades:
+                # SL_FIRST_AMBIGUOUS is a bar that touched both levels and is
+                # resolved as the stop, so it belongs with the stops.
+                outcomes["SL" if trade.outcome.startswith("SL") else trade.outcome] += 1
+                (won_r if trade.net_r > 0 else lost_r).append(trade.net_r)
         if trades == 0:
             continue
         evidence.append(
@@ -178,6 +217,11 @@ def evidence_for(
                 win_rate=wins / trades,
                 expectancy_r=total_r / trades,
                 max_drawdown_r=worst,
+                tp_share=outcomes["TP"] / trades,
+                sl_share=outcomes["SL"] / trades,
+                time_share=outcomes["TIME"] / trades,
+                average_win_r=(sum(won_r) / len(won_r)) if won_r else 0.0,
+                average_loss_r=(sum(lost_r) / len(lost_r)) if lost_r else 0.0,
             )
         )
     return sorted(evidence, key=lambda item: item.expectancy_r)
@@ -357,11 +401,21 @@ def main(argv: list[str] | None = None) -> int:
             worth_reading = [item for item in evidence if item.trades >= 20]
             if not worth_reading:
                 continue
-            comparisons.extend(
-                compare_to_chance(group, frame, worth_reading, backtester=backtester)
-            )
+            # NAME THE SYMBOL. The comparison runs per symbol, so a detector
+            # with enough lone trades on four of them produced four rows all
+            # labelled `drift_continuation` and nothing else -- which reads as
+            # a duplicated row rather than as four separate readings.
+            for item in compare_to_chance(group, frame, worth_reading, backtester=backtester):
+                named = f"{item.real.playbook[:11]} {symbol[:6]}"
+                comparisons.append(replace(item, real=replace(item.real, playbook=named)))
         if comparisons:
-            print(render_comparison(comparisons, window=f"{args.days:.0f} days, lone detectors"))
+            print(
+                render_comparison(
+                    comparisons,
+                    window=f"{args.days:.0f} days, lone detectors",
+                    conclusion=_MODULE_CONCLUSION,
+                )
+            )
         else:
             print(
                 "\n  No detector reached 20 lone trades on any one symbol. Widen "

@@ -328,7 +328,7 @@ class TestTheCoinFlip:
         assert not inside.beats_the_coin
         printed = render_comparison([inside])
         assert "inside chance" in printed
-        assert "Not one theory beat guessing" in printed
+        assert "Not one of them beat guessing" in printed
 
     def test_beating_the_average_coin_is_not_enough(self) -> None:
         """It has to beat every shuffle. Landing inside the range chance
