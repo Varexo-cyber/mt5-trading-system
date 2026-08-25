@@ -188,6 +188,12 @@ class LocalHistoryAdvisor:
                 model="jarvis_outcome_memory",
                 said_yes=True,
                 threshold=self.minimum,
+                # NOT AN OPINION. The confidence above is the ENGINE'S own
+                # number, handed back because this archive has nothing
+                # comparable to say. Flagged so a caller sizing on
+                # corroboration cannot read it as a second voice agreeing
+                # with the first.
+                independent=False,
             )
 
         total_weight = sum(1.0 / (0.05 + distance) for distance, _ in neighbors)
@@ -247,6 +253,12 @@ class LocalHistoryAdvisor:
                 model="jarvis_outcome_memory",
                 said_yes=True,
                 threshold=self.minimum,
+                # NOT AN OPINION. The confidence above is the ENGINE'S own
+                # number, handed back because this archive has nothing
+                # comparable to say. Flagged so a caller sizing on
+                # corroboration cannot read it as a second voice agreeing
+                # with the first.
+                independent=False,
             )
 
         useful_rate = 1.0 - learned_veto_rate
