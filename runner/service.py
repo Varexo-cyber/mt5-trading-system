@@ -1870,9 +1870,7 @@ class JarvisRunner:
         positions = self._managed_positions()
         state = self.risk.build_state(account, positions)
         if self.risk.circuit_breaker_tripped(state):
-            for position in positions:
-                self.broker.close_position(position)
-            self.alerts.send(self.risk.trip_circuit_breaker(state))
+            self._trip_circuit_breaker(state, positions)
             return self._summary(started_at, ScanBatch((), (), 0, 0, self.cursor, 0), 0, 0)
 
         self._process_external_signals()
@@ -7141,6 +7139,27 @@ class JarvisRunner:
         self.kill_switch.engage(message)
         self.alerts.send(message)
         return True
+
+    def _trip_circuit_breaker(self, state, positions) -> str:  # type: ignore[no-untyped-def]
+        """Go flat, halt, and say what actually happened.
+
+        Through the same flattener the kill switch uses, rather than the bare
+        loop this used to be. That loop had both of the faults the flattener
+        was written to avoid. An exception on one position abandoned every
+        position after it AND skipped the alert entirely, because the raise
+        propagated past both. And the close result was discarded, so a broker
+        REJECTION read exactly like a successful close: the breaker announced
+        itself while the risk it exists to remove was still on the account.
+
+        Flatten first, then trip. `trip_circuit_breaker` halts and engages the
+        kill switch, and its docstring names that order.
+        """
+        remaining = self._flatten_owned_positions("circuit breaker tripped", positions=positions)
+        message = self.risk.trip_circuit_breaker(state)
+        if remaining:
+            message += f" {len(remaining)} owned position(s) still require closure."
+        self.alerts.send(message)
+        return message
 
     def _flatten_owned_positions(self, reason: str, *, positions=None):  # type: ignore[no-untyped-def]
         """Close Jarvis entries and manual positions it explicitly adopted."""
