@@ -553,6 +553,50 @@ analysis:
     # plaats van erdoorheen geduwd.
     fixed_lots: 0.01
 
+    # DE STOP UIT DE RUIS GEHAALD, 26 augustus. Het target blijft groter dan
+    # de stop -- die beslissing was gemeten en klopt nog steeds.
+    #
+    # WAT ER FOUT WAS. Beide niveaus stonden in kaarsbreedtes terwijl de markt
+    # in SPREADS rekent. Op goud, M1-kaars ~$2,00, spread $0,25:
+    #
+    #     stop 0,4 spans = $0,80 = 3,2 SPREADS
+    #
+    # Een stop van drie spreads wordt geraakt zonder dat de markt iets doet --
+    # exact dezelfde fout als de profit lock die binnen de spread stond. De
+    # live trade van vanochtend ging naar +EUR 1,20 en eindigde op -EUR 0,90.
+    #
+    #     stop   0,4 -> 1,0 spans = $2,00 = 8,0 spreads = EUR 1,72  (1,0%)
+    #     target 1,2 -> 1,4 spans = $2,80 = 11 spreads
+    #
+    # WAT IK EERST WILDE EN NIET GEDAAN HEB: stop 1,6 / target 0,7, dus een
+    # dichtbij target dat de broker snel pakt. De rekensom weigerde het --
+    # break-even hitrate 75% tegen 47% hier -- en `test_the_loser_is_cut_fast
+    # _and_the_winner_is_not` legt precies die meting vast. Een winnaar kleiner
+    # dan een verliezer maken lost het ruisprobleem op door een duurder
+    # probleem terug te zetten.
+    #
+    #     stop  target  spreads stop    RR   break-even
+    #      0,4     1,2          3,2   3,00      33%   <- ruis raakt de stop
+    #      1,0     1,4          8,0   1,40      47%   <- hier
+    #      1,6     0,7         12,8   0,44      75%   <- te duur
+    #
+    # 33% is een lagere lat dan 47%, en dat is de prijs van deze wijziging.
+    # Hij wordt betaald omdat een stop op 3,2 spreads die 33% nooit gaat halen:
+    # trades die eruit vliegen op de bid/ask tellen mee als verliezers zonder
+    # dat de markt ooit tegen ze in ging.
+    #
+    # EN DE KLOK PAKT HET MIDDEN. Sinds vandaag sluit een scalp na vier minuten
+    # met wat er ligt, dus het target hoeft niet meer geraakt te worden om geld
+    # op te leveren -- het is er voor de trade die echt doorloopt. Dat was de
+    # klacht: "je ziet al 1 euro, CLAIM DIE EURO". Dat doet de klok nu, en de
+    # stop staat er alleen nog voor het geval dat het echt verkeerd gaat.
+    #
+    # WAT DIT SETTELT: `mfe_r` staat bij elke gesloten trade. Na een dag
+    # scalpen zegt de scorecard waar deze trades ECHT pieken, en dan staat het
+    # target daar in plaats van waar een rekensom het wilde hebben.
+    stop_candle_spans: 1.0
+    target_candle_spans: 1.4
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
