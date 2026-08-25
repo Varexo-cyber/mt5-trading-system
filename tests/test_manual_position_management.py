@@ -132,3 +132,70 @@ def test_ignored_gold_is_neither_adopted_nor_returned_for_management(tmp_path: P
     assert fake.orders_sent == []
     assert runner.journal.open_trade_by_ticket(9001) is None
     runner.journal.close()
+
+
+def test_the_circuit_breaker_flattens_the_rest_when_one_close_raises(tmp_path: Path) -> None:
+    """The breaker used to close positions in a bare loop of its own.
+
+    An exception on one position propagated straight out of that loop, so
+    every position after it stayed open AND the alert never went out -- the
+    account carried the risk the breaker exists to remove, silently. The kill
+    switch's flattener already contained each close and reported what was left
+    over; the breaker now goes through it.
+    """
+    fake = FakeMT5(
+        now=NOW,
+        specs={"EURUSD": eurusd_spec()},
+        quotes={"EURUSD": (1.08500, 1.08512)},
+        positions=[],
+    )
+    runner = _runner(tmp_path, fake)
+    sent: list[str] = []
+    runner.alerts = SimpleNamespace(send=sent.append)
+    runner.risk = SimpleNamespace(trip_circuit_breaker=lambda _state: "CIRCUIT BREAKER: test")
+    first = SimpleNamespace(ticket=1, symbol="EURUSD")
+    second = SimpleNamespace(ticket=2, symbol="EURUSD")
+    closed: list[int] = []
+
+    def close(pos):  # type: ignore[no-untyped-def]
+        if pos.ticket == first.ticket:
+            raise RuntimeError("the broker dropped the connection on this one")
+        closed.append(pos.ticket)
+        return SimpleNamespace(ok=True, retcode=0, comment="done")
+
+    runner.broker = SimpleNamespace(close_position=close)
+    runner._managed_positions = lambda: []  # type: ignore[assignment]
+
+    message = runner._trip_circuit_breaker(None, [first, second])
+
+    assert closed == [second.ticket], "the position after the failing one was abandoned"
+    assert sent == [message]
+    assert "CIRCUIT BREAKER" in message
+    runner.journal.close()
+
+
+def test_the_circuit_breaker_says_so_when_a_position_would_not_close(tmp_path: Path) -> None:
+    """A broker rejection used to read exactly like a successful close, because
+    the return value was thrown away."""
+    fake = FakeMT5(
+        now=NOW,
+        specs={"EURUSD": eurusd_spec()},
+        quotes={"EURUSD": (1.08500, 1.08512)},
+        positions=[],
+    )
+    runner = _runner(tmp_path, fake)
+    sent: list[str] = []
+    runner.alerts = SimpleNamespace(send=sent.append)
+    runner.risk = SimpleNamespace(trip_circuit_breaker=lambda _state: "CIRCUIT BREAKER: test")
+    stuck = SimpleNamespace(ticket=1, symbol="EURUSD")
+    runner.broker = SimpleNamespace(
+        close_position=lambda _pos: SimpleNamespace(
+            ok=False, retcode=10018, comment="market closed"
+        )
+    )
+    runner._managed_positions = lambda: [stuck]  # type: ignore[assignment]
+
+    message = runner._trip_circuit_breaker(None, [stuck])
+
+    assert "1 owned position(s) still require closure." in message
+    runner.journal.close()
