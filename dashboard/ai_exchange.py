@@ -68,6 +68,37 @@ def pair_ai_reviews(rows: Sequence[Mapping[str, object]]) -> list[dict[str, Any]
     return paired
 
 
+#: What actually refused the trade, in the operator's language. The status used
+#: to read "NA CLAUDE GEBLOKKEERD" for every non-OK reason, which is true only
+#: in the sense that these gates run after the adviser -- and it is read as "the
+#: adviser blocked it". On the run that prompted this the counters said VETO 0
+#: and APPROVED 33 while most rows carried that label, so the panel appeared to
+#: contradict itself. The adviser had refused nothing; margin and entry quality
+#: had refused almost everything.
+#:
+#: The reason was already in the explanation column. Now it is in the status,
+#: so the two cannot disagree.
+_BLOCKED_LABELS = {
+    "INSUFFICIENT_MARGIN": "TE WEINIG MARGE",
+    "TRADE_SKIPPED_UNDERCAPITALIZED": "TE KLEIN VOOR DIT ACCOUNT",
+    "UNDERCAPITALIZED": "TE KLEIN VOOR DIT ACCOUNT",
+    "RISK_EXCEEDS_CAP": "RISICOPLAFOND VOL",
+    "ENTRY_OVEREXTENDED": "INSTAP TE VER DOORGELOPEN",
+    "ENTRY_MOVED_DURING_REVIEW": "PRIJS LIEP WEG TIJDENS REVIEW",
+    "SL_TOO_TIGHT_FOR_COSTS": "STOP BINNEN DE KOSTEN",
+    "SL_TOO_TIGHT_FOR_BROKER": "STOP TE KRAP VOOR BROKER",
+    "SL_TOO_WIDE_FOR_ACCOUNT": "STOP TE BREED VOOR ACCOUNT",
+    "RR_BELOW_MINIMUM": "BELONING TE KLEIN",
+    "SECTION_BREAKER_TRIPPED": "SECTIE HEEFT ZICHZELF GESTOPT",
+    "SPREAD_TOO_WIDE": "SPREAD TE BREED",
+}
+
+
+def _blocked_by(reason: str) -> str:
+    """Name the gate that refused, never the layer it happened to run after."""
+    return _BLOCKED_LABELS.get(reason, f"GEBLOKKEERD: {reason}")
+
+
 def execution_outcomes(path: Path, cycle_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
     """Join AI approvals to what the deterministic/order path did afterwards.
 
@@ -116,7 +147,7 @@ def execution_outcomes(path: Path, cycle_ids: Sequence[str]) -> dict[str, dict[s
             status = "ORDER IN VERWERKING"
             explanation = "De entry-intentie bestaat, maar er is nog geen brokerticket bevestigd."
         elif reason and reason != "OK":
-            status = "NA CLAUDE GEBLOKKEERD"
+            status = _blocked_by(reason)
             explanation = f"{reason}: {detail}" if detail else reason
         elif str(row["mode"] or "") == "monitor":
             status = "ALLEEN MONITOR"

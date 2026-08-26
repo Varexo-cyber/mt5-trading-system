@@ -106,7 +106,10 @@ def test_execution_outcome_explains_a_post_ai_block(tmp_path) -> None:  # type: 
 
     outcome = execution_outcomes(path, ["cycle-1"])["cycle-1"]
 
-    assert outcome["status"] == "NA CLAUDE GEBLOKKEERD"
+    # Named for the gate that refused. It used to read "NA CLAUDE
+    # GEBLOKKEERD" here, which is true only in the sense that this gate runs
+    # after the adviser -- and was read as the adviser having refused it.
+    assert outcome["status"] == "PRIJS LIEP WEG TIJDENS REVIEW"
     assert "ENTRY_MOVED_DURING_REVIEW" in outcome["detail"]
 
 
@@ -124,3 +127,43 @@ def test_execution_outcome_shows_the_confirmed_mt5_ticket(tmp_path) -> None:  # 
 
     assert outcome["status"] == "GEOPEND IN MT5"
     assert outcome["ticket"] == 5049535
+
+
+class TestTheStatusNamesTheGateNotTheTimeline:
+    """The panel contradicted itself and the label was why.
+
+    On 26 August the counters read VETO 0 and APPROVED 33 while most rows in
+    the table said "NA CLAUDE GEBLOKKEERD". Both were true and together they
+    were unreadable: the adviser had refused nothing, and margin and entry
+    quality had refused almost everything. "NA CLAUDE" means "after Claude",
+    and it is read as "by Claude".
+
+    The reason was already sitting in the explanation column. Putting it in
+    the status is what stops the two disagreeing.
+    """
+
+    def test_a_margin_refusal_says_margin(self) -> None:
+        from dashboard.ai_exchange import _blocked_by
+
+        assert _blocked_by("INSUFFICIENT_MARGIN") == "TE WEINIG MARGE"
+
+    def test_an_entry_quality_refusal_says_so(self) -> None:
+        from dashboard.ai_exchange import _blocked_by
+
+        assert _blocked_by("ENTRY_OVEREXTENDED") == "INSTAP TE VER DOORGELOPEN"
+        assert _blocked_by("ENTRY_MOVED_DURING_REVIEW") == "PRIJS LIEP WEG TIJDENS REVIEW"
+
+    def test_an_unmapped_reason_still_names_itself(self) -> None:
+        """A new refusal reason must never silently inherit someone else's
+        name. The fallback carries the raw reason rather than a guess."""
+        from dashboard.ai_exchange import _blocked_by
+
+        assert _blocked_by("SOME_NEW_GATE") == "GEBLOKKEERD: SOME_NEW_GATE"
+
+    def test_no_label_blames_the_adviser(self) -> None:
+        """The whole point. Nothing in this map may mention Claude, because
+        none of these gates is Claude."""
+        from dashboard.ai_exchange import _BLOCKED_LABELS
+
+        for reason, label in _BLOCKED_LABELS.items():
+            assert "CLAUDE" not in label.upper(), reason
