@@ -76,18 +76,25 @@ def runner(**overrides):  # type: ignore[no-untyped-def]
     # confuses the two, and the direction it confuses them in is the dangerous
     # one: the mechanics stop being covered at the exact moment nobody is
     # watching them, and the switch turns back on against untested code.
+    #
+    # `risk_pct` is the same story with a sharper edge. A test that reads the
+    # account's stake cannot tell "the sizer produced the minimum lot" from
+    # "the sizer is bypassed and always sends the minimum lot", because on an
+    # account this small at 1% those are the same number. Tests that care about
+    # the arithmetic pass their own stake; the one that cares about the floor
+    # passes 1.0 and asserts the floor.
+    module = settings.analysis.candle_momentum.model_copy(
+        update={
+            "own_lane_enabled": True,
+            "risk_pct": overrides.get("risk_pct", settings.analysis.candle_momentum.risk_pct),
+        }
+    )
     settings = settings.model_copy(
         update={
             "system": settings.system.model_copy(
                 update={"mode": overrides.get("mode", TradingMode.MICRO_LIVE)}
             ),
-            "analysis": settings.analysis.model_copy(
-                update={
-                    "candle_momentum": settings.analysis.candle_momentum.model_copy(
-                        update={"own_lane_enabled": True}
-                    )
-                }
-            ),
+            "analysis": settings.analysis.model_copy(update={"candle_momentum": module}),
         }
     )
     service = object.__new__(JarvisRunner)
@@ -165,22 +172,53 @@ class TestItOpensATrade:
         would carry EUR 9 behind a stop measured in seconds". The stop was 0.4
         of an M1 candle when that was written and is 1.0 now.
         """
-        service = runner()
+        # A stake this test OWNS, rather than whatever the account is set to
+        # this week. It was reading `risk_pct` from the shipped overlay and
+        # went red when the owner asked for 1.5 -> 1.0: at 1% of this fixture's
+        # equity the risk model lands exactly on the broker's minimum lot, so
+        # "risk-sized" and "pinned to 0.01" produce the same number and the
+        # test can no longer tell them apart. That is a fact about a small
+        # account, asserted on its own below, not about the sizer.
+        service = runner(risk_pct=4.0)
         run(service)
 
         volume = service.sent[0].volume
         assert volume > 0.01, "still pinned to the old fixed lot"
-        # And bounded: `risk_pct` is 1.5, halved the same evening after three
-        # scalps took 6.6% of the account between them. Not a verdict on the
-        # section -- three trades are not a sample -- but the stake had just
-        # doubled on something never measured, and halving it is the cheapest
-        # way to keep measuring without the measurement eating the account.
-        assert service.settings.analysis.candle_momentum.risk_pct == 1.5
+
+    def test_a_small_account_lands_on_the_brokers_floor_and_that_is_the_ceiling(self) -> None:
+        """THE WALL SECTION SIX RUNS INTO, and it is not a strategy problem.
+
+        0.01 lot of XAUUSD is one ounce, so a $1 move is $1. That is the
+        smallest position the broker accepts -- there is nothing below it. On a
+        EUR 212 account at 1% risk the budget is about EUR 2.12, and one M1
+        candle of gold behind the minimum lot is already EUR 1.71.
+
+        So the stop cannot be widened. Costs are spread over stop, the stop is
+        pinned by the minimum lot, and the cost share is therefore pinned near
+        20% of R -- against an entry that measured 1.3 points better than a coin
+        flip where it needs 8 to 10.
+
+        The owner asked for the stop to be raised if that made section six
+        profitable. It would, and it cannot: at this equity a wider stop is
+        refused as TRADE_SKIPPED_UNDERCAPITALIZED by the rule he wrote himself.
+        This test is that arithmetic, so the day the account is large enough it
+        fails and says so.
+        """
+        service = runner(risk_pct=1.0)
+        run(service)
+
+        spec = service.broker.spec("XAUUSD")
+        assert service.sent[0].volume == spec.volume_min
 
     def test_a_lot_ceiling_still_trims_when_one_is_set(self) -> None:
         """`fixed_lots` survives as a ceiling for anyone who wants one. It
-        trims and can never round up."""
-        service = runner()
+        trims and can never round up.
+
+        Needs a stake the ceiling can actually bite on: at the account's own 1%
+        the sizer already returns the broker minimum, and `min(0.02, 0.01)` is
+        0.01 whether the ceiling works or not.
+        """
+        service = runner(risk_pct=4.0)
         # Off the fixture's module, not the overlay's: the fixture is what
         # decides the lane is switched on for these tests, and reaching past it
         # to the shipped config puts the account's own on/off decision back
