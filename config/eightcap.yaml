@@ -902,7 +902,56 @@ analysis:
     #
     # `section6.cmd` meet nu wat dit werkelijk oplevert. Valt het tegen, dan
     # is dit één regel terug.
-    minimum_target_spreads: 7.0
+    #
+    # ---------------------------------------------------------------------
+    # 7,0 -> 14,0. Dit is de duurste knop op deze sectie en hij stond het
+    # losst. `section6.cmd` heeft hem inmiddels gemeten en de eigenaar vroeg om
+    # een hogere winrate, dus hier is wat deze poort ECHT is.
+    #
+    # HET IS EEN KOSTENPOORT, GESCHREVEN OP HET TARGET. Target = 1,4 span,
+    # stop = 1,0 span. Dus:
+    #
+    #     poort 7,0  ->  span >= 5,0 spreads   ->  kosten 1,4/7,0  = 20% van R
+    #     poort 14,0 ->  span >= 10,0 spreads  ->  kosten 1,4/14,0 = 10% van R
+    #
+    # Er komt commissie en slippage bovenop, dus 20% gemeten werd 23,5%.
+    # 14,0 zet dat rond de 12%.
+    #
+    # EN KOSTEN STUREN DE WINRATE. Dat is geen theorie, het staat in de vier
+    # markten van de meting zelf -- hoe duurder, hoe lager de winrate, omdat
+    # een brede spread je stop DICHTERBIJ zet in echte afstand:
+    #
+    #     markt     kosten   winrate   toeval daarbij   voorsprong
+    #     XAUUSD     23,5%     43%         31,9%          +11,1
+    #     XAUEUR     26,5%     43%         30,6%          +12,4
+    #     US30       44,0%     38%         23,3%          +14,7
+    #     GER40      30,0%     37%         29,2%           +7,8
+    #
+    # De voorsprong op toeval is ~11 punten en staat er in alle vier. Wat
+    # verschilt is wat de kosten ervan overlaten:
+    #
+    #     kosten   verwachte winrate   nodig voor break-even   uitkomst
+    #      23,5%          43%                 51,2%            -0,20R
+    #      12,0%        ~47,5%                46,7%            +0,02R
+    #       8,0%        ~49,0%                45,0%            +0,10R
+    #
+    # Rond 10-12% kantelt het. Daar zit 14,0.
+    #
+    # WAAROM DEZE KNOP EN NIET DE STOP. Een bredere stop doet hetzelfde met de
+    # kosten en loopt vast op de minimum lot: 0,01 goud achter een stop van
+    # $6 is EUR 5,12 en dat is 2,4% van deze rekening. Deze poort raakt de stop
+    # NIET aan -- hij wacht tot de spread klein genoeg is voor de kaars die er
+    # al ligt. Geen kleine-account-probleem, want R in euro's blijft 1%.
+    #
+    # WAT HET KOST: minder trades. Hij vraagt nu een kaars van 10 spreads in
+    # plaats van 5. De vorige stap (8,0 -> 7,0) gaf +22% setups, dus deze kant
+    # op is fors -- reken op de helft of minder.
+    #
+    # DAT IS DE JUISTE RUIL EN DAT IS DE HELE REDENERING. De eigenaar wil veel
+    # trades. Meer trades is alleen goed als een trade geld OPLEVERT; nu kost
+    # elke trade gemiddeld EUR 0,41, dus meer trades is sneller verliezen.
+    # Eerst boven nul, dan pas de kraan open -- en dan is dit één regel terug.
+    minimum_target_spreads: 14.0
 
     # DE CLAIM, 25 augustus, na twee XAUUSD-trades die piekten en alles
     # teruggaven. De logica-fout zit in `_scalp_verdict` en staat daar
@@ -927,8 +976,51 @@ analysis:
     # De vloer van 2,0 blijft staan en betekent nu wat hij hoort te betekenen:
     # de piek moet minstens twee spreads waard zijn geweest voordat dit de
     # moeite waard is.
+    #
+    # ---------------------------------------------------------------------
+    # 2,0 -> 6,0. DIT IS WAAR DE EIGENAAR OM VROEG: "zoveel mogelijk winnen en
+    # zo min mogelijk verliezen", en concreet "70-80% en overal een euro
+    # oppakken".
+    #
+    # WAAROM NIET VIA HET TARGET. Een target van 0,5R geeft precies die
+    # winrate -- ~71% -- en verliest geld. Bij dezelfde strengheid:
+    #
+    #     vorm          winrate   nodig    per trade
+    #     target 1,4R     ~51%    43,8%     +0,16R
+    #     target 0,5R     ~71%    73,3%     -0,04R
+    #
+    # De hoge winrate ziet er beter uit en betaalt niet, omdat één verlies dan
+    # 2,2 winsten opeet. Dat is dezelfde val als "0,20 target onder de spread"
+    # hierboven, alleen minder extreem.
+    #
+    # DUS VIA DE CLAIM, want die knipt de RUNNERS NIET AF. Het target blijft
+    # 1,4R voor de trades die doorlopen -- die betalen alles -- en de claim
+    # pakt de euro van de trades die piekten en gaan terugvallen. Dat zijn twee
+    # verschillende trades en ze hoeven niet dezelfde uitgang te delen.
+    #
+    # DE REKENSOM VAN DE 6,0, met de poort op 14,0 (span >= 10 spreads, dus
+    # stop = 10 spreads = 1R = 1% van de rekening):
+    #
+    #     piek 6 spreads  -  1 spread kosten  =  5 spreads netto
+    #     5 spreads / 10 spreads per R        =  0,5R
+    #     0,5R van EUR 2,12                   =  EUR 1,06
+    #
+    # Dat is de euro, letterlijk. En de vloer van 2,0 die hier stond was
+    # EUR 0,21 -- die claimde niets van betekenis en liet daarna de rest
+    # teruglopen naar de stop.
+    #
+    # WAT DIT MET DE WINRATE DOET. De trades die 6 spreads halen en stallen
+    # worden nu geboekt in plaats van teruggegeven. In de praktijk betekent dat
+    # veel kleine winsten plus af en toe een vol target, met het verlies nog
+    # steeds op 1R. Dat is de 70-80% die gevraagd werd, verdiend aan de
+    # uitgang in plaats van cadeau gedaan aan de ingang.
+    #
+    # WAT ER NIET VERANDERT: `scalp_giveback_share` van 0,40 hieronder. De
+    # leiband groeit mee met de piek, dus een trade die naar 20 spreads loopt
+    # wordt niet op 6 afgeknipt -- die mag 8 spreads teruggeven voordat er
+    # geclaimd wordt. Kleine winst vastzetten, grote winst laten lopen.
     scalp_claim_spreads: 1.0
-    scalp_claim_minimum_spreads: 2.0
+    scalp_claim_minimum_spreads: 6.0
 
     # EN DE LEIBAND GROEIT MEE, zelfde dag, na de vraag die de vorige alinea
     # onderuit haalde: "het is niet vroeg claimen, het is vroeg VEILIG STELLEN

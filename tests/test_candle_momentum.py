@@ -830,3 +830,75 @@ class TestTheLaneAsksTheCalendarItselfOnThePathItActuallyTakes:
         self._observe_on_the_no_signal_path(runner, signals)
 
         assert recorded == []
+
+
+class TestTheGeometryHoldsTogetherAsOneShape:
+    """Four numbers that are only correct in relation to each other.
+
+    The owner asked for "70-80% and a euro picked up each time", and for as
+    much winning and as little losing as possible. Those are two different
+    requests and only the second one is expectancy. Given as a target of 0.5R
+    the first request produces ~71% and LOSES money, because at that payoff one
+    loss eats 2.2 wins and the break-even rate is 73.3%.
+
+    So it is delivered at the EXIT instead: the target stays where the
+    arithmetic wants it and the claim banks the euro off trades that peak and
+    stall. Two different trades, two different exits, and the runners are not
+    cut to buy a nicer-looking hit rate.
+
+    Every number below is derived from the others. Change one alone and the
+    shape stops meaning what its comments say it means.
+    """
+
+    def config(self):  # type: ignore[no-untyped-def]
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.candle_momentum
+
+    def test_the_gate_buys_a_known_cost_and_that_is_what_it_is_for(self) -> None:
+        """`minimum_target_spreads` reads as a target rule and IS a cost rule.
+        target = 1.4 span and stop = 1.0 span, so the gate fixes how many
+        spreads wide 1R is, and one spread is the round trip."""
+        config = self.config()
+        span_in_spreads = config.minimum_target_spreads / config.target_candle_spans
+        stop_in_spreads = span_in_spreads * config.stop_candle_spans
+        cost_share = 1.0 / stop_in_spreads
+
+        assert stop_in_spreads == pytest.approx(10.0)
+        assert cost_share == pytest.approx(0.10)
+
+    def test_the_claim_banks_about_a_euro_and_not_about_a_dime(self) -> None:
+        """The floor was 2.0 spreads. Behind a 10-spread stop that is 0.1R --
+        EUR 0.21 -- which banks nothing worth banking and then lets the rest
+        run back to the stop. Six spreads peak, minus the one the round trip
+        costs, is half an R."""
+        config = self.config()
+        stop_in_spreads = (
+            config.minimum_target_spreads / config.target_candle_spans * config.stop_candle_spans
+        )
+        banked_r = (config.scalp_claim_minimum_spreads - 1.0) / stop_in_spreads
+
+        assert banked_r == pytest.approx(0.5)
+
+    def test_the_claim_is_below_the_target_so_both_exits_can_happen(self) -> None:
+        """If the claim armed above the target it could never fire -- the
+        target would be hit first, every time, and the rule would be dead code
+        that looks alive."""
+        config = self.config()
+        target_in_spreads = config.minimum_target_spreads
+
+        assert config.scalp_claim_minimum_spreads < target_in_spreads
+
+    def test_a_runner_is_not_cut_at_the_claim_floor(self) -> None:
+        """The whole reason the euro is taken at the exit and not at the
+        target: the leash grows with the peak, so a trade that reaches 20
+        spreads may give back 8 before anything is claimed. Small win secured,
+        big win left alone."""
+        config = self.config()
+        peak = 20.0
+        leash = max(config.scalp_claim_spreads, peak * config.scalp_giveback_share)
+
+        assert leash == pytest.approx(8.0)
+        assert leash > config.scalp_claim_spreads
