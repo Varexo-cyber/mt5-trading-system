@@ -148,8 +148,25 @@ class MarketStructure:
         )
 
     def inspect(self, ctx: MarketContext, timeframe: Timeframe) -> StructureSnapshot | None:
-        """Return the chart annotations separately from the trading opinion."""
-        frame = ctx.bars(timeframe).df
+        """Return the chart annotations separately from the trading opinion.
+
+        A timeframe that is not in the context at all is the same answer as one
+        with too few bars in it: no opinion. `analyze` above already turns None
+        from here into a neutral signal, so this is the only line that has to
+        know the difference between "absent" and "short".
+
+        It matters because `ctx.bars()` RAISES, and this is its only caller in
+        the whole analysis package -- every other module reads
+        `ctx.series.get()` and gets None. Now that `get_context` may leave out a
+        timeframe the broker cannot supply, that KeyError would travel up
+        through the confluence engine, which evaluates its modules in a plain
+        generator with no per-module isolation, and take a whole cycle down for
+        one missing weekly series.
+        """
+        series = ctx.series.get(timeframe)
+        if series is None:
+            return None
+        frame = series.df
         needed = max(
             self.config.atr_period + 1,
             self.config.external_swing_lookback * 2 + 2,

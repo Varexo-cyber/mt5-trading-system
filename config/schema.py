@@ -140,6 +140,18 @@ class DataConfig(Base):
     #: three were discarded as having no data at all rather than as having
     #: enough for the timeframes that actually drive the decision.
     min_bars_by_timeframe: dict[str, int] = Field(default_factory=dict)
+    #: Timeframes whose absence refuses the market outright. Everything else in
+    #: `timeframes` is left out of the context when the broker cannot supply it,
+    #: and the modules that read it say so and score neutral.
+    #:
+    #: EMPTY MEANS ALL OF THEM, which is what this system did before the field
+    #: existed: `get_context` built its series with a dict comprehension, so the
+    #: first timeframe to raise took the other six with it and the symbol went
+    #: into a quarantine that backs off to four hours. A hole in one M5 feed
+    #: removed a market for the rest of the session, including the timeframes
+    #: that were complete. A config that says nothing keeps the old behaviour
+    #: rather than loosening silently on upgrade.
+    required_timeframes: tuple[str, ...] = ()
     #: A timeframe is stale if its newest closed bar is older than
     #: `stale_after_bars` * bar duration. Weekend gaps are handled separately.
     stale_after_bars: float = Field(default=3.0, ge=1.0)
@@ -157,6 +169,15 @@ class DataConfig(Base):
         too_few = {tf: n for tf, n in self.bars.items() if n < self.minimum_bars_for(tf)}
         if too_few:
             raise ValueError(f"data.bars below the minimum for that timeframe: {too_few}")
+        # A required timeframe that is never loaded can never be supplied, so
+        # every symbol would be refused for a timeframe nobody asked for. That
+        # is a typo with the blast radius of the whole catalogue, and it costs
+        # one line to make it impossible.
+        stray = [tf for tf in self.required_timeframes if tf not in self.timeframes]
+        if stray:
+            raise ValueError(
+                f"data.required_timeframes names timeframe(s) not in data.timeframes: {stray}"
+            )
         return self
 
     def minimum_bars_for(self, timeframe: str) -> int:

@@ -100,15 +100,86 @@ class DataManager:
         with_tick: bool = True,
         force_refresh: bool = False,
     ) -> MarketContext:
-        """Assemble the full multi-timeframe view an analysis cycle works from."""
+        """Assemble the full multi-timeframe view an analysis cycle works from.
+
+        ONE TIMEFRAME USED TO VETO THE WHOLE MARKET, and it was a dict
+        comprehension that did it:
+
+            series = {tf: self.get_series(symbol, tf) for tf in wanted}
+
+        Seven fetches, and the first one to raise took the other six with it.
+        The symbol then went into quarantine, and quarantine backs off 30
+        minutes, then two hours, then four. So a hole in one M5 feed, or a
+        broker carrying 180 H4 bars where 200 are asked for, removed that
+        market from the account for the rest of the session -- including the
+        timeframes that were complete and the modules that only read those.
+
+        The comment above `min_bars_by_timeframe` in the overlay already
+        describes this happening once: COFFEE, STLAM and SPM were "thrown out
+        as having no data at all -- losing the six timeframes that actually
+        drive the decision over the one that only sets background context."
+        The fix applied then was to lower W1's bar count, which cured those
+        three symbols and left the mechanism intact for every other one.
+
+        THE MECHANISM IS THE BUG. The ladder was validated as a BLOCK, before
+        anything asked which parts of it the decision actually needed. So the
+        question is moved to where it can be answered: a timeframe named in
+        `required_timeframes` is still fatal, and one that is not is left OUT
+        of the context and recorded.
+
+        THIS IS NOT "TRADE ON LESS DATA". Every module states the timeframes it
+        reads and returns a neutral signal naming them when one is absent --
+        `candle_momentum` has done exactly that since it was written. A missing
+        timeframe therefore removes the modules that depend on it from the vote
+        rather than letting them guess, which is the same fail-closed rule as
+        before, applied per module instead of per market. What changes is that
+        a module reading only M5 and M15 is no longer silenced because W1 has a
+        hole in it.
+
+        `meta["unavailable_timeframes"]` carries what was dropped and why, so a
+        decision taken on a partial ladder says so in the journal instead of
+        looking identical to one taken on a complete one.
+        """
         wanted = timeframes or self.timeframes
-        series = {tf: self.get_series(symbol, tf, force_refresh=force_refresh) for tf in wanted}
+        required = self.required_timeframes
+        series: dict[Timeframe, Series] = {}
+        unavailable: dict[str, str] = {}
+        for tf in wanted:
+            try:
+                series[tf] = self.get_series(symbol, tf, force_refresh=force_refresh)
+            except (InsufficientDataError, DataIntegrityError) as exc:
+                if not required or tf in required:
+                    raise
+                unavailable[tf.value] = str(exc).strip().split("\n")[0][:200]
 
         tick: Tick | None = None
         if with_tick:
             tick = self.connector.tick(symbol)
 
-        return MarketContext(symbol=symbol, now=self.clock.now(), series=series, tick=tick)
+        meta: dict[str, object] = {}
+        if unavailable:
+            meta["unavailable_timeframes"] = unavailable
+            log.debug(
+                "analysing without some timeframes",
+                extra={
+                    "event": "partial_ladder",
+                    "symbol": symbol,
+                    "missing": sorted(unavailable),
+                },
+            )
+        return MarketContext(
+            symbol=symbol, now=self.clock.now(), series=series, tick=tick, meta=meta
+        )
+
+    @property
+    def required_timeframes(self) -> frozenset[Timeframe]:
+        """Timeframes whose absence still refuses the market outright.
+
+        Empty means every timeframe is required, which is what this class did
+        before the setting existed. A config that says nothing keeps the old
+        behaviour rather than quietly loosening on upgrade.
+        """
+        return frozenset(Timeframe.parse(tf) for tf in self.config.required_timeframes)
 
     def invalidate(self, symbol: str | None = None) -> None:
         """Drop cached frames. Called after a reconnect, when data may have gaps."""
