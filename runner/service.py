@@ -4483,6 +4483,12 @@ class JarvisRunner:
             sl=stop,
             tp=target,
             spread_price=spread,
+            # RISK-SIZED LIKE EVERY OTHER ROUTE TO AN ORDER. A fixed lot means
+            # a different risk on every instrument -- 0.01 of gold behind a
+            # 3.41 dollar stop is EUR 2.91, 0.01 of an index is something else
+            # -- and this lane was the only path that did not use the sizer for
+            # what it is for. Zero falls back to the account's own figure.
+            risk_pct=config.risk_pct or None,
             # A scalp's reward-to-risk is set by the candle, not by the swing
             # engine's floor, and it is already guarded by
             # `minimum_target_spreads` in the module itself.
@@ -4499,7 +4505,10 @@ class JarvisRunner:
             )
             return False
 
-        volume = spec.round_volume_down(min(config.fixed_lots, sizing.volume))
+        # The lot ceiling, when one is set at all. Zero means the risk model
+        # decides outright; a positive value trims and can never round up.
+        capped = min(config.fixed_lots, sizing.volume) if config.fixed_lots > 0 else sizing.volume
+        volume = spec.round_volume_down(capped)
         if volume < spec.volume_min:
             self._record_skip(
                 cycle_id,

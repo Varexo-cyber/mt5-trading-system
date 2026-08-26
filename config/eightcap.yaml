@@ -569,10 +569,31 @@ analysis:
     # eigen noodstop komen allemaal uit de bestaande machinerie. Een tweede
     # kopie daarvan zou ooit afwijken van de eerste.
     own_lane_enabled: true
-    # De vaste inzet, en tegelijk een plafond: nooit meer dan wat de gewone
-    # sizer toestaat, zodat een te brede stop nog steeds geweigerd wordt in
-    # plaats van erdoorheen geduwd.
-    fixed_lots: 0.01
+    # RISICO-GESIZED IN PLAATS VAN VAST, 26 augustus, op verzoek van de
+    # eigenaar en omdat het argument voor de vaste lot verlopen was.
+    #
+    # WAT ER FOUT AAN WAS. 0,01 lot is geen risico, het is een hoeveelheid.
+    # Op goud staat 0,01 achter een stop van $3,41 en dat is EUR 2,91 = 1,7%
+    # van de rekening. Op een index achter zijn eigen stop is het iets totaal
+    # anders. Elke andere route naar een order gebruikt de sizer om daar EEN
+    # getal van te maken; deze baan was de enige die dat niet deed.
+    #
+    # De reden die hier stond is achterhaald door een latere wijziging:
+    # "risk-sizing naar 5% zet EUR 9 achter een stop van seconden". Die stop
+    # was toen 0,4 kaarsbreedte. Hij staat nu op 1,0 -- op goud ongeveer
+    # $3,41, ruim acht spreads -- dus het is geen stop van seconden meer.
+    #
+    # 3% en niet de 5% van de rekening, want dit is nog steeds het enige dat
+    # live staat zonder gemeten record. En de grenzen eromheen zijn intussen
+    # echt: `max_total_open_risk_pct` wordt sinds vandaag ook door deze baan
+    # gevraagd, de marge wordt gefit in plaats van geweigerd, er mogen er twee
+    # tegelijk, en de sectie zet zichzelf uit na zes verliezers.
+    #
+    # `fixed_lots: 0.0` betekent GEEN plafond in lots -- het risicomodel
+    # beslist. Een getal boven nul knipt af en kan nooit naar boven afronden,
+    # dus terugzetten is één regel.
+    risk_pct: 3.0
+    fixed_lots: 0.0
 
     # DE STOP UIT DE RUIS GEHAALD, 26 augustus. Het target blijft groter dan
     # de stop -- die beslissing was gemeten en klopt nog steeds.
