@@ -188,6 +188,53 @@ class TestSlope:
         assert slope_direction(bars_from(spiked), 6) == 1
 
 
+class TestM1HasToAgreeWithItself:
+    """THE OWNER'S COMPLAINT, PINNED: "it is a buy and dumb section six does a
+    sell."
+
+    M1 was read as a single candle -- body, wick, volume -- and never as a
+    direction. So one green minute inside a FALLING M1 sequence was a buy, as
+    long as M5 and M15 happened to point up: the side agreed with the slower
+    charts and disagreed with the chart the trade was actually taken on.
+    """
+
+    def test_one_green_minute_inside_a_falling_m1_chart_is_refused(self) -> None:
+        signal = CandleMomentum().analyze(
+            context(m1_closes=[*falling(39), BASE - 38 * 0.5 + 4.0], last_body=4.0)
+        )
+
+        assert signal.score == 0.0
+        assert "against its own chart" in signal.reasoning
+        assert signal.details["m1_direction"] == -1
+
+    def test_a_quiet_stretch_before_the_push_is_still_allowed(self) -> None:
+        """Not symmetric with M5 and M15 on purpose. Those must AGREE -- they
+        are the thesis. M1 need only not contradict, because the first minute
+        of a real push often follows a flat stretch, and refusing those removes
+        the setups this module exists for."""
+        signal = CandleMomentum().analyze(
+            context(m1_closes=[*([BASE] * 39), BASE + 4.0], last_body=4.0)
+        )
+
+        assert signal.details["m1_direction"] == 0
+        assert signal.score > 0
+
+    def test_the_trigger_candle_is_not_allowed_to_vouch_for_itself(self) -> None:
+        """The trigger is by construction a big bar and it is the newest one,
+        so a fit that included it would be dragged its own way and the test
+        would confirm itself. The reading has to come from the bars BEFORE it.
+
+        Same falling chart as the first case; the only thing arguing upward is
+        the trigger candle. If it were included the window could read +1 and
+        the refusal would vanish.
+        """
+        closes = [*falling(39), BASE - 38 * 0.5 + 12.0]
+        signal = CandleMomentum().analyze(context(m1_closes=closes, last_body=12.0))
+
+        assert signal.details["m1_direction"] == -1
+        assert signal.score == 0.0
+
+
 class TestTheRefusalsThatMatter:
     def test_an_event_candle_is_refused_however_good_it_looks(self) -> None:
         """THE ONE THAT KEEPS THIS OUT OF THE DITCH. A minute carrying many

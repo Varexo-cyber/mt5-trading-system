@@ -275,6 +275,44 @@ class CandleMomentum:
                 details=details,
             )
 
+        # WAS M1 ITSELF ALREADY GOING THIS WAY, BEFORE THE CANDLE FIRED?
+        #
+        # Nothing asked. M1 was read as a single candle -- its body, its wick,
+        # its volume -- and never as a direction, so a lone green minute inside
+        # a falling M1 sequence was a buy as long as M5 and M15 happened to
+        # point up. That is the owner's complaint in its purest form: the side
+        # agrees with the slower charts and disagrees with the chart the trade
+        # is actually being taken on.
+        #
+        # MEASURED WITHOUT THE TRIGGER CANDLE, which is the whole trick. The
+        # trigger is by construction a big bar -- 1.75x the recent average body
+        # -- and it is the last bar in the window, so including it would drag
+        # the fit its own way and the test would confirm itself. Dropping it
+        # asks the honest question instead: was this move under way before this
+        # minute, or is this minute the entire evidence?
+        #
+        # NOT SYMMETRIC WITH THE OTHER TWO, deliberately. M5 and M15 must AGREE
+        # -- they are the thesis. M1 must merely not CONTRADICT: flat is
+        # allowed, because the first minute of a real push often follows a
+        # quiet stretch and refusing that would remove the setups this module
+        # exists for. Only an M1 chart actively running the other way is
+        # refused, and that is the case that was losing money.
+        prior = fast.df.iloc[:-1]
+        m1_trend = slope_direction(prior, config.trigger_bars, config.minimum_slope_range)
+        details["m1_direction"] = m1_trend
+        if m1_trend != 0 and m1_trend != candle.direction:
+            return Signal(
+                module=self.name,
+                score=0.0,
+                confidence=0.0,
+                reasoning=(
+                    f"the {config.trigger_timeframe} bars before this candle were going "
+                    f"{m1_trend:+d} and the candle is {candle.direction:+d} — this is one "
+                    f"minute against its own chart, not a continuation of it"
+                ),
+                details=details,
+            )
+
         confirm = slope_direction(middle.df, config.confirm_bars, config.minimum_slope_range)
         bias = slope_direction(slow.df, config.bias_bars, config.minimum_slope_range)
         details |= {"confirm_direction": confirm, "bias_direction": bias}
