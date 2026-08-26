@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -12,7 +13,13 @@ from config.schema import Settings
 from core.broker import Broker
 from core.clock import Clock, LiveClock
 from core.instrument import AssetClass
-from core.types import SymbolDescriptor, Timeframe
+from core.types import Direction, SymbolDescriptor, Timeframe
+
+#: How long a contract's minimum-lot margin stays usable. It moves with price
+#: and price moves slowly relative to a whole catalogue sweep.
+_MARGIN_CACHE_SECONDS = 900.0
+#: Equity, read once per scan rather than once per symbol.
+_EQUITY_CACHE_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +110,11 @@ class UniverseScanner:
         # catalogue, released by its own deadline, never persisted: a restart
         # measures everything again.
         self._parked: dict[str, ParkedSpread] = {}
+        # Symbol -> (expiry, margin for one minimum lot). A property of the
+        # contract, not of the account, so it is stable enough to cache and
+        # compared against fresh equity every time.
+        self._minimum_margin: dict[str, tuple[float, float]] = {}
+        self._equity_seen: tuple[float, float] | None = None
 
     def catalogue(self) -> list[SymbolDescriptor]:
         """Every broker symbol the operator has asked to look at.
@@ -198,6 +210,64 @@ class UniverseScanner:
             next_cursor,
             len(universe),
         )
+
+    def _unaffordable(self, symbol: str, spec, tick) -> str | None:  # type: ignore[no-untyped-def]
+        """Whether the SMALLEST position this contract allows is out of reach.
+
+        Deliberately the minimum lot and not the sized one. A sized position
+        being too large is a fact about today's stop and belongs to the sizer,
+        which already refuses it per trade. This asks a different and permanent
+        question -- can this account hold ANY position in this instrument --
+        and only removes markets where the answer is no on every possible
+        setup.
+
+        Unknown is never a refusal. A broker that cannot price the margin, or
+        an account whose equity does not read, leaves the symbol in the
+        catalogue and lets the per-trade margin check have the last word.
+        """
+        equity = self._equity()
+        if equity <= 0 or spec.volume_min <= 0:
+            return None
+        margin = self._margin_for_minimum(symbol, spec, tick)
+        if margin is None or margin <= 0:
+            return None
+        factor = self.settings.risk.margin_safety_factor
+        needed = margin * factor
+        if needed <= equity:
+            return None
+        return (
+            f"Minimum lot {spec.volume_min:g} needs {margin:.2f} margin; with the "
+            f"{factor:g}x buffer that is {needed:.2f} against {equity:.2f} equity. "
+            f"No setup on this instrument can be sized small enough."
+        )
+
+    def _margin_for_minimum(self, symbol: str, spec, tick) -> float | None:  # type: ignore[no-untyped-def]
+        cached = self._minimum_margin.get(symbol)
+        now = time.monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        estimate = getattr(self.broker, "estimate_margin", None)
+        if not callable(estimate):
+            return None
+        try:
+            margin = float(estimate(symbol, Direction.LONG, spec.volume_min, tick.ask))
+        except Exception:  # noqa: BLE001 - an unpriceable contract is not a refusal
+            return None
+        self._minimum_margin[symbol] = (now + _MARGIN_CACHE_SECONDS, margin)
+        return margin
+
+    def _equity(self) -> float:
+        """Account equity, once per scan rather than once per symbol."""
+        cached = self._equity_seen
+        now = time.monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        try:
+            equity = float(self.broker.account().equity)
+        except Exception:  # noqa: BLE001 - unknown equity refuses nothing
+            return 0.0
+        self._equity_seen = (now + _EQUITY_CACHE_SECONDS, equity)
+        return equity
 
     def _inspect(self, descriptor: SymbolDescriptor) -> tuple[ScanCandidate | None, ScanInspection]:
         inspected_at = self.clock.now()
@@ -296,6 +366,26 @@ class UniverseScanner:
                         if cap is not None
                         else "No spread limit configured for this asset class"
                     ),
+                    asset_class=spec.asset_class,
+                    spread_bps=spread_bps,
+                    quote_age_seconds=age,
+                )
+            # BEFORE THE EXPENSIVE PART, because this refusal is permanent for
+            # the account rather than momentary for the market.
+            #
+            # The deck was full of INSUFFICIENT_MARGIN on single-name stocks:
+            # 0.23 lots of ADS wanting 718 EUR of margin, 0.2 of NXTL wanting
+            # 728, on an account holding 176. Those are not near misses. The
+            # smallest position the contract allows is already out of reach, so
+            # no price, no signal and no adviser opinion could ever turn one
+            # into a trade -- and each was costing a full multi-timeframe
+            # analysis every cycle on a one-vCPU box, which is time the guard
+            # and the two sections that can actually trade were not getting.
+            unaffordable = self._unaffordable(descriptor.name, spec, tick)
+            if unaffordable is not None:
+                return reject(
+                    "affordability",
+                    unaffordable,
                     asset_class=spec.asset_class,
                     spread_bps=spread_bps,
                     quote_age_seconds=age,
