@@ -69,7 +69,50 @@ instruments:
   # order can be built from it, because the entry gate refuses the symbol by
   # name before sizing is ever reached.
   ignored_symbols: []
-  observation_only_symbols: [XAUUSD]
+
+  # GOUD VAN "NIET AANRAKEN" NAAR "NIET OVERNEMEN", 26 augustus, op verzoek van
+  # de eigenaar en nadat bleek dat die twee dingen hier één knop waren.
+  #
+  # WAT ER MIS WAS AAN DE OUDE OPZET. `observation_only_symbols` beantwoordt
+  # twee verschillende vragen met één antwoord:
+  #
+  #     mag Jarvis hier zelf een positie OPENEN?
+  #     mag Jarvis een positie aanraken die hij NIET geopend heeft?
+  #
+  # De eigenaar handelt goud met de hand en het antwoord op de tweede moet nee
+  # blijven -- `manual_positions` staat aan en adopteert magic 0, en dat is
+  # precies wat een handmatige MT5-order meekrijgt. Zonder die regel neemt
+  # Jarvis zijn eigen goudtrades over, beheert ze en sluit ze. Dat mag niet en
+  # dat blijft zo.
+  #
+  # Maar dezelfde regel verbood sectie 6 ook om zelf goud te scalpen, en dat
+  # kostte meer dan het opleverde:
+  #
+  #     XAUUSD    796 setups / 30 dagen    kosten 23,5%   <- geblokkeerd
+  #     XAUEUR    792 setups               kosten 26,5%   <- wel gehandeld
+  #     US30      480 setups               kosten 44,0%   <- wel gehandeld
+  #
+  # Het blokkeren hield sectie 6 dus NIET uit goud. Het duwde hem in de
+  # afgeleide crossen -- XAUAUD, XAUEUR -- waar de spread breder is en de
+  # "momentum-kaars" vaak het valutabeen is dat beweegt in plaats van het
+  # metaal. De duurste variant van precies dezelfde trade.
+  #
+  # `no_adoption_symbols` splitst die twee vragen. Wat blijft gelden:
+  #
+  #     handmatige tickets adopteren   NEE, op twee plekken afgedwongen
+  #     handmatige tickets beheren     NEE
+  #     handmatige tickets sluiten     NEE
+  #     eigen positie openen           JA, met alle gewone poorten
+  #
+  # Jarvis' eigen goudtrades dragen magic 770101 en zijn eigen comment; die van
+  # de eigenaar dragen magic 0. Ze zijn nooit te verwarren, en de scheiding
+  # wordt op de twee plekken gemaakt die ertoe doen: `_managed_positions` (wat
+  # de beheerlus ziet) en `_adopt_manual_positions` (wat er in het journaal
+  # terechtkomt). Alleen de eerste bewaken zou een handmatige goudtrade
+  # adopteren, opschrijven als de onze, en hem daarna weigeren te beheren --
+  # het slechtste van allebei.
+  observation_only_symbols: []
+  no_adoption_symbols: [XAUUSD]
 
   # No hand-written equity floors. They were a guess at what a small account
   # can afford — gold at EUR 500, indices at EUR 2000 — and a guess made before

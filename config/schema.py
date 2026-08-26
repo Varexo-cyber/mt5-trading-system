@@ -233,6 +233,11 @@ class InstrumentsConfig(Base):
     #: The one thing that changes for such a symbol is that it appears in the
     #: journal as analysis. Nothing reaches the broker.
     observation_only_symbols: tuple[str, ...] = ()
+    #: Symbols where Jarvis may trade its OWN book but must never take over a
+    #: position somebody else opened. See `refuses_adoption` for why this is
+    #: not the same question as `observation_only_symbols`, and for the gold
+    #: case that made the distinction necessary.
+    no_adoption_symbols: tuple[str, ...] = ()
     #: Asset classes the scanner will look at. Empty means all of them.
     #:
     #: This is a horizon control, not a quality one. The stop is 1.5 ATR and the
@@ -317,6 +322,39 @@ class InstrumentsConfig(Base):
         canonical = self.canonical_symbol(symbol)
         ignored = {item.upper() for item in self.ignored_symbols}
         return symbol.upper() in ignored or canonical.upper() in ignored
+
+    def refuses_adoption(self, symbol: str) -> bool:
+        """Whether a position Jarvis did NOT open here must be left alone.
+
+        WHY THIS IS SEPARATE FROM `is_hands_off`. That predicate answers two
+        different questions with one answer, and the owner needs different
+        answers to them:
+
+            may Jarvis OPEN a position here?
+            may Jarvis touch a position it DID NOT open here?
+
+        Gold is the case. It sits in `observation_only_symbols` because the
+        owner trades it by hand and Jarvis must never manage or close those
+        tickets -- and `manual_positions` is enabled adopting magic 0, which is
+        exactly what a hand-placed MT5 order carries, so without that entry
+        Jarvis would take his own gold trades over.
+
+        But the same entry also forbids section six from opening its own gold
+        scalp, and gold is both the largest source of setups this section has
+        and the CHEAPEST market it can reach: 796 setups in thirty days at 23.5%
+        cost, against 26.5% on XAUEUR and 44% on US30. Blocking it did not stop
+        section six trading gold -- it pushed it onto the derived crosses,
+        XAUAUD and XAUEUR, whose spread is wider and whose "momentum candle" is
+        often the currency leg moving rather than the metal.
+
+        So: this list keeps the guarantee that matters -- a hand-placed ticket
+        is never adopted, managed, or closed -- while letting the account open
+        and run its OWN position in the same symbol, under its own magic
+        number, with every ordinary gate and the section breaker in force.
+        """
+        canonical = self.canonical_symbol(symbol)
+        refused = {item.upper() for item in self.no_adoption_symbols}
+        return symbol.upper() in refused or canonical.upper() in refused
 
 
 # ------------------------------------------------------------------ risk ---

@@ -85,15 +85,12 @@ class TestShippedConfig:
         assert settings.scanner.batch_size == 240
         assert settings.scanner.priority_every_cycle
         assert settings.scanner.deep_candidates >= 847
-        # Gold moved from a total opt-out to observation-only on 24 August so
-        # section six can READ it. Everything that kept it safe is unchanged;
-        # only the scan now sees it. `is_hands_off` is the assertion that
-        # still matters, because it is the one about an open ticket.
-        assert settings.instruments.observation_only_symbols == ("XAUUSD",)
-        assert settings.instruments.is_hands_off("XAUUSD")
-        # And NOT ignored any more, which is the whole change: the universe
-        # filter excludes on `is_ignored`, so this is what lets a context for
-        # gold exist for a paper section to read.
+        # Gold: opened by Jarvis, never taken over from the owner. Those were
+        # one switch until 26 August and the coupling cost real money -- see
+        # `TestGoldIsTradableWithoutBeingAdoptable` for the full argument.
+        assert settings.instruments.no_adoption_symbols == ("XAUUSD",)
+        assert settings.instruments.refuses_adoption("XAUUSD")
+        assert not settings.instruments.is_hands_off("XAUUSD")
         assert not settings.instruments.is_ignored("XAUUSD")
         # Every class section six is ALLOWED to trade rides the every-cycle
         # lane, and that property is what is asserted rather than the literal
@@ -570,14 +567,11 @@ class TestTradeFrequency:
         assert settings.instruments.min_equity_for_symbol == {}
         assert settings.risk.release_slots_when_unmanageable
         assert not settings.trade_management.bank_enabled
-        # Refused by name before sizing is ever reached. The reason changed
-        # from SYMBOL_IGNORED to SYMBOL_OBSERVATION_ONLY when gold became
-        # readable for section six; what did not change is that it is refused.
-        assert settings.symbol_allowed_at_equity("XAUUSD", 100.0) == (
-            False,
-            "SYMBOL_OBSERVATION_ONLY",
-        )
-        for symbol in ("US30", "BTCUSD"):
+        # Gold is openable again as of 26 August. What protects the owner's
+        # hand-placed tickets is `no_adoption_symbols`, not a refusal to trade
+        # the symbol at all -- the two were one switch and the coupling pushed
+        # section six onto the expensive gold crosses instead.
+        for symbol in ("XAUUSD", "US30", "BTCUSD"):
             allowed, reason = settings.symbol_allowed_at_equity(symbol, 100.0)
             assert allowed, f"{symbol} blocked: {reason}"
         # The full ladder, weekly down to one minute.
@@ -942,10 +936,12 @@ class TestOilIsRefusedANewEntryButNotAbandoned:
 
         assert not instruments.is_hands_off("UKOUSD")
         assert not instruments.is_hands_off("USOUSD")
-        # Gold is hands-off through `observation_only_symbols` now rather than
-        # `ignored_symbols`. The distinction being drawn here is unchanged: oil
-        # is refused a new ENTRY and still managed; gold is never touched.
-        assert instruments.is_hands_off("XAUUSD")
+        # Gold makes a THIRD distinction, and this is the one place all three
+        # sit together: oil is refused a new entry and still managed; an
+        # ignored symbol does not exist at all; gold is freely traded by Jarvis
+        # and never taken over from the owner.
+        assert not instruments.is_hands_off("XAUUSD")
+        assert instruments.refuses_adoption("XAUUSD")
 
     def test_nothing_else_was_caught_by_it(self) -> None:
         allowed, reason = self._settings().symbol_allowed_at_equity("EURUSD.i", 214.0)
@@ -992,14 +988,36 @@ class TestCommissionIsChargedWhereItIsActuallyPaid:
         assert self._risk().commission_per_lot("something_new") == pytest.approx(5.50)
 
 
-class TestGoldIsReadableWithoutBeingTradable:
+class TestGoldIsTradableWithoutBeingAdoptable:
     """`ignored_symbols` gives four guarantees at once — not scanned, not
-    opened, not managed, not counted — and a paper section needs the first one
-    broken and the other three kept.
+    opened, not managed, not counted — and gold needs a different subset of
+    them than either of the other two lists can express.
 
-    A section running on paper needs a MarketContext for the symbol, and an
-    ignored symbol never gets one, so gold was invisible to the very thing
-    meant to read it. `observation_only_symbols` splits the four apart.
+    24 August: gold moved to `observation_only_symbols` so section six could
+    READ it, keeping the other three guarantees.
+
+    26 August: that turned out to answer two questions with one answer.
+
+        may Jarvis OPEN a position here?
+        may Jarvis touch a position it DID NOT open here?
+
+    The owner trades gold by hand and the second must stay no —
+    `manual_positions` is enabled adopting magic 0, exactly what a hand-placed
+    MT5 order carries. But the same entry also stopped section six opening its
+    own gold scalp, and gold is both the largest source of setups that section
+    has and the cheapest market it can reach:
+
+        XAUUSD    796 setups / 30 days    cost 23.5%    <- blocked
+        XAUEUR    792 setups              cost 26.5%    <- traded
+        US30      480 setups              cost 44.0%    <- traded
+
+    So the block did not keep section six out of gold. It pushed it onto the
+    derived crosses, where the spread is wider and the "momentum candle" is
+    often the currency leg rather than the metal — the most expensive version
+    of the same trade.
+
+    `no_adoption_symbols` splits the two. The behavioural half is held in
+    `tests/test_no_adoption.py`; this class holds the configuration.
     """
 
     def _settings(self):  # type: ignore[no-untyped-def]
@@ -1007,22 +1025,33 @@ class TestGoldIsReadableWithoutBeingTradable:
             overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
         )
 
-    def test_gold_is_scanned_now(self) -> None:
-        """The one thing that changed. The universe filter excludes on
-        `is_ignored`, so this is what lets a context exist at all."""
+    def test_gold_is_scanned(self) -> None:
+        """The universe filter excludes on `is_ignored`, so this is what lets a
+        context exist at all."""
         assert not self._settings().instruments.is_ignored("XAUUSD")
 
-    def test_gold_can_never_be_opened(self) -> None:
+    def test_gold_can_be_opened_again(self) -> None:
         allowed, reason = self._settings().symbol_allowed_at_equity("XAUUSD", 174.0)
 
-        assert not allowed
-        assert reason == "SYMBOL_OBSERVATION_ONLY"
+        assert allowed, reason
 
-    def test_an_open_gold_ticket_is_still_never_touched(self) -> None:
-        """The guarantee that matters most: the owner holds gold themselves.
-        Position management and the risk counters both read `is_hands_off`,
-        which covers observation-only exactly as it covered ignored."""
-        assert self._settings().instruments.is_hands_off("XAUUSD")
+    def test_a_ticket_the_owner_opened_is_still_never_touched(self) -> None:
+        """The guarantee that matters most, and the whole reason the split
+        exists rather than a plain unblock. Adoption is refused by symbol; what
+        Jarvis opened itself carries its own magic number and is unaffected."""
+        instruments = self._settings().instruments
+
+        assert instruments.refuses_adoption("XAUUSD")
+        assert not instruments.is_hands_off("XAUUSD")
+
+    def test_manual_adoption_is_on_which_is_why_this_is_needed(self) -> None:
+        """If adoption were off, `no_adoption_symbols` would be decoration and
+        someone would eventually delete it. It is load-bearing precisely
+        because magic 0 IS adopted everywhere else."""
+        manual = self._settings().trade_management.manual_positions
+
+        assert manual.enabled
+        assert 0 in manual.magic_numbers
 
     def test_both_lists_mean_hands_off_so_the_two_cannot_drift(self) -> None:
         """They differ only on scanning, and scanning has nothing to do with
