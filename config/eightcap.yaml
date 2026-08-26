@@ -1183,7 +1183,43 @@ analysis:
     # 0,75 geeft een plan een zevende van zijn beloning aan bewegingsruimte
     # voordat de sizer hem weigert. Een validator bewaakt de afstand nu, dus
     # deze twee kunnen niet meer stilletjes uit de pas lopen.
-    minimum_r_multiple: 0.75
+    #
+    # ---------------------------------------------------------------------
+    # 26 AUGUSTUS: 0,75 -> 0,35. DIT IS DE VLOER DIE ALLE ACHT DETECTOREN
+    # VERLIES LIET DRAAIEN, en het is geen eigenschap van de detectoren.
+    #
+    # `modules.cmd --days 240` gaf voor het eerst de uitsplitsing per exit.
+    # Alle acht hebben DEZELFDE vorm, en die vorm is het probleem:
+    #
+    #     winrate 54-57%    gem. winnaar +0,68R    gem. verliezer -1,04R
+    #
+    # De richting is dus GOED — 54-57% is echt boven een muntworp. Wat het
+    # sloopt is de verhouding: 0,68 / 1,04 = 0,65, en daarvoor heb je 60,5%
+    # nodig. Het target stond op 0,72R tegen een stop van 1,00R.
+    #
+    # De motor heeft al een eigen zoektocht naar de afstand met positieve
+    # verwachting (`_first_touch_outcomes`). Die mocht alleen nooit onder deze
+    # vloer komen. Wat de give-back tabel over 1.970 trades zegt:
+    #
+    #     target   raakt   per trade
+    #      0,30R    80%     -0,001R
+    #      0,35R    77%     -0,002R
+    #      0,50R    68%     -0,024R
+    #      0,72R    56%     -0,070R   <- waar de vloer hem hield
+    #      1,00R    10%     -0,840R
+    #
+    # Het optimum ligt rond 0,30-0,35R en de vloer stond op 0,75. Hoger is
+    # aantoonbaar slechter: deze bewegingen lopen simpelweg niet ver — 197 van
+    # de 1.970 trades piekten ooit boven 1,00R.
+    #
+    # 0,35 en niet lager omdat de schema-ondergrens 0,30 is en de validator
+    # `minimum_r_multiple >= min_risk_reward x (1 + 0,15)` eist: 0,30 x 1,15 =
+    # 0,345. Dit is de laagste waarde die het systeem toestaat.
+    #
+    # WAT DIT NIET IS: bewijs. Het is rekenwerk op gemeten emmers, niet een
+    # replay met deze waarde erin. `modules.cmd` bevestigt of weerlegt het in
+    # twintig minuten, en dat is de eerste run die telt.
+    minimum_r_multiple: 0.35
     # De bereiktest vraagt al om de rekenkundige break-even reach rate. De extra
     # vaste drie procentpunten waren een tweede veiligheidsmarge bovenop spread-
     # en kostengates. Weg ermee; de marktmeting zelf blijft hard actief.
@@ -1191,7 +1227,19 @@ analysis:
     # Van 20% naar 25% van de stop. Quick/intraday-plannen hebben kleinere
     # stops en raakten hierdoor eerder de grens, zelfs wanneer de spread binnen
     # de eigen uur-baseline lag. De totale-kostengrens blijft daarnaast actief.
-    max_spread_share_of_stop: 0.25
+    #
+    # 26 AUGUSTUS: 0,25 -> 0,08, en dit is de TWEEDE knop van dezelfde fix.
+    # Met het target op 0,35R is de rekening:
+    #
+    #     rondrit 0,040R (nu)  ->  -0,002R per trade
+    #     rondrit 0,030R       ->  +0,008R
+    #     rondrit 0,020R       ->  +0,018R
+    #
+    # Het target alleen brengt het naar break-even; de kosten brengen het naar
+    # winst. Een spread die een kwart van je stop mag zijn, is een kwart van je
+    # R betaald voordat de markt iets doet. 0,08 knipt die dure staart eraf
+    # zonder de gewone trade te weigeren.
+    max_spread_share_of_stop: 0.08
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
@@ -1326,47 +1374,38 @@ analysis:
     # Hij handelt nu via zijn eigen baan (`own_lane_enabled`), met eigen
     # instap, stop, target en limiet. Hier weghalen is wat voorkomt dat hij
     # ALLEBEI doet: stemmen in sectie 1 en zijn eigen trade openen.
-    # GEMETEN, 26 augustus. `modules.cmd --days 240` heeft alle negen voor het
-    # eerst gegradeerd, over 2.192 voorstellen, met echte kosten. Dit is de
-    # uitkomst en dit is de enige reden dat deze regel verandert.
+    # GEMETEN EN DAARNA BEGREPEN, 26 augustus. Twee stappen op één dag, en de
+    # tweede haalt de eerste onderuit.
     #
-    #   module                trades   per trade   totaal   ook op 120d?
-    #   session_breakout          38     -0,312R   -11,86R   ja, negatief
-    #   ema_pullback_resume      246     -0,231R   -56,76R   ja, negatief
-    #   liquidity_sweep           65     -0,135R    -8,80R   ja, negatief
-    #   fast_ema_cross           311     -0,121R   -37,52R   ja, negatief
-    #   drift_continuation       713     -0,100R   -71,31R   ja, negatief
-    #   market_structure          67     -0,100R    -6,69R   ja, negatief
-    #   impulse_break            515     -0,086R   -44,19R   ja, negatief
+    # `modules.cmd --days 240` gaf alle acht detectoren een negatief cijfer
+    # over 2.192 voorstellen, op twee onafhankelijke perioden. De eerste
+    # reactie was ze allemaal uit te zetten. Dat is hier een half uur zo
+    # geweest en het was fout, om een reden die in de tabel zelf stond:
     #
-    # Zeven van de zeven negatief, op twee onafhankelijke perioden. Dat is
-    # geen pech en het is niet te tunen: een detector die over een echte
-    # steekproef verliest hoort uit, en dat doen is meer waard dan welke regel
-    # er ook voor in de plaats zou kunnen komen.
+    #     alle acht: winrate 54-57%, gem. winnaar +0,68R, verliezer -1,04R
     #
-    # EN WAT ER NIET VOOR TERUGKOMT, want dit is bijna misgegaan.
+    # Acht detectoren die onafhankelijk van elkaar dezelfde vorm produceren
+    # hebben geen acht eigen problemen. Ze delen er een. De richting is goed —
+    # 54-57% is echt boven een muntworp — en wat ze sloopt is dat het target
+    # op 0,72R stond tegen een stop van 1,00R, gehouden door
+    # `minimum_r_multiple: 0.75`. Zie de motivering daar.
     #
-    # `trend_momentum` is de enige die ALLEEN positief is (+0,023R over 110
-    # trades) en de enige die de muntworp op enig symbool verslaat. De
-    # verleiding was hem hier aan te zetten. Dat is niet gebeurd, om de reden
-    # die `TestTrendMomentumIsOffLiveOnItsRecord` vastlegt: op 20 markten over
-    # 180 dagen deed hij -0,365R over 163 trades met t = -4,01.
+    # Detectoren uitzetten voor een fout die in de plandrempel zit, is het
+    # symptoom behandelen. Dus staan ze weer aan, met de vloer op 0,35 en de
+    # kostengate op 0,08.
     #
-    # Dat is een significant negatieve meting op VIER KEER zoveel markten.
-    # +0,023R over 110 trades is niet te onderscheiden van nul, en op de
-    # 120-daagse steekproef stond dezelfde module op -0,136R. Ruis mag een
-    # gemeten bevinding niet omkeren, ook niet als de ruis de goede kant op
-    # wijst. Vooral dan niet.
+    # `trend_momentum` blijft eraf, en dat is bewust inconsequent: zijn eigen
+    # meting (-0,365R over 163 trades op 20 markten, t = -4,01) is ook onder
+    # de kapotte vloer gedaan en dus net zo verdacht als de rest. Maar hij is
+    # nooit live geweest en dit is geen moment om er een module bij te zetten
+    # op een theorie. Als `modules.cmd` de fix bevestigt, is hij de eerste
+    # kandidaat.
     #
-    # WAT DAT BETEKENT, ONOMWONDEN: er blijft geen enkele detector over met
-    # een gemeten record die geld verdient. Sectie 1 handelt hierna niets
-    # meer, en dat is geen storing maar de conclusie. `m1_micro_breakout`
-    # kwam in geen van beide tabellen voor en stelt dus niets voor;
-    # `basket_divergence` is sectie 2 en draait op papier.
-    #
-    # Sectie 6 raakt dit niet: die heeft een eigen baan en staat niet op deze
-    # lijst.
-    live_enabled_modules: [m1_micro_breakout, basket_divergence]
+    # WAT DIT NIET IS: bewijs. De acht cijfers hierboven zijn gemeten MET de
+    # kapotte vloer. Dat ze met de nieuwe vloer positief worden is rekenwerk,
+    # geen replay. Draai `modules.cmd` en als het tegenvalt gaat deze regel
+    # terug naar [m1_micro_breakout, basket_divergence] — dat is één edit.
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -1595,7 +1634,10 @@ analysis:
     veto_on_conflict: true
     # Also refuse when a short-horizon theory contradicts the swing engine.
     require_method_agreement: true
-    max_spread_share_of_stop: 0.15
+    # 26 augustus: mee met de gate in `analysis` — zie de rekensom daar. De
+    # rondrit is de helft van het gat naar winst, en dit is de knop die hem
+    # kleiner maakt.
+    max_spread_share_of_stop: 0.08
 
     # Van 60 naar 75, op verzoek van de eigenaar: liever weinig trades waar hij
     # zeker van is dan veel marginale.
@@ -2275,7 +2317,10 @@ risk:
   # 0.60, mee met `analysis.confluence.minimum_r_multiple` — zie de motivatie
   # en het aanvaarde risico daar. De validator weigert elke combinatie waarin
   # deze twee uit elkaar lopen, dus ze bewegen altijd samen.
-  min_risk_reward: 0.60
+  #
+  # 26 AUGUSTUS: 0,60 -> 0,30, mee met de vloer daar. 0,30 is de
+  # schema-ondergrens; lager kan het systeem niet.
+  min_risk_reward: 0.30
   max_trades_per_day: 0
   max_trades_per_week: 0
 

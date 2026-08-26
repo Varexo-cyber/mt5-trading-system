@@ -986,15 +986,46 @@ class TestTheTargetBandHasToContainAPayableDistance:
         the sizer at exactly 0.60R with nothing to spare, and the quote moves in
         between: NDX100 SHORT on 19 August was approved, reviewed, and then
         refused as `RR_BELOW_MINIMUM: reward:risk is 1:0.52`.
+
+        AND ON 26 AUGUST BOTH CAME DOWN AGAIN, 0.75 -> 0.35 and 0.60 -> 0.30,
+        because the first module backtest showed the floor was the defect.
+
+        All eight detectors came back with the SAME shape over 2,192
+        proposals: 54-57% win, average winner +0.68R, average loser -1.04R.
+        Eight readers that agree on nothing else do not have eight separate
+        problems. The direction is genuinely better than a coin; the ratio
+        0.68/1.04 needs 60.5% and does not get it, because the target sat at
+        0.72R against a 1.00R stop -- which is where this floor held it.
+
+        What the give-back table says over 1,970 trades:
+
+            target   reached   per trade
+             0.30R     80%      -0.001R
+             0.35R     77%      -0.002R
+             0.72R     56%      -0.070R   <- where the floor held it
+             1.00R     10%      -0.840R
+
+        The engine already searches for the distance with positive measured
+        expectancy. It was simply never allowed to look where the money is.
+        Higher is demonstrably worse, not safer: 197 of 1,970 trades ever
+        peaked above 1.00R.
+
+        0.35 is the lowest the system permits -- the schema floor is 0.30 and
+        the validator needs 0.30 x 1.15 = 0.345 of planning headroom.
+
+        The cost objection recorded above ("27% of the risk on 7 pips") was
+        right and is now acted on rather than accepted:
+        `max_spread_share_of_stop` goes 0.25 -> 0.08 in the same edit. At a
+        0.35R target the round trip is the whole remaining gap -- 0.040R
+        leaves -0.002R a trade and 0.020R leaves +0.018R.
         """
         band = self._band()
 
-        assert band.minimum_r_multiple == 0.75
-        assert band.minimum_r_multiple < 1.0
-        # The floor the owner set is the one the SIZER enforces, and it is
-        # untouched. This is headroom above it, not a stricter policy.
-        assert self._settings().risk.min_risk_reward == 0.60
-        assert band.minimum_r_multiple >= 0.60 * (1.0 + band.target_planning_margin)
+        assert band.minimum_r_multiple == 0.35
+        assert self._settings().risk.min_risk_reward == 0.30
+        assert band.minimum_r_multiple >= 0.30 * (1.0 + band.target_planning_margin)
+        # The cost gate is half of the same fix and must not drift back up.
+        assert band.max_spread_share_of_stop <= 0.10
 
     def test_the_sizer_will_not_refuse_what_the_analysis_may_plan(self) -> None:
         """Two floors that must agree, and they did not: `min_risk_reward` sat

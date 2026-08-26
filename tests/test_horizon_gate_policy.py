@@ -145,39 +145,33 @@ def test_the_replay_can_judge_in_the_account_s_own_live_mode() -> None:
 
 
 def test_the_live_allowlist_follows_the_measured_record() -> None:
-    """The allowlist follows the largest measurement available, and on
-    26 August that stopped being four days of real money.
+    """The allowlist follows the measured record, and on 26 August the record
+    was read twice on one day.
 
     `modules.cmd --days 240` graded all nine detectors for the first time,
-    over 2,192 proposals with the broker's own recorded spreads. Every one of
-    the seven that could trade came back negative, on that window and on the
-    independent 120-day one:
+    over 2,192 proposals with the broker's own spreads. Every one came back
+    negative, and the first response was to clear the allowlist. That lasted
+    half an hour and it was wrong, for a reason printed in the same table:
 
-        session_breakout      -0.312R over 38
-        ema_pullback_resume   -0.231R over 246
-        liquidity_sweep       -0.135R over 65
-        fast_ema_cross        -0.121R over 311
-        drift_continuation    -0.100R over 713
-        market_structure      -0.100R over 67
-        impulse_break         -0.086R over 515
+        all eight: 54-57% win, avg winner +0.68R, avg loser -1.04R
 
-    So all seven are off. `session_breakout` had been kept on four days of
-    live money at +1.20 EUR a trade; eight months of replayed bars with costs
-    charged is the bigger and cleaner sample, and it disagrees.
+    Eight readers that share no logic do not have eight private problems.
+    They had one, and it was not theirs: `minimum_r_multiple` held the target
+    at 0.72R against a 1.00R stop, a ratio needing 60.5% against the 54-57%
+    they deliver. Switching off detectors for a planning floor is treating the
+    symptom, so the floor moved to 0.35 and the detectors came back.
 
-    `trend_momentum` stays off, and this is the one worth being careful about.
-    It is the only detector that is POSITIVE alone in the new run (+0.023R
-    over 110 trades) and the only one to beat a coin flip on any symbol. It is
-    still off because +0.023R over 110 trades is not distinguishable from
-    zero, the same module read -0.136R on the 120-day window, and the finding
-    it was switched off for -- -0.365R over 163 trades on twenty markets,
-    t = -4.01 -- is significant and on four times the market coverage. Noise
-    does not overturn a measurement, least of all noise pointing the way you
-    would like.
+    `trend_momentum` stays off, and that is knowingly inconsistent: its own
+    kill finding (-0.365R over 163 trades on twenty markets, t = -4.01) was
+    also measured under the broken floor and is therefore just as suspect. It
+    has never been live, and re-enabling a module on a theory is not the same
+    risk as restoring one that was already running. It is first in line if the
+    next run confirms the fix.
 
-    What is left cannot trade: `m1_micro_breakout` proposed nothing in either
-    window and `basket_divergence` is section two, on paper. Section one is
-    therefore flat, and that is the conclusion rather than a fault.
+    NONE OF THIS IS PROOF. The eight figures were measured WITH the broken
+    floor; that they turn positive without it is arithmetic on the give-back
+    buckets, not a replay. One `modules.cmd` run settles it and this list is
+    one edit either way.
     """
     from pathlib import Path
 
@@ -188,7 +182,8 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
         overlay=root / "config" / "eightcap.yaml", env_overrides=False
     ).analysis.confluence
 
-    measured_negative = (
+    # Back on, once the planning floor that shaped their losses was fixed.
+    restored = (
         "session_breakout",
         "ema_pullback_resume",
         "liquidity_sweep",
@@ -196,13 +191,17 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
         "drift_continuation",
         "market_structure",
         "impulse_break",
-        "seasonality",
     )
-    for module in measured_negative:
-        assert module not in confluence.live_enabled_modules, module
-    # Still off, and deliberately so despite being the only positive row in
-    # the new run. See the docstring.
+    for module in restored:
+        assert module in confluence.live_enabled_modules, module
+    # Never had a record worth restoring.
+    assert "seasonality" not in confluence.live_enabled_modules
+    # Still off, deliberately, and explained in the docstring.
     assert "trend_momentum" not in confluence.live_enabled_modules
+    # The fix the restoration depends on. If either drifts back, the reason
+    # these are on has gone with it.
+    assert confluence.minimum_r_multiple <= 0.40
+    assert confluence.max_spread_share_of_stop <= 0.10
     # A detector with no live figure of its own keeps the single global floor.
     assert (
         confluence.lone_floor_for("m1_micro_breakout") == confluence.lone_module_minimum_confidence
