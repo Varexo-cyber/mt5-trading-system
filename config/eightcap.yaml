@@ -267,6 +267,42 @@ data:
   # session, which is what the check is for.
   max_gap_fraction: 0.05
 
+  # EEN TIJDFRAME MOCHT DE HELE MARKT WEGSTEMMEN, 26 augustus.
+  #
+  # `get_context` bouwde zijn reeksen met een dict-comprehension over alle
+  # zeven tijdframes. Zeven fetches, en de eerste die een fout gooide nam de
+  # andere zes mee. Het symbool ging daarna in quarantaine, en quarantaine
+  # loopt op: 30 minuten, twee uur, vier uur. Eén gat in een M5-feed, of een
+  # broker met 180 H4-bars waar er 200 gevraagd worden, haalde die markt dus
+  # voor de rest van de sessie uit de rekening -- inclusief de tijdframes die
+  # compleet waren en de modules die alleen dáárnaar kijken.
+  #
+  # Het commentaar bij `min_bars_by_timeframe` hierboven beschrijft precies dit
+  # al een keer: COFFEE, STLAM en SPM werden "thrown out as having no data at
+  # all". De reparatie was toen die W1-drempel verlagen. Dat hielp die drie
+  # symbolen en liet het mechanisme staan voor alle andere.
+  #
+  # HET MECHANISME WAS DE FOUT: de ladder werd als BLOK gekeurd, voordat iets
+  # vroeg welke delen ervan de beslissing eigenlijk nodig had.
+  #
+  # WAT HIER STAAT is die vraag, één keer beantwoord. De intraday-ladder
+  # beslist de trade en blijft hard: ontbreekt er één, dan geen trade -- geen
+  # data is geen toestemming, precies zoals bij de kalender. W1 en D1 zetten
+  # achtergrond en bias; ontbreken die, dan wordt het symbool geanalyseerd
+  # zonder ze en zeggen de modules die ze lezen zelf dat ze niets zien.
+  #
+  # DIT IS GEEN "HANDELEN OP MINDER DATA". Elke module noemt de tijdframes die
+  # hij leest en geeft een neutraal signaal terug als er een ontbreekt. Een
+  # ontbrekend tijdframe haalt dus de modules die ervan afhangen UIT de
+  # stemming in plaats van ze te laten gokken -- dezelfde fail-closed regel,
+  # alleen per module in plaats van per markt. Wat verandert is dat een module
+  # die alleen M5 en M15 leest niet meer zwijgt omdat W1 een gat heeft.
+  #
+  # `unavailable_timeframes` gaat mee de journaal-regel in, dus een beslissing
+  # op een halve ladder is zichtbaar in plaats van niet te onderscheiden van
+  # een beslissing op een hele.
+  required_timeframes: [H4, H1, M15, M5, M1]
+
 scanner:
   # EEN CYCLUS MOET AF KUNNEN, ANDERS BESTAAT ER GEEN CYCLUS.
   #

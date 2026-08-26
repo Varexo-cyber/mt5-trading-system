@@ -4086,11 +4086,25 @@ class JarvisRunner:
         session, spread or news distance. The JSON remains the full evidence;
         these fields are its indexed, typed projection.
         """
-        data = extra or {}
+        data = dict(extra or {})
         intelligence = data.get("market_intelligence")
         regime = data.get("volatility_regime")
         if regime is None and isinstance(intelligence, dict):
             regime = intelligence.get("regime")
+
+        # A DECISION ON A PARTIAL LADDER SAYS SO.
+        #
+        # `get_context` no longer lets one unavailable timeframe refuse the
+        # whole market -- an optional one is left out and the modules that read
+        # it score neutral. That is the right behaviour and it is also the kind
+        # of change that must never be invisible: without this line a trade
+        # taken with W1 and D1 missing looks exactly like one taken with the
+        # full ladder, and the first question anyone asks about a bad run is
+        # "what did it actually have in front of it".
+        if market_context is not None and "unavailable_timeframes" not in data:
+            missing = market_context.meta.get("unavailable_timeframes")
+            if missing:
+                data["unavailable_timeframes"] = missing
 
         return CycleContext(
             symbol=symbol,
