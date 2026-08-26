@@ -592,7 +592,32 @@ analysis:
     # `fixed_lots: 0.0` betekent GEEN plafond in lots -- het risicomodel
     # beslist. Een getal boven nul knipt af en kan nooit naar boven afronden,
     # dus terugzetten is één regel.
-    risk_pct: 3.0
+    #
+    # ---------------------------------------------------------------------
+    # 3,0 -> 1,5 DEZELFDE AVOND, op verzoek van de eigenaar, na drie scalps:
+    #
+    #     XAUAUD sell 0.03   -7,42
+    #     XAUEUR sell 0.03   +1,86
+    #     XMRUSD sell 4.00   -6,11
+    #
+    # Netto -11,67 op een rekening van 176. Dat is 6,6% in drie trades.
+    #
+    # WAT DIT NIET IS: een oordeel dat de sectie niet deugt. Drie trades zijn
+    # geen steekproef en ik ga er ook niet zo een van maken. Het is dat de
+    # inzet vanochtend verdubbelde op iets dat NOOIT gemeten is, en dat
+    # halveren de goedkoopste manier is om te blijven meten zonder dat het
+    # meten zelf de rekening opeet.
+    #
+    #     1,5% van 176 = EUR 2,64 per scalp
+    #     twee tegelijk = EUR 5,28 van 176
+    #
+    # Dat is ongeveer terug op wat de vaste 0,01 lot op goud deed (EUR 2,91),
+    # maar nu WEL hetzelfde bedrag op elk instrument in plaats van toevallig
+    # wat 0,01 daar betekende. Dat was de hele reden voor de omschakeling en
+    # die staat nog steeds.
+    #
+    # Terug naar 3,0 zodra `section6.cmd` zegt dat de instap iets waard is.
+    risk_pct: 1.5
     fixed_lots: 0.0
 
     # DE STOP UIT DE RUIS GEHAALD, 26 augustus. Het target blijft groter dan
