@@ -1767,6 +1767,22 @@ class CandleMomentumConfig(Base):
     candle_lookback: int = Field(default=30, ge=5, le=500)
     confirm_bars: int = Field(default=6, ge=1, le=200)
     bias_bars: int = Field(default=4, ge=1, le=200)
+    #: Bars of the trigger timeframe, BEFORE the trigger candle, used to ask
+    #: whether M1 was already going this way.
+    #:
+    #: M1 used to be read as a single candle -- body, wick, volume -- and never
+    #: as a direction, so a lone green minute inside a falling M1 sequence was
+    #: a buy provided M5 and M15 happened to point up. The side agreed with the
+    #: slower charts and disagreed with the chart the trade was taken on.
+    #:
+    #: The trigger candle is excluded on purpose. It is by construction a big
+    #: bar and it is the newest one, so including it would pull the fit its own
+    #: way and the test would confirm itself.
+    #:
+    #: Unlike M5 and M15 this only has to NOT CONTRADICT. Flat is allowed: the
+    #: first minute of a real push often follows a quiet stretch, and refusing
+    #: those would remove the setups this module exists for.
+    trigger_bars: int = Field(default=5, ge=2, le=200)
     #: How far a confirming timeframe must actually travel across its window
     #: before it counts as pointing anywhere, in multiples of that timeframe's
     #: own average bar range.
