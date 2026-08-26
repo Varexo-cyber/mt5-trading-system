@@ -66,6 +66,12 @@ class HealthIntervention:
 #: bars: within a minute it cannot have meaningfully changed.
 ATR_CACHE_SECONDS = 60.0
 
+#: How long a journal trade may sit "absent at the broker, deal not yet
+#: available" before the accounting is written off instead of halting the
+#: account. Deal history lags the position list by seconds, so a window this
+#: wide recovers every honest case; beyond it the deal is not coming.
+PENDING_HISTORY_GRACE_SECONDS = 900.0
+
 #: What section six stamps on its orders. Defined here rather than in the
 #: runner because both files must agree on it and this is the one they can
 #: both import — the runner already imports from this module, so the constant
@@ -193,6 +199,10 @@ class PositionManager:
         #: change lane, and the alternative is a journal round trip per open
         #: position per second. Pruned with the position in `manage`.
         self._scalp_tickets: dict[int, bool] = {}
+        # ticket -> when it was first seen absent at the broker with no
+        # recoverable deal. In memory, so a restart restarts the grace window,
+        # which errs toward keeping the halt rather than clearing it.
+        self._pending_history_since: dict[int, float] = {}
 
     def reconcile(self, positions: list[Position]) -> list[ManagementEvent]:
         events: list[ManagementEvent] = []
@@ -221,15 +231,61 @@ class PositionManager:
             if ticket and ticket not in broker_tickets:
                 closed = self.broker.closed_position(ticket)
                 if closed is None:
-                    events.append(
-                        ManagementEvent(
-                            ticket,
-                            "BROKER_CLOSED_PENDING_HISTORY",
-                            "journal trade absent at broker and no final deal is available; "
-                            "block new risk",
+                    # HALTING IS RIGHT FOR SECONDS AND A DEADLOCK AFTER THAT.
+                    #
+                    # Deal history lags the position list, so a trade that has
+                    # just closed can legitimately be missing from it for a
+                    # moment, and refusing new risk in that moment is correct.
+                    #
+                    # What it must not be is permanent. The row stays open, the
+                    # next cycle re-detects it, and the next cycle halts again;
+                    # a restart rebuilds the halt within one cycle. The account
+                    # stops trading for ever over a figure that is never going
+                    # to arrive.
+                    #
+                    # And what is unknown here is the ACCOUNTING, not the risk.
+                    # The broker has no position, so there is nothing left on
+                    # the account to be wrong about. Refusing to trade over a
+                    # missing P&L protects nothing.
+                    since = self._pending_history_since.setdefault(ticket, time.monotonic())
+                    waited = time.monotonic() - since
+                    if waited < PENDING_HISTORY_GRACE_SECONDS:
+                        events.append(
+                            ManagementEvent(
+                                ticket,
+                                "BROKER_CLOSED_PENDING_HISTORY",
+                                "journal trade absent at broker and no final deal is available; "
+                                f"block new risk ({waited:.0f}s of "
+                                f"{PENDING_HISTORY_GRACE_SECONDS:.0f}s grace)",
+                            )
                         )
-                    )
+                    else:
+                        self.journal.settle_unrecoverable(
+                            int(row["id"]),
+                            f"broker closed this position and no deal was recoverable after "
+                            f"{waited / 60:.0f} minutes; profit and loss unknown",
+                        )
+                        self._pending_history_since.pop(ticket, None)
+                        log.warning(
+                            "settling a trade whose closing deal never arrived",
+                            extra={
+                                "event": "pending_history_written_off",
+                                "ticket": ticket,
+                                "waited_seconds": round(waited),
+                            },
+                        )
+                        events.append(
+                            ManagementEvent(
+                                ticket,
+                                "BROKER_CLOSED_UNRECOVERABLE",
+                                f"no closing deal after {waited / 60:.0f} minutes; the position "
+                                f"is gone from the broker so the risk is gone. Closed in the "
+                                f"journal with profit and loss unknown rather than halting the "
+                                f"account for ever over an accounting gap.",
+                            )
+                        )
                 else:
+                    self._pending_history_since.pop(ticket, None)
                     events.append(
                         ManagementEvent(
                             ticket,
