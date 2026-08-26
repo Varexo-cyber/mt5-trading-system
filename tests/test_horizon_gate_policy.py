@@ -145,17 +145,39 @@ def test_the_replay_can_judge_in_the_account_s_own_live_mode() -> None:
 
 
 def test_the_live_allowlist_follows_the_measured_record() -> None:
-    """Both halves of this were set on the backtest and re-decided on four days
-    of real money.
+    """The allowlist follows the largest measurement available, and on
+    26 August that stopped being four days of real money.
 
-    `session_breakout` was let in as a second voice on 33 backtest trades and
-    pinned above its own 0.80 ceiling so it could never decide anything. It
-    earned +1.20 EUR a trade live, so the floor drops UNDER that ceiling: a
-    lone firing is possible now, but only from its most convinced readings.
+    `modules.cmd --days 240` graded all nine detectors for the first time,
+    over 2,192 proposals with the broker's own recorded spreads. Every one of
+    the seven that could trade came back negative, on that window and on the
+    independent 120-day one:
 
-    `seasonality` went the other way. It was the same calculated bet on
-    evidence just as thin, and it came back at -1.01 EUR a trade — the only
-    net-negative of the nine — so it is off the allowlist entirely.
+        session_breakout      -0.312R over 38
+        ema_pullback_resume   -0.231R over 246
+        liquidity_sweep       -0.135R over 65
+        fast_ema_cross        -0.121R over 311
+        drift_continuation    -0.100R over 713
+        market_structure      -0.100R over 67
+        impulse_break         -0.086R over 515
+
+    So all seven are off. `session_breakout` had been kept on four days of
+    live money at +1.20 EUR a trade; eight months of replayed bars with costs
+    charged is the bigger and cleaner sample, and it disagrees.
+
+    `trend_momentum` stays off, and this is the one worth being careful about.
+    It is the only detector that is POSITIVE alone in the new run (+0.023R
+    over 110 trades) and the only one to beat a coin flip on any symbol. It is
+    still off because +0.023R over 110 trades is not distinguishable from
+    zero, the same module read -0.136R on the 120-day window, and the finding
+    it was switched off for -- -0.365R over 163 trades on twenty markets,
+    t = -4.01 -- is significant and on four times the market coverage. Noise
+    does not overturn a measurement, least of all noise pointing the way you
+    would like.
+
+    What is left cannot trade: `m1_micro_breakout` proposed nothing in either
+    window and `basket_divergence` is section two, on paper. Section one is
+    therefore flat, and that is the conclusion rather than a fault.
     """
     from pathlib import Path
 
@@ -166,12 +188,21 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
         overlay=root / "config" / "eightcap.yaml", env_overrides=False
     ).analysis.confluence
 
-    assert "session_breakout" in confluence.live_enabled_modules
-    assert "seasonality" not in confluence.live_enabled_modules
-    # Still off: the one detector with a losing record that is significant.
+    measured_negative = (
+        "session_breakout",
+        "ema_pullback_resume",
+        "liquidity_sweep",
+        "fast_ema_cross",
+        "drift_continuation",
+        "market_structure",
+        "impulse_break",
+        "seasonality",
+    )
+    for module in measured_negative:
+        assert module not in confluence.live_enabled_modules, module
+    # Still off, and deliberately so despite being the only positive row in
+    # the new run. See the docstring.
     assert "trend_momentum" not in confluence.live_enabled_modules
-    # Under the 0.80 ceiling now, so a convinced lone firing can carry a trade.
-    assert 0.55 < confluence.lone_floor_for("session_breakout") < 0.80
     # A detector with no live figure of its own keeps the single global floor.
     assert (
         confluence.lone_floor_for("m1_micro_breakout") == confluence.lone_module_minimum_confidence
