@@ -1531,12 +1531,36 @@ class JarvisRunner:
             }
         ):
             allowed.update(manual.magic_numbers)
+        own = self.settings.system.magic_number
         return [
             position
             for position in positions
-            if getattr(position, "magic", self.settings.system.magic_number) in allowed
+            if getattr(position, "magic", own) in allowed
             and not self._symbol_ignored(position.symbol)
+            # A SYMBOL CAN BE TRADABLE AND STILL NOT ADOPTABLE.
+            #
+            # `manual_positions` is enabled here and adopts magic 0, which is
+            # exactly what a hand-placed MT5 order carries. So on any symbol
+            # the owner trades by hand, "Jarvis may open a position here" and
+            # "Jarvis may take over the owner's position here" had the same
+            # answer, and the only way to say no to the second was to say no
+            # to the first.
+            #
+            # That is what kept gold out of section six -- the largest source
+            # of setups it has and the cheapest market it can reach -- and it
+            # did not stop the section trading gold at all. It pushed it onto
+            # the derived crosses instead, where the spread is wider and the
+            # momentum candle is often the currency leg rather than the metal.
+            and not (
+                getattr(position, "magic", own) != own and self._adoption_refused(position.symbol)
+            )
         ]
+
+    def _adoption_refused(self, symbol: str) -> bool:
+        """Compatibility-safe access to the no-adoption list."""
+        instruments = getattr(self.settings, "instruments", None)
+        predicate = getattr(instruments, "refuses_adoption", None)
+        return bool(predicate(symbol)) if callable(predicate) else False
 
     def _symbol_ignored(self, symbol: str) -> bool:
         """Compatibility-safe access to the complete instrument opt-out."""
@@ -1586,6 +1610,15 @@ class JarvisRunner:
         events: list[ManagementEvent] = []
         for position in self.broker.positions():
             if self._symbol_ignored(position.symbol):
+                continue
+            # The second gate, and it must be here as well as in
+            # `_managed_positions`. That one decides what the management loop
+            # SEES; this one is what puts a foreign ticket into our journal in
+            # the first place. Guarding only the first would leave the account
+            # adopting a hand-placed gold trade, writing it down as ours, and
+            # then declining to manage it -- the worst of both, and it would
+            # look like a bug rather than a policy.
+            if self._adoption_refused(position.symbol):
                 continue
             if (
                 position.magic == self.settings.system.magic_number
