@@ -2873,6 +2873,68 @@ class JarvisRunner:
         )
         return AnalysedCandidate(symbol, cycle_id, idea, context, intelligence, verdict)
 
+    def _fit_to_margin(self, state, symbol, direction, sizing, spec, margin):  # type: ignore[no-untyped-def]
+        """FIT IT INSTEAD OF REFUSING IT, in the one place both callers use.
+
+        Every analytical gate has already passed by here. The margin does not
+        stretch to the size the risk budget asked for, and the size is the one
+        thing that can change without invalidating any of it -- entry, stop and
+        target stay exactly where they were, so the measured expectancy that
+        approved this trade is still the expectancy of the smaller one.
+
+        It risks LESS, never more. Rounding UP to the broker minimum is
+        forbidden outright in this system and stays forbidden: when even
+        `volume_min` will not fit, nothing is changed and the caller's refusal
+        stands.
+
+        WHY THIS IS A FUNCTION. It was written once, inline, before the
+        adviser. The revalidation that runs AFTER the adviser re-sizes from
+        scratch and then checked the margin with no fitting at all, so the
+        sequence for any trade too large for the account was:
+
+            sizer wants 0.32 lots        -> margin refuses
+            fitted down to 0.05          -> margin passes
+            adviser approves
+            revalidation re-sizes        -> 0.32 lots again
+            margin refuses               -> INSUFFICIENT_MARGIN
+
+        The trade was made to fit, then unmade, then refused for not fitting.
+        The deck showed that as a wall of margin refusals on setups its own
+        header said had "already passed margin", and it was most of what
+        reached the decision layer and died there.
+        """
+        if margin.approved or not self.settings.risk.reduce_volume_to_fit_margin:
+            return sizing, margin
+        fitted = self.risk.largest_volume_within_margin(
+            state,
+            symbol,
+            direction,
+            sizing.volume,
+            sizing.entry,
+            volume_min=spec.volume_min,
+            volume_step=spec.volume_step,
+        )
+        if not (0 < fitted < sizing.volume):
+            return sizing, margin
+        scale = fitted / sizing.volume
+        sizing = replace(
+            sizing,
+            volume=fitted,
+            actual_risk_money=sizing.actual_risk_money * scale,
+            actual_risk_pct=sizing.actual_risk_pct * scale,
+        )
+        log.info(
+            "volume reduced to fit margin",
+            extra={
+                "event": "volume_fitted_to_margin",
+                "symbol": symbol,
+                "requested_volume": round(fitted / scale, 4),
+                "volume": fitted,
+                "risk_pct": round(sizing.actual_risk_pct, 3),
+            },
+        )
+        return sizing, self.risk.check_margin(state, symbol, direction, sizing.volume, sizing.entry)
+
     def _process_candidate(  # type: ignore[no-untyped-def]
         self,
         candidate: AnalysedCandidate,
@@ -3256,50 +3318,7 @@ class JarvisRunner:
             sizing.volume,
             sizing.entry,
         )
-        if not margin.approved and self.settings.risk.reduce_volume_to_fit_margin:
-            # FIT IT INSTEAD OF REFUSING IT.
-            #
-            # Every analytical gate has already passed by here. The margin does
-            # not stretch to the size the risk budget asked for, and the size is
-            # the one thing that can change without invalidating any of it —
-            # entry, stop and target stay exactly where they were, so the
-            # measured expectancy that approved this trade is still the
-            # expectancy of the smaller one.
-            #
-            # It risks LESS, never more. Rounding UP to the broker minimum is
-            # forbidden outright in this system and stays forbidden: when even
-            # `volume_min` will not fit, this returns nothing and the refusal
-            # below stands.
-            fitted = self.risk.largest_volume_within_margin(
-                state,
-                symbol,
-                idea.direction,
-                sizing.volume,
-                sizing.entry,
-                volume_min=spec.volume_min,
-                volume_step=spec.volume_step,
-            )
-            if fitted > 0 and fitted < sizing.volume:
-                scale = fitted / sizing.volume
-                sizing = replace(
-                    sizing,
-                    volume=fitted,
-                    actual_risk_money=sizing.actual_risk_money * scale,
-                    actual_risk_pct=sizing.actual_risk_pct * scale,
-                )
-                log.info(
-                    "volume reduced to fit margin",
-                    extra={
-                        "event": "volume_fitted_to_margin",
-                        "symbol": symbol,
-                        "requested_volume": round(fitted / scale, 4),
-                        "volume": fitted,
-                        "risk_pct": round(sizing.actual_risk_pct, 3),
-                    },
-                )
-                margin = self.risk.check_margin(
-                    state, symbol, idea.direction, sizing.volume, sizing.entry
-                )
+        sizing, margin = self._fit_to_margin(state, symbol, idea.direction, sizing, spec, margin)
         if not margin.approved:
             cycle_pk = self._record_skip(
                 cycle_id,
@@ -5921,6 +5940,13 @@ class JarvisRunner:
             original.direction,
             sizing.volume,
             sizing.entry,
+        )
+        # THE SAME RULE AS BEFORE THE ADVISER. This re-sizes from scratch a few
+        # lines up, which throws away the fitting that got the proposal through
+        # in the first place; refusing here without re-fitting killed almost
+        # everything that reached this point. See `_fit_to_margin`.
+        sizing, margin = self._fit_to_margin(
+            fresh_state, symbol, original.direction, sizing, spec, margin
         )
         if not margin.approved:
             return fail(margin.reason, margin.detail, binding)

@@ -20,6 +20,12 @@ from core.types import Direction, SymbolDescriptor, Timeframe
 _MARGIN_CACHE_SECONDS = 900.0
 #: Equity, read once per scan rather than once per symbol.
 _EQUITY_CACHE_SECONDS = 30.0
+#: How long a symbol stays OUT OF THE CATALOGUE once its minimum lot is found
+#: unaffordable. Long, because the verdict is about the contract and the
+#: account rather than about the market, and neither changes in a minute.
+#: Not permanent, because a deposit should bring the market back without a
+#: restart.
+_UNAFFORDABLE_PARK_SECONDS = 6 * 3600.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +121,11 @@ class UniverseScanner:
         # compared against fresh equity every time.
         self._minimum_margin: dict[str, tuple[float, float]] = {}
         self._equity_seen: tuple[float, float] | None = None
+        # Symbol -> when it may be looked at again. Rejecting in `_inspect`
+        # saved the expensive part but the symbol still occupied a slot in the
+        # rotation, so the markets that CAN trade were still waiting their turn
+        # behind hundreds that cannot. This takes them out of the queue.
+        self._unaffordable_until: dict[str, float] = {}
 
     def catalogue(self) -> list[SymbolDescriptor]:
         """Every broker symbol the operator has asked to look at.
@@ -130,6 +141,7 @@ class UniverseScanner:
             {self.settings.instruments.broker_symbol(name) for name in chosen} if chosen else set()
         )
 
+        now = time.monotonic()
         return [
             item
             for item in self.broker.symbols()
@@ -140,6 +152,13 @@ class UniverseScanner:
             if (not wanted or self._path_class(item.path).value in wanted)
             and (not names or item.name in names)
             and not self.settings.instruments.is_ignored(item.name)
+            # OUT OF THE QUEUE, not merely refused in it. A catalogue of 845
+            # symbols inspected 240 at a time gives every market one turn in
+            # roughly three and a half cycles. When most of the catalogue is
+            # single-name stock this account cannot hold a minimum lot of, the
+            # markets that CAN trade spend most of their time waiting behind
+            # markets that never will.
+            and self._unaffordable_until.get(item.name, 0.0) <= now
         ]
 
     def scan(
@@ -383,6 +402,9 @@ class UniverseScanner:
             # and the two sections that can actually trade were not getting.
             unaffordable = self._unaffordable(descriptor.name, spec, tick)
             if unaffordable is not None:
+                self._unaffordable_until[descriptor.name] = (
+                    time.monotonic() + _UNAFFORDABLE_PARK_SECONDS
+                )
                 return reject(
                     "affordability",
                     unaffordable,
