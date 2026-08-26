@@ -95,7 +95,33 @@ class TestShippedConfig:
         # filter excludes on `is_ignored`, so this is what lets a context for
         # gold exist for a paper section to read.
         assert not settings.instruments.is_ignored("XAUUSD")
-        assert settings.scanner.priority_asset_classes == ("forex", "crypto")
+        # Every class section six is ALLOWED to trade rides the every-cycle
+        # lane, and that property is what is asserted rather than the literal
+        # tuple.
+        #
+        # It used to be ("forex", "crypto"). Forex is the largest class in this
+        # catalogue and section six may not touch a single pair of it --
+        # commission -- so the preferred lane was mostly markets this section
+        # is forbidden from, while metal, index and commodity sat on tier 0 and
+        # came round every three or four cycles. A cycle is about a minute and
+        # the trigger is the LAST CLOSED M1 CANDLE, so three of every four
+        # triggers on those markets were never seen: not refused on quality,
+        # never looked at. That was the "only four or five trades a day".
+        #
+        # Stocks stay on tier 0 deliberately. On this equity the affordability
+        # filter rejects nearly all of them before a bar is fetched, so
+        # promoting them would spend cycle slots on markets that cannot be
+        # traded anyway.
+        from core.instrument import AssetClass
+
+        tradable = {
+            asset.value
+            for asset in AssetClass
+            if settings.risk.commission_per_lot(asset.value) == 0
+        }
+        promoted = set(settings.scanner.priority_asset_classes)
+        assert tradable - promoted == {"stock"}
+        assert "forex" in promoted, "section one's majors still ride the fast lane"
         assert {"EURUSD", "BTCUSD", "XAUUSD"} <= set(settings.scanner.priority_symbols)
         assert settings.scanner.priority_spread_weight > 0
         assert not settings.ai.market_scout.enabled
