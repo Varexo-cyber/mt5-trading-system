@@ -31,6 +31,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from config.loader import DEFAULT_CONFIG_PATH, load_settings
+from core.clock import SimulatedClock
 from core.instrument import AssetClass
 from scanner.universe import UniverseScanner
 
@@ -93,7 +94,10 @@ def _scanner(broker: _Broker) -> UniverseScanner:
     settings = load_settings(
         DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
     )
-    return UniverseScanner(broker, settings)  # type: ignore[arg-type]
+    # A simulated clock pinned to the fixture's quote time. With the real one
+    # the tick ages as the test suite runs and the symbol is refused for a
+    # stale quote before it ever reaches the gate under test.
+    return UniverseScanner(broker, settings, SimulatedClock(NOW))  # type: ignore[arg-type]
 
 
 def _verdict(broker: _Broker):  # type: ignore[no-untyped-def]

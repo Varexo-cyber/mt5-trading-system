@@ -928,6 +928,32 @@ class Journal:
         )
         self.conn.commit()
 
+    def settle_unrecoverable(self, trade_id: int, reason: str) -> None:
+        """Close a trade the broker no longer holds and whose deal is lost.
+
+        WHY THIS HAD TO EXIST. Reconciliation halts new risk when the journal
+        says a trade is live and the broker neither holds it nor can produce
+        the closing deal. That is right for a few seconds -- deal history lags
+        the position list -- and it is a deadlock after that, because the row
+        stays open, every cycle re-detects it, and every cycle halts again. A
+        restart does not help: the halt is rebuilt within one cycle.
+
+        What is actually unknown here is the ACCOUNTING, not the risk. The
+        broker has no position, so there is nothing left on the account to be
+        wrong about. Refusing to trade for ever over a missing P&L figure
+        protects nothing.
+
+        So the row is closed and marked as unrecoverable, with `pnl_money` left
+        NULL rather than invented. Every report that sums realised money will
+        skip it, which is the honest treatment: this trade happened and what it
+        returned is not known.
+        """
+        self.conn.execute(
+            "UPDATE trades SET closed_at = ?, exit_reason = ? WHERE id = ? AND closed_at IS NULL",
+            (iso(self.clock.now()), reason[:200], trade_id),
+        )
+        self.conn.commit()
+
     def management_action_exists(self, ticket: int, actions: tuple[str, ...]) -> bool:
         if not actions:
             return False
