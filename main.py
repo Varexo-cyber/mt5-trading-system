@@ -38,6 +38,7 @@ from filters.newsfeed.service import HeadlineService
 from filters.runway_filter import RunwayFilter
 from filters.session_filter import SessionFilter
 from filters.spread_filter import SpreadFilter
+from filters.volume_spike_filter import VolumeSpikeFilter
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger, setup_logging
 from journal.database import Journal
@@ -327,6 +328,12 @@ def build_filter_chain(
     return FilterChain(
         [
             NewsFilter(news_config, calendar, clock),
+            # Immediately under the calendar, because it answers the same
+            # question about the part of it a calendar cannot see. A scheduled
+            # release is in the calendar; an unscheduled headline, a central
+            # banker off script and a stop cascade are not, and all three print
+            # the same minute.
+            VolumeSpikeFilter(settings.filters.volume_spike, data),
             # Directly under the calendar, because it answers the same question
             # about the part of it the calendar cannot see, and above
             # everything below: a war breaking out is a more fundamental

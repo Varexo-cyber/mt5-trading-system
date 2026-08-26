@@ -884,6 +884,31 @@ class SessionFilterConfig(Base):
         return self
 
 
+class VolumeSpikeFilterConfig(Base):
+    """Refuse a market whose last closed minute is carrying an event.
+
+    Section six has refused these since it was written. Section one had no
+    equivalent: seven of its eight live detectors never look at volume, and the
+    one that does has a volume FLOOR and no ceiling -- more volume raises its
+    confidence without limit, so a release printing ten times normal activity
+    produces its strongest reading.
+
+    The calendar is what protected section one, and a calendar only knows what
+    is scheduled. An unscheduled headline, a central banker off script, a stop
+    cascade: none of those are in it, and all of them print this candle.
+    """
+
+    enabled: bool = True
+    #: At or above this multiple of the median, the minute is an event. The
+    #: same figure section six uses, so the two cannot disagree about the same
+    #: candle.
+    extreme_multiple: float = Field(default=3.0, gt=1.0, le=50.0)
+    #: How many closed M1 bars the median is taken over. Median rather than
+    #: mean, because one earlier spike inside the window would lift a mean
+    #: enough to hide the next one.
+    lookback_bars: int = Field(default=30, ge=5, le=500)
+
+
 class SpreadFilterConfig(Base):
     enabled: bool = True
     #: Block entry when spread exceeds this multiple of the instrument's own
@@ -1201,6 +1226,7 @@ class FiltersConfig(Base):
     runway: RunwayFilterConfig = RunwayFilterConfig()
     liveliness: LivelinessFilterConfig = LivelinessFilterConfig()
     spread: SpreadFilterConfig = SpreadFilterConfig()
+    volume_spike: VolumeSpikeFilterConfig = VolumeSpikeFilterConfig()
     correlation: CorrelationFilterConfig = CorrelationFilterConfig()
     currency_exposure: CurrencyExposureConfig = CurrencyExposureConfig()
     loss_cooldown: LossCooldownConfig = LossCooldownConfig()
