@@ -3098,13 +3098,37 @@ class ConfluenceConfig(Base):
     #: Horizon-specific authority. The legacy fields above remain the default
     #: swing policy and keep old overlays/backtests reproducible. Live routing
     #: uses these named profiles once present.
+    #: THE LADDER, WITH NO RUNGS MISSING.
+    #:
+    #: Each profile plans on one timeframe, refuses a trade taken into a strong
+    #: trend on the ones ABOVE it, and checks the immediate move on the ones
+    #: BELOW. The three ladders used to skip rungs, and the skipped ones were
+    #: not obscure:
+    #:
+    #:     swing     planned H1,  vetoed on D1/W1     -- H4 never consulted
+    #:     intraday  planned M15, vetoed on H4/D1     -- H1 never consulted
+    #:     quick     planned M5,  vetoed on H1/H4     -- M15 never consulted
+    #:
+    #: A swing trade could therefore be taken straight into an H4 downtrend
+    #: without anything objecting, because the check jumped from H1 to D1.
+    #:
+    #: The gaps are closed and `minimum_htf_conflicts` scales with the rung
+    #: count, so this is BROADER rather than STRICTER: two conflicts out of
+    #: three is the same share of the ladder as two out of two was not -- it is
+    #: looser per timeframe and wider in what it looks at, which is the point.
+    #: More places to notice a conflict, no single one able to veto alone
+    #: except on swing, where the ladder is longest and the trade slowest.
     horizon_profiles: dict[str, HorizonProfileConfig] = Field(
         default_factory=lambda: {
-            "swing": HorizonProfileConfig(),
+            "swing": HorizonProfileConfig(
+                htf_trend_timeframes=("H4", "D1", "W1"),
+                minimum_htf_conflicts=2,
+                entry_timing_timeframes=("M15", "M5", "M1"),
+            ),
             "intraday": HorizonProfileConfig(
                 planning_timeframe="M15",
                 target_horizon_bars=12,
-                htf_trend_timeframes=("H4", "D1"),
+                htf_trend_timeframes=("H1", "H4", "D1"),
                 minimum_htf_conflicts=2,
                 htf_trend_veto=1.0,
                 entry_timing_timeframes=("M5", "M1"),
@@ -3112,7 +3136,7 @@ class ConfluenceConfig(Base):
             "quick": HorizonProfileConfig(
                 planning_timeframe="M5",
                 target_horizon_bars=6,
-                htf_trend_timeframes=("H1", "H4"),
+                htf_trend_timeframes=("M15", "H1", "H4"),
                 minimum_htf_conflicts=2,
                 htf_trend_veto=1.0,
                 entry_timing_timeframes=("M1",),
