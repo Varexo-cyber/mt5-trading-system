@@ -617,6 +617,45 @@ analysis:
     # die staat nog steeds.
     #
     # Terug naar 3,0 zodra `section6.cmd` zegt dat de instap iets waard is.
+    #
+    # ---------------------------------------------------------------------
+    # WAT DE POSTMORTEM VAN DIE EERSTE TRADE ZEI, en waarom hij dat eerst
+    # NIET kon zeggen. `why.cmd --ticket 135059061`, XAUAUD short, twaalf
+    # seconden, nooit een cent in de plus, -1,13R op een -1,00R plan:
+    #
+    #     score         33,0 against a 35,0 threshold   <- onzin, zie hieronder
+    #     session       ?
+    #     regime        ?
+    #
+    # Drie fouten in vijf regels. Die 35,0 is de confluence-lat, en deze baan
+    # bestaat JUIST omdat de module daar niet overheen kan (33,75 tegen 45).
+    # De baan heeft die stemming nooit gevraagd, dus dat getal beschrijft een
+    # oordeel dat niet heeft plaatsgevonden -- en elke latere query die filtert
+    # op `total_score >= score_threshold` gooit stilletjes elke sectie
+    # zes-trade weg die deze rekening ooit heeft gedaan. De twee vraagtekens
+    # zijn lege kolommen: de baan gaf `extra` van `_record_skip` door en daar
+    # zit geen sessie, geen regime en geen spread in. Allebei gerepareerd; de
+    # baan schrijft nu zijn eigen bewijs weg.
+    #
+    # EN DIT IS HET GETAL DAT ER NOOIT STOND. Een plan wordt getekend aan de
+    # kant van het boek waar je INSTAPT, en allebei de uitstappen gebeuren aan
+    # de andere kant -- een short verkoop je op de bid en koop je terug op de
+    # ask. Dus de markt hoeft één spread MINDER te lopen dan de stop lijkt om
+    # je eruit te gooien, en één spread MEER dan het target lijkt om je te
+    # betalen. Bij `minimum_target_spreads: 7,0` en stop 1,0 / target 1,4:
+    #
+    #     stop   = 5,0 spreads  ->  4 spreads tegen je in en je bent eruit
+    #     target = 7,0 spreads  ->  8 spreads mee en je wordt betaald
+    #     muntje opgooien       ->  4/12 = 33% raak
+    #     wat 1,4:1 nodig heeft ->  1/2,4 = 41,7%
+    #
+    # De module moet dus NEGEN procentpunten beter zijn dan toeval voordat er
+    # één cent overblijft. Dat is de lat, en niemand heeft hem ooit gemeten.
+    # `section6.cmd` is precies daarvoor gebouwd en is nog nooit gedraaid; zes
+    # live trades zijn geen steekproef en ik ga er ook geen van maken.
+    #
+    # WAT DIT NIET IS: een reden om de poort weer dicht te doen. 8,0 -> 7,0
+    # kostte 1,1 procentpunt van die negen; bij 8,0 stond het probleem er ook.
     risk_pct: 1.5
     fixed_lots: 0.0
 

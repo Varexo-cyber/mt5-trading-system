@@ -4403,6 +4403,81 @@ class JarvisRunner:
             return None
         return direction, entry, stop, target
 
+    def _scalp_cycle_evidence(
+        self,
+        *,
+        spec: InstrumentSpec,
+        extra: dict | None,
+        entry: float,
+        stop: float,
+        target: float,
+        spread: float,
+    ) -> dict[str, object]:
+        """What has to be written down to answer "why was this scalp bad".
+
+        WHY THIS EXISTS, and it is a repair rather than an addition. Section
+        six recorded its cycle with `extra` exactly as `_record_skip` received
+        it, and on the NO_SIGNAL path that dict carries no session, no regime
+        and no spread. `_journal_cycle_context` promotes precisely those three
+        into their own columns, so every section six trade in this journal has
+        all three empty, and `market_context` was never passed either, so ATR
+        is empty too.
+
+        The effect was found by reading a postmortem rather than the code. A
+        XAUAUD short lived twelve seconds, never showed a cent of profit and
+        returned -1.13R on a -1.00R plan, and `why.cmd` could say nothing at
+        all about the two things that decide a scalp:
+
+            session       ?
+            regime        ?
+
+        No spread line, because the column was NULL. That is the one lane whose
+        trades are over in seconds and therefore the one lane where the cost of
+        entry, not the quality of the read, is the likeliest explanation -- and
+        it was the only lane recording none of it.
+
+        THE THREE NUMBERS ADDED HERE ARE THE SCALP'S OWN ARITHMETIC. The module
+        gates on `target / spread >= minimum_target_spreads`; nothing anywhere
+        records what that ratio actually was, nor the same measurement against
+        the STOP, which is what R is. Written down, they say immediately
+        whether a losing scalp was a bad read or a trade that could not have
+        paid:
+
+            stop_in_spreads    how far the market must go against you to lose
+            target_in_spreads  how far it must go for you to win
+            cost_share         spread as a fraction of R
+
+        A scalp is planned from the entry side of the book and both exits
+        happen on the other side, so the adverse travel is one spread SHORTER
+        than the stop looks and the favourable travel one spread LONGER than
+        the target looks. At the configured gate that is FOUR spreads against
+        you versus EIGHT for you, so a coin flip lands at 33% where the 1.4:1
+        payoff needs 41.7%. The module has to beat a random walk by nine points
+        of hit rate, and until these columns are populated there is no way to
+        check whether it does.
+        """
+        data = dict(extra or {})
+        if "spread_pips" not in data and spread > 0:
+            # Defensive because this now sits ON THE ORDER PATH. Everything
+            # this function produces is diagnostics, and a diagnostic that can
+            # raise decides whether money moves -- which is exactly the class
+            # of bug that put a RecursionError in this lane a day ago. Nothing
+            # here may be the reason a trade does or does not happen.
+            with suppress(Exception):
+                data["spread_pips"] = round(spec.price_to_pips(spread), 3)
+        if "session" not in data:
+            with suppress(Exception):
+                session_filter = self.filters.find(SessionFilter)
+                if session_filter is not None:
+                    data["session"] = session_filter.session_label(self.clock.now())
+        risk = abs(entry - stop)
+        if spread > 0 and risk > 0:
+            data["stop_in_spreads"] = round(risk / spread, 2)
+            data["target_in_spreads"] = round(abs(target - entry) / spread, 2)
+            data["cost_share"] = round(spread / risk, 3)
+        data["section"] = "six"
+        return data
+
     def _open_scalp_count(self) -> int:
         """Live scalp positions this lane is currently holding.
 
@@ -4674,13 +4749,34 @@ class JarvisRunner:
 
         cycle_pk = self.recorder.record_cycle(
             cycle_id=cycle_id,
-            context=self._journal_cycle_context(symbol, account.equity, dict(extra or {})),
+            context=self._journal_cycle_context(
+                symbol,
+                account.equity,
+                self._scalp_cycle_evidence(
+                    spec=spec,
+                    extra=extra,
+                    entry=entry,
+                    stop=stop,
+                    target=target,
+                    spread=spread,
+                ),
+                market_context=self._cycle_contexts.get(symbol),
+            ),
             reason=Reason.OK,
             detail=f"section six scalp; {signal.reasoning}",
             traded=True,
             direction=direction,
             total_score=abs(signal.score) * signal.confidence,
-            score_threshold=self.settings.analysis.confluence.score_threshold,
+            # NO THRESHOLD, BECAUSE THIS LANE NEVER FACED ONE. It used to write
+            # the confluence bar here, and a postmortem then printed "score
+            # 33.0 against a 35.0 threshold" over a trade that was opened
+            # anyway -- which reads as the account trading through its own vote.
+            # It did not: `_run_scalp_lane` exists precisely because a scalp
+            # cannot clear that bar and is not asked to. Recording a number the
+            # decision never consulted is recording a false fact, and every
+            # later query filtering on `total_score >= score_threshold` would
+            # silently drop every section six trade the account ever took.
+            score_threshold=None,
             signals=list(signals),
             weights={"candle_momentum": 1.0},
         )

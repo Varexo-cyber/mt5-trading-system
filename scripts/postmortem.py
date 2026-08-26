@@ -213,16 +213,59 @@ def report(db: sqlite3.Connection, trade: sqlite3.Row) -> None:
         print(f"\n{'-' * 78}")
         print("  WHY IT WAS TAKEN")
         print(f"{'-' * 78}\n")
+        context = _json(cycle["context_json"])
+        # SAY WHICH ROUTE TOOK IT, BEFORE ANY NUMBER.
+        #
+        # Section six has its own lane around the confluence vote, because its
+        # module tops out at 33.75 against a bar of 45 and cannot clear it by
+        # design. This report used to print "score 33.0 against a 35.0
+        # threshold" over such a trade and stop there, which reads as the
+        # account having traded through its own vote. It had not -- the vote
+        # was never asked. Naming the lane is the difference between "the
+        # system ignored its threshold" and "this threshold does not apply
+        # here", and only one of those is worth investigating.
+        section_six = str(context.get("section") or "") == "six" or str(
+            cycle["detail"] or ""
+        ).startswith("section six")
         score = cycle["total_score"]
         threshold = cycle["score_threshold"]
-        if score is not None and threshold is not None:
+        if section_six:
+            print("  route         section six's own lane - the confluence vote does not apply")
+            if score is not None:
+                print(f"  strength      {score:.1f}  (candle_momentum alone)")
+        elif score is not None and threshold is not None:
             print(f"  score         {score:.1f} against a {threshold:.1f} threshold")
+        elif score is not None:
+            print(f"  score         {score:.1f}")
         print(f"  session       {cycle['session'] or '?'}")
         print(f"  regime        {cycle['volatility_regime'] or '?'}")
         if cycle["spread_pips"] is not None:
             print(f"  spread        {cycle['spread_pips']:.2f} pips at entry")
         if cycle["minutes_to_news"] is not None:
             print(f"  next news     {cycle['minutes_to_news']:.0f} min away")
+
+        # WHAT THE TRADE HAD TO PAY BEFORE IT COULD BE RIGHT.
+        #
+        # On a trade measured in seconds this is usually the whole story, and
+        # the report had no line for it. A plan is drawn from the entry side of
+        # the book while both exits happen on the other side: a short is sold
+        # at the bid and bought back at the ask, so the market has to travel
+        # one spread LESS than the stop looks to lose, and one spread MORE than
+        # the target looks to win. Printed side by side, those two distances
+        # say whether a loser was a bad read or a trade that could not have
+        # paid at any hit rate.
+        stop_spreads = context.get("stop_in_spreads")
+        target_spreads = context.get("target_in_spreads")
+        if stop_spreads and target_spreads:
+            adverse = float(stop_spreads) - 1.0
+            favourable = float(target_spreads) + 1.0
+            share = float(context.get("cost_share") or 0.0)
+            print(f"\n  cost of entry {share:.1%} of R -- one spread, crossed once")
+            print(f"    to lose     {adverse:.1f} spreads against you (stop at {stop_spreads})")
+            print(f"    to win      {favourable:.1f} spreads for you  (target at {target_spreads})")
+            if adverse > 0 and favourable > 0:
+                flat = adverse / (adverse + favourable)
+                print(f"    coin flip   {flat:.0%} - anything less than the payoff needs is a cost")
 
         modules = db.execute(
             "SELECT module, score, confidence, reasoning FROM module_scores "
@@ -239,7 +282,6 @@ def report(db: sqlite3.Connection, trade: sqlite3.Row) -> None:
                     f"conf {row['confidence']:.2f}  {(row['reasoning'] or '')[:80]}"
                 )
 
-        context = _json(cycle["context_json"])
         interesting = {
             key: context[key]
             for key in ("runway_minutes", "minutes_to_target", "activity_ratio", "ai_confidence")
