@@ -2477,6 +2477,35 @@ trade_management:
   profit_lock_from_r: 0.20
   profit_lock_fraction: 0.6
 
+  # BREAK-EVEN MEE OMLAAG MET HET TARGET, 26 augustus.
+  #
+  # De basis zet hem op 0,60R. Sinds `minimum_r_multiple` naar 0,35 ging is
+  # dat DOOD: de trade is weg op 0,35R en 0,60R wordt nooit bereikt. De stop
+  # ging dus nooit meer naar break-even en elk verlies was een volle 1,04R.
+  # Een drempel boven het target is geen voorzichtige instelling, het is een
+  # uitgeschakelde regel die er nog uitziet als een instelling.
+  #
+  # 0,25, en de ladder eronder is nu: lock 0,20 -> break-even 0,25 ->
+  # target 0,35. De profit lock MOET onder break-even wapenen -- dat is het
+  # ontwerp en `test_it_arms_below_break_even_because_that_is_the_whole_point`
+  # bewaakt het -- want de lock is wat een trade opvangt die de break-even
+  # drempel nooit haalt.
+  #
+  # Niet lager dan dit, want `min_stop_room_r` is 0,15: onder 0,15R winst
+  # duwt de ruimte-vloer de stop toch terug en doet de regel niets.
+  #
+  # WAT ER BEWUST DOOD BLIJFT. Zes regels vielen boven het nieuwe target, en
+  # drie daarvan hebben een gemeten negatief record op deze rekening:
+  #
+  #     peak_stall_arm_r    0,60R   lift -0,64R
+  #     giveback_arm_r      0,50R   lift -0,40R
+  #     health_secure_at_r  0,50R   13 trades, 0 gewonnen, -EUR 20,33
+  #
+  # Die blijven staan waar ze staan. Ze omlaag halen zou meer laten gebeuren
+  # van precies wat gemeten geld kost. `partial_close_at_r` was op 0,01 lot
+  # sowieso al inert.
+  break_even_at_r: 0.25
+
   # SPREAD_SQUEEZE WEER AAN, MAAR NU MET DRIE TESTS DIE HIJ NIET HAD.
   #
   # Hij was elf van de elf keer negatief: acht in de replay van 17 augustus,
