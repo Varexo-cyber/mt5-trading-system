@@ -586,9 +586,30 @@ class TestTheScalpIsJudgedEverySecondAndNotOnAClock:
         service.journal = SimpleNamespace(  # type: ignore[attr-defined]
             trade_opened_by_section_six=lambda _ticket: False
         )
-        service.settings = load_settings(
+        settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
+        # A claim floor these tests OWN, for the reason given on the other
+        # `watcher` below: these are about the LEASH -- that it grows with the
+        # peak, that it never drops under a spread, that the 25 August XAUUSD
+        # trade would now be claimed -- and the peaks they build are a few
+        # spreads wide because that is what demonstrates it. What the account
+        # currently claims at is a tuning decision that follows the evidence,
+        # and it is asserted once in `TestTheGeometryHoldsTogetherAsOneShape`.
+        settings = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={
+                        "candle_momentum": settings.analysis.candle_momentum.model_copy(
+                            update={
+                                "scalp_claim_minimum_spreads": overrides.get("claim_floor", 2.0)
+                            }
+                        )
+                    }
+                )
+            }
+        )
+        service.settings = settings
         service.broker = SimpleNamespace(  # type: ignore[attr-defined]
             spec=lambda symbol: InstrumentSpec.from_mt5(xauusd_spec()),
             copy_rates=lambda symbol, tf, n: [
@@ -766,7 +787,14 @@ class TestALaneIsNotIdentifiedByAFieldTheBrokerOwns:
     sent, and the broker cannot touch it.
     """
 
-    def watcher(self, *, comment: str, in_journal: bool, price: float = 2400.70):  # type: ignore[no-untyped-def]
+    def watcher(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        comment: str,
+        in_journal: bool,
+        price: float = 2400.70,
+        claim_floor: float = 2.0,
+    ):
         from datetime import UTC, datetime
 
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
@@ -777,9 +805,31 @@ class TestALaneIsNotIdentifiedByAFieldTheBrokerOwns:
 
         closed: list = []
         service = PositionManager.__new__(PositionManager)
-        service.settings = load_settings(
+        settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
+        # A claim floor these tests OWN. They are about the MECHANISM -- that a
+        # scalp is recognised when the broker rewrites its comment, that the
+        # leash grows with the peak -- and the peaks they build are a few
+        # spreads wide because that is enough to demonstrate it.
+        #
+        # Reading the account's floor made them fail the day it moved from 2.0
+        # to 6.0 spreads, which is a tuning decision that follows the evidence
+        # and will move again. Whether the account claims at EUR 0.21 or EUR
+        # 1.06 is asserted once, in `TestTheGeometryHoldsTogetherAsOneShape`,
+        # where it belongs.
+        settings = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={
+                        "candle_momentum": settings.analysis.candle_momentum.model_copy(
+                            update={"scalp_claim_minimum_spreads": claim_floor}
+                        )
+                    }
+                )
+            }
+        )
+        service.settings = settings
         service._scalp_tickets = {}
         service.journal = SimpleNamespace(  # type: ignore[attr-defined]
             trade_opened_by_section_six=lambda _ticket: in_journal
