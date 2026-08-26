@@ -118,10 +118,15 @@ def build_engine(settings):  # type: ignore[no-untyped-def]
 
 
 def history(
-    connector: MT5Connector, symbol: str, start: datetime, end: datetime
+    connector: MT5Connector,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    *,
+    timeframes: tuple[Timeframe, ...] = REPLAY_TIMEFRAMES,
 ) -> dict[Timeframe, pd.DataFrame]:
     frames: dict[Timeframe, pd.DataFrame] = {}
-    for timeframe in REPLAY_TIMEFRAMES:
+    for timeframe in timeframes:
         # Reach back past `start` so the first decision already has its 300
         # bars of context instead of being skipped for want of history.
         warmup = start - timeframe.duration * 400
@@ -351,6 +356,15 @@ def main(argv: list[str] | None = None) -> int:
         "outside the conditions it was written for",
     )
     parser.add_argument(
+        "--with-m1",
+        action="store_true",
+        help="also load M1 bars, so the detectors that trigger on them can be "
+        "graded at all. `m1_micro_breakout` is live and has never appeared in "
+        "this table -- not because it loses, but because the replay fetches no "
+        "M1 and it returns neutral without one. Slow: 240 days of M1 is a "
+        "third of a million bars per symbol.",
+    )
+    parser.add_argument(
         "--exits",
         action="store_true",
         help="walk every position bar by bar and sweep exit rules over them. "
@@ -390,7 +404,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  replaying {symbol} …", flush=True)
             try:
                 spec = connector.spec(symbol)
-                frames = history(connector, symbol, start, end)
+                # M1 ON REQUEST, because a detector that triggers on it
+                # returns neutral without one and so has never appeared in any
+                # table here. `m1_micro_breakout` is LIVE and was reported as
+                # "no trades" for exactly that reason -- the same silent gap
+                # that hid section six.
+                frames = history(
+                    connector,
+                    symbol,
+                    start,
+                    end,
+                    timeframes=(
+                        (*REPLAY_TIMEFRAMES, Timeframe.M1) if args.with_m1 else REPLAY_TIMEFRAMES
+                    ),
+                )
                 orders = replay.orders(symbol, frames, point=spec.point, start=start, end=end)
             except Exception as exc:  # noqa: BLE001 - one bad symbol must not end the run
                 print(f"    skipped: {type(exc).__name__}: {exc}")

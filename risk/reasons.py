@@ -141,6 +141,13 @@ class Reason(StrEnum):
     MARKET_CLOSED = "MARKET_CLOSED"
     STALE_QUOTE = "STALE_QUOTE"
     SPREAD_TOO_WIDE = "SPREAD_TOO_WIDE"
+    #: The last closed minute carried many times its normal activity. That is a
+    #: release, a headline or a stop cascade -- an event rather than momentum --
+    #: and it is the strongest-looking bar such a system will ever print.
+    #: Section six has refused these since it was written; section one had no
+    #: such rule at all, and the calendar it relied on only knows what is
+    #: scheduled.
+    VOLUME_SPIKE = "VOLUME_SPIKE"
     #: The spread is too large a share of *this trade's own stop*, which is a
     #: different question from whether the spread is unusual. In the evening a
     #: spread can be entirely typical for the hour — so the hour-of-day baseline
