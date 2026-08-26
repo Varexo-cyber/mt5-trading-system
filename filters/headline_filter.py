@@ -68,7 +68,11 @@ class HeadlineFilter(Filter):
         if not self.service.is_usable():
             return self._unavailable()
 
-        currencies = symbol_currencies(ctx.spec.currency_base, ctx.spec.currency_profit)
+        currencies = symbol_currencies(
+            ctx.spec.currency_base,
+            ctx.spec.currency_profit,
+            getattr(getattr(ctx.spec, "asset_class", None), "value", None),
+        )
         pressure = self.service.pressure(ctx.symbol, currencies)
         data = {
             "headline_count": pressure.recent,

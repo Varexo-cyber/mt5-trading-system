@@ -906,6 +906,25 @@ analysis:
     risk_pct: 1.0
     fixed_lots: 0.0
 
+    # RODE MAPPEN: 15 -> 30 MINUTEN, op verzoek van de eigenaar.
+    #
+    # WAT DIT WEL EN NIET IS. Dit is de EXTRA marge van sectie 6 bovenop de
+    # echte nieuwsblokkade, niet de blokkade zelf. Die staat in
+    # `filters.news` en is aanzienlijk strenger dan hier gevraagd werd:
+    #
+    #     high impact       60 min ervoor,  30 min erna
+    #     extreme impact   120 min ervoor,  60 min erna
+    #
+    # `extreme` is FOMC, Non-Farm, NFP, CPI, rentebesluiten, ECB-persconferentie
+    # en Fed Chair. Dat zijn de rode mappen, en daar zit dus al twee uur stilte
+    # voor en een uur erna. Sectie 6 vraagt die filter rechtstreeks
+    # (`_scalp_news_verdict`) en weigert ook als de kalender onleesbaar is --
+    # geen data is geen toestemming.
+    #
+    # Deze 30 is de tweede zeef en hij is nu geen dode letter meer: op 15 kon
+    # hij per definitie nooit iets tegenhouden wat de 60 hierboven doorliet.
+    news_clearance_minutes: 30.0
+
     # DE STOP UIT DE RUIS GEHAALD, 26 augustus. Het target blijft groter dan
     # de stop -- die beslissing was gemeten en klopt nog steeds.
     #

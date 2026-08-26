@@ -6771,7 +6771,11 @@ class JarvisRunner:
             spec = self.broker.spec(symbol)
         except Exception:  # noqa: BLE001 - a missing spec must not skip supervision
             return []
-        currencies = symbol_currencies(spec.currency_base, spec.currency_profit)
+        currencies = symbol_currencies(
+            spec.currency_base,
+            spec.currency_profit,
+            getattr(getattr(spec, "asset_class", None), "value", None),
+        )
         now = self.clock.now()
         return [
             {
