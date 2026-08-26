@@ -1326,7 +1326,47 @@ analysis:
     # Hij handelt nu via zijn eigen baan (`own_lane_enabled`), met eigen
     # instap, stop, target en limiet. Hier weghalen is wat voorkomt dat hij
     # ALLEBEI doet: stemmen in sectie 1 en zijn eigen trade openen.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence]
+    # GEMETEN, 26 augustus. `modules.cmd --days 240` heeft alle negen voor het
+    # eerst gegradeerd, over 2.192 voorstellen, met echte kosten. Dit is de
+    # uitkomst en dit is de enige reden dat deze regel verandert.
+    #
+    #   module                trades   per trade   totaal   ook op 120d?
+    #   session_breakout          38     -0,312R   -11,86R   ja, negatief
+    #   ema_pullback_resume      246     -0,231R   -56,76R   ja, negatief
+    #   liquidity_sweep           65     -0,135R    -8,80R   ja, negatief
+    #   fast_ema_cross           311     -0,121R   -37,52R   ja, negatief
+    #   drift_continuation       713     -0,100R   -71,31R   ja, negatief
+    #   market_structure          67     -0,100R    -6,69R   ja, negatief
+    #   impulse_break            515     -0,086R   -44,19R   ja, negatief
+    #
+    # Zeven van de zeven negatief, op twee onafhankelijke perioden. Dat is
+    # geen pech en het is niet te tunen: een detector die over een echte
+    # steekproef verliest hoort uit, en dat doen is meer waard dan welke regel
+    # er ook voor in de plaats zou kunnen komen.
+    #
+    # EN WAT ER NIET VOOR TERUGKOMT, want dit is bijna misgegaan.
+    #
+    # `trend_momentum` is de enige die ALLEEN positief is (+0,023R over 110
+    # trades) en de enige die de muntworp op enig symbool verslaat. De
+    # verleiding was hem hier aan te zetten. Dat is niet gebeurd, om de reden
+    # die `TestTrendMomentumIsOffLiveOnItsRecord` vastlegt: op 20 markten over
+    # 180 dagen deed hij -0,365R over 163 trades met t = -4,01.
+    #
+    # Dat is een significant negatieve meting op VIER KEER zoveel markten.
+    # +0,023R over 110 trades is niet te onderscheiden van nul, en op de
+    # 120-daagse steekproef stond dezelfde module op -0,136R. Ruis mag een
+    # gemeten bevinding niet omkeren, ook niet als de ruis de goede kant op
+    # wijst. Vooral dan niet.
+    #
+    # WAT DAT BETEKENT, ONOMWONDEN: er blijft geen enkele detector over met
+    # een gemeten record die geld verdient. Sectie 1 handelt hierna niets
+    # meer, en dat is geen storing maar de conclusie. `m1_micro_breakout`
+    # kwam in geen van beide tabellen voor en stelt dus niets voor;
+    # `basket_divergence` is sectie 2 en draait op papier.
+    #
+    # Sectie 6 raakt dit niet: die heeft een eigen baan en staat niet op deze
+    # lijst.
+    live_enabled_modules: [m1_micro_breakout, basket_divergence]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -1389,6 +1429,9 @@ analysis:
     # bronnen die elkaar tegenspreken plus het grootste volume-effect van de
     # tabel is precies de combinatie waarbij je een halve stap zet en meet.
     lone_module_minimum_confidence_by_module:
+      # Geen van deze staat nog op `live_enabled_modules`, dus deze regels
+      # doen niets. Ze blijven staan zodat een terugdraai één regel is en niet
+      # een reconstructie.
       ema_pullback_resume: 0.55
       impulse_break: 0.55
       fast_ema_cross: 0.60
