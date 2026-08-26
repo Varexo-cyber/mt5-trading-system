@@ -597,6 +597,38 @@ analysis:
     stop_candle_spans: 1.0
     target_candle_spans: 1.4
 
+    # DE POORT IETS OPEN, 26 augustus, op verzoek van de eigenaar en met de
+    # prijs erbij gemeten in plaats van geschat.
+    #
+    # Deze poort bepaalt indirect je KOSTEN. Het target moet minstens N
+    # spreads breed zijn, target = 1,4 x span en stop = 1,0 x span, dus de
+    # rondrit van een spread is 1,4/N van je R:
+    #
+    #     poort   span minimaal   rondrit in R   winrate nodig
+    #      8,0        5,71 sp         17,5%          49,0%   <- was
+    #      7,0        5,00 sp         20,0%          50,0%   <- nu
+    #      6,0        4,29 sp         23,3%          51,4%
+    #      5,0        3,57 sp         28,0%          53,3%
+    #
+    # 8,0 -> 7,0 kost dus precies EEN procentpunt aan benodigde winrate, en
+    # levert +22% setups op (gemeten over 36.000 synthetische M1-bars bij drie
+    # volatiliteitsniveaus: 327 -> 398).
+    #
+    # WAT ER NIET LOSSER GAAT, en die getallen stonden in dezelfde meting:
+    #   exhaustion_close  0,92 -> 0,95   +34% setups
+    #   minimum_body_multiple 1,8 -> 1,6 +20% setups
+    #
+    # De eerste geeft het meeste en is de gevaarlijkste: dat is het
+    # "laatste koper"-filter, en die loslaten betekent instappen bovenop een
+    # beweging die al klaar is. De tweede laat minder besliste kaarsen toe.
+    # Allebei kosten kwaliteit die niet in een formule te vangen is, terwijl
+    # de poort hierboven een prijs heeft die je exact kunt uitrekenen. Een
+    # knop met een bekende prijs gaat voor een knop met een onbekende.
+    #
+    # `section6.cmd` meet nu wat dit werkelijk oplevert. Valt het tegen, dan
+    # is dit één regel terug.
+    minimum_target_spreads: 7.0
+
     # DE CLAIM, 25 augustus, na twee XAUUSD-trades die piekten en alles
     # teruggaven. De logica-fout zit in `_scalp_verdict` en staat daar
     # beschreven: de claim werd gewapend door de LIVE winst in plaats van door
