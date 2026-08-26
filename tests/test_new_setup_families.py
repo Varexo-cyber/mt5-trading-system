@@ -422,25 +422,26 @@ class TestNoneOfThemCanTradeYet:
         `session_breakout` earned +1.20 EUR a trade and stayed; `seasonality`
         cost -1.01 and went off.
 
-        THE FIRST SETTLEMENT WAS FOUR DAYS LONG. On 26 August the module
-        backtest graded every detector over 240 days with the broker's own
-        spreads, and `session_breakout` came back at -0.312R a trade over 38
-        trades -- the worst per-trade figure of the nine -- and at -0.234R
-        over 24 on the independent 120-day window. Negative on both.
+        THE 240-DAY RUN LOOKED LIKE IT SETTLED IT AGAIN, AND DID NOT.
+        `session_breakout` came back at -0.312R a trade over 38, the worst of
+        the nine, and was briefly switched off for it. Then the same table
+        showed all eight detectors sharing one shape -- 54-57% win, +0.68R
+        winner, -1.04R loser -- which is a property of the plan, not of eight
+        unrelated readers: the target sat at 0.72R against a 1.00R stop.
 
-        Four days of live money is a smaller and dirtier sample than eight
-        months of replayed bars with costs charged, so the larger measurement
-        wins and the module is off. The point of `live_enabled_modules` being
-        a list rather than an argument is exactly that this can happen twice.
+        So the measurement is not evidence against this detector specifically.
+        It is evidence against the floor every detector planned under, and
+        that floor moved. `session_breakout` stays live at its own 0.75 lone
+        floor, which still makes it the strictest module on the list.
+
+        `volatility_squeeze` produced no trades at all in the 180-day run and
+        `mean_reversion` measured -0.193R over 194. One has no record and the
+        other a bad one, so neither was ever live to settle.
         """
         allowed = set(self._confluence().live_enabled_modules)
 
-        for module in (
-            "session_breakout",
-            "seasonality",
-            "volatility_squeeze",
-            "mean_reversion",
-        ):
+        assert "session_breakout" in allowed
+        for module in ("seasonality", "volatility_squeeze", "mean_reversion"):
             assert module not in allowed, module
 
     def test_the_one_still_live_may_now_carry_a_trade_when_convinced(self) -> None:
