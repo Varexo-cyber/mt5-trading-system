@@ -739,7 +739,44 @@ analysis:
     #
     # WAT DIT NIET IS: een reden om de poort weer dicht te doen. 8,0 -> 7,0
     # kostte 1,1 procentpunt van die negen; bij 8,0 stond het probleem er ook.
-    risk_pct: 1.5
+    #
+    # ---------------------------------------------------------------------
+    # 1,5 -> 1,0 op verzoek van de eigenaar, samen met "zet de stop hoger als
+    # dat het winstgevender maakt". Het eerste is gedaan. Het tweede KAN NIET,
+    # en de reden staat hieronder omdat hij niets met de strategie te maken
+    # heeft en alles met de rekeninggrootte.
+    #
+    # DE MINIMUM LOT IS DE VLOER. Op XAUUSD is 0,01 lot één ounce, dus een
+    # koersbeweging van $1 is $1 verlies. Dat is het kleinste dat de broker
+    # accepteert -- kleiner bestaat niet. Bij een rekening van EUR 212:
+    #
+    #     stop        0,01 lot kost     % van 212     past bij 1%?
+    #     1,0 span    $2,00 = EUR 1,71     0,80%      ja, net
+    #     1,25 span   $2,50 = EUR 2,13     1,00%      precies de grens
+    #     2,0 span    $4,00 = EUR 3,41     1,61%      nee
+    #     3,0 span    $6,00 = EUR 5,12     2,41%      nee
+    #
+    # Bij 1% risico op deze rekening is de breedste stop die goud toelaat dus
+    # ongeveer 1,25 kaars. Alles daarboven wordt door de kleine-account-check
+    # geweigerd als TRADE_SKIPPED_UNDERCAPITALIZED -- de regel die de eigenaar
+    # zelf als KRITIEK heeft opgeschreven: niet afronden naar de minimum lot,
+    # maar overslaan. Die regel doet precies wat hij moet doen.
+    #
+    # EN DAAROM IS SECTIE 6 OP DEZE REKENING NIET TE REPAREREN. De kosten zijn
+    # spread gedeeld door stop. De stop is vastgezet door de minimum lot. Dus
+    # de kosten liggen vast op ongeveer 19-23% van R, en de instap is 1,3
+    # procentpunt beter dan toeval waar hij er 8 tot 10 nodig heeft.
+    #
+    # Het is geen strategieprobleem. Het is dat EUR 212 de kleinst mogelijke
+    # stop afdwingt, en de kleinst mogelijke stop is precies waar een vaste
+    # spread het meeste pijn doet.
+    #
+    # WAT HET WEL ZOU OPLOSSEN, met het getal erbij: bij ongeveer EUR 510 past
+    # een stop van 3 kaarsen binnen 1% risico. Dan zakken de kosten van 23,5%
+    # naar 6,7% van R en gaat de benodigde winrate van 51,2% naar 44,5% --
+    # tegen de 43% die gemeten is. Dan is het een eerlijke gok in plaats van
+    # een rekensom die niet uitkomt.
+    risk_pct: 1.0
     fixed_lots: 0.0
 
     # DE STOP UIT DE RUIS GEHAALD, 26 augustus. Het target blijft groter dan

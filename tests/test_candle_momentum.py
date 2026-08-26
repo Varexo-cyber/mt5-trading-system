@@ -388,7 +388,7 @@ class TestItIsLiveAndBraked:
         # quantity, not a risk: 0.01 of gold behind a 3.41 dollar stop is
         # EUR 2.91, and 0.01 of an index is something else entirely. The lot
         # ceiling is off (0.0) so the risk model decides outright.
-        assert module.risk_pct == 1.5
+        assert module.risk_pct == 1.0
         assert module.fixed_lots == 0.0
         assert "candle_momentum" not in settings.analysis.confluence.live_enabled_modules
         # Its own stop stays, and it is the strict one: this section takes
