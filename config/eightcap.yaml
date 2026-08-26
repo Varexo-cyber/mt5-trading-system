@@ -370,7 +370,42 @@ scanner:
   # analysed, but scarce position slots and paid Claude reviews go to familiar,
   # liquid markets first. Only when those produce no executable proposal does
   # the queue reach single-name shares and less liquid CFDs.
-  priority_asset_classes: [forex, crypto]
+  # SECTIE 6 KEEK DE VERKEERDE KANT OP, EN DAT KWAM HIERVANDAAN.
+  #
+  # Deze rij stond op [forex, crypto]. Forex is verreweg de grootste klasse in
+  # deze catalogus -- en sectie 6 mag GEEN ENKEL forexpaar handelen, want daar
+  # staat commissie op en een scalp van een paar spreads kan EUR 5,50 per lot
+  # niet dragen. De baan die elke cyclus vooraan staat was dus grotendeels
+  # gevuld met markten waar deze sectie verboden terrein heeft.
+  #
+  # Ondertussen stonden METAL, INDEX en COMMODITY -- drie van de vijf klassen
+  # die sectie 6 WEL mag -- op tier 0, achteraan in de rotatie. Met
+  # `batch_size: 240` op een catalogus van 847 komt zo'n symbool ongeveer elke
+  # drie tot vier cycli langs. Een cyclus duurt ongeveer een minuut en de
+  # trigger is de LAATSTE GESLOTEN M1-KAARS.
+  #
+  #     tier 0  ->  sectie 6 ziet 1 van elke 4 minuutkaarsen
+  #
+  # Drie van de vier triggers werden dus nooit gezien. Niet geweigerd op
+  # kwaliteit -- niet gezien. Alleen XAUUSD, US30, US500, NAS100 en US2000
+  # ontsnapten daaraan, en dan alleen omdat ze los bij naam in
+  # `priority_symbols` hieronder staan. Dat is precies waar de "maar vier of
+  # vijf trades per dag" vandaan kwam.
+  #
+  # DIT KOST GEEN REKENTIJD. `batch_size` blijft 240; dit verandert alleen
+  # WELKE 240. Wat langzamer roteert zijn losse aandelen en forex-exoten, en
+  # die zijn op een rekening van EUR 212 toch grotendeels onbetaalbaar -- de
+  # affordability-filter gooit ze er al uit voordat er een bar wordt opgehaald.
+  #
+  # DE TIENDE MAJORS BLIJVEN ONGEMOEID. `priority_symbols` is tier 2 en staat
+  # boven deze rij, dus sectie 1 verliest niets.
+  #
+  # EN DE KWALITEITSLAT GAAT NIET OMLAAG. Dit is puur "kijk vaker", niet
+  # "accepteer meer". De goud-crossen die hierdoor terugkomen (XAUAUD, XAUEUR)
+  # worden nu door `minimum_target_spreads: 14,0` beoordeeld op hun eigen
+  # kosten, en dat is de poort die hun spread hoort te wegen -- niet een
+  # scanvolgorde die toevallig bepaalt of ze überhaupt bekeken worden.
+  priority_asset_classes: [forex, crypto, metal, index, commodity]
   priority_symbols:
     - EURUSD
     - GBPUSD
