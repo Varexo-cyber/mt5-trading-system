@@ -210,6 +210,26 @@ class TestWhenItDoesFire:
         assert module.analyze(context(m1_closes=rising(), last_body=4.0)).score == 0.0
 
 
+class _NewsDouble:
+    """Stands in for the account's `NewsFilter` at the shape the lane uses."""
+
+    name = "news"
+
+    def __init__(self, *, minutes_to_news: float | None = None, blocked: str = "") -> None:
+        self.minutes_to_news = minutes_to_news
+        self.blocked = blocked
+        self.asked: list[str] = []
+
+    def check(self, ctx):  # type: ignore[no-untyped-def]
+        from filters.base import FilterVerdict
+        from risk.reasons import Reason
+
+        self.asked.append(ctx.symbol)
+        if self.blocked:
+            return FilterVerdict.block("news", Reason.NEWS_BLACKOUT, self.blocked)
+        return FilterVerdict.allow("news", "clear", minutes_to_news=self.minutes_to_news)
+
+
 class TestTheNewsBlackoutIsTheAccountsAndNotACopy:
     """The module reads bars and has no calendar, on purpose. A second copy of
     the news rules beside it would be a copy that eventually disagrees, and the
@@ -241,7 +261,18 @@ class TestTheNewsBlackoutIsTheAccountsAndNotACopy:
             record_shadow_trade=lambda **kw: recorded.append(kw) or 1,
         )
         runner.broker = SimpleNamespace(  # type: ignore[assignment]
-            spec=lambda _s: SimpleNamespace(asset_class=SimpleNamespace(value="metal"))
+            spec=lambda _s: SimpleNamespace(
+                asset_class=SimpleNamespace(value="metal"),
+                currency_base="XAU",
+                currency_profit="USD",
+            )
+        )
+        runner.clock = SimpleNamespace(now=lambda: ctx.now)  # type: ignore[assignment]
+        # THE CALENDAR THE LANE NOW ASKS ITSELF. `minutes_to_news` used to
+        # arrive only in `extra`, which the NO_SIGNAL path does not populate.
+        runner._news = _NewsDouble(minutes_to_news=90.0)  # type: ignore[attr-defined]
+        runner.filters = SimpleNamespace(  # type: ignore[assignment]
+            find=lambda _kind: runner._news, filters=(runner._news,)
         )
         return runner, [CandleMomentum().analyze(live)]
 
@@ -491,7 +522,16 @@ class TestWhereItIsAllowedToTradeAndHowMuchAtOnce:
             record_shadow_trade=lambda **kw: recorded.append(kw) or 1,
         )
         runner.broker = SimpleNamespace(  # type: ignore[assignment]
-            spec=lambda _s: SimpleNamespace(asset_class=SimpleNamespace(value=asset_class))
+            spec=lambda _s: SimpleNamespace(
+                asset_class=SimpleNamespace(value=asset_class),
+                currency_base="XAU",
+                currency_profit="USD",
+            )
+        )
+        runner.clock = SimpleNamespace(now=lambda: live.now)  # type: ignore[assignment]
+        runner._news = _NewsDouble(minutes_to_news=90.0)  # type: ignore[attr-defined]
+        runner.filters = SimpleNamespace(  # type: ignore[assignment]
+            find=lambda _kind: runner._news, filters=(runner._news,)
         )
         return runner, [CandleMomentum().analyze(live)], recorded
 
@@ -550,3 +590,124 @@ class TestWhereItIsAllowedToTradeAndHowMuchAtOnce:
 
         assert settings.analysis.candle_momentum.max_concurrent == 2
         assert settings.analysis.candle_momentum.max_concurrent < 4
+
+
+class TestTheLaneAsksTheCalendarItselfOnThePathItActuallyTakes:
+    """The blackout checks were real, present, tested -- and unreachable.
+
+    WHAT HAPPENED. Section six opened a trade about twenty minutes before a
+    red-folder release, inside a window the account blocks for sixty.
+
+    `_scalp_plan` has two calendar guards. The first refuses when `reason` is a
+    news block; the second refuses when `extra["minutes_to_news"]` is inside
+    the lane's own clearance. Both were covered by tests -- which passed the
+    reason and the minutes IN BY HAND. Nothing tested whether either ever
+    arrives.
+
+    Neither does, on the route this lane actually takes. It is called from
+    `_record_skip`, so it runs on setups the main path refused, and the
+    commonest refusal is NO_SIGNAL from the confluence engine -- which sits
+    BEFORE `self.filters.check`. On that path the news filter has not run, so
+    `reason` cannot be a news block and `extra` carries no `minutes_to_news`.
+    The second guard then read None and skipped itself.
+
+    Two guards, both present, both green, and the lane had no calendar
+    protection at all on its main route to an order.
+    """
+
+    def _runner(self, news):  # type: ignore[no-untyped-def]
+        from types import SimpleNamespace
+
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.types import Tick
+        from runner.service import JarvisRunner
+
+        recorded: list = []
+        runner = object.__new__(JarvisRunner)
+        runner.settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        ctx = context(m1_closes=rising(), last_body=4.0)
+        live = ctx.__class__(
+            symbol=ctx.symbol,
+            now=ctx.now,
+            series=ctx.series,
+            tick=Tick(ctx.symbol, ctx.now, BASE, BASE + 0.2),
+        )
+        runner._cycle_contexts = {"XAUUSD": live}
+        runner.recorder = SimpleNamespace(  # type: ignore[assignment]
+            has_unresolved_shadow_trade=lambda *_: False,
+            open_shadow_count=lambda *_: 0,
+            record_shadow_trade=lambda **kw: recorded.append(kw) or 1,
+        )
+        runner.broker = SimpleNamespace(  # type: ignore[assignment]
+            spec=lambda _s: SimpleNamespace(
+                asset_class=SimpleNamespace(value="metal"),
+                currency_base="XAU",
+                currency_profit="USD",
+            )
+        )
+        runner.clock = SimpleNamespace(now=lambda: live.now)  # type: ignore[assignment]
+        runner.filters = SimpleNamespace(find=lambda _k: news, filters=(news,))  # type: ignore[assignment]
+        return runner, [CandleMomentum().analyze(live)], recorded
+
+    def _observe_on_the_no_signal_path(self, runner, signals):  # type: ignore[no-untyped-def]
+        from risk.reasons import Reason
+
+        # Exactly what `_record_skip` hands it: the confluence engine's own
+        # refusal, and an `extra` with no calendar data in it because the news
+        # filter has not run yet.
+        runner._observe_scalp(1, "XAUUSD", signals, Reason.NO_SIGNAL, {})
+
+    def test_a_blackout_stops_it_even_though_the_reason_says_no_signal(self) -> None:
+        """The live failure. Nothing in the arguments mentions news; the
+        calendar does."""
+        news = _NewsDouble(blocked="high-impact USD event: Non-Farm Payrolls")
+        runner, signals, recorded = self._runner(news)
+
+        self._observe_on_the_no_signal_path(runner, signals)
+
+        assert recorded == [], "traded through a red folder"
+        assert news.asked == ["XAUUSD"], "the calendar was never consulted"
+
+    def test_a_release_inside_the_lanes_own_runway_stops_it_too(self) -> None:
+        """`minutes_to_news` now comes off the verdict instead of out of an
+        `extra` that never contained it."""
+        news = _NewsDouble(minutes_to_news=3.0)
+        runner, signals, recorded = self._runner(news)
+
+        self._observe_on_the_no_signal_path(runner, signals)
+
+        assert recorded == []
+
+    def test_a_genuinely_clear_market_still_trades(self) -> None:
+        """The guard must not become a way of refusing everything."""
+        news = _NewsDouble(minutes_to_news=90.0)
+        runner, signals, recorded = self._runner(news)
+
+        self._observe_on_the_no_signal_path(runner, signals)
+
+        assert len(recorded) == 1
+
+    def test_an_unreadable_calendar_refuses(self) -> None:
+        """The account's standing rule: no data is not permission."""
+
+        class _Broken:
+            name = "news"
+
+            def check(self, ctx):  # type: ignore[no-untyped-def]
+                raise RuntimeError("calendar cache is corrupt")
+
+        runner, signals, recorded = self._runner(_Broken())
+
+        self._observe_on_the_no_signal_path(runner, signals)
+
+        assert recorded == []
+
+    def test_a_missing_news_filter_refuses(self) -> None:
+        """A lane that cannot find the calendar may not assume it is clear."""
+        runner, signals, recorded = self._runner(None)
+
+        self._observe_on_the_no_signal_path(runner, signals)
+
+        assert recorded == []

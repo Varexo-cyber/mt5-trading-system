@@ -4224,6 +4224,55 @@ class JarvisRunner:
             tp=target,
         )
 
+    def _scalp_news_verdict(self, symbol: str) -> str | None:
+        """The calendar's own answer for this symbol, or why it cannot be had.
+
+        Returns None when the lane may trade and a reason string when it may
+        not. Anything unexpected refuses: a lane that cannot reach the calendar
+        is not a lane that may assume the calendar is clear.
+        """
+        try:
+            news = self.filters.find(NewsFilter)
+        except Exception:  # noqa: BLE001 - a missing filter chain is not permission
+            return "the news filter could not be resolved"
+        if news is None:
+            return "no news filter is configured"
+        try:
+            spec = self.broker.spec(symbol)
+            context = self._cycle_contexts.get(symbol)
+            verdict = news.check(
+                FilterContext(
+                    symbol=symbol,
+                    spec=spec,
+                    now=self.clock.now(),
+                    direction=None,
+                    tick=getattr(context, "tick", None),
+                    open_positions=(),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            log.warning(
+                "section six could not read the calendar; refusing",
+                extra={
+                    "event": "scalp_news_unavailable",
+                    "symbol": symbol,
+                    "error": type(exc).__name__,
+                },
+            )
+            return f"the calendar could not be read ({type(exc).__name__})"
+        if not verdict.passed:
+            return verdict.detail or "news blackout"
+        # Clear of the blackout, and still inside the lane's own tighter
+        # runway. `minutes_to_news` comes off the verdict rather than out of
+        # `extra`, which is what was missing.
+        minutes = getattr(verdict, "minutes_to_news", None)
+        if minutes is None:
+            minutes = (verdict.data or {}).get("minutes_to_news")
+        clearance = self.settings.analysis.candle_momentum.news_clearance_minutes
+        if minutes is not None and float(minutes) <= clearance:
+            return f"only {float(minutes):.0f} min to the next blackout"
+        return None
+
     def _scalp_plan(
         self,
         symbol: str,
@@ -4246,6 +4295,27 @@ class JarvisRunner:
         """
         config = self.settings.analysis.candle_momentum
         if not config.enabled or reason in self._NEWS_BLOCKS:
+            return None
+        # ASK THE CALENDAR DIRECTLY. The `reason` check above is real but it
+        # cannot be relied on here, and believing it was is how section six
+        # traded twenty minutes before a red folder.
+        #
+        # This lane is reached from `_record_skip`, so it runs on setups the
+        # main path REFUSED -- and the commonest refusal, NO_SIGNAL, is raised
+        # at the confluence engine, which sits BEFORE `self.filters.check`.
+        # On that path the news filter has not run at all: `reason` cannot be
+        # a news block because nothing has evaluated the news, and
+        # `extra["minutes_to_news"]` is absent, so the clearance check below
+        # was reading None and skipping itself.
+        #
+        # The result was a scalp lane with no calendar protection whatsoever on
+        # its main route to an order, while both checks written to provide it
+        # looked present and passed.
+        #
+        # Refuses on unavailable too, which is the standing rule of this
+        # account: no data is not permission.
+        blocked = self._scalp_news_verdict(symbol)
+        if blocked is not None:
             return None
         # WHERE COMMISSION IS ZERO, AND NOWHERE ELSE.
         #
