@@ -161,6 +161,98 @@ def proposals(
     return orders
 
 
+def sweep(
+    orders: list[BacktestOrder], minute: pd.DataFrame, gates: tuple[float, ...]
+) -> list[tuple]:
+    """The same setups, re-judged at every cost gate, in one pass.
+
+    WHY A SWEEP AND NOT A RUN PER GATE. The expensive half of this script is
+    the detector walking every closed M1 bar; the gate is a filter applied to
+    what comes out of it. A stricter gate is a strict SUBSET of a looser one,
+    so building the setups once with the gate switched off and filtering
+    afterwards gives the same answer as re-running, for one detector pass
+    instead of eight.
+
+    The non-overlap selection IS redone per gate, because it must be: removing
+    setups frees the minutes they occupied, and a later setup that was skipped
+    for overlapping a rejected one is genuinely available at the stricter gate.
+    Filtering the TRADES instead of the ORDERS would answer a different
+    question and would answer it optimistically.
+
+    WHAT THE CURVE IS FOR. The first run of this script returned -0.304R a
+    trade over 1,681 trades, and the decomposition said the entry itself is
+    worth about +0.03R on gold while the round trip costs 0.235R. Cost and
+    gate are the same number seen from two sides -- target is 1.4 spans and
+    stop is 1.0 span, so one spread is 1.4/gate of R -- and the only question
+    left is whether any gate exists where what survives still has an edge.
+    """
+    backtester = PessimisticBacktester()
+    rows: list[tuple] = []
+    for gate in gates:
+        kept = [
+            order
+            for order in orders
+            if order.spread > 0 and abs(order.take_profit - order.entry) / order.spread >= gate
+        ]
+        if not kept:
+            rows.append((gate, 0, 0, 0.0, 0.0, 0.0))
+            continue
+        result = backtester.run_non_overlapping(minute, kept)
+        if not result.sample_size:
+            rows.append((gate, len(kept), 0, 0.0, 0.0, 0.0))
+            continue
+        rows.append(
+            (
+                gate,
+                len(kept),
+                result.sample_size,
+                result.win_rate,
+                result.expectancy_r,
+                result.total_r,
+            )
+        )
+    return rows
+
+
+def render_sweep(rows: list[tuple], window: str) -> str:
+    lines = [
+        "",
+        "=" * 78,
+        f"  IS THERE A GATE WHERE THIS PAYS?  {window}",
+        "=" * 78,
+        "",
+        "  `minimum_target_spreads` raised step by step, everything else at live",
+        "  settings. The cost column is not a separate measurement -- it IS the",
+        "  gate: target is 1.4 spans and stop 1.0, so one spread is 1.4/gate of R.",
+        "",
+        f"  {'gate':>6}{'cost of R':>12}{'setups':>9}{'trades':>9}{'win':>7}"
+        f"{'per trade':>12}{'total':>10}",
+        "  " + "-" * 66,
+    ]
+    for gate, setups, trades, win, per, total in rows:
+        cost = f"{1.4 / gate:.1%}" if gate > 0 else "-"
+        if not trades:
+            lines.append(f"  {gate:>6.0f}{cost:>12}{setups:>9}{0:>9}{'-':>7}{'-':>12}{'-':>10}")
+            continue
+        lines.append(
+            f"  {gate:>6.0f}{cost:>12}{setups:>9}{trades:>9}{win:>6.0%}"
+            f"{per:>+11.3f}R{total:>+9.1f}R"
+        )
+    lines.append("")
+    best = [row for row in rows if row[2] and row[4] > 0]
+    if best:
+        gate, _, trades, _, per, _ = max(best, key=lambda row: row[4])
+        lines.append(f"  Positive at gate {gate:.0f}: {per:+.3f}R over {trades} trades. That is")
+        lines.append(f"  `minimum_target_spreads: {gate:.1f}` and `own_lane_enabled: true` again.")
+        lines.append("  Read the trade count first: a gate leaving twenty trades a month has")
+        lines.append("  measured almost nothing, whatever sign it carries.")
+    else:
+        lines.append("  No gate turns it positive. Cost is not the part that can be fixed --")
+        lines.append("  an entry worth hundredths of R cannot carry a scalp's round trip.")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render(rows: list[tuple], window: str) -> str:  # type: ignore[no-untyped-def]
     lines = [
         "",
@@ -203,9 +295,43 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="decide every Nth M1 bar. Raise it to trade accuracy for speed",
     )
+    parser.add_argument(
+        "--sweep",
+        action="store_true",
+        help=(
+            "also raise `minimum_target_spreads` step by step and report what "
+            "survives at each. This is the run that says whether the lane can "
+            "be switched back on."
+        ),
+    )
+    parser.add_argument(
+        "--gates",
+        nargs="*",
+        type=float,
+        default=[5, 7, 10, 14, 20, 28, 40, 56],
+        help="the gates --sweep walks. Doubling roughly halves the cost each step.",
+    )
     args = parser.parse_args(argv)
 
     settings = load_settings(DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml")
+    if args.sweep:
+        # THE GATE IS SWITCHED OFF FOR THE PASS, NOT LOWERED.
+        #
+        # The sweep needs the full superset of setups so every gate above can
+        # be taken as a subset of it. Leaving the live gate in place would cap
+        # the sweep at 7.0 and quietly report the same row eight times, which
+        # looks exactly like a flat curve.
+        settings = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={
+                        "candle_momentum": settings.analysis.candle_momentum.model_copy(
+                            update={"minimum_target_spreads": 0.0}
+                        )
+                    }
+                )
+            }
+        )
     end = datetime.now(UTC)
     start = end - timedelta(days=args.days)
     backtester = PessimisticBacktester()
@@ -217,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     rows: list[tuple] = []
     pooled: list[float] = []
+    swept: list[tuple] = []
     try:
         connector.connect()
         for symbol in args.symbols:
@@ -241,6 +368,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"    {len(orders)} setups")
             if not orders:
+                continue
+            if args.sweep:
+                swept.append((symbol, orders, frames[Timeframe.M1]))
                 continue
             result = backtester.run_non_overlapping(frames[Timeframe.M1], orders)
             if not result.sample_size:
@@ -269,6 +399,28 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         with contextlib.suppress(Exception):
             connector.shutdown()
+
+    if args.sweep:
+        # POOLED ACROSS MARKETS, because the question is about the RULE and a
+        # per-market table at eight gates is sixty-four rows nobody reads. The
+        # per-market split is what a plain run already gives.
+        gates = tuple(sorted(float(gate) for gate in args.gates if gate > 0))
+        totals: list[tuple] = []
+        for gate in gates:
+            setups = trades = 0
+            weighted = total = 0.0
+            wins = 0.0
+            for _symbol, orders, minute in swept:
+                row = sweep(orders, minute, (gate,))[0]
+                setups += row[1]
+                trades += row[2]
+                wins += row[3] * row[2]
+                weighted += row[4] * row[2]
+                total += row[5]
+            per = weighted / trades if trades else 0.0
+            totals.append((gate, setups, trades, wins / trades if trades else 0.0, per, total))
+        print(render_sweep(totals, f"{args.days:.0f} days"))
+        return 0
 
     print(render(rows, f"{args.days:.0f} days"))
     if pooled:

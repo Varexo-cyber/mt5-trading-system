@@ -66,11 +66,28 @@ def runner(**overrides):  # type: ignore[no-untyped-def]
     )
     # The shipped overlay loads in backtest; the lane refuses outright unless
     # the mode is live, which is itself one of the guards under test.
+    #
+    # `own_lane_enabled` is forced on for the same reason, and the reason is
+    # worth writing down because these tests all went red the day the account
+    # switched the lane off: whether THIS account currently runs section six is
+    # a business decision that changes with the evidence, and it changed once
+    # `section6.cmd` measured -0.304R a trade over 1,681 trades. Whether the
+    # lane WORKS is a property of the code. A fixture reading the live overlay
+    # confuses the two, and the direction it confuses them in is the dangerous
+    # one: the mechanics stop being covered at the exact moment nobody is
+    # watching them, and the switch turns back on against untested code.
     settings = settings.model_copy(
         update={
             "system": settings.system.model_copy(
                 update={"mode": overrides.get("mode", TradingMode.MICRO_LIVE)}
-            )
+            ),
+            "analysis": settings.analysis.model_copy(
+                update={
+                    "candle_momentum": settings.analysis.candle_momentum.model_copy(
+                        update={"own_lane_enabled": True}
+                    )
+                }
+            ),
         }
     )
     service = object.__new__(JarvisRunner)
@@ -163,13 +180,12 @@ class TestItOpensATrade:
     def test_a_lot_ceiling_still_trims_when_one_is_set(self) -> None:
         """`fixed_lots` survives as a ceiling for anyone who wants one. It
         trims and can never round up."""
-        from config.loader import DEFAULT_CONFIG_PATH, load_settings
-
         service = runner()
-        base = load_settings(
-            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
-        )
-        capped = base.analysis.candle_momentum.model_copy(update={"fixed_lots": 0.02})
+        # Off the fixture's module, not the overlay's: the fixture is what
+        # decides the lane is switched on for these tests, and reaching past it
+        # to the shipped config puts the account's own on/off decision back
+        # into a test of the ceiling arithmetic.
+        capped = service.settings.analysis.candle_momentum.model_copy(update={"fixed_lots": 0.02})
         analysis = service.settings.analysis.model_copy(update={"candle_momentum": capped})
         service.settings = service.settings.model_copy(update={"analysis": analysis})
         run(service)
