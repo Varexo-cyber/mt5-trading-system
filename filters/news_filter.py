@@ -69,7 +69,12 @@ class NewsFilter(Filter):
     # -- entry gate --------------------------------------------------------
 
     def check(self, ctx: FilterContext) -> FilterVerdict:
-        currencies = symbol_currencies(ctx.spec.currency_base, ctx.spec.currency_profit)
+        currencies = symbol_currencies(
+            ctx.spec.currency_base,
+            ctx.spec.currency_profit,
+            # An index has no dollar leg and trades US data anyway.
+            getattr(getattr(ctx.spec, "asset_class", None), "value", None),
+        )
 
         try:
             blackouts = self._blackouts(currencies)
@@ -130,7 +135,13 @@ class NewsFilter(Filter):
 
     # -- open positions ----------------------------------------------------
 
-    def position_action(self, position: Position, currency_base: str, currency_profit: str) -> str:
+    def position_action(
+        self,
+        position: Position,
+        currency_base: str,
+        currency_profit: str,
+        asset_class: str | None = None,
+    ) -> str:
         """What to do with an open position as news approaches.
 
         Returns one of `none`, `break_even`, `close` — the configured action if
@@ -139,7 +150,11 @@ class NewsFilter(Filter):
         reason to de-risk what is already open, not to leave it exposed.
         """
         now = self.clock.now()
-        currencies = symbol_currencies(currency_base, currency_profit)
+        # The asset class travels here too. An open DAX position through an
+        # FOMC print is exactly the spread spike this rule exists to move a
+        # stop out of the way of, and until now the calendar was asked about
+        # euros only.
+        currencies = symbol_currencies(currency_base, currency_profit, asset_class)
 
         try:
             blackouts = self._blackouts(currencies)
@@ -186,9 +201,11 @@ class NewsFilter(Filter):
         future = [b for b in blackouts if b.start > now]
         return min(future, key=lambda b: b.start) if future else None
 
-    def blackouts_for(self, currency_base: str, currency_profit: str) -> list[Blackout]:
+    def blackouts_for(
+        self, currency_base: str, currency_profit: str, asset_class: str | None = None
+    ) -> list[Blackout]:
         """Every window that applies to an instrument. Used by the verifier."""
-        return self._blackouts(symbol_currencies(currency_base, currency_profit))
+        return self._blackouts(symbol_currencies(currency_base, currency_profit, asset_class))
 
     # -- internals ---------------------------------------------------------
 

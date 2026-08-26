@@ -96,7 +96,16 @@ class EconomicEvent:
 _DOLLAR_DENOMINATED_BASES = frozenset({"XAU", "XAG", "XPT", "XPD", "BTC", "ETH", "LTC", "XRP"})
 
 
-def symbol_currencies(currency_base: str, currency_profit: str) -> frozenset[str]:
+#: Instrument families a US release moves regardless of what they are quoted
+#: in. Equity indices are the case: the DAX carries no dollar leg anywhere in
+#: its symbol, and FOMC, payrolls and CPI move it about as hard as they move
+#: the S&P. Nothing in the pair says so, so nothing asked the calendar.
+_US_DRIVEN_ASSET_CLASSES = frozenset({"index"})
+
+
+def symbol_currencies(
+    currency_base: str, currency_profit: str, asset_class: str | None = None
+) -> frozenset[str]:
     """Currencies whose news moves this instrument.
 
     THE ONE THAT MOVES GOLD IS NOT IN THE PAIR. This used to return exactly the
@@ -118,10 +127,27 @@ def symbol_currencies(currency_base: str, currency_profit: str) -> frozenset[str
     The base itself stays in the set. It still never matches, and removing it
     would be deciding which side of a pair counts on a day when a calendar
     finally does publish something for it.
+
+    THE SAME HOLE, ONE FAMILY OVER. The fix above is keyed on the BASE, so it
+    catches metals and crypto and misses equity indices entirely. GER40 is
+    quoted in euros and has no dollar leg at all, and an FOMC decision or a
+    payrolls print moves it about as hard as it moves the S&P — every index in
+    the catalogue trades US risk sentiment whatever its home exchange.
+
+    That mattered little while indices sat at the back of the scan rotation.
+    Section six now has `index` in its every-cycle lane, so GER40, UK100, FRA40
+    and JP225 are live candidates on the minute a US release lands, and the
+    calendar would have said nothing.
+
+    `asset_class` is optional and defaults to the old behaviour, so a caller
+    that has not got a spec to hand is unchanged rather than silently
+    loosened.
     """
     base, quote = currency_base.upper(), currency_profit.upper()
     currencies = {base, quote}
     if base in _DOLLAR_DENOMINATED_BASES:
+        currencies.add("USD")
+    if asset_class and asset_class.lower() in _US_DRIVEN_ASSET_CLASSES:
         currencies.add("USD")
     return frozenset(currencies)
 

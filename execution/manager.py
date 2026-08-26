@@ -2521,6 +2521,7 @@ class PositionManager:
             position,
             spec.currency_base,
             spec.currency_profit,
+            getattr(getattr(spec, "asset_class", None), "value", None),
         )
         if action == "none":
             return events
