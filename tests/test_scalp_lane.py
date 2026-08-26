@@ -851,3 +851,50 @@ class TestALaneIsNotIdentifiedByAFieldTheBrokerOwns:
 
         service.journal = SimpleNamespace(trade_opened_by_section_six=lambda _t: True)
         assert service._is_scalp(position) is True
+
+
+class TestTheHealthExitReachesAScalpTooWhenItGoesWrong:
+    """The owner asked for this by name: "zorg dat wanneer het fout gaat de
+    health exit goed ingrijpt."
+
+    It already does, and the two properties that make it true are both
+    orderings inside `_manage_one` that nothing states out loud -- so they are
+    one refactor away from silently reversing, and the failure would be
+    invisible: a scalp would simply be held to its stop while the system could
+    already see the structure had broken.
+    """
+
+    def test_health_is_asked_before_the_scalp_rules_take_over(self) -> None:
+        """`_scalp_verdict` returns early for every scalp it is asked about, so
+        anything placed after it never runs on a section six position at all.
+        The health read has to come first or it does not exist for this lane.
+        """
+        import inspect
+
+        from execution.manager import PositionManager
+
+        source = inspect.getsource(PositionManager._manage_one)
+        assert source.index("_act_on_health") < source.index("_scalp_verdict")
+
+    def test_health_is_not_held_back_by_the_settle_window(self) -> None:
+        """`min_discretionary_exit_minutes` gates the two rules that need a
+        peak to exist -- the stall and the give-back -- because both are
+        arithmetic on a number a fresh trade has not got yet.
+
+        It must NOT gate the health read. A structure break is a discrete
+        event, as real in minute four as in hour four, and a scalp is over
+        inside that window. Gating it would mean holding a position the system
+        can see is broken for the entire life of the trade.
+        """
+        import inspect
+
+        from execution.manager import PositionManager
+
+        source = inspect.getsource(PositionManager._manage_one)
+        settled = source.index("settled = ")
+        health = source.index("_act_on_health")
+        # The gate is applied by `if settled else None` on the two rules that
+        # need it. The health call sits after them and carries no such clause.
+        health_line = source[health : source.index("\n", health)]
+        assert settled < health
+        assert "settled" not in health_line
