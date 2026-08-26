@@ -242,6 +242,84 @@ def render(title: str, evidence: list[ModuleEvidence], note: str) -> str:
     return "\n".join(lines)
 
 
+#: Where the round trip stops being affordable. The gate that admits these
+#: trades live is `max_spread_share_of_stop`, which ships at 0.15 and 0.20 --
+#: a spread allowed to be a fifth of the stop is a fifth of R paid before the
+#: market does anything. The measured gap to break even on this account is
+#: 0.094R per trade, which is SMALLER than that, so the cost is not a rounding
+#: error on the finding: it may be most of it.
+#:
+#: Edges chosen around the shipped gate so the table brackets it rather than
+#: agreeing with it.
+_COST_BANDS = ((0.0, 0.03), (0.03, 0.06), (0.06, 0.10), (0.10, 0.15), (0.15, 1.00))
+
+
+def render_cost_bands(orders: list[BacktestOrder], frames, backtester) -> str:  # type: ignore[no-untyped-def]
+    """What every trade returned, bucketed by what its round trip cost.
+
+    THE QUESTION NO TABLE HERE ASKED. Every detector loses between 0.063R and
+    0.312R a trade, and the spread on the stop widths this account trades is
+    itself worth around a tenth of R. If the cheap end of this table is
+    positive and the expensive end is not, then the detectors are not the
+    thing that needs replacing -- the gate that lets an expensive trade
+    through is, and that is one number in the overlay rather than a rewrite.
+
+    If instead every band loses, the cost is not the story and the selection
+    really is worthless. Either answer is worth more than another opinion.
+    """
+    priced = [order for order in orders if order.spread > 0]
+    skipped = len(orders) - len(priced)
+    rows = []
+    for low, high in _COST_BANDS:
+        band = [
+            order
+            for order in priced
+            if low <= order.spread / max(1e-12, abs(order.entry - order.stop_loss)) < high
+        ]
+        if not band:
+            continue
+        by_symbol: dict[str, list[BacktestOrder]] = defaultdict(list)
+        for order in band:
+            by_symbol[order.symbol].append(order)
+        trades = total = wins = 0.0, 0.0, 0.0
+        trades, total, wins = 0, 0.0, 0
+        for symbol, group in by_symbol.items():
+            frame = frames.get(symbol)
+            if frame is None:
+                continue
+            result = backtester.run_non_overlapping(frame, group)
+            trades += result.sample_size
+            total += result.total_r
+            wins += round(result.win_rate * result.sample_size)
+        if trades:
+            rows.append((low, high, trades, wins / trades, total / trades, total))
+
+    lines = [
+        "",
+        "=" * 78,
+        "  WHAT THE ROUND TRIP COSTS, AND WHETHER IT IS THE WHOLE STORY",
+        "=" * 78,
+        "",
+        "  Every trade, bucketed by the spread as a share of its own stop. The live",
+        "  gate `max_spread_share_of_stop` ships at 0.15-0.20, so the bottom band is",
+        "  what the account is allowed to take today.",
+        "",
+        f"  {'spread / stop':<18}{'trades':>8}{'win':>7}{'per trade':>12}{'total':>11}",
+        "  " + "-" * 56,
+    ]
+    for low, high, trades, win, per, total in rows:
+        label = f"{low:.0%} - {high:.0%}" if high < 1 else f"over {low:.0%}"
+        lines.append(f"  {label:<18}{trades:>8}{win:>7.0%}{per:>+11.3f}R{total:>+10.2f}R")
+    if not rows:
+        lines.append("  (no proposal carried a recorded spread)")
+    if skipped:
+        lines.append("")
+        lines.append(f"  {skipped} proposals carried no recorded spread and are left out rather")
+        lines.append("  than counted as free.")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def by_module_symbol(orders: list[BacktestOrder]) -> dict[str, list[BacktestOrder]]:
     """Every order the detectors proposed, grouped by symbol.
 
@@ -409,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
                     "it. Splitting five ways divides the sample five ways.",
                 )
             )
+
+    print(render_cost_bands(everything, execution_frames, backtester))
 
     if args.exits:
         # THE QUESTION THE TABLES ABOVE RAISE AND CANNOT SETTLE.
