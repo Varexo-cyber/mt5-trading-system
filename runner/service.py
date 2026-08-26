@@ -595,6 +595,7 @@ class JarvisRunner:
         # Python session is global and not thread-safe. This timestamp lets the
         # scan yield to the one-second protection layer between broker reads.
         self._last_guard_pulse = time.monotonic()
+        self._inside_scalp_lane = False
         # Recomputed every cycle; STEADY until the first one runs.
         self.posture: PostureAssessment = assess(consecutive_losses=0, equity=1.0, equity_peak=1.0)
         self.external_inbox = ExternalSignalInbox(root / self.settings.external_signals.inbox_path)
@@ -4009,7 +4010,25 @@ class JarvisRunner:
         # same decision twice, once against the shadow resolver and once
         # against the account -- and the two would disagree the moment a fill
         # differed from the plan.
-        if signals and self._scalp_lane_took_it(cycle_id, symbol, signals, reason, extra):
+        # RE-ENTRANCY GUARD. `_run_scalp_lane` records its own refusals through
+        # this very function -- an undersized lot, a failed margin check, a full
+        # risk book -- so without this the sequence is:
+        #
+        #     _record_skip -> _scalp_lane_took_it -> _run_scalp_lane
+        #                  -> _record_skip -> ...
+        #
+        # until RecursionError, which then recurses again inside the logging
+        # formatter trying to render the traceback.
+        #
+        # The loop was always there and was almost never reachable, because the
+        # lane sent a FIXED 0.01 lot and those refusal paths practically never
+        # fired. Risk-sizing it at 3% made them ordinary, and the latent bug
+        # became a live one within an hour.
+        if (
+            signals
+            and not self._inside_scalp_lane
+            and self._scalp_lane_took_it(cycle_id, symbol, signals, reason, extra)
+        ):
             self.scan_activity.record_deep_decision(
                 symbol,
                 "SCALP_OPENED",
@@ -4178,6 +4197,13 @@ class JarvisRunner:
     #: Skip reasons that mean the market is not in a state any paper section
     #: should be pretending to trade. Recording an observation here would
     #: measure a strategy nobody would ever run.
+    #: True while `_run_scalp_lane` is on the stack. That function records its
+    #: own refusals through `_record_skip`, which is also what invites the lane
+    #: in -- so without this the two call each other until the interpreter runs
+    #: out of stack. Class-level so a runner built with `object.__new__`, as
+    #: every test fixture here does, is safe before `__init__` ever runs.
+    _inside_scalp_lane = False
+
     _NEWS_BLOCKS = frozenset(
         {
             Reason.NEWS_BLACKOUT,
@@ -4457,6 +4483,9 @@ class JarvisRunner:
         every single time, and catching only the failures already imagined is
         how the next unimagined one gets through.
         """
+        if self._inside_scalp_lane:
+            return False
+        self._inside_scalp_lane = True
         try:
             return self._run_scalp_lane(cycle_id, symbol, signals, reason, extra)
         except Exception:
@@ -4465,6 +4494,8 @@ class JarvisRunner:
                 extra={"event": "scalp_lane_failed", "symbol": symbol},
             )
             return False
+        finally:
+            self._inside_scalp_lane = False
 
     def _run_scalp_lane(
         self,

@@ -347,7 +347,13 @@ class PositionSizer:
         if capped:
             detail += f" — capped at the broker's {spec.volume_max:g} lot maximum"
 
-        log.info(
+        # DEBUG, NOT INFO. This fires on every successful sizing, and the
+        # scanner sizes hundreds of candidates a cycle across 824 symbols --
+        # so at INFO it is thousands of identical lines an hour, and the one
+        # line that matters is invisible between them. The journal already
+        # holds the durable record through `record_sizing`; this is telemetry,
+        # and telemetry that drowns the log is worse than none.
+        log.debug(
             "position sized",
             extra={
                 "event": "sizing",
