@@ -374,7 +374,16 @@ class TestItIsLiveAndBraked:
         )
         module = settings.analysis.candle_momentum
 
-        assert module.own_lane_enabled
+        # NOT asserted: that the lane is switched ON. It was, and this line
+        # used to check it, and that made a business decision into a test.
+        # `section6.cmd` measured the lane for the first time on 26 August --
+        # 1,681 trades, -0.304R each -- and it was switched off the same hour;
+        # this assertion went red for a change that was exactly right. Whether
+        # the account runs section six follows the evidence and will move
+        # again. What may NEVER move is the line below it: the module must
+        # stay out of `live_enabled_modules` so it cannot both vote in section
+        # one and open its own trade on the same reading. That is the
+        # invariant, and it holds whether the lane is on or off.
         # Risk-sized like every other route to an order. A fixed lot is a
         # quantity, not a risk: 0.01 of gold behind a 3.41 dollar stop is
         # EUR 2.91, and 0.01 of an index is something else entirely. The lot

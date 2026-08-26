@@ -568,7 +568,54 @@ analysis:
     # nieuwsblokkade, de kill switch, de kapitaalvloer, de margecheck en zijn
     # eigen noodstop komen allemaal uit de bestaande machinerie. Een tweede
     # kopie daarvan zou ooit afwijken van de eerste.
-    own_lane_enabled: true
+    #
+    # ---------------------------------------------------------------------
+    # WEER UIT, 26 augustus, omdat `section6.cmd` eindelijk gedraaid heeft en
+    # de uitkomst niet voor tweeërlei uitleg vatbaar is. 30 dagen, elke
+    # gesloten M1-kaars, vier markten:
+    #
+    #     symbool   setups  trades  win   per trade   gem win   gem verlies
+    #     XAUUSD       796     595   43%     -0,203R    +1,19R      -1,25R
+    #     XAUEUR       792     593   43%     -0,233R    +1,16R      -1,27R
+    #     US30         480     393   38%     -0,539R    +0,98R      -1,46R
+    #     GER40        119     100   37%     -0,407R    +1,10R      -1,10R
+    #
+    #     samen: 1.681 trades, -0,304R per trade, -511,73R
+    #
+    # 1.681 trades met een spreiding van ongeveer 1,2R geeft een standaardfout
+    # van 0,029R. -0,304 / 0,029 = t van ruim -10. Dit is geen ruis en geen
+    # ongelukkige maand.
+    #
+    # EN NU HET INTERESSANTE, want dit is GEEN "de module ziet niets". Reken
+    # de instap zonder kosten door op het geplande 1,4 : 1,0:
+    #
+    #     goud   0,43 x 1,40 - 0,57 x 1,00 = +0,032R   <- ECHT positief
+    #     US30   0,38 x 1,40 - 0,62 x 1,00 = -0,088R
+    #     GER40  0,37 x 1,40 - 0,63 x 1,00 = -0,112R
+    #
+    # Op goud raadt hij dus BETER dan de payoff nodig heeft -- 43% tegen de
+    # 41,7% die 1,4 : 1,0 vraagt, en ver boven de 33% die een muntje haalt.
+    # De lezer werkt. Hij is alleen +0,032R groot.
+    #
+    # En de kosten zijn 0,235R. Dat staat niet in een schatting maar in de
+    # tabel hierboven: het plan was +1,40R / -1,00R en wat eruit kwam is
+    # +1,19R / -1,25R. Precies één ronde spread aan beide kanten.
+    #
+    #     +0,032R aan instap  -  0,235R aan kosten  =  -0,203R   <- de tabel
+    #
+    # DAAROM IS ER GEEN KNOP. De kosten zijn 1,4 / target_in_spreads van je R,
+    # dus om ze onder de 0,032R te krijgen moet `minimum_target_spreads` van
+    # 7 naar ongeveer 44. Bij die poort vuurt er vrijwel niets meer, en wat er
+    # dan nog overblijft is geen scalp. `section6.cmd --sweep` rekent die hele
+    # curve in één run uit, zodat dit een meting blijft en geen mening.
+    #
+    # WAT DIT NIET IS: het weggooien van de module. `candle_momentum` telt
+    # gewoon mee in de confluence-stemming zoals altijd. Wat uit gaat is de
+    # EIGEN BAAN eromheen -- de route die zonder stemming een order stuurt.
+    #
+    # AANZETTEN IS ÉÉN REGEL: hieronder weer `true`. Doen zodra `--sweep` een
+    # poort aanwijst waar de verwachting boven nul uitkomt.
+    own_lane_enabled: false
     # RISICO-GESIZED IN PLAATS VAN VAST, 26 augustus, op verzoek van de
     # eigenaar en omdat het argument voor de vaste lot verlopen was.
     #

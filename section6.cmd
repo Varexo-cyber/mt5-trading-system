@@ -23,9 +23,20 @@ echo  real to improve.
 echo.
 echo  No orders. No Claude API. Nothing written anywhere.
 echo.
+echo  MEASURED 26 AUGUST: 1,681 trades over 30 days, -0.304R each, -511.73R.
+echo  The lane is switched OFF. The entry is not the problem - on gold it
+echo  reads the minute correctly, 43%% against the 41.7%% that a 1.4:1 payoff
+echo  needs. It is worth +0.03R. The round trip costs 0.235R.
+echo.
+echo  section6.cmd --sweep              IS there a gate where this pays?
 echo  section6.cmd --days 60            longer history
 echo  section6.cmd --symbols XAUUSD     one market
 echo  section6.cmd --stride 2           faster, coarser
+echo.
+echo  --sweep is the run that decides whether the lane comes back on. It
+echo  raises minimum_target_spreads step by step and reports what survives at
+echo  each. Cost is 1.4/gate of R, so the gate and the cost are one number
+echo  seen from two sides.
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (
