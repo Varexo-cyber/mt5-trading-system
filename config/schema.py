@@ -1821,17 +1821,32 @@ class CandleMomentumConfig(Base):
     #: are account-wide and a second copy of any of them would eventually
     #: disagree with the first.
     own_lane_enabled: bool = False
-    #: Lots per scalp, fixed rather than risk-sized.
+    #: What one scalp may risk, as a percentage of equity. Zero falls back to
+    #: `risk.risk_per_trade_pct`.
     #:
-    #: On gold at 0.01 lot a dollar of movement is about EUR 0.86, and the stop
-    #: is 0.4 of an M1 candle -- so a losing scalp costs well under a euro on
-    #: this account. Risk-sizing it to 5% would put EUR 9 behind a stop measured
-    #: in seconds, which is not what anyone asked for.
+    #: WHY THIS EXISTS. The lane used to send a FIXED 0.01 lots on every
+    #: instrument, and a fixed lot means a different risk on every instrument:
+    #: 0.01 of gold behind a 3.41 dollar stop is EUR 2.91, and 0.01 of an index
+    #: behind its own stop is something else entirely. Sizing by risk is what a
+    #: position sizer is for, and the lane was the only route to an order that
+    #: did not use it.
     #:
-    #: Never larger than what the ordinary sizer would allow: the fixed lot is
-    #: a ceiling, not an override, so a symbol whose stop is too wide for the
-    #: account is still refused rather than forced through.
-    fixed_lots: float = Field(default=0.01, gt=0.0, le=1.0)
+    #: The original reason for the fixed lot was recorded here and has since
+    #: expired: "risk-sizing it to 5% would put EUR 9 behind a stop measured in
+    #: seconds". The stop was 0.4 of an M1 candle when that was written. It is
+    #: 1.0 now -- about 3.41 dollars on gold, roughly eight spreads -- so the
+    #: stop is no longer measured in seconds.
+    #:
+    #: 3.0 rather than the account's 5.0, because this lane is still the only
+    #: live thing on the account with no measured record at all.
+    risk_pct: float = Field(default=3.0, ge=0.0, le=20.0)
+    #: A hard ceiling in lots regardless of what the risk model sized, or 0.0
+    #: for no ceiling.
+    #:
+    #: It is a ceiling and never an override: a symbol whose stop is too wide
+    #: for the account is still refused rather than forced through, and this
+    #: cannot round a position UP to reach it.
+    fixed_lots: float = Field(default=0.0, ge=0.0, le=1.0)
 
     #: Minutes after which a scalp takes whatever profit it has.
     #:

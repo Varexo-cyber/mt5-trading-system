@@ -135,13 +135,43 @@ class TestItOpensATrade:
         assert run(service) is True
         assert len(service.sent) == 1
 
-    def test_it_is_sized_at_the_fixed_lot(self) -> None:
-        """Not risk-sized. At 5% of a EUR 176 account a scalp would carry EUR 9
-        behind a stop measured in seconds, which is not what was asked for."""
+    def test_it_is_risk_sized_and_not_a_fixed_lot(self) -> None:
+        """A fixed lot is a quantity, not a risk.
+
+        This asserted 0.01 lots on every instrument, which means a different
+        risk on every instrument -- 0.01 of gold behind a 3.41 dollar stop is
+        EUR 2.91, and 0.01 of an index behind its own stop is something else.
+        Sizing by risk is what a position sizer is for, and this lane was the
+        only route to an order that did not use it.
+
+        The reason recorded here for the fixed lot had expired: "at 5% a scalp
+        would carry EUR 9 behind a stop measured in seconds". The stop was 0.4
+        of an M1 candle when that was written and is 1.0 now.
+        """
         service = runner()
         run(service)
 
-        assert service.sent[0].volume == 0.01
+        volume = service.sent[0].volume
+        assert volume > 0.01, "still pinned to the old fixed lot"
+        # And bounded: `risk_pct` is 3.0, so this is not the 5% the rest of the
+        # account takes, on the only live thing with no measured record.
+        assert service.settings.analysis.candle_momentum.risk_pct == 3.0
+
+    def test_a_lot_ceiling_still_trims_when_one_is_set(self) -> None:
+        """`fixed_lots` survives as a ceiling for anyone who wants one. It
+        trims and can never round up."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        service = runner()
+        base = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        capped = base.analysis.candle_momentum.model_copy(update={"fixed_lots": 0.02})
+        analysis = service.settings.analysis.model_copy(update={"candle_momentum": capped})
+        service.settings = service.settings.model_copy(update={"analysis": analysis})
+        run(service)
+
+        assert service.sent[0].volume == 0.02
 
     def test_it_carries_the_stop_and_target_from_the_candle(self) -> None:
         service = runner()
