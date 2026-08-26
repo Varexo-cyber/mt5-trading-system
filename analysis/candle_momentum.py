@@ -50,6 +50,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from config.schema import CandleMomentumConfig
@@ -106,22 +107,77 @@ def read_candle(frame: pd.DataFrame, lookback: int) -> CandleRead | None:
     )
 
 
-def slope_direction(closes: pd.Series, bars: int) -> int:
-    """Which way a timeframe is pointing, as a sign and nothing more.
+def slope_direction(frame: pd.DataFrame, bars: int, minimum_range: float = 0.0) -> int:
+    """Which way a timeframe is pointing — or 0 when it is not pointing.
 
-    Deliberately crude. This is not a trend module — it is the question "does
-    the slower chart contradict the candle", and a contradiction is a sign
-    disagreement. Anything finer would be a second trend reader competing with
-    the ones that already exist.
+    THIS IS WHERE SECTION SIX TOOK THE WRONG SIDE. The first version read two
+    closes and nothing else:
+
+        change = closes.iloc[-1] / closes.iloc[-(bars + 1)] - 1.0
+        return 1 if change > 0 else -1 if change < 0 else 0
+
+    Two faults, and together they are the whole "it goes long where it should
+    have gone short" complaint.
+
+    NO MINIMUM. A change of one hundred-thousandth of a percent returned +1,
+    carrying exactly the same authority as a real trend. On a market going
+    nowhere that sign is a coin flip, so M5 and M15 "agreeing" with the candle
+    is a one-in-four COINCIDENCE rather than evidence -- and what follows is a
+    lone M1 candle traded with no context behind it at all. This module's whole
+    thesis is "everything above it is already pointing that way". On a flat
+    chart that thesis was being satisfied by noise.
+
+    TWO POINTS. Whichever bar happens to sit at `-(bars + 1)` decides the
+    answer by itself, so one spike in that reference bar inverts the read of
+    the entire window. With `bias_bars` at 4, a quarter of the evidence rested
+    on a single close.
+
+    So: a least-squares fit across every bar in the window, which no single bar
+    can flip, and a floor measured in that timeframe's OWN average bar range. A
+    move smaller than one bar's normal travel is not a direction, it is the
+    market standing still, and the honest answer there is 0 -- which reads as a
+    disagreement upstream and refuses the trade.
+
+    Still deliberately not a trend module. It answers "is the slower chart
+    actually going somewhere, and is it the same way", and nothing else.
     """
-    if len(closes) < bars + 1:
+    if len(frame) < bars + 1:
         return 0
-    start = float(closes.iloc[-(bars + 1)])
-    end = float(closes.iloc[-1])
-    if start <= 0 or not math.isfinite(end):
+    window = frame.iloc[-(bars + 1) :]
+    closes = window["close"].astype(float).to_numpy()
+    if not np.isfinite(closes).all():
         return 0
-    change = end / start - 1.0
-    return 1 if change > 0 else -1 if change < 0 else 0
+
+    # Degree-1 polyfit returns (slope, intercept). The slope is price per bar,
+    # so times the span is the move the fit describes across the whole window.
+    x = np.arange(len(closes), dtype=float)
+    slope = float(np.polyfit(x, closes, 1)[0])
+    if not math.isfinite(slope):
+        return 0
+    travel = slope * (len(closes) - 1)
+
+    # A DEAD-FLAT SERIES IS NOT A DIRECTION, and least squares does not say so
+    # by itself: on twenty identical closes `polyfit` returns a slope of about
+    # 1e-15 rather than exactly zero, and `travel > 0` then reports a confident
+    # +1. That is this function's original defect reappearing in the repair --
+    # a meaningless move carrying a full sign. Scaled to the price level, so it
+    # means the same thing on gold at 4,000 and on EURUSD at 1.08.
+    if abs(travel) <= abs(float(closes[-1])) * 1e-12:
+        return 0
+
+    if minimum_range > 0.0:
+        # The instrument's own yardstick rather than a pip count: "meaningful"
+        # is a different number on gold and on EURUSD, and a fixed threshold
+        # would silently switch this off on one of them.
+        highs = window["high"].astype(float).to_numpy()
+        lows = window["low"].astype(float).to_numpy()
+        average_range = float(np.mean(highs - lows))
+        if not math.isfinite(average_range) or average_range <= 0:
+            return 0
+        if abs(travel) < minimum_range * average_range:
+            return 0
+
+    return 1 if travel > 0 else -1 if travel < 0 else 0
 
 
 class CandleMomentum:
@@ -131,6 +187,31 @@ class CandleMomentum:
 
     def __init__(self, config: CandleMomentumConfig | None = None) -> None:
         self.config = config or CandleMomentumConfig()
+
+    @staticmethod
+    def _range_location(frame: pd.DataFrame, bars: int, direction: int) -> float | None:
+        """Where the last close sits in the recent range, in the trade's favour.
+
+        1.0 means the close is at the extreme the trade is betting on -- the
+        high for a long, the low for a short -- so there is nothing left in
+        front of it. 0.0 means the whole range is still ahead.
+
+        Returned rather than judged so the number lands in `details` even when
+        it passes: "how close to the top was it" is the first question about
+        any entry that went straight into the red, and a gate that only records
+        its refusals cannot answer it.
+        """
+        if bars < 2 or len(frame) < bars:
+            return None
+        window = frame.iloc[-bars:]
+        high = float(window["high"].astype(float).max())
+        low = float(window["low"].astype(float).min())
+        close = float(window["close"].astype(float).iloc[-1])
+        span = high - low
+        if not math.isfinite(span) or span <= 0:
+            return None
+        position = (close - low) / span
+        return position if direction > 0 else 1.0 - position
 
     def analyze(self, ctx: MarketContext) -> Signal:
         config = self.config
@@ -194,20 +275,46 @@ class CandleMomentum:
                 details=details,
             )
 
-        confirm = slope_direction(middle.df["close"], config.confirm_bars)
-        bias = slope_direction(slow.df["close"], config.bias_bars)
+        confirm = slope_direction(middle.df, config.confirm_bars, config.minimum_slope_range)
+        bias = slope_direction(slow.df, config.bias_bars, config.minimum_slope_range)
         details |= {"confirm_direction": confirm, "bias_direction": bias}
         if confirm != candle.direction or bias != candle.direction:
+            # 0 lands here too, and that is the point. A timeframe that is not
+            # going anywhere is not agreement, and it used to read as agreement
+            # half the time by coin flip.
+            flat = " (0 means that chart is not going anywhere)" if 0 in (confirm, bias) else ""
             return Signal(
                 module=self.name,
                 score=0.0,
                 confidence=0.0,
                 reasoning=(
                     f"candle {candle.direction:+d} against confirm {confirm:+d} and bias "
-                    f"{bias:+d} — two out of three is a disagreement, not a majority"
+                    f"{bias:+d} — two out of three is a disagreement, not a majority{flat}"
                 ),
                 details=details,
             )
+
+        # WHERE IN THE MOVE THIS IS JOINING -- MEASURED, NOT YET JUDGED.
+        #
+        # The suspicion is real: the exhaustion refusal below asks "is there
+        # room left" of the TRIGGER CANDLE, which is sixty seconds of evidence,
+        # and never asks it of the move the trade is actually joining.
+        #
+        # It is not gated, and the reason is a measurement rather than caution.
+        # Refusing above 80% of the recent range kills the module outright: in
+        # any clean trend the newest close IS near the recent high, which is
+        # what a trend is. Gating on that would refuse exactly the setups this
+        # module exists to take, and "it stopped losing because it stopped
+        # trading" is not a fix.
+        #
+        # So it is recorded on every reading, pass or refuse. After a day of
+        # live scalps the journal can say what this number was on the winners
+        # and on the losers, and then a threshold is a measurement instead of a
+        # guess. A gate invented today would be the third knob turned on a
+        # hunch on this module, and the first two both had to come back out.
+        location = self._range_location(middle.df, config.confirm_range_bars, candle.direction)
+        if location is not None:
+            details["confirm_range_location"] = round(location, 3)
 
         # THE LAST BUYER PROBLEM. A candle closing hard on its own extreme after
         # the move has already travelled is the end of the move, not the start.

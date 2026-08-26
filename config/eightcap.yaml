@@ -649,9 +649,58 @@ analysis:
     # gewoon mee in de confluence-stemming zoals altijd. Wat uit gaat is de
     # EIGEN BAAN eromheen -- de route die zonder stemming een order stuurt.
     #
-    # AANZETTEN IS ÉÉN REGEL: hieronder weer `true`. Doen zodra `--sweep` een
-    # poort aanwijst waar de verwachting boven nul uitkomt.
-    own_lane_enabled: false
+    # ---------------------------------------------------------------------
+    # WEER AAN, dezelfde dag, op uitdrukkelijk verzoek van de eigenaar en
+    # nadat er iets echts aan de INSTAP gerepareerd is. Zijn woorden: "het is
+    # niet de stop, hij koopt gewoon de verkeerde kant op." Hij had gelijk, en
+    # ik had naar de verkeerde knop zitten kijken.
+    #
+    # WAT ER KAPOT WAS. `slope_direction` vergeleek twee closes en gaf een
+    # teken terug zonder enige ondergrens:
+    #
+    #     change = closes[-1] / closes[-(bars+1)] - 1.0
+    #     return 1 if change > 0 else -1 if change < 0 else 0
+    #
+    # Een verandering van een honderdduizendste procent gaf dus +1, met exact
+    # hetzelfde gezag als een echte trend. Op een markt die stilstaat is dat
+    # teken een muntje, dus "M1, M5 en M15 wijzen alle drie dezelfde kant op"
+    # was een TOEVALSTREFFER van één op vier -- en wat er dan gehandeld werd
+    # was een losse M1-kaars met helemaal niets erachter. De hele stelling van
+    # deze module is "alles erboven wees al die kant op". Op een vlakke grafiek
+    # werd die stelling ingevuld door ruis.
+    #
+    # En het waren TWEE PUNTEN, dus welke bar toevallig op -(bars+1) stond
+    # besliste het antwoord in zijn eentje. Bij `bias_bars: 4` rustte een kwart
+    # van het bewijs op één close.
+    #
+    # WAT ER NU STAAT: een kleinste-kwadratenlijn over het hele venster, die
+    # geen enkele losse bar kan omklappen, plus een vloer in de eigen
+    # gemiddelde bar-hoogte van dat tijdframe. Beweegt het venster minder dan
+    # een halve bar, dan is het antwoord 0 -- en 0 leest bovenliggend als
+    # onenigheid en weigert de trade.
+    #
+    # DIT IS DE ENIGE KNOP DIE OMGAAT. Ik wilde er een tweede bij (weiger als
+    # de prijs al bovenin het M5-bereik staat) en dat is er NIET ingegaan: in
+    # elke schone trend staat de nieuwste close bovenin, want dat is wat een
+    # trend is. Die poort had precies de setups geweigerd waar deze module voor
+    # bestaat, en "hij verliest niet meer want hij handelt niet meer" is geen
+    # reparatie. Het getal wordt wel bij elke lezing opgeschreven
+    # (`confirm_range_location`), dus na een dag scalpen zegt het journaal zelf
+    # wat het op de winnaars en op de verliezers was.
+    #
+    # DE VANGRAILS DIE ERONDER LIGGEN, want dit blijft een sectie met een
+    # gemeten min van -0,304R per trade:
+    #   - inzet 1,0% per trade in plaats van 1,5%
+    #   - twee tegelijk, en ze tellen mee in `max_total_open_risk_pct`
+    #   - `section_breakers`: zes verliezers achter elkaar en hij zet zichzelf
+    #     uit, zonder dat er iemand bij hoeft te zijn
+    #   - de health exit staat niet stil tijdens de eerste tien minuten: een
+    #     structuurbreuk is een gebeurtenis en mag in minuut vier net zo goed
+    #     ingrijpen als in uur vier
+    #
+    # Zes verliezers op 1% is 6% van de rekening. Dat is de maximale prijs van
+    # deze proef voordat hij zichzelf stopt.
+    own_lane_enabled: true
     # RISICO-GESIZED IN PLAATS VAN VAST, 26 augustus, op verzoek van de
     # eigenaar en omdat het argument voor de vaste lot verlopen was.
     #

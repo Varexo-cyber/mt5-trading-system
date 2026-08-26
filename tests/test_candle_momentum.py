@@ -118,11 +118,74 @@ class TestTheCandleRead:
         assert read_candle(frame(rising(5)), 30) is None
 
 
+def bars_from(closes: list[float], *, bar_range: float = 1.0) -> pd.DataFrame:
+    """Bars with a known average high-low range, so the floor is computable."""
+    return pd.DataFrame(
+        {
+            "open": closes,
+            "high": [c + bar_range / 2 for c in closes],
+            "low": [c - bar_range / 2 for c in closes],
+            "close": closes,
+        }
+    )
+
+
 class TestSlope:
-    def test_it_is_a_sign_and_nothing_more(self) -> None:
-        assert slope_direction(pd.Series(np.arange(20.0) + 100.0), 6) == 1
-        assert slope_direction(pd.Series(120.0 - np.arange(20.0)), 6) == -1
-        assert slope_direction(pd.Series([100.0] * 20), 6) == 0
+    """WHERE SECTION SIX TOOK THE WRONG SIDE.
+
+    The original read two closes and returned a sign with no minimum, so a
+    change of one hundred-thousandth of a percent counted as a trend. On a flat
+    chart the sign is a coin flip, which made "M1, M5 and M15 all agree" a
+    one-in-four coincidence rather than evidence -- and the trade that followed
+    was a lone M1 candle with nothing behind it.
+    """
+
+    def test_it_is_still_a_sign_when_the_chart_really_moves(self) -> None:
+        assert slope_direction(bars_from(list(np.arange(20.0) + 100.0)), 6) == 1
+        assert slope_direction(bars_from(list(120.0 - np.arange(20.0))), 6) == -1
+        assert slope_direction(bars_from([100.0] * 20), 6) == 0
+
+    def test_a_move_smaller_than_the_bars_themselves_is_not_a_direction(self) -> None:
+        """THE DEFECT, ASSERTED. Six bars drifting up by a thousandth apiece,
+        on bars that are a full point tall: the old code called that a trend
+        and let a scalp through on it."""
+        closes = [100.0 + i * 0.001 for i in range(20)]
+
+        assert slope_direction(bars_from(closes, bar_range=1.0), 6, 0.0) == 1
+        assert slope_direction(bars_from(closes, bar_range=1.0), 6, 0.5) == 0
+
+    def test_the_floor_is_in_the_instruments_own_units(self) -> None:
+        """A pip count would switch this off on gold or on EURUSD depending on
+        which one it was tuned for. The same drift is a trend on quiet bars and
+        noise on wide ones."""
+        closes = [100.0 + i * 0.2 for i in range(20)]
+
+        assert slope_direction(bars_from(closes, bar_range=0.5), 6, 0.5) == 1
+        assert slope_direction(bars_from(closes, bar_range=10.0), 6, 0.5) == 0
+
+    def test_a_flat_chart_is_zero_and_not_floating_point_noise(self) -> None:
+        """`polyfit` on twenty identical closes returns about 1e-15, not zero,
+        so `travel > 0` reported a confident +1 on a chart that had not moved
+        at all -- this function's original defect, reappearing inside its own
+        repair."""
+        assert slope_direction(bars_from([100.0] * 20), 6) == 0
+        assert slope_direction(bars_from([4021.37] * 20), 6) == 0
+
+    def test_one_spike_bar_can_no_longer_invert_the_whole_window(self) -> None:
+        """Two points meant whichever bar sat at -(bars + 1) decided the answer
+        by itself. With `bias_bars` at 4 that is a quarter of the evidence
+        resting on one close.
+
+        Least squares is not immune to an outlier -- a big enough one still
+        moves the fit -- but it weighs the bar instead of handing it the
+        casting vote, and that is the difference this test pins.
+        """
+        spiked = [107.0, 101.0, 102.0, 103.0, 104.0, 105.0, 106.0]
+
+        # Endpoint arithmetic reads a FALL across a window that plainly rises,
+        # because the one bar it happens to start from sits above the last.
+        assert spiked[0] > spiked[-1]
+        assert slope_direction(bars_from(spiked), 6) == 1
 
 
 class TestTheRefusalsThatMatter:

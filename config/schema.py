@@ -1767,6 +1767,43 @@ class CandleMomentumConfig(Base):
     candle_lookback: int = Field(default=30, ge=5, le=500)
     confirm_bars: int = Field(default=6, ge=1, le=200)
     bias_bars: int = Field(default=4, ge=1, le=200)
+    #: How far a confirming timeframe must actually travel across its window
+    #: before it counts as pointing anywhere, in multiples of that timeframe's
+    #: own average bar range.
+    #:
+    #: THE DEFECT THIS CLOSES. `slope_direction` compared two closes with no
+    #: minimum at all, so a change of one hundred-thousandth of a percent
+    #: returned +1 with the same authority as a real trend. On a market going
+    #: nowhere that sign is a coin flip, which made "M1, M5 and M15 all agree"
+    #: a one-in-four COINCIDENCE instead of evidence -- and the trade that
+    #: followed was a lone M1 candle with nothing behind it. This module's
+    #: entire thesis is that the slower charts already point the same way; on a
+    #: flat chart that thesis was being satisfied by noise.
+    #:
+    #: 0.5 means the window must have travelled at least half of one average
+    #: bar. Below that the answer is 0, which reads upstream as a disagreement
+    #: and refuses. Zero here restores the old behaviour of accepting any sign.
+    minimum_slope_range: float = Field(default=0.5, ge=0.0, le=10.0)
+    #: Bars of the confirm timeframe used to ask where in the recent move the
+    #: price already is.
+    confirm_range_bars: int = Field(default=20, ge=2, le=500)
+    #:
+    #: RECORDED ON EVERY READING, GATED ON NOTHING -- yet. The exhaustion
+    #: refusal below asks "is there room left in front of this" of the TRIGGER
+    #: CANDLE, sixty seconds of evidence, and never asks it of the move the
+    #: trade is joining. That gap is real.
+    #:
+    #: What is not established is where the line sits. Refusing above 80% of
+    #: the recent range kills the module: in any clean trend the newest close
+    #: IS near the recent high, because that is what a trend is, so the gate
+    #: would refuse precisely the setups this module exists to take. "It
+    #: stopped losing because it stopped trading" is not a fix.
+    #:
+    #: So the number goes into `details` and into the journal on every reading,
+    #: and after a day of live scalps it can be compared between the winners
+    #: and the losers. Then a threshold is a measurement. Invented today it
+    #: would be the third knob turned on a hunch on this module, and the first
+    #: two both had to come back out.
     #: Body as a share of the whole candle. Below this it is mostly wick, which
     #: means nobody finished the minute in control of it.
     #: Raised from 0.55. "Only when it is convincing" is not a slogan, it is
