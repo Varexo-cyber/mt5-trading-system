@@ -531,7 +531,28 @@ analysis:
     minimum_body_share: 0.60
     # Tweede filter, 8,8% van de weigeringen. 2,2 -> 1,8: nog steeds bijna
     # twee keer de gemiddelde kaars, dus nog steeds een beweging en geen minuut.
-    minimum_body_multiple: 1.8
+    #
+    # 26 AUGUSTUS: 1,8 -> 1,75, tweede stapje op verzoek van de eigenaar nadat
+    # `minimum_target_spreads` van 8,0 naar 7,0 ging (+22%). Gemeten over
+    # 14.000 synthetische M1-bars bij twee volatiliteitsniveaus, bovenop die
+    # eerste wijziging:
+    #
+    #     body_share  0,60 -> 0,55       +5%
+    #     body_mult   1,8  -> 1,75       +7%   <- dit
+    #     body_share 0,57 + mult 1,75   +11%
+    #     body_mult   1,8  -> 1,70      +14%
+    #
+    # 1,75 geeft de meeste setups voor de kleinste stap in wat de kaars nog
+    # moet bewijzen: 1,75 keer de gemiddelde kaars is nog altijd bijna twee
+    # keer, dus de zin hierboven klopt nog steeds. `minimum_body_share` blijft
+    # op 0,60 -- dat filter gaat over hoeveel LONT er mag zijn, en lont is
+    # twijfel: iemand duwde en werd teruggeduwd. Dat is precies het soort
+    # kaars waar een scalp niets aan heeft.
+    #
+    # 1,70 lag klaar en is niet genomen. Het verschil tussen +7% en +14% is
+    # niet groot genoeg om twee ongemeten stappen tegelijk te zetten, en
+    # `section6.cmd` kan nu meten of de eerste iets waard was.
+    minimum_body_multiple: 1.75
     body_saturation_multiple: 3.5
     # EIGEN BAAN AAN, 25 augustus. Dit is de wijziging die sectie 6 weer laat
     # handelen nadat de lat van 45 hem stilzette.
