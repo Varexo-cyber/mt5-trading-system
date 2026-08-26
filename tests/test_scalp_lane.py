@@ -153,9 +153,12 @@ class TestItOpensATrade:
 
         volume = service.sent[0].volume
         assert volume > 0.01, "still pinned to the old fixed lot"
-        # And bounded: `risk_pct` is 3.0, so this is not the 5% the rest of the
-        # account takes, on the only live thing with no measured record.
-        assert service.settings.analysis.candle_momentum.risk_pct == 3.0
+        # And bounded: `risk_pct` is 1.5, halved the same evening after three
+        # scalps took 6.6% of the account between them. Not a verdict on the
+        # section -- three trades are not a sample -- but the stake had just
+        # doubled on something never measured, and halving it is the cheapest
+        # way to keep measuring without the measurement eating the account.
+        assert service.settings.analysis.candle_momentum.risk_pct == 1.5
 
     def test_a_lot_ceiling_still_trims_when_one_is_set(self) -> None:
         """`fixed_lots` survives as a ceiling for anyone who wants one. It
