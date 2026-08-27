@@ -63,13 +63,19 @@ MOMENTUM = (Signal("candle_momentum", 45.0, 0.75, reasoning="a decisive minute")
 class TestAgreementCanNeverMakeASetupLookWorse:
     def test_a_second_agreeing_reader_no_longer_lowers_the_score(self) -> None:
         """The defect, stated as the property that must hold. Under the plain
-        mean this was 70.0 against 51.9."""
+        mean this was 70.0 against 51.9.
+
+        `>=` and not `>`: the PREMIUM was refuted by the 90-day measurement and
+        switched off, so agreement no longer LIFTS a score. What may never come
+        back is agreement LOWERING one -- that was never a tuning choice, it
+        was a selection on loneliness at a fixed bar.
+        """
         engine = _engine()
 
         alone = _score(engine, [STRUCTURE])
         corroborated = _score(engine, [STRUCTURE, MOMENTUM])
 
-        assert corroborated > alone
+        assert corroborated >= alone
 
     def test_zero_removes_the_premium_but_does_not_bring_the_mean_back(self) -> None:
         """STATED PLAINLY BECAUSE IT IS A REAL BEHAVIOUR CHANGE, not a
@@ -112,8 +118,13 @@ class TestThePremiumIsBounded:
     def test_the_premium_grows_with_the_strength_of_the_agreement(self) -> None:
         """Not with the COUNT of it. A module scraping past its floor must not
         buy the same premium as a second strong reader, or "find anything that
-        agrees" becomes the strategy."""
-        engine = _engine()
+        agrees" becomes the strategy.
+
+        Asserted against an engine with the premium ON, because the shipped
+        account now has it off. The shape has to stay correct for the day a
+        measurement puts it back.
+        """
+        engine = _engine(corroboration_bonus_per_module=0.15, max_corroboration_bonus=0.45)
         token = (Signal("thin", 4.0, 0.5, reasoning="barely there"), 1.0)
 
         assert _score(engine, [STRUCTURE, MOMENTUM]) > _score(engine, [STRUCTURE, token])
@@ -121,7 +132,7 @@ class TestThePremiumIsBounded:
         assert _score(engine, [STRUCTURE, token]) >= _score(engine, [STRUCTURE])
 
     def test_the_cap_holds_once_enough_agreement_has_accumulated(self) -> None:
-        engine = _engine()
+        engine = _engine(corroboration_bonus_per_module=0.15, max_corroboration_bonus=0.45)
         seven = [STRUCTURE, *[MOMENTUM] * 7]
         eight = [STRUCTURE, *[MOMENTUM] * 8]
 
@@ -130,26 +141,49 @@ class TestThePremiumIsBounded:
 
 
 class TestTheShippedSettings:
-    def test_the_premium_is_on_and_the_scale_is_unchanged(self) -> None:
+    def test_the_premium_is_off_because_the_measurement_refused_it(self) -> None:
+        """90 days, five pairs, 941 proposals. `modules.cmd` produces exactly
+        the table that tests this premium -- ALONE against WHEN PRESENT -- and
+        it says the opposite of what the premium assumes:
+
+            module                  TOGETHER    ALONE
+            impulse_break            -0.116R   -0.416R   together better
+            liquidity_sweep          -0.326R   -0.252R   ALONE better
+            ema_pullback_resume      -0.300R   -0.192R   ALONE better
+            drift_continuation       -0.083R   -0.137R   together better
+            fast_ema_cross           -0.156R   +0.097R   ALONE better
+            trend_momentum           -0.110R   +0.105R   ALONE better
+
+        Four of six do BETTER alone, and both of the only positive rows in the
+        whole report are in the ALONE table.
+
+        The premium can only ADD setups -- it is a multiplier of at least 1.0 --
+        and what it adds is corroborated ones. In this sample those are worse on
+        average. "More agreement is better evidence" sounds unarguable and was
+        measured here as false.
+        """
         config = _engine().config
 
-        assert config.corroboration_bonus_per_module == 0.15
-        assert config.max_corroboration_bonus == 0.45
+        assert config.corroboration_bonus_per_module == 0.0
+        assert config.max_corroboration_bonus == 0.0
         # The threshold did not move with it. It could not: the whole point of
         # keeping the mean is that a one-module reading still faces the bar it
         # always faced, so nothing that trades today stops trading.
         assert config.score_threshold == 35.0
 
-    def test_nothing_that_trades_today_stops_trading(self) -> None:
-        """The premium is a multiplier at or above 1.0, so every setup that
-        cleared the bar still clears it. This change can only ADD the
-        corroborated setups that were being pushed under the bar by the fact
-        that there was more evidence for them."""
-        engine = _engine()
-        off = _engine(corroboration_bonus_per_module=0.0, max_corroboration_bonus=0.0)
+    def test_the_score_is_still_the_strongest_reading_and_not_the_mean(self) -> None:
+        """The premium was refuted; the base was not, and the difference
+        matters.
 
-        for pairs in ([STRUCTURE], [STRUCTURE, MOMENTUM], [STRUCTURE, MOMENTUM, MOMENTUM]):
-            assert _score(engine, pairs) >= _score(off, pairs)
+        A weighted mean is not a tuning choice, it is a defect: two readers who
+        AGREE scored 51.9 against 70.0 for one reader alone, and at a fixed bar
+        that selects on loneliness rather than on evidence. Putting the mean
+        back to undo the premium would put that back with it.
+        """
+        engine = _engine()
+
+        assert _score(engine, [STRUCTURE, MOMENTUM]) == pytest.approx(70.0)
+        assert _score(engine, [STRUCTURE]) == pytest.approx(70.0)
 
 
 class TestTheArithmeticExistsExactlyOnce:

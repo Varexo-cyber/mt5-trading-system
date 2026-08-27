@@ -1163,17 +1163,31 @@ class TestTheLoneFloorCanBeSetPerDetector:
         assert all(value > confluence.minimum_confidence for value in table.values())
 
 
-class TestTrendMomentumIsOffLiveOnItsRecord:
-    """The first hard finding this account produced, acted on.
+class TestTrendMomentumIsBackOnItsNarrowedRecord:
+    """Switched off on one measurement, back on because a second one disagreed
+    about the part that changed.
 
-    20 markets, 180 days, 163 closed trades: -0.365R a trade, -59.45R in total,
-    t = -4.01. Not a small sample and not bad luck — a detector that loses
-    money, and the one behind more proposals than any other.
+    THE KILL, and it is not withdrawn: 20 markets, 180 days, 163 closed trades,
+    -0.365R a trade, -59.45R total, t = -4.01. A real sample and a real result.
 
-    It stays WEIGHTED so `scripts/backtest_modules.py` keeps measuring it. Only
-    the allowlist decides whether a module may trade live, which is exactly the
-    separation that makes a decision like this reversible on evidence rather
-    than on argument.
+    THE SECOND MEASUREMENT, 27 August: 90 days over five markets -- the majors
+    and gold -- and it is the only substantial positive population in the whole
+    report:
+
+        trend_momentum ALONE   66 trades   76% won   +0.105R   +6.94R
+
+    The two do not contradict each other. They measure different universes, and
+    this config already carries the same reasoning about `drift_continuation`:
+    "the problem was never the detector, it was where it was allowed to look."
+    Single-name shares left the catalogue the same day, so part of those twenty
+    markets is no longer traded at all.
+
+    WHAT THIS IS NOT: proof of an edge. Its own report scores it +0.085R against
+    a coin flip and labels that inside chance. It is the best candidate in a
+    report where every other live detector measured negative -- and it is armed
+    with the strictest section breaker of the four, because a module going live
+    against a significant negative measurement without a self-stop is not an
+    experiment, it is hoping.
     """
 
     def _confluence(self):  # type: ignore[no-untyped-def]
@@ -1183,8 +1197,23 @@ class TestTrendMomentumIsOffLiveOnItsRecord:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.confluence
 
-    def test_it_cannot_trade_live(self) -> None:
-        assert "trend_momentum" not in self._confluence().live_enabled_modules
+    def test_it_trades_live_again(self) -> None:
+        assert "trend_momentum" in self._confluence().live_enabled_modules
+
+    def test_and_it_can_stop_itself(self) -> None:
+        """The condition of it being on. Eight losers in a row, or twelve of
+        twenty -- against the 24% loss rate it showed in the report that put it
+        back, so this fires on behaviour that is plainly different rather than
+        on a bad run."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        breaker = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).risk.section_breakers["trend_momentum"]
+
+        assert breaker.enabled
+        assert breaker.losing_streak <= 8
+        assert breaker.maximum_loss_share <= 0.60
 
     def test_but_it_is_still_measured(self) -> None:
         """Switching a module off and losing sight of it means never finding

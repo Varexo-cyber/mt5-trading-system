@@ -442,18 +442,25 @@ class TestWhereTheMoneyActuallyCameFrom:
     def test_a_module_carrying_no_weight_is_not_credited_either(
         self, journal: Path, capsys
     ) -> None:  # type: ignore[no-untyped-def]
-        """`trend_momentum` is computed and logged on this account and votes on
-        nothing. It did not produce the trade and must not appear to have."""
+        """A module computed and logged on this account that votes on nothing
+        did not produce the trade and must not appear to have.
+
+        `trend_momentum` was the example here until it went live on 27 August.
+        `seasonality` carries the property now: weighted low, never on the
+        allowlist, and present in every journal row because it is computed. The
+        point is the ZERO, not the name -- picking a live module would let this
+        pass for the wrong reason.
+        """
         path = self._journal(
             journal,
-            [(+0.5, "trend_up", [("impulse_break", 60.0, 0.6), ("trend_momentum", 65.0, 0.0)])],
+            [(+0.5, "trend_up", [("impulse_break", 60.0, 0.6), ("seasonality", 65.0, 0.0)])],
         )
 
         main(["--db", str(path), "--days", "2"])
         out = capsys.readouterr().out
 
         assert "impulse_break" in out
-        assert "trend_momentum" not in out
+        assert "seasonality" not in out
 
     def test_the_double_counting_is_stated_rather_than_hidden(self, journal: Path, capsys) -> None:
         """Three detectors behind one trade puts it in three rows. Without the
