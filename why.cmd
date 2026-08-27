@@ -28,11 +28,23 @@ if not exist ".venv-live\Scripts\python.exe" (
   exit /b 1
 )
 
+REM  A bare number means a ticket, because that is the only thing anybody
+REM  types here. `why.cmd 135059061` now works as well as `--ticket`.
+echo %~1| findstr /r "^[0-9][0-9]*$" >nul
+if not errorlevel 1 (
+  echo  Reading "%~1" as --ticket %~1.
+  echo.
+  ".venv-live\Scripts\python.exe" scripts\postmortem.py --ticket %~1
+  goto :done
+)
+
 if "%~1"=="" (
   ".venv-live\Scripts\python.exe" scripts\postmortem.py --hours 6
 ) else (
   ".venv-live\Scripts\python.exe" scripts\postmortem.py %*
 )
+
+:done
 
 echo.
 pause

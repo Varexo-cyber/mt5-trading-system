@@ -431,8 +431,17 @@ class TestNoneOfThemCanTradeYet:
 
         So the measurement is not evidence against this detector specifically.
         It is evidence against the floor every detector planned under, and
-        that floor moved. `session_breakout` stays live at its own 0.75 lone
-        floor, which still makes it the strictest module on the list.
+        that floor moved.
+
+        AND THE FLOOR MOVING DID NOT FIX IT. `minimum_r_multiple` went 0.75 ->
+        0.35 on 27 August, and the 90-day run at the new floor shows the SAME
+        shape one notch smaller: average win +0.33R against average loss
+        -1.05R, needing 76% where 70% is delivered. The winners shrank with the
+        target and the losers did not, so the ratio barely moved.
+
+        `session_breakout` is therefore off, on its own number rather than on
+        the shared one: 44 trades, -0.175R a trade, -7.70R. Its 0.75 lone floor
+        made it the strictest module on the list and that was not enough.
 
         `volatility_squeeze` produced no trades at all in the 180-day run and
         `mean_reversion` measured -0.193R over 194. One has no record and the
@@ -440,7 +449,7 @@ class TestNoneOfThemCanTradeYet:
         """
         allowed = set(self._confluence().live_enabled_modules)
 
-        assert "session_breakout" in allowed
+        assert "session_breakout" not in allowed
         for module in ("seasonality", "volatility_squeeze", "mean_reversion"):
             assert module not in allowed, module
 

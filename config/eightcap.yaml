@@ -1611,8 +1611,40 @@ analysis:
     # De premie kan alleen omhoog werken. Wat erbij komt zijn de bevestigde
     # setups die tot nu toe onder de lat werden gedrukt door het feit dat er
     # meer bewijs voor was.
-    corroboration_bonus_per_module: 0.15
-    max_corroboration_bonus: 0.45
+    # ---------------------------------------------------------------------
+    # WEERLEGD DOOR DE METING, ZELFDE DAG, EN DUS UIT. 90 dagen, vijf paren,
+    # 941 voorstellen. `modules.cmd` maakt precies de tabel die deze premie
+    # test -- ALONE tegen WHEN PRESENT -- en hij zegt het omgekeerde van wat ik
+    # beweerde:
+    #
+    #     module                  SAMEN      ALLEEN
+    #     impulse_break          -0,116R    -0,416R    samen beter
+    #     liquidity_sweep        -0,326R    -0,252R    ALLEEN beter
+    #     ema_pullback_resume    -0,300R    -0,192R    ALLEEN beter
+    #     drift_continuation     -0,083R    -0,137R    samen beter
+    #     fast_ema_cross         -0,156R    +0,097R    ALLEEN beter
+    #     trend_momentum         -0,110R    +0,105R    ALLEEN beter
+    #
+    # Vier van de zes doen het BETER alleen, en de enige twee positieve regels
+    # in het hele rapport staan allebei in de ALONE-tabel.
+    #
+    # De premie kan alleen setups TOEVOEGEN -- hij is een vermenigvuldiger van
+    # minstens 1,0 -- en wat hij toevoegt zijn bevestigde setups. Die zijn in
+    # dit monster gemiddeld slechter. Hem laten staan is dus bewust slechtere
+    # trades toevoegen op een redenering die gemeten is en gezakt.
+    #
+    # WAT BLIJFT: de score is nog steeds de sterkste lezing en niet het
+    # gemiddelde. Dat is geen tuning maar een defect -- twee lezers die het
+    # eens waren scoorden 51,9 tegen 70,0 voor een lezer alleen, en dat is bij
+    # een vaste lat een selectie op eenzaamheid. Het gemiddelde terugzetten zou
+    # dat defect terugzetten. Wat weg is, is mijn beloning bovenop.
+    #
+    # WAT DIT ZEGT OVER HET IDEE. "Meer bevestiging is beter bewijs" klinkt
+    # onweerlegbaar en is hier gemeten als onwaar. Dat hoort opgeschreven te
+    # staan naast de reparatie, want de volgende die deze code leest krijgt
+    # hetzelfde idee.
+    corroboration_bonus_per_module: 0.0
+    max_corroboration_bonus: 0.0
 
     # EEN EENZAME LEZER MOET BIJNA ZEKER ZIJN. Dit is de knop die de eigenaar
     # bedoelde toen hij om 80 vroeg.
@@ -2019,7 +2051,60 @@ analysis:
     # haalt dat 77,6% en blokkeert dus niets; tegen een zwakke setup kan het wel
     # de doorslag geven. Dat is precies de goede kant op: de laatste minuut die
     # hard de andere kant op ging is echt bewijs.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence, candle_momentum]
+    # ================================================================
+    # DE LIJST VOLGT NU DE METING. 90 dagen, vijf markten, 941 voorstellen.
+    # ================================================================
+    #
+    # Het rapport eindigt met zijn eigen conclusie en die is hier uitgevoerd:
+    #
+    #     "A detector that is negative over a real sample should be switched
+    #      off, and doing that is worth more than any rule that could be added
+    #      in its place."
+    #
+    # WAT ERUIT GAAT, met het aantal trades erbij zodat niemand later denkt dat
+    # dit op ruis besloten is:
+    #
+    #     ema_pullback_resume   119 trades   -0,300R    -35,74R
+    #     fast_ema_cross        124 trades   -0,156R    -19,33R
+    #     impulse_break         262 trades   -0,116R    -30,45R
+    #     drift_continuation    364 trades   -0,083R    -30,14R
+    #     session_breakout       44 trades   -0,175R     -7,70R
+    #     liquidity_sweep        30 trades   -0,326R     -9,78R
+    #
+    # Samen -133R over 943 trades. Dat is geen tegenvallende maand, dat is
+    # zeshonderd euro op deze rekening en het is elke keer dezelfde vorm:
+    # gemiddelde winst rond +0,33R, gemiddeld verlies rond -1,05R. Winnaars van
+    # een derde van de verliezers, en dan heb je 76% nodig waar 70% gehaald
+    # wordt.
+    #
+    # En geen van hen versloeg een muntworp die dezelfde momenten, stops en
+    # targets nam. Dat staat in de derde tabel van hetzelfde rapport.
+    #
+    # WAT ERIN KOMT: `trend_momentum`, op instructie van de eigenaar en met de
+    # enige echte positieve populatie in het rapport:
+    #
+    #     trend_momentum ALLEEN   66 trades   76% winst   +0,105R   +6,94R
+    #
+    # WAT DAAR TEGENIN GAAT en hier hoort te staan: hij is eerder uitgezet op
+    # -0,365R over 163 trades op TWINTIG markten, t = -4,01. Dat is een harder
+    # getal dan dit. Het verschil is het speelveld -- deze meting is vijf
+    # markten, majors en goud -- en dezelfde redenering staat in deze config al
+    # over `drift_continuation`: "het probleem was nooit de detector, het was
+    # waar hij mocht kijken". Sinds vandaag staan aandelen buiten het
+    # universum, dus een deel van die twintig markten wordt sowieso niet meer
+    # gehandeld.
+    #
+    # Zijn eigen rapport noemt hem tegen de munt +0,085R en "inside chance".
+    # Dat is geen bewijs van een edge. Het is de beste kandidaat die er is, met
+    # `section_breakers` eronder die hem uitzet na zes verliezers.
+    #
+    # WAT BLIJFT STAAN EN WAAROM: `market_structure` heeft 25 trades in dit
+    # monster -- te dun om te veroordelen, en dat is dezelfde lat waarop
+    # `transition` ooit ten onrechte geblokkeerd werd. `m1_micro_breakout` en
+    # `basket_divergence` komen in geen van beide tabellen voor: ze zijn niet
+    # slecht bevonden, ze zijn niet gemeten. `candle_momentum` kan niet alleen
+    # handelen (33,75 tegen een lat van 35) en kan dus alleen bevestigen.
+    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2937,6 +3022,29 @@ risk:
       minimum_trades: 25
       maximum_loss_share: 0.70
       losing_streak: 10
+
+    # TREND_MOMENTUM KRIJGT ER EEN, en hij is de strengste van de vier.
+    #
+    # Deze module is vandaag aangezet op de enige positieve populatie in het
+    # 90-daagse rapport -- 66 trades ALLEEN, 76% winst, +0,105R -- en tegen een
+    # eerdere meting in die harder is dan die van hem: -0,365R over 163 trades
+    # op twintig markten, t = -4,01.
+    #
+    # Dat is een weddenschap dat het speelveld het probleem was en niet de
+    # module, en die weddenschap moet zichzelf kunnen verliezen zonder dat er
+    # iemand bij is. Een module die live gaat tegen een significante negatieve
+    # meting in zonder noodstop is geen experiment, dat is hopen.
+    #
+    # 20 trades om te beginnen en niet 25: het positieve monster waarop dit
+    # besloten is telt er 66, dus twintig slechte is al een derde daarvan en
+    # ruim genoeg om te weten dat het niet klopt. 60% verliezers over die 20
+    # is bovendien slechter dan de 24% die deze module in het rapport liet
+    # zien -- dus dit vuurt op onmiskenbaar afwijkend gedrag, niet op pech.
+    trend_momentum:
+      window: 20
+      minimum_trades: 20
+      maximum_loss_share: 0.60
+      losing_streak: 8
 
   commission_by_asset_class:
     index: 0.0

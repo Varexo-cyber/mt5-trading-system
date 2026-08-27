@@ -46,11 +46,24 @@ if not exist ".venv-live\Scripts\python.exe" (
   exit /b 1
 )
 
+REM  A bare number means days. See the note in modules.cmd: `--days30` fails
+REM  as "unrecognized arguments", which is a missing space reported as a
+REM  missing feature.
+echo %~1| findstr /r "^[0-9][0-9]*$" >nul
+if not errorlevel 1 (
+  echo  Reading "%~1" as --days %~1.
+  echo.
+  ".venv-live\Scripts\python.exe" scripts\backtest_section_six.py --days %~1
+  goto :done
+)
+
 if "%~1"=="" (
   ".venv-live\Scripts\python.exe" scripts\backtest_section_six.py --days 30
 ) else (
   ".venv-live\Scripts\python.exe" scripts\backtest_section_six.py %*
 )
+
+:done
 
 echo.
 pause
