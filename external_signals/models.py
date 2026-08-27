@@ -64,11 +64,7 @@ class NotificationEnvelope:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> NotificationEnvelope:
         timestamp = raw.get("received_at")
-        received = (
-            datetime.fromisoformat(str(timestamp))
-            if timestamp
-            else datetime.now(UTC)
-        )
+        received = datetime.fromisoformat(str(timestamp)) if timestamp else datetime.now(UTC)
         if received.tzinfo is None:
             received = received.replace(tzinfo=UTC)
         return cls(

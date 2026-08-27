@@ -639,10 +639,26 @@ class TestTheRaisedEnvelopeAgreesWithItselfEverywhere:
         )
 
     def test_the_ladder_runs_from_the_ordinary_stake_to_the_peak(self) -> None:
+        """2% to 8%, on the owner's instruction of 27 August, after a night in
+        which section one carried 7.6% and 10.9% on two index trades while the
+        section six scalp beside them carried 0.6%.
+
+        The RAMP matters as much as the endpoints and is asserted here for the
+        first time. It ran from confidence 0.50 to 0.70, so a setup that had
+        only just cleared the approval bar already drew a large stake, and 0.70
+        drew the ceiling. The schema's own default is 0.70 to 0.90 and says
+        why: "an approval that only just cleared the bar is not a convincing
+        setup, it is a permitted one."
+        """
         conviction = self._settings().risk.conviction_risk
 
-        assert conviction.floor_pct == 5.0
-        assert conviction.ceiling_pct == 12.0
+        assert conviction.floor_pct == 2.0
+        assert conviction.ceiling_pct == 8.0
+        assert conviction.confidence_floor == 0.70
+        assert conviction.confidence_ceiling == 0.90
+        # The peak has to cost real conviction, not merely an approval.
+        assert conviction.stake_for(0.70) == conviction.floor_pct
+        assert conviction.stake_for(0.90) == conviction.ceiling_pct
 
     def test_no_clamp_is_left_behind_at_the_old_ceiling(self) -> None:
         """The trap this test exists for. Every ceiling the stake passes

@@ -52,7 +52,15 @@ EXPERIMENTAL_LIVE_PHRASE = "BEVESTIG EXPERIMENTEEL LIVE"
 # left. At 174 EUR that is 124 EUR of room: roughly 36 ordinary losers at 2%,
 # roughly 24 at 3%. A third of the distance to the floor, bought for 50% more
 # on each outcome.
-EXPERIMENTAL_RISK_PER_TRADE_PCT = 5.0
+# 5,0 -> 2,0 on 27 August, at the owner's instruction: "2% to 8% max, and the
+# 8 only on real conviction toward profit -- no nonsense and not just because".
+#
+# What made him say it: an EUSTX50 entry carrying a 46.7-point stop, EUR 23.36
+# on a EUR 211 account -- 10.9% -- and a GER40 at 7.6%, both legal under the
+# old envelope. The section six scalp beside them risked 0.6%. Section one was
+# staked eight to twelve times larger than the section a whole day of work went
+# into.
+EXPERIMENTAL_RISK_PER_TRADE_PCT = 2.0
 
 # The most one trade may risk, reached only at maximum reviewer confidence.
 #
@@ -88,7 +96,13 @@ EXPERIMENTAL_RISK_PER_TRADE_PCT = 5.0
 #
 # At 174 EUR a maximum-conviction trade now risks 13.92 EUR against a 50 EUR
 # floor. That is roughly nine such losers from the end of the experiment.
-EXPERIMENTAL_MAX_STAKE_PCT = 12.0
+# 12,0 -> 8,0, same instruction. And the ramp beneath it moved with it: it ran
+# from confidence 0.50 to 0.70, so a setup that had only just cleared the
+# approval bar already drew a large stake and 0.70 -- which nobody calls high
+# conviction -- drew the ceiling. It now runs 0.70 to 0.90, which is what the
+# schema always documented and what "real conviction" has to mean if the word
+# is to do any work.
+EXPERIMENTAL_MAX_STAKE_PCT = 8.0
 
 # The most the whole book may risk at once, across every open position.
 #
@@ -108,7 +122,12 @@ EXPERIMENTAL_MAX_STAKE_PCT = 12.0
 # 12; at 8% it means 16. Leaving it at 12 would have quietly changed the design
 # to "one big trade and a fragment", which is a different decision about the
 # account and not one anybody made.
-EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 24.0
+# 24 -> 16, and it must move with the ceiling above or the design changes by
+# accident. The rule this number encodes is "two maximum-conviction trades fill
+# the book". At a 12% ceiling that was 24; at 8% it is 16. Leaving it at 24
+# would have allowed THREE peak trades, which is a different decision about the
+# account and not one anybody made.
+EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 16.0
 # Zero: the automatic peak-to-current halt is off for this experiment.
 #
 # The operator turned it off after seeing what it left. At 88.28 EUR against a

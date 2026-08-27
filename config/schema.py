@@ -553,6 +553,24 @@ class RiskConfig(Base):
     #: tested — the cost of trading is, and it wins. Past roughly a quarter, a
     #: full stop-out cannot land inside -1.25R however good the entry was.
     max_cost_share_of_risk: float = Field(default=0.0, ge=0.0, le=1.0)
+    #: The same ceiling for the confluence path specifically, because section
+    #: one's arithmetic is not the account's.
+    #:
+    #: Its own give-back table over 1,970 trades:
+    #:
+    #:     RR 0.30   80% hit   -0.001R      random walk 74%
+    #:     RR 0.72   56% hit   -0.070R      random walk 56%
+    #:     RR 1.00   10% hit   -0.840R      random walk 48%
+    #:
+    #: At the near target it wins 80% where a coin flip wins 74%, so the edge
+    #: is six points of hit rate — about 0.05R, and that is the whole of it.
+    #: The account-wide limit lets a trade spend a third of its risk on spread,
+    #: commission and slippage: seven times the edge it is trying to collect.
+    #: The measured result is the exact zero in the first row.
+    #:
+    #: Zero falls back to `max_cost_share_of_risk`, so an account that has not
+    #: set this keeps its old behaviour rather than being tightened silently.
+    section_one_max_cost_share: float = Field(default=0.0, ge=0.0, le=1.0)
 
     #: Broker commission per lot per side, in account currency. 0 for accounts
     #: whose cost is entirely in the spread.
@@ -1821,6 +1839,24 @@ class CandleMomentumConfig(Base):
     #: first minute of a real push often follows a quiet stretch, and refusing
     #: those would remove the setups this module exists for.
     trigger_bars: int = Field(default=5, ge=2, le=200)
+    #: The body above which a candle stops being momentum and becomes an event,
+    #: in multiples of the recent average body.
+    #:
+    #: There was a ceiling on VOLUME and none on the move itself, although the
+    #: argument for the first is entirely about size relative to normal.
+    #: `minimum_body_multiple` is a floor and `body_saturation_multiple` only
+    #: caps the SCORE, so a bar ten times its average body passed with maximum
+    #: confidence. The strongest-looking bar such a system will ever see is the
+    #: one it should not trade.
+    #:
+    #: Compounded by the geometry: the stop is one candle span, so an outsized
+    #: candle produces an outsized R, and on an account too small to express it
+    #: the position lands on the broker minimum and the money risked stops
+    #: matching the plan.
+    #:
+    #: Sits above `body_saturation_multiple` (3.5), so every candle that scores
+    #: full marks is still tradable and the refusal begins beyond it.
+    maximum_body_multiple: float = Field(default=5.0, gt=0.0, le=100.0)
     #: How far a confirming timeframe must actually travel across its window
     #: before it counts as pointing anywhere, in multiples of that timeframe's
     #: own average bar range.

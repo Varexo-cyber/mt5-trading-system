@@ -111,6 +111,7 @@ class PositionSizer:
         spread_price: float = 0.0,
         risk_pct: float | None = None,
         enforce_minimum_rr: bool = True,
+        max_cost_share: float | None = None,
     ) -> SizingResult:
         """Compute the lot size for one setup.
 
@@ -241,8 +242,22 @@ class PositionSizer:
         # a 25% commission-and-slippage gate while its real total cost was
         # 37-41% of R. On the live AUDCAD long that is exactly what happened.
         # Two gates, both satisfied, one unaffordable trade.
+        # THE LIMIT BELONGS TO THE STRATEGY, NOT TO THE ACCOUNT, and the two
+        # lanes here are not close. Section one takes a target at 0.30R and
+        # wins 80% of the time; its whole edge is about 0.05R, so a cost of 8%
+        # already halves it. Section six takes 1.4R at 43% and its edge is
+        # around 11 points of hit rate, which carries a 10-12% cost. One number
+        # cannot be right for both, and the account-wide 0.35 was right for
+        # neither: it let a trade spend a third of its risk on costs when the
+        # largest edge in this system is worth a twentieth.
+        #
+        # Passed in rather than looked up per lane, so there is still exactly
+        # ONE definition of what a cost is (`_cost_share`) and the caller only
+        # chooses how much of it is tolerable.
         cost_share = self._cost_share(spec, sl_distance, commission_per_lot, spread_price)
-        limit = self.settings.risk.max_cost_share_of_risk
+        limit = (
+            self.settings.risk.max_cost_share_of_risk if max_cost_share is None else max_cost_share
+        )
         if limit > 0 and cost_share > limit:
             return result(
                 RiskDecision.block(
