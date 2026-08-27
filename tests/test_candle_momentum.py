@@ -518,19 +518,40 @@ class TestItIsLiveAndBraked:
         # used to check it, and that made a business decision into a test.
         # `section6.cmd` measured the lane for the first time on 26 August --
         # 1,681 trades, -0.304R each -- and it was switched off the same hour;
-        # this assertion went red for a change that was exactly right. Whether
-        # the account runs section six follows the evidence and will move
-        # again. What may NEVER move is the line below it: the module must
-        # stay out of `live_enabled_modules` so it cannot both vote in section
-        # one and open its own trade on the same reading. That is the
-        # invariant, and it holds whether the lane is on or off.
+        # this assertion went red for a change that was exactly right.
+        #
+        # ALSO NOT ASSERTED ANY MORE: that the module stays OUT of
+        # `live_enabled_modules`. It was kept out with this reason --
+        #
+        #     "so it cannot do both -- vote in section one AND open its own
+        #      trade on the same reading"
+        #
+        # -- and that is not reachable. The lane is invoked from inside
+        # `_record_skip`, so it only ever runs on setups section one REFUSED;
+        # when section one takes the trade the lane does not run at all that
+        # cycle. The two were already mutually exclusive and nobody had checked.
+        #
+        # Keeping it out cost real evidence. The score was a weighted mean, so
+        # this module joining a strong reader LOWERED the score -- 70.0 alone
+        # against 51.9 corroborated -- which is why excluding it looked right.
+        # With the mean gone the same pair reads 75.1, and a decisive M1 candle
+        # confirming an H1 break is exactly the corroboration the engine was
+        # built to reward.
+        #
+        # THE INVARIANT THAT REPLACES IT is the arithmetic below: its ceiling
+        # is under the bar, so it can never open a trade alone however loudly
+        # it reads. That is checked by `test_its_ceiling_really_is_below_the_
+        # bar`, and it fails the moment anyone raises `base_score` or
+        # `maximum_confidence` -- before this could become dangerous.
         # Risk-sized like every other route to an order. A fixed lot is a
         # quantity, not a risk: 0.01 of gold behind a 3.41 dollar stop is
         # EUR 2.91, and 0.01 of an index is something else entirely. The lot
         # ceiling is off (0.0) so the risk model decides outright.
         assert module.risk_pct == 1.0
         assert module.fixed_lots == 0.0
-        assert "candle_momentum" not in settings.analysis.confluence.live_enabled_modules
+        confluence = settings.analysis.confluence
+        assert "candle_momentum" in confluence.live_enabled_modules
+        assert module.base_score * module.maximum_confidence < confluence.score_threshold
         # Its own stop stays, and it is the strict one: this section takes
         # several trades a day, so ten losses in a row is half a day paying
         # for the same fault.
