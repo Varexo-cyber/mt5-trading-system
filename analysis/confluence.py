@@ -286,10 +286,67 @@ class ConfluenceEngine:
             )
 
         denominator = sum(weight for _, weight in agreeing)
-        score = (
-            sum(abs(signal.score) * signal.confidence * weight for signal, weight in agreeing)
-            / denominator
+        # THE ENGINE IS CALLED CONFLUENCE AND THIS LINE PUNISHED CONFLUENCE.
+        #
+        # The score was a weighted MEAN over the agreeing modules, so a second
+        # reader that AGREES could only pull the average toward its own value.
+        # Against the threshold of 45:
+        #
+        #     market_structure alone                        70.0
+        #     market_structure + candle_momentum agreeing    51.9
+        #
+        # Two readers pointing the same way scored eighteen points LOWER than
+        # one reader alone. Corroboration was a penalty, and the penalty grew
+        # with how much corroboration there was.
+        #
+        # WHAT THAT SELECTED FOR is the part that matters. At a fixed bar, an
+        # engine whose score falls as agreement rises does not merely
+        # undervalue corroborated setups -- it systematically prefers the ones
+        # where exactly ONE detector is loud and every other is silent. Those
+        # are the least corroborated readings available. All eight detectors
+        # came back at 54-57% with an average win of 0.68R against an average
+        # loss of 1.04R: one shape, indistinguishable from each other and
+        # barely distinguishable from a coin.
+        #
+        # This was known and written down without the conclusion being drawn.
+        # `candle_momentum`'s docstring says "joining a strong reader makes
+        # matters worse rather than better", and the answer at the time was to
+        # give that module its own lane AROUND the vote rather than to ask why
+        # agreement was being taxed.
+        #
+        # THE FIX: THE SCORE IS THE STRONGEST READING, RAISED BY HOW STRONGLY
+        # IT IS CORROBORATED.
+        #
+        # A premium on top of the mean was tried first and was not enough: at
+        # 15% a corroborated pair came out at 59.7 against 70.0 alone, so the
+        # penalty survived its own repair and only got smaller. The property
+        # has to hold by construction rather than by tuning, and the
+        # construction is that agreement may not dilute the reading that
+        # earned the score.
+        #
+        # The premium is weighted by each corroborating module's OWN strength
+        # relative to the best, so a token nod earns a token premium and a
+        # second strong reader earns a real one. Without that, any module
+        # scraping past its floor would buy the full bonus, and "find anything
+        # that agrees" would become the strategy.
+        #
+        # The scale is untouched where it matters: a single agreeing module
+        # scores exactly `|score| x confidence`, which is what the plain mean
+        # gave it, so the threshold keeps its meaning and nothing that trades
+        # today stops trading. Zero restores the old arithmetic for one module
+        # and removes the premium for the rest.
+        strengths = sorted(
+            (abs(signal.score) * signal.confidence for signal, _ in agreeing), reverse=True
         )
+        best = strengths[0] if strengths else 0.0
+        corroboration = 0.0
+        if best > 0:
+            corroboration = min(
+                self.config.max_corroboration_bonus,
+                self.config.corroboration_bonus_per_module
+                * sum(other / best for other in strengths[1:]),
+            )
+        score = best * (1.0 + corroboration)
         confidence = sum(signal.confidence * weight for signal, weight in agreeing) / denominator
         if score < self.config.score_threshold:
             return self._reject(

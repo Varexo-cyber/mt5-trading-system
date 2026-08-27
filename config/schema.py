@@ -2805,6 +2805,33 @@ class ConfluenceConfig(Base):
     #: purity would be very hard to spot from the outside.
     cache_signals_per_bar: bool = True
     score_threshold: float = Field(default=55.0, ge=1.0, le=100.0)
+    #: What each agreeing module beyond the first adds to the score, as a
+    #: fraction. The whole premium is capped by `max_corroboration_bonus`.
+    #:
+    #: WHY THIS EXISTS. The score is a weighted MEAN over the agreeing modules,
+    #: so a second reader that AGREES could only pull the average toward its
+    #: own value. Against a threshold of 45:
+    #:
+    #:     market_structure alone                        70.0
+    #:     market_structure + candle_momentum agreeing    51.9
+    #:
+    #: Two readers pointing the same way scored eighteen points LOWER than one
+    #: reader alone, in an engine named for confluence.
+    #:
+    #: The selection effect is the damage. At a fixed bar, a score that falls
+    #: as agreement rises does not just undervalue corroborated setups — it
+    #: systematically picks the ones where exactly one detector is loud and the
+    #: rest are silent. All eight detectors then measured 54-57% with an
+    #: average win of 0.68R against an average loss of 1.04R: one shape, and
+    #: barely distinguishable from a coin.
+    #:
+    #: Zero restores the old arithmetic exactly, so an account that has not set
+    #: this keeps its behaviour rather than being changed by an upgrade.
+    corroboration_bonus_per_module: float = Field(default=0.0, ge=0.0, le=1.0)
+    #: The ceiling on that premium. Bounded so a wide agreement cannot swamp
+    #: the quality of the reading itself: five weak modules nodding along must
+    #: not outscore one strong, well-corroborated pair.
+    max_corroboration_bonus: float = Field(default=0.0, ge=0.0, le=2.0)
     minimum_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
     minimum_directional_modules: int = Field(default=2, ge=1, le=10)
     #: What a SINGLE detector must be sure of before it may carry a trade alone.
