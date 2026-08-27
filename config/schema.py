@@ -3018,6 +3018,14 @@ class ConfluenceConfig(Base):
         "ema_pullback_resume",
         "m1_micro_breakout",
         "candle_momentum",
+        # AND A THIRD TIME, to `basket_divergence`, where it is worst of the
+        # three. That module reads ONE timeframe, M1, and its own docstring
+        # states the mechanism: "the trade pays when the GAP closes". A gap
+        # between two indices measured over M1 closes in minutes. It was given
+        # H1 planning authority and a target twenty-four hours out, by which
+        # time the gap it was entered on had long since closed and what was
+        # left was an unhedged directional index position with no thesis.
+        "basket_divergence",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
@@ -4084,6 +4092,43 @@ class TradeManagementConfig(Base):
     #: current price, because a trade that ran to 2R and came back has proved
     #: something — that one belongs to the give-back rule, not to this one.
     time_exit_stale_peak_r: float = Field(default=1.0, ge=0.0)
+
+    #: MEASURE THE DEADLINE AGAINST THE PLAN, NOT AGAINST A CONSTANT.
+    #:
+    #: `time_exit_hours` was one number for every trade the system has ever
+    #: taken, and the engine has decided a per-proposal horizon the whole time:
+    #: `quick` is thirty minutes, `intraday` three hours, `swing` twenty-four.
+    #: The confluence engine's own comment on that number says "everything
+    #: downstream derives its window from this". The exit did not derive
+    #: anything from it — `execution/manager.py` did not contain the word
+    #: horizon — so a thirty-minute idea sat in a position slot for a day.
+    #:
+    #: That is one defect with two consequences, which is why it is worth this
+    #: much comment. THE SLOT is what caps trades per day: a position released
+    #: after its own three-hour plan frees the slot eight times sooner than one
+    #: released after twenty-four. And THE TRADE is decided by whatever moves
+    #: the market in the hours it is held, so a detector that claimed to read
+    #: the next thirty minutes and was then judged over twenty-four hours was
+    #: measured almost entirely on noise it never claimed to see. That is a
+    #: mechanism for "no detector beat a coin flip" which does not require any
+    #: of them to be worthless.
+    #:
+    #: NOTHING ABOUT SWING CHANGES. Its plan is H1 x 24 bars = 1,440 minutes =
+    #: exactly the 24.0 that `time_exit_hours` already held, so at a multiple of
+    #: 1.0 a swing trade keeps the deadline it has always had. The two numbers
+    #: were the same number all along; only one of them was ever applied.
+    time_exit_uses_plan_horizon: bool = True
+    #: Rope on top of the plan's own length, because expiring exactly on the
+    #: target's own bar is a coin flip about one bar rather than a policy. 1.5
+    #: gives a three-hour plan four and a half hours before the deadline can
+    #: fire, and the deadline is not itself an exit: `_time_exit_verdict` still
+    #: only closes a trade that went nowhere or peaked below
+    #: `time_exit_stale_peak_r`. A trade that is working is never closed by it.
+    time_exit_horizon_multiple: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: A floor under the derived deadline, so a very short plan cannot produce
+    #: a deadline inside the spread's own noise. Thirty minutes is the quick
+    #: profile's whole horizon; below that the number stops being a plan.
+    time_exit_minimum_hours: float = Field(default=0.5, ge=0.0)
 
     #: How often the AI supervisor reconsiders each open position, in minutes.
     #: Zero switches it off and leaves the mechanical rules above as the whole

@@ -37,7 +37,7 @@ from infra.logging import get_logger
 
 log = get_logger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 _MIGRATIONS: dict[int, tuple[str, ...]] = {
@@ -355,6 +355,29 @@ _MIGRATIONS: dict[int, tuple[str, ...]] = {
         "CREATE INDEX idx_position_snapshots_trade_ts " "ON position_state_snapshots(trade_id, ts)",
         "CREATE INDEX idx_position_snapshots_ticket_ts " "ON position_state_snapshots(ticket, ts)",
         "CREATE INDEX idx_position_snapshots_ts ON position_state_snapshots(ts)",
+    ),
+    8: (
+        # HOW LONG THIS TRADE WAS EVER MEANT TO LAST.
+        #
+        # The engine decides that per proposal — `quick` is thirty minutes,
+        # `intraday` three hours, `swing` twenty-four — and the number reached
+        # the target maths, the reviewer briefing, the brain and the scorecard.
+        # It never reached the code that CLOSES positions. `execution/manager`
+        # does not contain the word "horizon"; its stalled-trade deadline was a
+        # flat `time_exit_hours: 24` for every trade the system has ever taken.
+        #
+        # So a thirty-minute idea occupied a position slot for a day, and for
+        # twenty-three and a half of those hours it was a position with no
+        # thesis behind it — the trigger's information had decayed and only the
+        # exposure was left. That is both halves of the same complaint: the
+        # slot is what caps trades per day, and a trade held long past its own
+        # plan is decided by noise the detector never claimed to read.
+        #
+        # NULL on every existing row, and on any position adopted rather than
+        # planned. The manager falls back to `time_exit_hours` there, so
+        # nothing already open changes behaviour.
+        "ALTER TABLE trades ADD COLUMN horizon TEXT",
+        "ALTER TABLE trades ADD COLUMN expected_horizon_minutes INTEGER",
     ),
 }
 
