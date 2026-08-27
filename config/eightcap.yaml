@@ -2241,8 +2241,46 @@ analysis:
     # alleen als uitvoerder: ze wegen nu ook niet meer mee als context of veto,
     # want een munt die meestemt is geen bevestiging.
     momentum_scalp: false
-    range_fade: true
     range_break: false
+    # ---------------------------------------------------------------------
+    # ALLE DRIE UIT, 27 augustus. De eigenaar vroeg om een systeem waar ik
+    # echt van overtuigd ben, en dat kan niet zolang dit draait.
+    #
+    # `range_fade` STOND AAN op zijn verzoek ("ik wil meer kaarspatronen") en
+    # met de cijfers erbij. Dit is wat die cijfers nu waard zijn op de nieuwe
+    # inzet van 2% (1R = EUR 4,22):
+    #
+    #     898 trades, -0,174R per trade
+    #     per trade        EUR 0,73 verlies
+    #     over 898         EUR 660
+    #     worst drawdown   EUR 398   <- op een rekening van EUR 211
+    #
+    # En dit is het getal dat de beslissing maakt: de HELE gemeten edge van
+    # sectie 1 is +0,05R per trade. `range_fade` verliest 0,174R per trade.
+    #
+    #     range_fade verliest 3,5x zo hard als sectie 1 wint
+    #
+    # Alles wat vandaag aan sectie 1 gerepareerd is -- de scorefout, de
+    # kostenpoort, de inzet -- wordt hierdoor opgegeten voordat het iets kan
+    # opleveren. Er is geen versie van "overtuigd zijn" waarin dit aan staat.
+    #
+    # `trend_pullback` en `failed_break` GAAN OOK UIT, en om een andere reden:
+    # ze stonden hier NIET. Ze zijn schema-defaults die niemand ooit heeft
+    # aangezet, en ze handelden met echt geld. De enige meting die van een van
+    # beide bestaat is "trend_pullback 2 trades" -- in de tabel hierboven zelf
+    # weggeschreven als "te weinig". `failed_break` komt in geen enkele tabel
+    # voor.
+    #
+    # Live geld op een strategie die niemand gemeten en niemand aangezet heeft
+    # is geen risico dat iemand genomen heeft. Het is er een die overkwam.
+    # Daarom staan ze hier nu expliciet, ook al is `false` de uitkomst: een
+    # regel die er staat kan besproken worden, een default niet.
+    #
+    # TERUG AANZETTEN is per stuk een regel, en de lat is dezelfde als voor
+    # alles vandaag: een meting die zegt dat het boven nul uitkomt.
+    range_fade: false
+    trend_pullback: false
+    failed_break: false
     # Two theories reading the same bars in opposite directions is a market
     # with no edge, not a close call to settle by score. Stand aside.
     veto_on_conflict: true
