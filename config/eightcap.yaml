@@ -3108,7 +3108,17 @@ risk:
   # Het absolute plafond. Een modus mag hier lager gaan, nooit hoger — de
   # loader weigert dat bij het inladen, en dat is precies hoe deze regel is
   # opgevallen toen micro_live op 4 werd gezet terwijl dit nog 2 was.
-  max_concurrent_positions: 4
+  #
+  # 4 -> 8 op 27 augustus, samen met `modes.micro_live`. Dezelfde loader ving
+  # het opnieuw, en dat is de derde keer vandaag dat een plafond alleen zetten
+  # een stille no-op zou zijn geweest.
+  #
+  # De reden staat bij `modes.micro_live.max_concurrent_positions`: vier slots
+  # waren gekalibreerd op een inzet van 5% en de inzet ging vanmiddag naar 2%,
+  # dus de helft van het boekplafond stond ongebruikt. Wat dan het aantal
+  # trades bepaalt is niet een poort maar het slot: een swing-trade houdt er
+  # een 24 uur vast.
+  max_concurrent_positions: 8
 
   # De anti-martingale-halvering staat uit op DIT account, en alleen omdat hij
   # hier niet doet waar hij voor bedoeld is.
@@ -3204,7 +3214,35 @@ modes:
     # 12% aggregate ceiling with two slots still free, and with the daily and
     # weekly limits switched off on this account that is as far as simultaneous
     # exposure should go.
-    max_concurrent_positions: 4
+    # 4 -> 8, EN DIT IS EEN CORRECTIE OP MEZELF VAN VANMIDDAG.
+    #
+    # Vier slots waren gezet toen de gewone inzet 5% was: 4 x 5 = 20%, tegen
+    # een boekplafond van 24%. Ik heb de inzet naar 2% gebracht en de slots
+    # laten staan. Daardoor:
+    #
+    #     4 slots x 2%  =   8% risico als alles vol staat
+    #     boekplafond      16%
+    #     -> de helft van de gesanctioneerde ruimte werd niet gebruikt
+    #
+    # En het slotplafond is wat het AANTAL TRADES bepaalt, niet de poorten.
+    # Een swing-trade houdt zijn slot 24 uur vast (`horizon_profiles.swing`:
+    # H1 x 24 bars, en `time_exit_hours: 24`). Met vier slots is dat vier
+    # trades per dag als hard plafond, hoeveel setups er ook langskomen.
+    #
+    # Dat werd vandaag erger door mijn eigen opschoning: van de zes modules die
+    # eruit gingen waren er VIJF van de zes intraday-modules en TWEE van de
+    # drie quick-modules. Wat overbleef is bijna allemaal swing, dus bijna elke
+    # trade bezet nu een slot voor een etmaal.
+    #
+    # 8 x 2% = 16% = exact het boekplafond. Dus dit verhoogt het gelijktijdige
+    # risico NIET boven wat al gesanctioneerd is -- `max_total_open_risk_pct`
+    # blijft de bindende rem, en die knijpt vanzelf eerder dicht zodra trades
+    # op overtuiging groter gesized worden. Bij 8% per trade passen er nog
+    # steeds maar twee.
+    #
+    # Wat het wel doet is de doorstroom verdubbelen: acht slots die elk 24 uur
+    # bezet zijn geven acht trades per dag in plaats van vier.
+    max_concurrent_positions: 8
     max_journal_detail: true
     min_equity: 50
     max_equity: 500

@@ -87,14 +87,37 @@ class TestScaling:
         """
         assert scaled(settings, 0.0, step=50.0, ceiling=6, floor=1) == 1
 
-    def test_eightcap_experiment_exposes_exactly_four_total_slots(self) -> None:
+    def test_the_slot_count_matches_the_stake_and_the_book_cap(self) -> None:
+        """Four slots were calibrated for a 5% stake: 4 x 5 = 20% against a 24%
+        book cap. The stake went to 2% on 27 August and the slots did not move,
+        so half the sanctioned risk sat unused -- and the SLOT count is what
+        decides how many trades a day there are, not any gate.
+
+        A swing trade holds its slot for 24 hours (`horizon_profiles.swing` is
+        H1 x 24 bars, and `time_exit_hours` is 24), so four slots is four
+        trades a day however many setups appear. That bit harder the same
+        afternoon: of the six modules switched off, five were intraday modules
+        and two of the three quick ones, so almost everything left classifies
+        as swing.
+
+        Eight slots at the ordinary 2% is exactly the 16% book cap, so this
+        raises throughput without raising sanctioned risk by a basis point.
+        `max_total_open_risk_pct` remains the binding rule and tightens on its
+        own as conviction sizes trades up: at the 8% ceiling only two fit.
+        """
         overlay = DEFAULT_CONFIG_PATH.with_name("eightcap.yaml")
         settings = apply_experimental_live_limits(
             load_settings(DEFAULT_CONFIG_PATH, overlay=overlay, env_overrides=False)
         )
 
         assert settings.risk.equity_per_position == 0.0
-        assert settings.effective_max_positions(153.03) == 4
+        assert settings.effective_max_positions(153.03) == 8
+        # The property, not just the number: a full book of ordinary trades
+        # must land ON the cap, never past it.
+        ordinary = settings.risk.conviction_risk.floor_pct
+        assert settings.effective_max_positions(153.03) * ordinary == (
+            settings.risk.max_total_open_risk_pct
+        )
         assert settings.trade_management.pyramiding.enabled
         assert settings.trade_management.pyramiding.max_legs_per_symbol == 3
         assert settings.trade_management.pyramiding.max_active_symbols == 1
