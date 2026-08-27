@@ -1853,7 +1853,26 @@ analysis:
     # winst. Een spread die een kwart van je stop mag zijn, is een kwart van je
     # R betaald voordat de markt iets doet. 0,08 knipt die dure staart eraf
     # zonder de gewone trade te weigeren.
-    max_spread_share_of_stop: 0.08
+    #
+    # 27 AUGUSTUS: 0,08 -> 0,03, en nu op een gemeten band in plaats van op een
+    # rekensom. `modules.cmd --days 90` splitst elke trade naar spread als
+    # aandeel van zijn eigen stop:
+    #
+    #     spread / stop    trades   winst   per trade    totaal
+    #     0% - 3%             409     60%     -0,091R    -37,29R
+    #     3% - 6%              34     38%     -0,488R    -16,61R
+    #     6% - 10%              5     40%     -0,397R     -1,98R
+    #     10% - 15%             2      0%     -0,841R     -1,68R
+    #
+    # Eenenveertig trades boven de 3% kostten -20,27R. Dat is 36% van het hele
+    # verlies uit 9% van de trades, en de trefkans zakt van 60% naar 38% zodra
+    # je die grens passeert -- de spread duwt de stop naar zich toe en het
+    # target weg, dus het is niet alleen een aftrek maar een slechtere trade.
+    #
+    # WAT DIT NIET DOET, en dat hoort erbij: de band die overblijft staat zelf
+    # ook op -0,091R. Dit maakt het systeem niet winstgevend. Het haalt de
+    # duurste 9% eruit voor negen procent minder volume, en dat is het.
+    max_spread_share_of_stop: 0.03
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
@@ -2167,6 +2186,58 @@ analysis:
     # bronnen die elkaar tegenspreken plus het grootste volume-effect van de
     # tabel is precies de combinatie waarbij je een halve stap zet en meet.
     lone_module_minimum_confidence_by_module:
+      # TREND_MOMENTUM HEEFT HET CIJFER DAT DE CODE VRAAGT, EN DIT IS DE ENIGE
+      # REGEL IN DEZE TABEL DIE LIVE IETS DOET.
+      #
+      # De vloer in `confluence.py` staat naast een comment dat zegt: "de tabel
+      # per module is standaard leeg ... dit verandert niets tot een detector
+      # een vermelding verdiend heeft. Verdiend betekent een getal uit
+      # `scripts/backtest_modules.py`, geen argument."
+      #
+      # Dat getal is er nu, twee keer, over twee onafhankelijke runs van
+      # negentig dagen op vijf markten:
+      #
+      #     run 1   66 trades   76% winst   +0,105R   +6,94R   binnen toeval
+      #     run 2   66 trades   76% winst   +0,123R   +8,14R   BUITEN toeval
+      #
+      # De tweede run is de eerste keer in dit project dat iets buiten toeval
+      # uitkomt: trend_momentum op XAUUSD haalde 76% waar een munt die dezelfde
+      # momenten met dezelfde stops en targets nam op 63% bleef -- een marge van
+      # +0,092R per trade. Elke andere regel in die tabel is als "inside
+      # chance" gemarkeerd.
+      #
+      # EN HET IS DE ENIGE RIJ WIENS HOUDTIJD DE GRADER ONGEVEER GOED HAD. De
+      # cap stond op 500 M5-bars, 41,7 uur. Een swing-plan is 24 uur, dus 1,7x
+      # te lang aangehouden. Een quick-module met een plan van dertig minuten
+      # werd 83x te lang aangehouden. Van alles in dat rapport is deze rij de
+      # minst vertekende, en dat is geen toeval maar de reden dat juist hier
+      # iets zichtbaar wordt.
+      #
+      # 0,50, EN IK WILDE 0,45. Dat is de waarde die de meting exact
+      # reproduceert -- de gemeten populatie is de HELE ALONE-tabel, 66 trades
+      # met alle zekerheidsniveaus door elkaar, en een hogere vloer laat een
+      # deelverzameling door die nooit apart gemeten is.
+      #
+      # `test_every_entry_names_a_detector_with_a_live_record` weigerde dat,
+      # en terecht. Zijn eis is dat elke vermelding hier BOVEN
+      # `minimum_confidence` blijft, met de reden erbij: op 0,45 is de
+      # lone-vloer niet versoepeld maar WEG. Elke lezing die uberhaupt door de
+      # gewone drempel komt, klaart hem dan ook, en dan is de eis "een
+      # onovertuigde losse mening is geen gecorroboreerd bewijs" niet
+      # afgezwakt maar afgeschaft. Dat is een grotere verandering dan wat de
+      # meting draagt.
+      #
+      # 0,50 is dus de laagste waarde in deze tabel -- passend, want dit is de
+      # enige detector erin die buiten toeval uitkomt -- en hij moet nog steeds
+      # overtuigd zijn. Het verschil met 0,65 is de kier die de meting vraagt.
+      #
+      # WAT HIERTEGENIN GAAT en hier hoort te staan: trend_momentum is eerder
+      # uitgezet op -0,365R over 163 trades op TWINTIG markten, t = -4,01. Dat
+      # is nog altijd een harder getal dan dit. Het verschil is het speelveld --
+      # deze meting is vijf markten, majors en goud -- en aandelen staan sinds
+      # 26 augustus buiten het universum. `section_breakers.trend_momentum`
+      # staat eronder en zet hem uit na acht verliezers op rij.
+      trend_momentum: 0.50
       # Geen van deze staat nog op `live_enabled_modules`, dus deze regels
       # doen niets. Ze blijven staan zodat een terugdraai één regel is en niet
       # een reconstructie.
@@ -2374,7 +2445,11 @@ analysis:
     # 26 augustus: mee met de gate in `analysis` — zie de rekensom daar. De
     # rondrit is de helft van het gat naar winst, en dit is de knop die hem
     # kleiner maakt.
-    max_spread_share_of_stop: 0.08
+    #
+    # 27 augustus: 0,08 -> 0,03, mee met dezelfde gate. De gemeten band staat
+    # daar; deze twee moeten hetzelfde getal houden, anders weigert de ene
+    # poort wat de andere doorlaat en is de meting niet meer toe te schrijven.
+    max_spread_share_of_stop: 0.03
 
     # Van 60 naar 75, op verzoek van de eigenaar: liever weinig trades waar hij
     # zeker van is dan veel marginale.
