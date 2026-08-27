@@ -3642,6 +3642,35 @@ class TradeManagementConfig(Base):
     #: ordinary pullback inside a live move does not trigger it, short enough
     #: to still be near the high when it does.
     peak_stall_minutes: float = Field(default=6.0, ge=0.0, le=240.0)
+    #: THE SAME DEFECT AS THE TIME EXIT, ONE SCREEN AWAY IN THE SAME FILE.
+    #:
+    #: The comment above states this rule's own design: "roughly a M5 bar plus
+    #: confirmation". M5 is the QUICK profile's planning timeframe. The rule was
+    #: built for a thirty-minute trade and then applied, as a wall-clock
+    #: constant, to a trade planned on H1 with a target twenty-four hours out —
+    #: where one bar is sixty minutes and four minutes of no new high is not a
+    #: stall, it is a trade breathing.
+    #:
+    #: The account's own replay says what that cost, and it is written twice in
+    #: `execution/manager.py`: PEAK_STALL banked +0.54R where leaving the
+    #: position alone returned +1.17R, a lift of -0.64R. The recorded response
+    #: was to make it wait longer, and the file's own comment on that says it
+    #: "changes when it fires and not what it pays". Correct — because the wait
+    #: was still being measured against the wrong clock.
+    #:
+    #: So the wait is at least this share of the trade's OWN plan.
+    #:
+    #:     quick     30 min plan  ->   4.5 min
+    #:     intraday    3 h  plan  ->  27   min
+    #:     swing      24 h  plan  ->   3.6 h
+    #:
+    #: `peak_stall_minutes` stays as the floor, so a position with no recorded
+    #: plan — an adopted one — behaves exactly as it does today, and the rule
+    #: can only ever fire LATER than it used to, never sooner. That direction
+    #: is the safety argument: waiting longer to close a profitable position
+    #: risks money left on the table, and the account has a measured -0.64R
+    #: saying that is the cheaper of the two mistakes here.
+    peak_stall_share_of_horizon: float = Field(default=0.15, ge=0.0, le=1.0)
     #: Profit required before a stalled peak means anything. Below this the
     #: trade has not made enough to be worth protecting and the noise band is
     #: wide enough that "no new high" says nothing.

@@ -630,6 +630,7 @@ class PositionManager:
                 risk_money=risk_money,
                 tick=tick,
                 risk=risk,
+                planned_minutes=self._planned_minutes(row),
             )
             if settled
             else None
@@ -1953,6 +1954,7 @@ class PositionManager:
         risk_money: float = 0.0,
         tick=None,  # type: ignore[no-untyped-def]
         risk: float = 0.0,
+        planned_minutes: float | None = None,
     ) -> ManagementEvent | None:
         """Bank a profit whose move has stopped advancing, while it is still there.
 
@@ -1985,7 +1987,25 @@ class PositionManager:
         process that is now running ever existed.
         """
         config = self.settings.trade_management
-        wait = config.peak_stall_minutes
+        # MEASURED AGAINST THE TRADE'S OWN PLAN, NOT AGAINST THE CLOCK.
+        #
+        # This was `config.peak_stall_minutes` flat. The docstring above states
+        # the design in its own words -- "roughly a M5 bar plus confirmation" --
+        # and M5 is the QUICK profile's planning timeframe. The rule was built
+        # for a thirty-minute trade and then applied unchanged to one planned
+        # on H1 with a target twenty-four hours away, where a single bar is
+        # sixty minutes and four minutes of no new high is a trade breathing.
+        #
+        # The account's replay is quoted twice below: PEAK_STALL banked +0.54R
+        # where doing nothing returned +1.17R. The response recorded there was
+        # to lengthen the wait, and the comment on it says that "changes when
+        # it fires and not what it pays" -- right, because the wait was still
+        # being counted on the wrong clock.
+        #
+        # The configured minutes stay as the FLOOR, so an adopted position with
+        # no recorded plan behaves exactly as before and this can only ever
+        # fire later than it used to, never sooner.
+        wait = self._peak_stall_wait(config, planned_minutes)
         # The R floor, OR enough money that the R floor is the wrong question.
         # A twelve-pip stop can put two percent of the account on the table at
         # 0.44R, and this rule exists precisely to leave at the top of a move
@@ -2157,6 +2177,43 @@ class PositionManager:
         )
 
     @staticmethod
+    def _peak_stall_wait(config: TradeManagementConfig, planned_minutes: float | None) -> float:
+        """How long a peak may stand before this rule calls the move over.
+
+        Extracted so it can be asserted directly, because the number it
+        produces is the whole behaviour and the rule around it needs a broker,
+        a tick and a health read to reach.
+
+        See `peak_stall_share_of_horizon`: the configured minutes are a floor
+        and the plan raises them, so this can only ever wait longer than the
+        old constant, never less. A position with no recorded plan gets exactly
+        the constant it got before.
+        """
+        wait = config.peak_stall_minutes
+        if planned_minutes is not None and config.peak_stall_share_of_horizon > 0:
+            wait = max(wait, planned_minutes * config.peak_stall_share_of_horizon)
+        return wait
+
+    @staticmethod
+    def _planned_minutes(row) -> float | None:  # type: ignore[no-untyped-def]
+        """How long the plan said this trade would take, or None if it cannot say.
+
+        Read defensively for the same reason `_risk_money` is: this runs inside
+        the loop watching real money, and a row recovered by hand, a test
+        double with a smaller table, or a position adopted from the terminal
+        must each cost one rule its refinement rather than take down the guard.
+
+        None is a real answer and callers must fall back to their constant on
+        it. A default of 1,440 would be a lie that happened to look like the
+        old behaviour, which is a worse failure than an honest gap.
+        """
+        try:
+            minutes = float(row["expected_horizon_minutes"] or 0.0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+        return minutes if minutes > 0.0 else None
+
+    @staticmethod
     def _time_exit_deadline(
         config: TradeManagementConfig,
         row,  # type: ignore[no-untyped-def]
@@ -2190,11 +2247,8 @@ class PositionManager:
         ceiling = config.time_exit_hours
         if ceiling is None or not config.time_exit_uses_plan_horizon:
             return ceiling * patience if ceiling is not None else None
-        try:
-            minutes = float(row["expected_horizon_minutes"] or 0.0)
-        except (KeyError, IndexError, TypeError, ValueError):
-            return ceiling * patience
-        if minutes <= 0.0:
+        minutes = PositionManager._planned_minutes(row)
+        if minutes is None:
             return ceiling * patience
         hours = max(
             config.time_exit_minimum_hours,
