@@ -2996,6 +2996,20 @@ class ConfluenceConfig(Base):
     #: `drift_continuation` measures eight M15 bars and was handed a swing
     #: plan — H1 planning authority and a target twenty-four hours out — for a
     #: signal whose whole mechanism expires in about two hours.
+    #:
+    #: AND IT HAPPENED AGAIN, to `candle_momentum`, which is the module this
+    #: warning was written for and the one it was not applied to. Its bias is
+    #: M15, its confirmation is M5 and its trigger is a single closed M1
+    #: candle. Nothing in it reads a chart slower than M15. It was in neither
+    #: list, so `_classify_horizon` fell through to `return "swing"` and gave a
+    #: one-minute trigger H1 planning authority and a target twenty-four hours
+    #: out — the exact sentence above, one module later.
+    #:
+    #: That is not only a wrong plan, it is the throughput. A swing proposal
+    #: holds its position slot for a full day (`time_exit_hours: 24`), and four
+    #: of the five modules live on this account classified as swing, so nearly
+    #: every trade parked a slot for an etmaal. An intraday plan expires in
+    #: three hours and frees the slot eight times sooner.
     intraday_modules: tuple[str, ...] = (
         "liquidity_sweep",
         "drift_continuation",
@@ -3003,6 +3017,7 @@ class ConfluenceConfig(Base):
         "impulse_break",
         "ema_pullback_resume",
         "m1_micro_breakout",
+        "candle_momentum",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
