@@ -128,13 +128,13 @@ class TestShippedConfig:
         # majors: momentum_scalp -172.15R over 307 trades, range_fade -156.32R
         # over 898, range_break -76.28R over 214. Against a coin flip taking the
         # same moments, stops and targets, not one of them won.
-        # `range_fade` is back on at the owner's instruction after he read the
-        # backtest himself: 898 trades, -156.32R, and +0.082R against a coin
-        # flip taking the same moments and stops, which is inside chance.
-        assert settings.analysis.playbooks.live_execution_enabled
-        assert settings.analysis.playbooks.range_fade
-        # The two that were WORSE than the coin stay off. Nothing was asked for
-        # them and there is nothing to say for them.
+        # Every short-horizon play is off as of 27 August; the reasoning and
+        # the arithmetic live in `TestNoPlaybookTradesOnASilentDefault` at the
+        # bottom of this file. In one line: `range_fade` measured -0.174R a
+        # trade over 898 trades and section one's entire edge is +0.05R, so it
+        # lost three and a half times faster than the account's best strategy
+        # won -- and two more were live on a schema default nobody set.
+        assert not settings.analysis.playbooks.range_fade
         assert not settings.analysis.playbooks.momentum_scalp
         assert not settings.analysis.playbooks.range_break
         # And the route stays the strictest one in the system, which is what
@@ -1076,3 +1076,61 @@ class TestGoldIsTradableWithoutBeingAdoptable:
 
         for symbol in ("EURUSD.i", "SPX500", "NDX100"):
             assert not settings.instruments.is_observation_only(symbol), symbol
+
+
+class TestNoPlaybookTradesOnASilentDefault:
+    """`trend_pullback` and `failed_break` traded real money because nobody
+    switched them off.
+
+    The overlay named `momentum_scalp`, `range_fade` and `range_break` and said
+    why for each. The other two were never mentioned at all: they were on
+    because `True` is the schema default, and the launch banner reported
+    "short-horizon playbooks active: range_fade, failed_break, trend_pullback"
+    every single start without anyone reading it as a decision.
+
+    That is a different failure from a bad setting. A bad setting is a choice
+    that can be argued with; this was a live strategy nobody chose. The only
+    measurement of either is "trend_pullback 2 trades", written into the
+    overlay's own table as "too few". `failed_break` appears in no table at all.
+
+    So every play is now named explicitly, including the ones that are off, and
+    this test fails if a new one is ever added with a permissive default.
+    """
+
+    def _playbooks(self):  # type: ignore[no-untyped-def]
+        return load_settings(
+            overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
+        ).analysis.playbooks
+
+    def test_every_play_is_named_in_the_overlay(self) -> None:
+        """Named, whatever the answer is. A line that exists can be argued
+        with; a default cannot."""
+        overlay = (DEFAULT_CONFIG_PATH.parent / "eightcap.yaml").read_text(encoding="utf-8")
+        playbooks = self._playbooks()
+        plays = [
+            name
+            for name in type(playbooks).model_fields
+            if isinstance(getattr(playbooks, name), bool)
+            and name not in {"enabled", "live_execution_enabled"}
+            and not name.startswith(("veto_", "require_"))
+        ]
+
+        assert plays, "the play list should not be empty"
+        for name in plays:
+            assert f"    {name}:" in overlay, f"{name} trades on a schema default"
+
+    def test_the_one_with_a_real_negative_sample_is_off(self) -> None:
+        """898 trades at -0.174R. Section one's entire measured edge is
+        +0.05R a trade, so this lost three and a half times faster than the
+        account's best strategy won."""
+        assert not self._playbooks().range_fade
+
+    def test_the_two_that_were_never_measured_are_off(self) -> None:
+        assert not self._playbooks().trend_pullback
+        assert not self._playbooks().failed_break
+
+    def test_the_two_that_measured_worse_than_a_coin_stay_off(self) -> None:
+        playbooks = self._playbooks()
+
+        assert not playbooks.momentum_scalp
+        assert not playbooks.range_break
