@@ -1953,7 +1953,39 @@ analysis:
     # kapotte vloer. Dat ze met de nieuwe vloer positief worden is rekenwerk,
     # geen replay. Draai `modules.cmd` en als het tegenvalt gaat deze regel
     # terug naar [m1_micro_breakout, basket_divergence] — dat is één edit.
-    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence]
+    # `candle_momentum` STAAT ER NU BIJ, en dat kan pas sinds de scorefout weg
+    # is. Hij was er expres uit gehouden, met deze reden:
+    #
+    #     "absent from live_enabled_modules precisely so it cannot do both --
+    #      vote in section one AND open its own trade on the same reading"
+    #
+    # DIE ANGST IS NIET BEREIKBAAR. De eigen baan van sectie 6 wordt aangeroepen
+    # VANUIT `_record_skip`, dus alleen op setups die sectie 1 heeft GEWEIGERD.
+    # Neemt sectie 1 de trade, dan draait de baan die cyclus helemaal niet. Ze
+    # sluiten elkaar al uit; dat stond nergens en is nu nagelopen.
+    #
+    # WAT HET OPLEVERT, met de getallen erbij. Goud breekt structuur en de
+    # M1-kaars bevestigt het:
+    #
+    #     market_structure alleen          sterkte 70,00
+    #     candle_momentum                  sterkte 33,75  (45 x 0,75, zijn max)
+    #
+    #     vroeger (gemiddelde)             51,9   <- bevestiging TREKT OMLAAG
+    #     nu (sterkste + premie)           75,1   <- bevestiging TELT MEE
+    #
+    # WAAROM DIT VEILIG IS, en het is rekenkunde en geen vertrouwen: zijn
+    # plafond is 45 x 0,75 = 33,75 en de lat staat op 35. Hij kan NOOIT alleen
+    # een trade openen, wat hij ook ziet. Hij kan alleen bevestigen of
+    # tegenspreken. `test_its_ceiling_really_is_below_the_bar` bewaakt precies
+    # dat, en als iemand ooit `base_score` of `maximum_confidence` verhoogt gaat
+    # die test rood voordat dit gevaarlijk wordt.
+    #
+    # EN TEGENSPREKEN MAG OOK. Een besliste M1-kaars tegen de setup in telt nu
+    # mee in de instemmingsratio. Tegen een sterke BOS (70 tegen 20,25 gewogen)
+    # haalt dat 77,6% en blokkeert dus niets; tegen een zwakke setup kan het wel
+    # de doorslag geven. Dat is precies de goede kant op: de laatste minuut die
+    # hard de andere kant op ging is echt bewijs.
+    live_enabled_modules: [market_structure, liquidity_sweep, drift_continuation, fast_ema_cross, impulse_break, ema_pullback_resume, m1_micro_breakout, session_breakout, basket_divergence, candle_momentum]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
