@@ -3861,6 +3861,11 @@ class JarvisRunner:
             cycle_pk=cycle_pk,
             sizing=sizing,
             equity_before=account.equity,
+            # Carried so the exit can read it. The horizon reached the target
+            # maths, the briefing, the brain and the scorecard, and stopped
+            # short of the only code that decides when to let a position go.
+            horizon=idea.horizon,
+            expected_horizon_minutes=idea.expected_horizon_minutes,
         )
         result = self.broker.order_send(request, spec)
         if not result.ok:
@@ -4884,8 +4889,17 @@ class JarvisRunner:
         # this is the last moment before money moves.
         if not self._entry_still_allowed():
             return False
+        # The label only. Section six does not plan against a horizon profile —
+        # its target is measured in spreads and its exit is the per-second claim
+        # and cut — so there is no honest minutes figure to write, and the
+        # manager keeps the flat backstop it already applied here. Recording
+        # the lane still lets the scorecard separate it from section one, which
+        # it could not do before.
         trade_id = self.recorder.record_entry_intent(
-            cycle_pk=cycle_pk, sizing=sizing, equity_before=account.equity
+            cycle_pk=cycle_pk,
+            sizing=sizing,
+            equity_before=account.equity,
+            horizon="scalp",
         )
         result = self.broker.order_send(
             OrderRequest(

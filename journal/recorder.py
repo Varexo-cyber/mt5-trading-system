@@ -191,6 +191,8 @@ class Recorder:
         opened_at: datetime | None = None,
         entry_state: str = "OPEN",
         magic: int | None = None,
+        horizon: str | None = None,
+        expected_horizon_minutes: int | None = None,
     ) -> int:
         """Record an opened trade and return its id.
 
@@ -201,6 +203,17 @@ class Recorder:
 
         `entry_state` is OPEN for a confirmed position. `record_entry_intent`
         below uses PENDING to write the row *before* the order is sent.
+
+        `horizon` and `expected_horizon_minutes` are HOW LONG THE PLAN SAID
+        THIS TRADE WOULD TAKE, written here because the position manager needs
+        them and had no way to ask. The engine's own comment on that number
+        reads "everything downstream derives its window from this" — and the
+        exit did not: its stalled-trade deadline was a flat twenty-four hours
+        for a thirty-minute idea and a day-long one alike.
+
+        Both stay optional. A position adopted from the terminal, or one opened
+        by the external bridge, genuinely has no planned horizon, and inventing
+        one for it would be worse than the manager's existing fallback.
         """
         now = opened_at or self.clock.now()
         cursor = self.journal.conn.execute(
@@ -208,8 +221,8 @@ class Recorder:
             INSERT INTO trades (
                 cycle_pk, ticket, magic, symbol, direction, volume, entry_price, sl, tp,
                 risk_money, risk_pct, sl_distance_pips, planned_rr, opened_at, equity_before,
-                entry_state
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                entry_state, horizon, expected_horizon_minutes
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 cycle_pk,
@@ -228,6 +241,8 @@ class Recorder:
                 iso(now),
                 equity_before,
                 entry_state,
+                horizon,
+                expected_horizon_minutes,
             ),
         )
         trade_id = int(cursor.lastrowid or 0)
@@ -252,6 +267,8 @@ class Recorder:
         cycle_pk: int | None,
         sizing: SizingResult,
         equity_before: float,
+        horizon: str | None = None,
+        expected_horizon_minutes: int | None = None,
     ) -> int:
         """Write down what is about to be sent, before sending it.
 
@@ -271,6 +288,8 @@ class Recorder:
             entry_price=sizing.entry,
             equity_before=equity_before,
             entry_state="PENDING",
+            horizon=horizon,
+            expected_horizon_minutes=expected_horizon_minutes,
         )
         self.journal.conn.commit()
         return trade_id

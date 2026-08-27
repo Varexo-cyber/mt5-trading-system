@@ -646,7 +646,7 @@ class PositionManager:
             events.append(reacted)
             if reacted.exit_price is not None:
                 return events
-        deadline = config.time_exit_hours * patience if config.time_exit_hours is not None else None
+        deadline = self._time_exit_deadline(config, row, patience)
         expired = self._time_exit_verdict(config, age_hours, deadline, r_now, peak_r)
         if expired is not None:
             result = self.broker.close_position(position)
@@ -2155,6 +2155,56 @@ class PositionManager:
             f"broker{because}",
             r_at_action=r_now,
         )
+
+    @staticmethod
+    def _time_exit_deadline(
+        config: TradeManagementConfig,
+        row,  # type: ignore[no-untyped-def]
+        patience: float,
+    ) -> float | None:
+        """How long this trade gets, from the plan that opened it.
+
+        This was `config.time_exit_hours * patience` — one constant for every
+        trade the system has ever taken — while the engine had been deciding a
+        per-proposal horizon the whole time. `quick` plans thirty minutes,
+        `intraday` three hours, `swing` twenty-four. The confluence engine's own
+        comment on that number reads "everything downstream derives its window
+        from this", and this file did not: it did not contain the word horizon.
+
+        So a thirty-minute idea held a position slot for a day. Both halves of
+        that hurt. The SLOT is the hard cap on trades per day, so releasing one
+        at three hours instead of twenty-four is eight times the throughput
+        from the same book. And a trade held twenty-three hours past its own
+        plan is decided by moves the detector never claimed to read — which is
+        a mechanism for "not one detector beat a coin flip" that does not
+        require any detector to be worthless.
+
+        SWING IS UNTOUCHED, and that is arithmetic rather than caution: H1 x 24
+        bars is 1,440 minutes, which is the 24.0 that `time_exit_hours` already
+        held. The two were the same number; only one was ever applied.
+
+        NULL is a real answer here and is left alone. A position adopted from
+        the terminal or opened by the external bridge has no planned horizon,
+        and the old constant is the honest fallback rather than a guess.
+        """
+        ceiling = config.time_exit_hours
+        if ceiling is None or not config.time_exit_uses_plan_horizon:
+            return ceiling * patience if ceiling is not None else None
+        try:
+            minutes = float(row["expected_horizon_minutes"] or 0.0)
+        except (KeyError, IndexError, TypeError, ValueError):
+            return ceiling * patience
+        if minutes <= 0.0:
+            return ceiling * patience
+        hours = max(
+            config.time_exit_minimum_hours,
+            minutes / 60.0 * config.time_exit_horizon_multiple,
+        )
+        # Never LONGER than the flat deadline. This rule shortens the leash to
+        # match the plan; it is not a licence for a plan to buy itself more
+        # time than the account's own ceiling allows. `patience` is applied
+        # once, at the end, to whichever of the two won.
+        return min(hours, ceiling) * patience
 
     @staticmethod
     def _time_exit_verdict(
