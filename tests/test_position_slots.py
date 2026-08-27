@@ -87,23 +87,28 @@ class TestScaling:
         """
         assert scaled(settings, 0.0, step=50.0, ceiling=6, floor=1) == 1
 
-    def test_the_slot_count_matches_the_stake_and_the_book_cap(self) -> None:
-        """Four slots were calibrated for a 5% stake: 4 x 5 = 20% against a 24%
-        book cap. The stake went to 2% on 27 August and the slots did not move,
-        so half the sanctioned risk sat unused -- and the SLOT count is what
-        decides how many trades a day there are, not any gate.
+    def test_four_slots_because_the_owner_said_four(self) -> None:
+        """FOUR IS AN INSTRUCTION, NOT A DERIVATION, and that is why it is
+        asserted flatly instead of against a formula.
 
-        A swing trade holds its slot for 24 hours (`horizon_profiles.swing` is
-        H1 x 24 bars, and `time_exit_hours` is 24), so four slots is four
-        trades a day however many setups appear. That bit harder the same
-        afternoon: of the six modules switched off, five were intraday modules
-        and two of the three quick ones, so almost everything left classifies
-        as swing.
+        It went to eight on 27 August on the arithmetic that four slots had
+        been calibrated for a 5% stake -- 4 x 5 = 20% against a 24% cap -- and
+        the stake had since gone to 2%, leaving half the sanctioned risk
+        unused. The owner put it back the same day: "max 4 trades tegelijk open
+        mag niks 8". That is a decision about how much he wants open at once,
+        and no measurement produces it.
 
-        Eight slots at the ordinary 2% is exactly the 16% book cap, so this
-        raises throughput without raising sanctioned risk by a basis point.
-        `max_total_open_risk_pct` remains the binding rule and tightens on its
-        own as conviction sizes trades up: at the 8% ceiling only two fit.
+        The earlier version of this test asserted `slots x ordinary == book
+        cap`, which was true at eight and is false at four. Keeping that
+        property would mean the SUITE overrules the owner the next time he
+        picks a number, so it is gone: the relation was a consequence of one
+        particular choice, never a rule the account has to obey.
+
+        WHAT STAYS TRUE AT FOUR is the thing that actually bounds the money,
+        and it is asserted below: the book cap is still reachable, because
+        conviction can size a trade to 8% and two of those fill 16%. Four slots
+        therefore lowers how far the risk is SPREAD, not how much of it there
+        can be.
         """
         overlay = DEFAULT_CONFIG_PATH.with_name("eightcap.yaml")
         settings = apply_experimental_live_limits(
@@ -111,12 +116,16 @@ class TestScaling:
         )
 
         assert settings.risk.equity_per_position == 0.0
-        assert settings.effective_max_positions(153.03) == 8
-        # The property, not just the number: a full book of ordinary trades
-        # must land ON the cap, never past it.
-        ordinary = settings.risk.conviction_risk.floor_pct
-        assert settings.effective_max_positions(153.03) * ordinary == (
-            settings.risk.max_total_open_risk_pct
+        assert settings.effective_max_positions(153.03) == 4
+        # The stakes the owner named in the same breath, unchanged.
+        assert settings.risk.conviction_risk.floor_pct == 2.0
+        assert settings.risk.conviction_risk.ceiling_pct == 8.0
+        assert settings.risk.max_risk_per_trade_pct == 8.0
+        # And the cap the slots do not move: two conviction trades reach it, so
+        # the ceiling on money at risk is the same at four slots as at eight.
+        assert settings.risk.max_total_open_risk_pct == 16.0
+        assert (
+            settings.risk.conviction_risk.ceiling_pct * 2 == settings.risk.max_total_open_risk_pct
         )
         assert settings.trade_management.pyramiding.enabled
         assert settings.trade_management.pyramiding.max_legs_per_symbol == 3

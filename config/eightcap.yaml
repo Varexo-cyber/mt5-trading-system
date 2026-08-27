@@ -3220,16 +3220,32 @@ risk:
   # loader weigert dat bij het inladen, en dat is precies hoe deze regel is
   # opgevallen toen micro_live op 4 werd gezet terwijl dit nog 2 was.
   #
-  # 4 -> 8 op 27 augustus, samen met `modes.micro_live`. Dezelfde loader ving
-  # het opnieuw, en dat is de derde keer vandaag dat een plafond alleen zetten
-  # een stille no-op zou zijn geweest.
+  # 4 -> 8 op 27 augustus en DEZELFDE DAG TERUG NAAR 4, op uitdrukkelijke
+  # instructie van de eigenaar: "max 4 trades tegelijk open mag niks 8".
   #
-  # De reden staat bij `modes.micro_live.max_concurrent_positions`: vier slots
-  # waren gekalibreerd op een inzet van 5% en de inzet ging vanmiddag naar 2%,
-  # dus de helft van het boekplafond stond ongebruikt. Wat dan het aantal
-  # trades bepaalt is niet een poort maar het slot: een swing-trade houdt er
-  # een 24 uur vast.
-  max_concurrent_positions: 8
+  # Dat is zijn beslissing en niet een correctie op een fout. De motivering
+  # voor 8 staat hieronder bij `modes.micro_live` en klopt nog steeds als
+  # rekensom; wat er niet in zat is hoeveel gelijktijdige posities de eigenaar
+  # wil kunnen overzien, en dat is geen getal dat uit een backtest komt.
+  #
+  # Wat dit WEL en NIET raakt, want dat is precies waar de verwarring zat:
+  #
+  #   NIET het risico. Het boekplafond is 16% en dat staat er sinds 24
+  #   augustus, in de config en in het gewapende contract. Met conviction tot
+  #   8% per trade is dat plafond met vier slots gewoon bereikbaar -- twee
+  #   trades van 8% en het zit vol. Het maximum dat tegelijk op tafel kan
+  #   liggen verandert door dit getal dus niet.
+  #
+  #   WEL de spreiding. Vier slots betekent dat die 16% over minder posities
+  #   verdeeld kan worden, dus per markt een groter bedrag.
+  #
+  #   EN NIET MEER het aantal trades per dag. Dat was het argument voor 8 en
+  #   het is vervallen: het slot was de rem omdat elke trade er 24 uur in bleef
+  #   zitten, en sinds vanmiddag volgt de houdtijd het plan (quick 45 min,
+  #   intraday 4,5 uur, swing 24 uur). Vier slots die in vier en een half uur
+  #   vrijkomen geven ruim twintig trades per dag; vier slots die een etmaal
+  #   bezet blijven gaven er vier. De doorstroom zit in de houdtijd, niet hier.
+  max_concurrent_positions: 4
 
   # De anti-martingale-halvering staat uit op DIT account, en alleen omdat hij
   # hier niet doet waar hij voor bedoeld is.
@@ -3351,9 +3367,30 @@ modes:
     # op overtuiging groter gesized worden. Bij 8% per trade passen er nog
     # steeds maar twee.
     #
-    # Wat het wel doet is de doorstroom verdubbelen: acht slots die elk 24 uur
-    # bezet zijn geven acht trades per dag in plaats van vier.
-    max_concurrent_positions: 8
+    # ------------------------------------------------------------------------
+    # TERUG NAAR 4, DEZELFDE DAG, OP INSTRUCTIE VAN DE EIGENAAR:
+    # "max 4 trades tegelijk open mag niks 8".
+    #
+    # De rekensom hierboven klopt nog steeds. Wat er niet in zat is hoeveel
+    # gelijktijdige posities de eigenaar wil kunnen overzien, en dat komt niet
+    # uit een backtest. Zijn getal wint.
+    #
+    # En het argument dat 8 droeg -- doorstroom -- is intussen vervallen. Het
+    # slot was de rem omdat ELKE trade er 24 uur in bleef zitten, en sinds
+    # vanmiddag volgt de houdtijd het plan in plaats van een vaste constante:
+    #
+    #     quick      30 min plan  ->  slot vrij na 45 min
+    #     intraday    3 uur plan  ->  slot vrij na 4,5 uur
+    #     swing      24 uur plan  ->  slot vrij na 24 uur
+    #
+    # Vier slots die in vier en een half uur vrijkomen geven ruim twintig
+    # trades per dag. Vier slots die een etmaal bezet blijven gaven er vier.
+    # De doorstroom zit in de houdtijd en niet in dit getal, en dat is precies
+    # waarom dit getal terug kan zonder het aantal trades terug te brengen.
+    #
+    # De inzetten waar de eigenaar in dezelfde adem om vroeg staan al zo en
+    # blijven ongewijzigd: gewoon 2%, op overtuiging tot 8%, boekplafond 16%.
+    max_concurrent_positions: 4
     max_journal_detail: true
     min_equity: 50
     max_equity: 500
