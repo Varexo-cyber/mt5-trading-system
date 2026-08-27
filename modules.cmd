@@ -8,8 +8,18 @@ echo   Which detector actually makes money?
 echo  ============================================
 echo.
 echo  backtest.cmd grades the five PLAYBOOKS, and all five were already
-echo  killed. This grades the CONFLUENCE MODULES - the eight detectors the
-echo  live account actually trades on, which have never been graded at all.
+echo  killed. This grades the CONFLUENCE MODULES.
+echo.
+echo  WHAT IT DOES NOT COVER, and that is THREE OF THE FIVE detectors that
+echo  are live. The replay fetches D1/H4/H1/M15/M5 and no M1 unless you pass
+echo  --with-m1, so m1_micro_breakout, basket_divergence and candle_momentum
+echo  appear in NO table below. They are not graded badly here. They are not
+echo  graded. What stands under them is a section breaker, not a number.
+echo.
+echo  Of the two that ARE covered: trend_momentum ALONE is the only positive
+echo  population this tool has ever produced and the only row outside chance.
+echo  market_structure sits at 27 trades and -0.020R - too thin to convict,
+echo  and too thin to lean on.
 echo.
 echo  Read the second table first. AGAINST CHANCE is a coin flip taking the
 echo  same moments with the same stops and the same targets. A module that

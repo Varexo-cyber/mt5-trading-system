@@ -24,9 +24,21 @@ echo.
 echo  No orders. No Claude API. Nothing written anywhere.
 echo.
 echo  MEASURED 26 AUGUST: 1,681 trades over 30 days, -0.304R each, -511.73R.
-echo  The lane is switched OFF. The entry is not the problem - on gold it
-echo  reads the minute correctly, 43%% against the 41.7%% that a 1.4:1 payoff
-echo  needs. It is worth +0.03R. The round trip costs 0.235R.
+echo  The entry is not the problem - on gold it reads the minute correctly,
+echo  43%% against the 41.7%% that a 1.4:1 payoff needs. It is worth +0.03R.
+echo  The round trip costs 0.235R.
+echo.
+echo  THE LANE IS ON. This banner said "switched OFF" until 27 August and the
+echo  config said `enabled: true` the whole time - the line was written when it
+echo  was off, the lane came back after the entry was reworked, and the banner
+echo  did not follow. That is a launcher lying to its operator about what is
+echo  trading his money, which is worse than any number on this screen.
+echo.
+echo  It is on as a BOUNDED experiment and here is the whole bound:
+echo    stake 1.0%% per trade, two at a time, counted in the book cap, and a
+echo    section breaker that switches the lane off by itself after six losers
+echo    in a row. Six losers at 1%% is 6%% of the account. That is the most this
+echo    trial can cost before it stops without anyone watching.
 echo.
 echo  section6.cmd --sweep              IS there a gate where this pays?
 echo  section6.cmd --days 60            longer history
