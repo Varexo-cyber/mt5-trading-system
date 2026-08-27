@@ -182,6 +182,34 @@ def assess_entry_quality(
             **rounded,
         )
 
+    # OVER-EXTENSION IS A REFUSAL WHEREVER IT SITS IN THE RANGE.
+    #
+    # These four tests were each written `at_extreme and <limit breached>`, so
+    # the whole over-extension check only existed for a price already at 80% of
+    # its twelve-bar range. That left two openings, and both are the same trade:
+    #
+    #   at 79% of the range, NO limit applied at all -- a market could have run
+    #   five ATR from its EMA and the gate had nothing to say;
+    #
+    #   at 100% of the range on a calm bar, every limit was clear -- which is
+    #   buying the highest price of the last hour and calling it timed.
+    #
+    # WHAT SAYS THIS IS WRONG rather than merely arguable. Over 1,970 closed
+    # trades, 197 ever peaked above +1.00R. That is 10%. A coin flip entering
+    # at random with the same 1R stop reaches +1R before -1R about half the
+    # time. Ten against fifty is not a weak edge -- it is an entry taken
+    # systematically at the point where the move has already happened, and the
+    # give-back table's whole shape follows from it: 80% of trades reach 0.30R
+    # and almost none reach 1.00R.
+    #
+    # So the limits apply always. They are not tight -- 2.75 ATR of travel in
+    # three bars, 2.25 ATR from the EMA -- and a market past them has made its
+    # move whether or not it happens to sit at the top of a twelve-bar window.
+    #
+    # `at_extreme` keeps exactly one job, which is the one it is good at:
+    # TIGHTENING. `max_extreme_single_bar_body_atr` is less than half
+    # `max_single_bar_body_atr`, because a one-bar thrust into the range edge
+    # is a different event from the same bar in the middle of a range.
     at_extreme = directional_location >= config.directional_extreme_location
     breaches: list[str] = []
     if executable_gap > live_gap_limit:
@@ -189,16 +217,16 @@ def assess_entry_quality(
             f"live quote ran {executable_gap:.2f}>{live_gap_limit:.2f} ATR beyond the "
             f"latest closed {timeframe.value} bar"
         )
-    if at_extreme and extension > extension_limit:
+    if extension > extension_limit:
         breaches.append(
             f"{config.extension_bars}-bar move {extension:.2f}>{extension_limit:.2f} ATR"
         )
-    if at_extreme and body > body_limit:
+    if body > body_limit:
         breaches.append(f"last body {body:.2f}>{body_limit:.2f} ATR")
     extreme_body_limit = config.max_extreme_single_bar_body_atr[asset]
     if at_extreme and body > extreme_body_limit:
         breaches.append(f"one-bar thrust at the range edge {body:.2f}>{extreme_body_limit:.2f} ATR")
-    if at_extreme and ema_distance > ema_limit:
+    if ema_distance > ema_limit:
         breaches.append(f"EMA distance {ema_distance:.2f}>{ema_limit:.2f} ATR")
     if breaches:
         return EntryTimingAssessment(
