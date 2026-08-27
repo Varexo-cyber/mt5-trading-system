@@ -117,8 +117,21 @@ class FilterChain:
             verdict = filter_.check(ctx)
             collected.update(verdict.data)
             if not verdict.passed:
+                # THE NAME GOES IN THE MESSAGE, NOT ONLY INTO `extra`.
+                #
+                # Everything an operator needs was already recorded here --
+                # filter, symbol, reason, detail -- and the console formatter
+                # renders the message, not the extras. So a live screen showed
+                # eighty consecutive lines reading "filter blocked entry" with
+                # nothing to tell them apart, and the owner watching his own
+                # launch could not see whether one gate was refusing everything
+                # or thirty gates were each refusing a little. Those two need
+                # completely different answers.
+                #
+                # The structured fields stay for the JSON log and the
+                # dashboard. The message now carries enough to read the screen.
                 log.info(
-                    "filter blocked entry",
+                    f"{ctx.symbol}: {verdict.filter_name} blocked entry — {verdict.reason}",
                     extra={
                         "event": "filter_block",
                         "filter": verdict.filter_name,
