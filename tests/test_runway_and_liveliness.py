@@ -515,16 +515,27 @@ class TestAnOpenSharePositionIsStillManaged:
     instrument class it was meant to remove.
     """
 
-    def test_shares_are_scanned_but_have_to_earn_it(self) -> None:
-        """Back in the scan, behind a measurement rather than behind the list."""
+    def test_the_measurements_stay_armed_even_though_shares_are_out(self) -> None:
+        """Shares came out of the scan again on 27 August, on the owner's
+        instruction and on his own afternoon: HEI -2.73, AIR -0.70, BAMI -0.86
+        against ETHUSD net +0.24.
+
+        The measurement-over-list reasoning still stands as reasoning, and
+        these gates judge the instrument rather than its class -- so they stay
+        armed, and they are what a share would have to clear if the class ever
+        comes back. What removed shares was not that the gates were wrong but
+        that a six-day trade on a Milanese small cap is a quarter of a
+        four-slot account's capacity for a week.
+        """
         from config.loader import load_settings
 
         settings = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         )
 
-        assert "stock" in settings.instruments.asset_classes
+        assert "stock" not in settings.instruments.asset_classes
         assert settings.filters.liveliness.max_gap_atr > 0
+        assert settings.filters.liveliness.min_bar_range_in_spreads > 0
 
     def test_but_a_share_still_gets_flattened_before_its_close(self) -> None:
         """The wind-down stays armed as a net, not as a live gate — so an open
