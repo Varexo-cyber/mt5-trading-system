@@ -116,7 +116,12 @@ def runner(**overrides):  # type: ignore[no-untyped-def]
 
     spec = InstrumentSpec.from_mt5(xauusd_spec())
     service.broker = SimpleNamespace(  # type: ignore[assignment]
-        account=lambda: SimpleNamespace(equity=176.0),
+        # AN EQUITY THAT CAN EXPRESS THE TRADE. At 176 with a ten-spread
+        # stop the smallest position the broker accepts already risks 1.42%,
+        # so the sizer correctly refuses and every test here measures the
+        # account's size rather than the lane's logic. That refusal has its
+        # own test; these need the order to reach the broker.
+        account=lambda: SimpleNamespace(equity=overrides.get("equity", 400.0)),
         spec=lambda symbol: spec,
         order_send=order_send,
     )
@@ -126,8 +131,18 @@ def runner(**overrides):  # type: ignore[no-untyped-def]
     service._journal_cycle_context = lambda *a, **k: {}  # type: ignore[assignment]
     service._promote_confirmed_entry = lambda **k: None  # type: ignore[assignment]
     service._record_skip = lambda *a, **k: service.recorder.skips.append(a)  # type: ignore[assignment]
+    # THE GEOMETRY THE CONFIG ACTUALLY DEMANDS, not a round number.
+    #
+    # This was entry 2400 / stop 2399 / target 2403 against a 0.25 spread,
+    # so the spread was a QUARTER of the risk. Every test here went red the
+    # day the cost gate came down to 12%, and they were right to: at that
+    # cost a scalp cannot pay, which is the whole reason the gate exists.
+    #
+    # 2.50 is ten spreads -- what `minimum_target_spreads: 14` asks for with
+    # target 1.4 and stop 1.0 -- so the cost lands at 10% and the fixture
+    # now describes a trade this account would really take.
     service._scalp_plan = lambda *a, **k: overrides.get(  # type: ignore[assignment]
-        "plan", (Direction.LONG, 2400.0, 2399.0, 2403.0)
+        "plan", (Direction.LONG, 2400.0, 2397.5, 2403.5)
     )
     service._cycle_contexts = {"XAUUSD": SimpleNamespace(tick=SimpleNamespace(spread=0.25))}
     service.risk = SimpleNamespace(  # type: ignore[assignment]
@@ -234,8 +249,8 @@ class TestItOpensATrade:
         service = runner()
         run(service)
 
-        assert service.sent[0].sl == 2399.0
-        assert service.sent[0].tp == 2403.0
+        assert service.sent[0].sl == 2397.5
+        assert service.sent[0].tp == 2403.5
 
     def test_it_is_marked_so_its_own_book_can_be_counted(self) -> None:
         """The concurrency cap reads the broker's position list by this

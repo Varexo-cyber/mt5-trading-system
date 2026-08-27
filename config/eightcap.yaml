@@ -2523,7 +2523,12 @@ risk:
   #
   # De dagelijkse verliesrem en de EUR 50 vloer blijven staan: dit verhoogt de
   # inzet per trade, niet hoeveel pijn een dag mag doen.
-  risk_per_trade_pct: 5.0
+  #
+  # 5,0 -> 2,0 op 27 augustus. Zie `conviction_risk` hieronder voor het hele
+  # verhaal: dit is de GEWONE inzet en 2% is wat de eigenaar als ondergrens
+  # noemde. De 8% is er nog steeds, maar alleen voor een setup die daar echt
+  # voor betaalt.
+  risk_per_trade_pct: 2.0
   # Het absolute plafond dat geen enkele modus mag overschrijden. Van 6 naar 9,
   # mee met het plafond van de conviction-ladder hieronder.
   #
@@ -2533,7 +2538,13 @@ risk:
   # er nog een derde keer overheen. Een validator eist bovendien dat de modus
   # deze waarde niet overschrijdt. Twee van de drie verhogen levert een stille
   # no-op op — de config zegt 9%, de rekening handelt 6%.
-  max_risk_per_trade_pct: 12.0
+  #
+  # 12 -> 8, en om precies dezelfde reden gaan ALLE DRIE mee: deze, de
+  # `ceiling_pct` van de conviction-ladder, en
+  # `modes.micro_live.max_risk_per_trade_pct`. Eentje verlagen en de andere
+  # twee laten staan zou hetzelfde stille verschil opleveren als hierboven
+  # beschreven, alleen dan de andere kant op.
+  max_risk_per_trade_pct: 8.0
 
   # Van 2.0x naar 1.5x de door MT5 berekende ordermargin. De echte broker-
   # margin moet nog steeds volledig beschikbaar zijn; alleen de extra reserve
@@ -2580,7 +2591,15 @@ risk:
   # Zero disables it. In Experimental Live the armed contract overrides this
   # value outright — see promotion/experimental.py — so an edit here cannot
   # widen what the live account is allowed to stake.
-  max_total_open_risk_pct: 24.0
+  #
+  # 24 -> 16 op 27 augustus, meebewegend met het per-trade plafond van 12 naar
+  # 8. Het ontwerp dat in `modes.micro_live` beschreven staat is "twee trades
+  # op maximale overtuiging vullen het boek", en dat is 2 x 8 = 16. Op 24 laten
+  # staan zou DRIE maximale trades toelaten en daarmee stilletjes het ontwerp
+  # veranderen in plaats van de inzet.
+  #
+  # Sectie 6 raakt dit niet: die vraagt 1% per scalp en er mogen er twee.
+  max_total_open_risk_pct: 16.0
 
   # De inzet schaalt mee met hoe overtuigd de reviewer is. Zie
   # config/schema.py ConvictionRiskConfig voor waarom het op ZIJN vertrouwen
@@ -2601,12 +2620,51 @@ risk:
   # 0,70 is nu het plafond omdat dat het hoogste is wat hij ooit geantwoord
   # heeft, niet omdat het een mooi rond getal is. Herzien zodra er dertig
   # reviews meer zijn en de spreiding verschoven blijkt.
+  # 2% TOT 8%, EN DIE 8 ALLEEN BIJ ECHTE OVERTUIGING, 27 augustus, op
+  # instructie van de eigenaar. Woordelijk: "geen onzin en zomaar dus".
+  #
+  # WAT HIER STOND EN WAT DAT DEED. floor 5,0 / ceiling 12,0 met de ramp van
+  # 0,50 naar 0,70. De schemadefault is 0,70 -> 0,90 en het commentaar dáár
+  # legt precies uit waarom:
+  #
+  #     "Deliberately well above `ai.minimum_confidence` (0.55): an approval
+  #      that only just cleared the bar is not a convincing setup, it is a
+  #      permitted one."
+  #
+  # De live-instelling begon de ramp OP 0,50 en zat vol op 0,70. Een setup die
+  # net over de goedkeuringslat komt kreeg dus al een flinke inzet, en 0,70 --
+  # wat niemand hoge overtuiging noemt -- kreeg het volle plafond. Dat is de
+  # "zomaar" waar de eigenaar over viel.
+  #
+  # WAT DAT VANNACHT KOSTTE, uitgerekend uit zijn eigen P&L (die indices zijn
+  # EUR 10 per punt per lot):
+  #
+  #     EUSTX50 buy 0.05   stop 46,7 punt   = EUR 23,36 = 10,9% van EUR 211
+  #     GER40   buy 0.03   stop 53,2 punt   = EUR 15,96 =  7,6%
+  #
+  # Allebei binnen het oude plafond van 12% en allebei enorm op deze rekening.
+  # Ter vergelijking: de sectie 6-scalp op NDX100 riskeerde EUR 1,28 = 0,6%.
+  # Sectie 1 stond dus 8 tot 12 keer zo groot als de sectie waar een hele dag
+  # aan gesleuteld is.
+  #
+  # WAT ER NU STAAT:
+  #
+  #     gewone trade                     2,0%   = EUR 4,22
+  #     conviction 0,80 (halverwege)     5,0%   = EUR 10,55
+  #     conviction 0,90+ (vol)           8,0%   = EUR 16,88
+  #
+  # En de ramp begint pas op 0,70, ruim boven de goedkeuringslat, zoals het
+  # schema het altijd al bedoeld had. Een goedgekeurde setup is niet hetzelfde
+  # als een overtuigende setup.
+  #
+  # WAT DIT NIET RAAKT: het aantal trades en welke setups genomen worden. Geen
+  # enkele poort beweegt hier. Alleen de inzet per stuk.
   conviction_risk:
     enabled: true
-    floor_pct: 5.0
-    ceiling_pct: 12.0
-    confidence_floor: 0.50
-    confidence_ceiling: 0.70
+    floor_pct: 2.0
+    ceiling_pct: 8.0
+    confidence_floor: 0.70
+    confidence_ceiling: 0.90
 
   # Een positie waarvan de beurs dicht is bezet geen slot meer.
   #
@@ -2754,7 +2812,35 @@ risk:
   # hun spread/stop-verhouding al is goedgekeurd. Een volle stop kan daardoor
   # rond -1.35R uitkomen in plaats van -1.25R. Boven 35% wordt nog steeds
   # geweigerd met SL_TOO_TIGHT_FOR_COSTS.
-  max_cost_share_of_risk: 0.35
+  # 0,35 -> 0,12, en sectie 1 krijgt zijn eigen strengere getal hieronder.
+  #
+  # Een derde van je risico aan kosten mogen uitgeven is alleen redelijk als de
+  # edge groot is. Die van sectie 1 is 0,05R en die van sectie 6 ongeveer
+  # 0,10R. 0,35 liet dus een trade zeven keer zijn eigen edge aan spread,
+  # commissie en slippage betalen.
+  #
+  # 0,12 is wat sectie 6 nodig heeft: zijn poort `minimum_target_spreads: 14`
+  # zet de spread op 10% van R en slippage komt er bovenop.
+  max_cost_share_of_risk: 0.12
+
+  # SECTIE 1 REKENT ANDERS EN KRIJGT ZIJN EIGEN PLAFOND.
+  #
+  # Zijn eigen teruggavetabel over 1.970 trades:
+  #
+  #     RR 0,30   80% raak   -0,001R      muntje opgooien 74%
+  #     RR 0,72   56% raak   -0,070R      muntje opgooien 56%
+  #     RR 1,00   10% raak   -0,840R      muntje opgooien 48%
+  #
+  # Bij het dichtbije target wint hij 80% waar toeval 74% haalt. De voorsprong
+  # is dus ZES procentpunt, ongeveer 0,05R, en dat is alles wat er is. De
+  # gemeten uitkomst is precies die nul in de eerste regel: edge 0,05R, kosten
+  # 0,04R, netto niets.
+  #
+  # 0,08 is twee keer wat deze trades gemiddeld kostten, dus de gewone setup
+  # verandert niet. Wat geweigerd wordt is de dure staart: het uur met een
+  # brede spread, de dunne index, de markt waar de rondrit meer kost dan de
+  # setup kan winnen. Dat zijn de trades die deze nul naar beneden trekken.
+  section_one_max_cost_share: 0.08
   # Het absolute plafond. Een modus mag hier lager gaan, nooit hoger — de
   # loader weigert dat bij het inladen, en dat is precies hoe deze regel is
   # opgevallen toen micro_live op 4 werd gezet terwijl dit nog 2 was.
@@ -2842,7 +2928,7 @@ modes:
     # The per-trade CEILING, not the ordinary stake. An ordinary approval is
     # still sized at `risk.risk_per_trade_pct`; this is the most that
     # conviction scaling may reach, and the sizer clamps to it.
-    max_risk_per_trade_pct: 12.0
+    max_risk_per_trade_pct: 8.0
     max_sl_pips: 30
     max_trades_per_day: 0
     daily_loss_limit_pct: 0

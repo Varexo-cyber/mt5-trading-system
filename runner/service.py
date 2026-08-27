@@ -3331,6 +3331,27 @@ class JarvisRunner:
             # playbooks refuse to score one — so the zero branch is a belt on a
             # path that does not reach here.
             spread_price=context.tick.spread if context.tick else 0.0,
+            # SECTION ONE'S OWN COST CEILING, and it is far tighter than the
+            # account's because its arithmetic is.
+            #
+            # Its give-back table over 1,970 trades reads:
+            #
+            #     RR 0.30   80% hit   -0.001R      random walk 74%
+            #     RR 0.72   56% hit   -0.070R      random walk 56%
+            #     RR 1.00   10% hit   -0.840R      random walk 48%
+            #
+            # At the near target it wins 80% against a coin flip's 74%, so the
+            # edge is six points of hit rate -- worth about 0.05R. That is the
+            # whole thing. A trade allowed to spend the account-wide 35% of its
+            # risk on spread, commission and slippage is spending seven times
+            # its own edge, and the measured result is exactly the zero the
+            # first row shows.
+            #
+            # 8% is twice the 4% these trades averaged, so the ordinary setup
+            # is untouched and what gets refused is the expensive tail: the
+            # wide-spread hour, the thin index, the market whose round trip
+            # costs more than the setup can win.
+            max_cost_share=self.settings.risk.section_one_max_cost_share or None,
         )
         if not sizing.approved:
             cycle_pk = self._record_skip(

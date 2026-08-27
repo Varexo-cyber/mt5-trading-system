@@ -228,8 +228,11 @@ class TestM1HasToAgreeWithItself:
         the trigger candle. If it were included the window could read +1 and
         the refusal would vanish.
         """
-        closes = [*falling(39), BASE - 38 * 0.5 + 12.0]
-        signal = CandleMomentum().analyze(context(m1_closes=closes, last_body=12.0))
+        # 4.5, not 12: a body that large is now refused outright as an
+        # event before the M1 read is reached, and this test is about the
+        # M1 read.
+        closes = [*falling(39), BASE - 38 * 0.5 + 4.5]
+        signal = CandleMomentum().analyze(context(m1_closes=closes, last_body=4.5))
 
         assert signal.details["m1_direction"] == -1
         assert signal.score == 0.0
@@ -302,7 +305,8 @@ class TestWhenItDoesFire:
 
     def test_a_bigger_body_scores_higher(self) -> None:
         small = CandleMomentum().analyze(context(m1_closes=rising(), last_body=1.8))
-        large = CandleMomentum().analyze(context(m1_closes=rising(), last_body=5.0))
+        # Just under `maximum_body_multiple`, which refuses at 5.0.
+        large = CandleMomentum().analyze(context(m1_closes=rising(), last_body=4.5))
 
         assert abs(large.score) > abs(small.score)
 

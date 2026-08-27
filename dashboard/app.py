@@ -1147,9 +1147,7 @@ def render_ai_exchange() -> None:
                     "Betaald": (
                         "nee (lokaal)"
                         if decision.get("provider") == "local_history"
-                        else "nee (geheugen)"
-                        if decision.get("replayed")
-                        else "ja"
+                        else "nee (geheugen)" if decision.get("replayed") else "ja"
                     ),
                     "Duur (ms)": item["latency_ms"],
                     "Confidence": decision.get("confidence"),
@@ -1577,9 +1575,7 @@ try:
             ai_state = (
                 "READY — LOKAAL, GEEN API-KOSTEN"
                 if local_history_mode
-                else "READY — FAIL CLOSED"
-                if ai_ready
-                else "BLOCKED"
+                else "READY — FAIL CLOSED" if ai_ready else "BLOCKED"
             )
             st.metric("Status", ai_state)
             active_model = "claude_archive" if local_history_mode else settings.ai.anthropic_model

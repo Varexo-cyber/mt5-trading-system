@@ -162,8 +162,7 @@ def closed_trades(path: Path, since: datetime) -> list[ClosedTrade]:
                 "FROM trades WHERE closed_at IS NOT NULL AND closed_at >= ? "
                 # ABANDONED rows are entries the broker refused. They never held
                 # risk and counting them would report losses that never happened.
-                "AND COALESCE(entry_state, 'OPEN') != 'ABANDONED' "
-                "ORDER BY closed_at DESC",
+                "AND COALESCE(entry_state, 'OPEN') != 'ABANDONED' " "ORDER BY closed_at DESC",
                 (iso(since),),
             ).fetchall()
     except sqlite3.Error:

@@ -263,6 +263,49 @@ class CandleMomentum:
                 ),
                 details=details,
             )
+        # A CANDLE CAN ALSO BE TOO BIG, and nothing here said so.
+        #
+        # There is a ceiling on VOLUME -- "this minute carried 8.4x its normal
+        # activity, that is an event, not momentum" -- and the argument is
+        # entirely about the size of the move relative to normal. It was never
+        # applied to the move itself. `minimum_body_multiple` is a floor and
+        # `body_saturation_multiple` only caps the SCORE, so a bar ten times
+        # its recent average body sailed through with maximum confidence.
+        #
+        # The strongest-looking bar such a system will ever see is the one it
+        # should not trade. That sentence is already written in
+        # `volume_spike_filter`; this is the same sentence about price.
+        #
+        # WHAT IT LOOKED LIKE LIVE. Four NDX100 scalps overnight:
+        #
+        #     +0.14   stop  2.92 points
+        #     +0.40   stop  5.16 points
+        #     -1.96   stop 21.12 points
+        #     -1.36   stop 15.00 points
+        #
+        # The stop is one candle span, so the column is the candle. The two
+        # winners triggered on ordinary minutes and the two losers on minutes
+        # three to seven times larger. Four trades prove nothing on their own,
+        # which is why the reason to refuse these is the argument above and not
+        # the table -- but the table is what made anyone look.
+        #
+        # A wide bar also carries a second cost that is not obvious: the stop
+        # is a candle span, so an outsized candle produces an outsized R, and
+        # on an account that cannot express it the position lands on the broker
+        # minimum and the money risked stops matching the plan.
+        if candle.body_multiple >= config.maximum_body_multiple:
+            return Signal(
+                module=self.name,
+                score=0.0,
+                confidence=0.0,
+                reasoning=(
+                    f"body {candle.body_multiple:.1f}x the recent average, at or above the "
+                    f"{config.maximum_body_multiple:.1f}x that makes it an event rather than "
+                    f"momentum — the stop would be a candle this wide and the move is already "
+                    f"spent"
+                ),
+                details=details,
+            )
         if candle.body_multiple < config.minimum_body_multiple:
             return Signal(
                 module=self.name,
