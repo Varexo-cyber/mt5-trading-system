@@ -95,6 +95,31 @@ def falling(n: int = 40, step: float = 0.5) -> list[float]:
     return [BASE - i * step for i in range(n)]
 
 
+def _chain(*filters):  # type: ignore[no-untyped-def]
+    """A stand-in for `FilterChain` that behaves the way the real one does.
+
+    Section six now runs the WHOLE entry chain rather than reaching past it for
+    the calendar alone, so a double that only answers `find` no longer
+    describes the object the lane talks to. Iterating and returning the first
+    refusal is the entire contract; getting it wrong here would make these
+    tests pass against a lane that never asked anything.
+    """
+    from types import SimpleNamespace
+
+    def check(ctx):  # type: ignore[no-untyped-def]
+        collected: dict = {}
+        for filter_ in filters:
+            verdict = filter_.check(ctx)
+            collected.update(getattr(verdict, "data", {}) or {})
+            if not verdict.passed:
+                return verdict, collected
+        return SimpleNamespace(
+            passed=True, filter_name="chain", detail="clear", reason=None, data=collected
+        ), collected
+
+    return SimpleNamespace(find=lambda _kind: filters[0], filters=filters, check=check)
+
+
 class TestTheCandleRead:
     def test_a_doji_has_almost_no_body(self) -> None:
         read = read_candle(frame(rising(), body=1.0, last_body=0.01, wick=2.0), 30)
@@ -385,9 +410,7 @@ class TestTheNewsBlackoutIsTheAccountsAndNotACopy:
         # THE CALENDAR THE LANE NOW ASKS ITSELF. `minutes_to_news` used to
         # arrive only in `extra`, which the NO_SIGNAL path does not populate.
         runner._news = _NewsDouble(minutes_to_news=90.0)  # type: ignore[attr-defined]
-        runner.filters = SimpleNamespace(  # type: ignore[assignment]
-            find=lambda _kind: runner._news, filters=(runner._news,)
-        )
+        runner.filters = _chain(runner._news)  # type: ignore[assignment]
         return runner, [CandleMomentum().analyze(live)]
 
     def test_a_clear_market_is_recorded(self) -> None:
@@ -653,9 +676,7 @@ class TestWhereItIsAllowedToTradeAndHowMuchAtOnce:
         )
         runner.clock = SimpleNamespace(now=lambda: live.now)  # type: ignore[assignment]
         runner._news = _NewsDouble(minutes_to_news=90.0)  # type: ignore[attr-defined]
-        runner.filters = SimpleNamespace(  # type: ignore[assignment]
-            find=lambda _kind: runner._news, filters=(runner._news,)
-        )
+        runner.filters = _chain(runner._news)  # type: ignore[assignment]
         return runner, [CandleMomentum().analyze(live)], recorded
 
     def _observe(self, runner, signals):  # type: ignore[no-untyped-def]
@@ -771,7 +792,7 @@ class TestTheLaneAsksTheCalendarItselfOnThePathItActuallyTakes:
             )
         )
         runner.clock = SimpleNamespace(now=lambda: live.now)  # type: ignore[assignment]
-        runner.filters = SimpleNamespace(find=lambda _k: news, filters=(news,))  # type: ignore[assignment]
+        runner.filters = _chain(news)  # type: ignore[assignment]
         return runner, [CandleMomentum().analyze(live)], recorded
 
     def _observe_on_the_no_signal_path(self, runner, signals):  # type: ignore[no-untyped-def]

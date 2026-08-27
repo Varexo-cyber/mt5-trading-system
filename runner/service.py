@@ -4319,22 +4319,52 @@ class JarvisRunner:
         )
 
     def _scalp_news_verdict(self, symbol: str) -> str | None:
-        """The calendar's own answer for this symbol, or why it cannot be had.
+        """Every entry gate the account runs, asked for this symbol.
 
         Returns None when the lane may trade and a reason string when it may
-        not. Anything unexpected refuses: a lane that cannot reach the calendar
-        is not a lane that may assume the calendar is clear.
+        not. Anything unexpected refuses: a lane that cannot reach its gates is
+        not a lane that may assume they are clear.
+
+        IT USED TO ASK ONE FILTER OUT OF THE WHOLE CHAIN. The docstring of
+        `_scalp_plan` explains why the chain is not reached on this path:
+
+            "This lane is reached from `_record_skip`, so it runs on setups the
+             main path REFUSED -- and the commonest refusal, NO_SIGNAL, is
+             raised at the confluence engine, which sits BEFORE
+             `self.filters.check`."
+
+        That was written to justify asking the CALENDAR directly. Everything
+        else in the chain is in exactly the same position and none of it was
+        asked: the session filter, the spread filter, the liveliness filter,
+        the headline filter, the volume-spike filter.
+
+        WHAT THAT MEANT LIVE. Six of eight overnight trades landed between
+        03:33 and 06:34 UTC -- the Asian session and the rollover, the widest
+        spreads of the day -- and four of them were NDX100, a US index, first
+        traded at 03:33, five hours after the Nasdaq closed.
+
+        The account already knows this is wrong. The session filter's own
+        comment in the overlay describes the identical failure being found and
+        fixed for section one:
+
+            "NDX100 short om 00:51 UTC, vijf uur nadat de Nasdaq dichtging...
+             Allebei door het filter heen, want Azie loopt en Azie staat in de
+             lijst -- terwijl Azie geen van beide instrumenten prijst."
+
+        Section six had its own lane, so it kept the hole. A scalp reaching for
+        a few spreads is the trade that can least afford a dead market and a
+        wide quote, and it was the only route that never asked.
         """
         try:
-            news = self.filters.find(NewsFilter)
+            chain = self.filters
         except Exception:  # noqa: BLE001 - a missing filter chain is not permission
-            return "the news filter could not be resolved"
-        if news is None:
-            return "no news filter is configured"
+            return "the filter chain could not be resolved"
+        if chain is None or not getattr(chain, "filters", None):
+            return "no filters are configured"
         try:
             spec = self.broker.spec(symbol)
             context = self._cycle_contexts.get(symbol)
-            verdict = news.check(
+            verdict, _data = chain.check(
                 FilterContext(
                     symbol=symbol,
                     spec=spec,
@@ -4346,16 +4376,16 @@ class JarvisRunner:
             )
         except Exception as exc:  # noqa: BLE001 - see docstring
             log.warning(
-                "section six could not read the calendar; refusing",
+                "section six could not run its entry gates; refusing",
                 extra={
-                    "event": "scalp_news_unavailable",
+                    "event": "scalp_gates_unavailable",
                     "symbol": symbol,
                     "error": type(exc).__name__,
                 },
             )
-            return f"the calendar could not be read ({type(exc).__name__})"
+            return f"the entry gates could not be run ({type(exc).__name__})"
         if not verdict.passed:
-            return verdict.detail or "news blackout"
+            return f"{verdict.filter_name}: {verdict.detail or verdict.reason}"
         # Clear of the blackout, and still inside the lane's own tighter
         # runway. `minutes_to_news` comes off the verdict rather than out of
         # `extra`, which is what was missing.
