@@ -125,7 +125,30 @@ class HistoricalContextReplay:
         #
         # The index is sorted and never changes, so the cut point is a binary
         # search and the window is a view.
-        close_times = {tf: frames[tf].index + tf.duration for tf in REPLAY_TIMEFRAMES}
+        # OVER THE FRAMES THE CALLER SUPPLIED, NOT OVER THE CONSTANT.
+        #
+        # This iterated `REPLAY_TIMEFRAMES`, which has no M1 in it. So
+        # `--with-m1` fetched a third of a million M1 bars per symbol, handed
+        # them in as `frames[M1]`, and this loop stepped straight past them:
+        # the `series` given to the engine never contained M1, whatever the
+        # caller asked for.
+        #
+        # The flag was inert from the day it was added. Its own help text
+        # explained that `m1_micro_breakout` had never appeared in the table
+        # because the replay fetched no M1 — and the escape hatch it offered
+        # did not work either, so three of the five live detectors could not be
+        # graded by any invocation of this tool.
+        #
+        # Same shape as everything else found here: a switch that exists, is
+        # documented, is passed on the command line, and is never reached by
+        # the code that would act on it.
+        #
+        # REPLAY_TIMEFRAMES stays the REQUIRED set. A timeframe the caller adds
+        # is offered to the detectors when it has history and simply left out
+        # when it does not — an extra chart must never be able to void a
+        # decision the required five could answer on their own.
+        required = set(REPLAY_TIMEFRAMES)
+        close_times = {tf: frame.index + tf.duration for tf, frame in frames.items()}
         for sequence, opened_at in enumerate(eligible.index):
             if sequence % self.decision_stride_bars:
                 continue
@@ -133,17 +156,16 @@ class HistoricalContextReplay:
             moment = pd.Timestamp(decided_at)
             series: dict[Timeframe, Series] = {}
             complete = True
-            for timeframe in REPLAY_TIMEFRAMES:
+            for timeframe in frames:
                 # `side="right"` counts the bars whose close is at or before the
                 # decision, which is exactly what `<= decided_at` selected.
                 cut = int(close_times[timeframe].searchsorted(moment, side="right"))
-                if cut < 120:
-                    complete = False
-                    break
                 available = frames[timeframe].iloc[max(0, cut - self.history_bars) : cut]
-                if len(available) < 120:
-                    complete = False
-                    break
+                if cut < 120 or len(available) < 120:
+                    if timeframe in required:
+                        complete = False
+                        break
+                    continue
                 series[timeframe] = Series(symbol, timeframe, available, decided_at)
             if not complete:
                 continue

@@ -357,12 +357,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--with-m1",
-        action="store_true",
-        help="also load M1 bars, so the detectors that trigger on them can be "
-        "graded at all. `m1_micro_breakout` is live and has never appeared in "
-        "this table -- not because it loses, but because the replay fetches no "
-        "M1 and it returns neutral without one. Slow: 240 days of M1 is a "
-        "third of a million bars per symbol.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="load M1 bars, so the detectors that trigger on them can be graded "
+        "at all. ON BY DEFAULT since 27 August. It was opt-in, and the result "
+        "was that THREE OF THE FIVE live detectors -- m1_micro_breakout, "
+        "basket_divergence and candle_momentum -- appeared in no table this "
+        "tool has ever printed. Not graded badly: never graded, because without "
+        "M1 they return a neutral signal and vanish. Nobody reading the report "
+        "could see that most of the live account was missing from it. "
+        "`--no-with-m1` restores the old, faster, blinder run.",
     )
     parser.add_argument(
         "--exits",
