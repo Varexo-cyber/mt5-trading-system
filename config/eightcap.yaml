@@ -3121,6 +3121,42 @@ risk:
       maximum_loss_share: 0.60
       losing_streak: 8
 
+    # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
+    # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde
+    # er vier, en een daarvan (`drift_burst`) staat niet eens live. Twee van de
+    # vijf modules die met echt geld mogen handelen hadden dus geen enkele
+    # automatische uitschakelaar onder zich.
+    #
+    # Dezelfde vorm als vrijwel alles wat hier gevonden is: een beveiliging die
+    # bestaat, klopt en getest is, maar niet over het pad ligt dat de code
+    # werkelijk loopt.
+    #
+    # MARKET_STRUCTURE krijgt exact de cijfers van `trend_momentum`. Het zijn de
+    # twee swing-modules, ze handelen op dezelfde klok en met dezelfde
+    # doorstroom, dus een verschil in de noodstop zou nergens op berusten. In
+    # het 90-daagse rapport staat hij op 27 trades en -0,020R: te dun om hem op
+    # uit te zetten, en precies dun genoeg om een vangnet te rechtvaardigen in
+    # plaats van een oordeel.
+    market_structure:
+      window: 20
+      minimum_trades: 20
+      maximum_loss_share: 0.60
+      losing_streak: 8
+
+    # M1_MICRO_BREAKOUT is de enige quick-module die live staat en hij komt in
+    # GEEN van beide tabellen voor -- de replay haalt standaard geen M1 op, dus
+    # hij is niet slecht bevonden, hij is nooit gemeten. Voor iets ongemetens
+    # dat wel met echt geld handelt is een noodstop het minimum.
+    #
+    # Ruimer dan de swing-paren, want hij vuurt vaker: 25 trades voordat het
+    # oordeel meetelt, en 10 op rij. Dezelfde vorm als `basket_divergence`, de
+    # andere ongemeten snelle module, zodat die twee vergelijkbaar blijven.
+    m1_micro_breakout:
+      window: 30
+      minimum_trades: 25
+      maximum_loss_share: 0.70
+      losing_streak: 10
+
   commission_by_asset_class:
     index: 0.0
     metal: 0.0
