@@ -113,9 +113,12 @@ def _chain(*filters):  # type: ignore[no-untyped-def]
             collected.update(getattr(verdict, "data", {}) or {})
             if not verdict.passed:
                 return verdict, collected
-        return SimpleNamespace(
-            passed=True, filter_name="chain", detail="clear", reason=None, data=collected
-        ), collected
+        return (
+            SimpleNamespace(
+                passed=True, filter_name="chain", detail="clear", reason=None, data=collected
+            ),
+            collected,
+        )
 
     return SimpleNamespace(find=lambda _kind: filters[0], filters=filters, check=check)
 

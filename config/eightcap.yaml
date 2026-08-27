@@ -1528,6 +1528,58 @@ analysis:
     # deze snede staat op iets dat wel overeind blijft.
     score_threshold: 35.0
 
+    # DE MOTOR HEET CONFLUENCE EN STRAFTE CONFLUENCE AF.
+    #
+    # De score is een gewogen GEMIDDELDE over de modules die het eens zijn. Een
+    # tweede lezer die MEEDOET kan dat gemiddelde dus alleen naar zijn eigen
+    # waarde toe trekken. Tegen de lat van 35:
+    #
+    #     market_structure alleen                        70,0
+    #     market_structure + candle_momentum, ZELFDE kant 51,9
+    #
+    # Twee lezers die het eens zijn scoorden ACHTTIEN PUNTEN LAGER dan een
+    # lezer die alleen stond. Overeenstemming was een straf, en hoe meer
+    # overeenstemming er was hoe zwaarder de straf.
+    #
+    # WAAR DAT OP SELECTEERDE is het echte probleem. Bij een vaste lat kiest
+    # een motor waarvan de score daalt naarmate er meer instemming is niet
+    # alleen te weinig bevestigde setups -- hij kiest systematisch de setups
+    # waar precies EEN detector schreeuwt en alle andere zwijgen. Dat zijn de
+    # minst bevestigde lezingen die er zijn.
+    #
+    # En dat verklaart de meting die vandaag alles domineerde: alle acht
+    # detectoren kwamen terug op 54-57% winst, gemiddelde winst +0,68R tegen
+    # gemiddeld verlies -1,04R. Een vorm, acht keer. Ze leken niet op elkaar
+    # omdat ze hetzelfde zagen -- ze leken op elkaar omdat de motor uit alle
+    # acht dezelfde SOORT setup koos: de eenzame.
+    #
+    # Dit stond al opgeschreven zonder dat iemand de conclusie trok. In de
+    # docstring van `candle_momentum`: "joining a strong reader makes matters
+    # worse rather than better". Het antwoord was toen die module zijn eigen
+    # baan OM de stemming heen geven, in plaats van vragen waarom instemming
+    # belast werd.
+    #
+    # DE SCHAAL BLIJFT. Het gemiddelde is onveranderd, dus een setup met een
+    # enkele module scoort precies wat hij altijd scoorde en de lat betekent
+    # nog hetzelfde. Wat erbij komt is een begrensde premie per extra module
+    # die het eens is:
+    #
+    #     1 module   x 1,00   ->  70,0   (zoals altijd)
+    #     2 modules  x 1,15   ->  59,7
+    #     3 modules  x 1,30   ->  ...
+    #     4+ modules x 1,45   (plafond)
+    #
+    # Het plafond staat er zodat brede instemming de kwaliteit van de lezing
+    # niet kan overstemmen: vijf zwakke modules die meeknikken mogen niet boven
+    # een sterk, goed bevestigd paar uitkomen.
+    #
+    # WAT DIT NIET DOET: geen enkele setup die vandaag handelt valt hierdoor af.
+    # De premie kan alleen omhoog werken. Wat erbij komt zijn de bevestigde
+    # setups die tot nu toe onder de lat werden gedrukt door het feit dat er
+    # meer bewijs voor was.
+    corroboration_bonus_per_module: 0.15
+    max_corroboration_bonus: 0.45
+
     # EEN EENZAME LEZER MOET BIJNA ZEKER ZIJN. Dit is de knop die de eigenaar
     # bedoelde toen hij om 80 vroeg.
     #
