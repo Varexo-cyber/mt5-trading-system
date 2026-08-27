@@ -36,18 +36,13 @@ from core.types import Signal
 
 
 def _score(engine, pairs) -> float:  # type: ignore[no-untyped-def]
-    """The scoring arithmetic alone, fed the (signal, weight) pairs the engine
-    would have resolved as agreeing."""
-    config = engine.config
-    strengths = sorted((abs(s.score) * s.confidence for s, _ in pairs), reverse=True)
-    best = strengths[0] if strengths else 0.0
-    if best <= 0:
-        return 0.0
-    bonus = min(
-        config.max_corroboration_bonus,
-        config.corroboration_bonus_per_module * sum(o / best for o in strengths[1:]),
-    )
-    return best * (1.0 + bonus)
+    """The engine's OWN scoring method, not a restatement of it.
+
+    This helper used to carry its own copy of the arithmetic, which is the
+    exact mistake the code had: two definitions, one repaired. A test that
+    reimplements what it checks passes against a broken engine.
+    """
+    return engine.score_of(list(pairs))
 
 
 def _engine(**changes):  # type: ignore[no-untyped-def]
@@ -155,3 +150,52 @@ class TestTheShippedSettings:
 
         for pairs in ([STRUCTURE], [STRUCTURE, MOMENTUM], [STRUCTURE, MOMENTUM, MOMENTUM]):
             assert _score(engine, pairs) >= _score(off, pairs)
+
+
+class TestTheArithmeticExistsExactlyOnce:
+    """It existed twice and only one copy was repaired.
+
+    `evaluate` computed the final score and `readiness` computed a score of its
+    own to decide which horizon owns the proposal -- quick, intraday or swing.
+    Both were the same weighted mean. Fixing the first left the second still
+    selecting on the defect: at a fixed bar, a score that falls as agreement
+    rises prefers the group where one detector is loud and the rest are silent.
+
+    So the corroborated quick group kept losing the horizon contest to the
+    lonely swing one, after the final score had stopped punishing corroboration.
+    """
+
+    def test_no_second_copy_of_the_score_survives(self) -> None:
+        """Asserted over the source, because the failure is invisible in
+        behaviour: both copies returned plausible numbers and only one was
+        right.
+
+        The mean's signature is that exact numerator divided by the summed
+        weights OVER THE AGREEING MODULES. The numerator alone is not enough to
+        match on: `_vote` uses the same term to choose a DIRECTION by comparing
+        the two sides, which is a different quantity that happens to share an
+        expression. Matching it would have made this test fail on correct code,
+        and the next person would have deleted the test rather than the copy.
+        """
+        import inspect
+
+        from analysis import confluence
+
+        source = " ".join(inspect.getsource(confluence).split())
+        mean_over_agreeing = (
+            "sum(abs(signal.score) * signal.confidence * weight "
+            "for signal, weight in agreeing) / denominator"
+        )
+
+        assert mean_over_agreeing not in source, "a second copy of the score is back"
+
+    def test_both_deciders_go_through_the_same_method(self) -> None:
+        """`evaluate` produces the final score; `readiness` inside
+        `_resolve_direction` decides which horizon owns the symbol. Those are
+        the two that were separate."""
+        import inspect
+
+        from analysis.confluence import ConfluenceEngine
+
+        assert "self.score_of(agreeing)" in inspect.getsource(ConfluenceEngine.evaluate)
+        assert "self.score_of(agreeing)" in inspect.getsource(ConfluenceEngine._resolve_direction)

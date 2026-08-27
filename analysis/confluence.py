@@ -87,6 +87,47 @@ class ConfluenceEngine:
         self._signal_cache[ctx.symbol] = (fingerprint, signals)
         return signals
 
+    def score_of(self, agreeing: list[tuple[Signal, float]]) -> float:
+        """The confluence score: the strongest agreeing reading, raised by how
+        strongly it is corroborated.
+
+        ONE DEFINITION, AND IT HAD TO BECOME ONE. This arithmetic existed twice
+        -- once at the end of `evaluate` and once inside `readiness`, which
+        decides which horizon owns the proposal. Both were the same weighted
+        MEAN, so a second reader that AGREED could only pull the average toward
+        its own value:
+
+            market_structure alone                        70.0
+            market_structure + candle_momentum agreeing    51.9
+
+        Repairing the first copy left the second one selecting exactly what the
+        defect always selected: at a fixed bar, a score that falls as agreement
+        rises prefers the group where one detector is loud and the rest are
+        silent. So the quick/intraday/swing decision kept picking the lonely
+        group even once the final score no longer did.
+
+        Two copies of one rule is how that happens. There is now one.
+
+        The premium is weighted by each corroborating module's own strength
+        relative to the best, so a token nod earns a token premium; a bounded
+        cap stops a crowd of weak modules outscoring one strong, well
+        corroborated pair. A single agreeing module scores exactly
+        `|score| x confidence`, which is what the mean gave it, so the
+        threshold keeps its meaning.
+        """
+        strengths = sorted(
+            (abs(signal.score) * signal.confidence for signal, _ in agreeing), reverse=True
+        )
+        best = strengths[0] if strengths else 0.0
+        if best <= 0.0:
+            return 0.0
+        corroboration = min(
+            self.config.max_corroboration_bonus,
+            self.config.corroboration_bonus_per_module
+            * sum(other / best for other in strengths[1:]),
+        )
+        return best * (1.0 + corroboration)
+
     def evaluate(self, ctx: MarketContext, mode: TradingMode) -> TradeIdea:
         signals = self._signals(ctx)
         if ctx.tick is None:
@@ -335,18 +376,7 @@ class ConfluenceEngine:
         # gave it, so the threshold keeps its meaning and nothing that trades
         # today stops trading. Zero restores the old arithmetic for one module
         # and removes the premium for the rest.
-        strengths = sorted(
-            (abs(signal.score) * signal.confidence for signal, _ in agreeing), reverse=True
-        )
-        best = strengths[0] if strengths else 0.0
-        corroboration = 0.0
-        if best > 0:
-            corroboration = min(
-                self.config.max_corroboration_bonus,
-                self.config.corroboration_bonus_per_module
-                * sum(other / best for other in strengths[1:]),
-            )
-        score = best * (1.0 + corroboration)
+        score = self.score_of(agreeing)
         confidence = sum(signal.confidence * weight for signal, weight in agreeing) / denominator
         if score < self.config.score_threshold:
             return self._reject(
@@ -1064,13 +1094,10 @@ class ConfluenceEngine:
             which clock owns the proposal; no threshold is relaxed here.
             """
             _direction, agreeing, agreement = result
-            denominator = sum(weight for _signal, weight in agreeing)
-            score = (
-                sum(abs(signal.score) * signal.confidence * weight for signal, weight in agreeing)
-                / denominator
-                if denominator
-                else 0.0
-            )
+            # The SAME arithmetic as the final score, because it was a second
+            # copy of it and repairing only the other one left this deciding
+            # which horizon owns the symbol on the defect.
+            score = self.score_of(agreeing)
             qualified = (
                 len(agreeing) >= self.config.minimum_directional_modules
                 and agreement >= self.config.minimum_agreement_ratio
