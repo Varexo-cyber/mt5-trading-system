@@ -341,3 +341,89 @@ class TestPlaybookVerdictTravelsWithTheRefusal:
             "the entry-quality refusal no longer records what the playbooks saw; "
             "the scalp-versus-chase overlap becomes unmeasurable again"
         )
+
+
+class TestOverExtensionIsRefusedWhereverItSitsInTheRange:
+    """The four over-extension tests were each written as
+
+        at_extreme and <limit breached>
+
+    so the whole check only existed for a price already at 80% of its
+    twelve-bar range. That left two openings, and they are the same trade seen
+    from two sides: at 79% of the range no limit applied at all, and at 100% of
+    the range on a calm bar every limit was clear.
+
+    WHAT MAKES THIS A DEFECT rather than a preference. Over 1,970 closed
+    trades, 197 ever peaked above +1.00R -- ten percent. A coin flip entering
+    at random with the same 1R stop reaches +1R before -1R about half the time.
+    Ten against fifty is not a weak edge; it is an entry taken systematically
+    after the move has happened. The whole shape of the give-back table follows
+    from it: 80% of trades reach 0.30R and almost none reach 1.00R.
+
+    The limits themselves were never the problem and have not moved. 2.75 ATR
+    of travel in three bars and 2.25 ATR from the EMA are generous, and a
+    market past either has made its move whether or not it happens to sit at
+    the top of a twelve-bar window.
+    """
+
+    def _ran_hard_then_barely_retraced(self) -> np.ndarray:
+        """A six-bar climb of ten, giving back only four of it.
+
+        The last twelve bars now form a range the price sits in the MIDDLE of
+        -- 56% -- while it is still 1.56 ATR above its own EMA. Before this
+        change `at_extreme` was False here, so extension, body and EMA distance
+        were all skipped and the verdict was ENTER_NOW.
+        """
+        closes = quiet_history()
+        closes[-15:-9] = np.linspace(100.0, 110.0, 6)
+        closes[-9:] = 110.0 - 4.0 * np.array([0.2, 0.6, 1.0, 0.8, 0.5, 0.9, 0.6, 0.7, 0.65])
+        return closes
+
+    def test_a_market_that_ran_is_refused_even_from_the_middle_of_its_range(self) -> None:
+        verdict = assess_entry_quality(
+            context(self._ran_hard_then_barely_retraced()),
+            Direction.LONG,
+            AssetClass.STOCK,
+            config(),
+        )
+
+        assert verdict.decision is EntryTimingDecision.WAIT_RETEST
+        assert (
+            verdict.directional_range_location < config().directional_extreme_location
+        ), "the fixture has to sit BELOW the extreme or it proves nothing"
+        assert verdict.ema_distance_atr > 1.5
+
+    def test_the_same_move_retraced_properly_is_still_allowed(self) -> None:
+        """The guard against over-correcting. A market that ran and then gave
+        back enough to come home to its EMA is a pullback entry, which is the
+        setup this system exists to take."""
+        closes = quiet_history()
+        closes[-15:-9] = np.linspace(100.0, 110.0, 6)
+        closes[-9:] = 110.0 - 6.0 * np.array([0.2, 0.6, 1.0, 0.8, 0.5, 0.9, 0.6, 0.7, 0.65])
+
+        verdict = assess_entry_quality(context(closes), Direction.LONG, AssetClass.STOCK, config())
+
+        assert verdict.decision is EntryTimingDecision.ENTER_NOW
+
+    def test_the_range_extreme_still_tightens_rather_than_enables(self) -> None:
+        """`at_extreme` keeps exactly one job and it is the one it is good at.
+        `max_extreme_single_bar_body_atr` is less than half
+        `max_single_bar_body_atr`, because a one-bar thrust INTO the range edge
+        is a different event from the same bar in the middle of a range."""
+        settings = config()
+
+        for asset in ("forex", "index", "metal", "crypto"):
+            assert (
+                settings.max_extreme_single_bar_body_atr[asset]
+                < settings.max_single_bar_body_atr[asset]
+            ), asset
+
+    def test_a_calm_market_inside_its_range_is_still_allowed(self) -> None:
+        """The guard against over-correcting. Refusing everything near a high
+        would refuse every trend entry there is, which is how the same fix was
+        got wrong on section six earlier the same day."""
+        closes = quiet_history()
+
+        verdict = assess_entry_quality(context(closes), Direction.LONG, AssetClass.STOCK, config())
+
+        assert verdict.decision is EntryTimingDecision.ENTER_NOW
