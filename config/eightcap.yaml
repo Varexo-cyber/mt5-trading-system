@@ -208,7 +208,41 @@ instruments:
   #
   # Wat er dan nog overeind staat voor aandelen: de avonduitfasering om 15:30
   # UTC, `INSUFFICIENT_RUNWAY` op datzelfde venster, en de kostenpoorten.
-  asset_classes: [forex, metal, index, commodity, stock, crypto]
+  #
+  # ---------------------------------------------------------------------
+  # `stock` GAAT ER WEER AF, 27 augustus, op instructie van de eigenaar en met
+  # zijn eigen middag als bewijs. Zes trades tussen 11:16 en 13:44:
+  #
+  #     HEI      -2,73   Heineken
+  #     EURCHF   -3,13   het vlakste majorpaar dat er is
+  #     AIR      -0,70   aandeel
+  #     BAMI     -0,86   aandeel
+  #     ETHUSD   +1,01
+  #     ETHUSD   -0,77
+  #
+  # Drie losse aandelen samen -4,29. Crypto per saldo +0,24. De eigenaar wil
+  # forex, goud, crypto en indices en geen Nederlandse en Italiaanse
+  # small caps, en dat is niet onredelijk op een rekening van EUR 211.
+  #
+  # WAAROM DE MEETPLICHT HIER NIET WINT VAN DE LIJST, en dat is het eerlijke
+  # deel: de redenering hierboven klopt nog steeds als redenering. `max_gap_atr`
+  # en `min_bar_range_in_spreads` beoordelen het ding zelf in plaats van de
+  # klasse, en dat is beter. Maar ze zijn niet de enige kosten van een aandeel
+  # op dit account:
+  #
+  #   - Het is de traagste markt in de catalogus. Een setup die op EURUSD in
+  #     twee dagen loopt doet er op een Milanese small cap zes over, en met vier
+  #     slots is dat een week van je capaciteit voor een trade.
+  #   - Het zijn er 600+ van de 847. Ze vullen de scanrotatie met markten die
+  #     sectie 6 niet eens mag aanraken en die op EUR 211 vrijwel allemaal door
+  #     de affordability-filter vallen.
+  #   - En de gaten die `max_gap_atr` vangt zijn de gaten die AL gebeurd zijn.
+  #     Het eerste gat op een nieuw aandeel wordt niet gevangen, want er is nog
+  #     geen geschiedenis om het aan te meten.
+  #
+  # Terugzetten is een woord. Doe dat zodra de rekening groot genoeg is dat een
+  # trade van zes dagen geen kwart van de capaciteit is.
+  asset_classes: [forex, metal, index, commodity, crypto]
 
   # Or watch a single instrument. Leave empty for the list above; set e.g.
   # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded

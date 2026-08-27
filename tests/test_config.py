@@ -68,7 +68,6 @@ class TestShippedConfig:
             "metal",
             "index",
             "commodity",
-            "stock",
             "crypto",
         )
         assert settings.instruments.symbols_only == ()
@@ -548,7 +547,6 @@ class TestTradeFrequency:
             "metal",
             "index",
             "commodity",
-            "stock",
             "crypto",
         )
         assert settings.instruments.symbols_only == ()
