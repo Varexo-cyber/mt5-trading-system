@@ -1151,6 +1151,12 @@ class TestTheLoneFloorCanBeSetPerDetector:
         # Every earner from the live table, and nothing else. A detector with
         # no measured record must keep the single global floor.
         assert set(table) == {
+            # The one entry here that does anything live, and the only detector
+            # in either backtest table that came out OUTSIDE chance: 66 lone
+            # trades, 76% win, +0.123R apiece, against a coin that took the
+            # same moments with the same stops and targets and reached 63%.
+            # Two independent 90-day runs agree on the sign.
+            "trend_momentum",
             "ema_pullback_resume",
             "impulse_break",
             "fast_ema_cross",
@@ -1160,7 +1166,16 @@ class TestTheLoneFloorCanBeSetPerDetector:
         # the module confidence floor would make the entry meaningless: every
         # firing would clear it and the corroboration requirement would be off
         # rather than relaxed.
+        #
+        # THIS CLAUSE EARNED ITS KEEP on 27 August. `trend_momentum` was going
+        # in at 0.45 — the value that reproduces the measured population
+        # exactly, since that population spans every confidence level — and
+        # 0.45 IS `minimum_confidence`. The entry would not have been a relaxed
+        # floor, it would have been no floor, and the difference is the whole
+        # rule. It went in at 0.50 instead: the lowest in the table, which is
+        # what the strongest record deserves, and still a bar.
         assert all(value > confluence.minimum_confidence for value in table.values())
+        assert table["trend_momentum"] == min(table.values())
 
 
 class TestTrendMomentumIsBackOnItsNarrowedRecord:

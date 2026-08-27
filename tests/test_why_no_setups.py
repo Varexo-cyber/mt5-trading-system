@@ -138,7 +138,13 @@ class TestThePerDetectorFloor:
 
         assert changed.lone_floor_for("liquidity_sweep") == 0.55
         assert changed.lone_floor_for("impulse_break") == 0.75
-        assert changed.lone_floor_for("trend_momentum") == 0.65
+        # A third detector, untouched by the override, still reads the global
+        # floor. `trend_momentum` stood here until it earned an entry of its
+        # own on 27 August, at which point this would have passed for the wrong
+        # reason — the same trap `m1_micro_breakout` was moved into above.
+        assert changed.lone_floor_for("basket_divergence") == (
+            changed.lone_module_minimum_confidence
+        )
 
     def test_a_misspelled_detector_stops_the_run(self) -> None:
         """The failure this whole tool exists to avoid: measuring a change that
