@@ -148,6 +148,12 @@ def test_replay_attributes_orders_only_to_modules_that_carried_weight() -> None:
                 take_profit=102.0,
                 score=70.0,
                 confidence=0.8,
+                # A real `TradeIdea` always carries this. The double is given
+                # it rather than the replay being made tolerant of its absence:
+                # a `getattr(..., None)` there would turn a production
+                # regression — the grader silently falling back to a
+                # forty-one-hour hold — into a passing test.
+                expected_horizon_minutes=180,
                 signals=(
                     Signal("causal", 70.0, 0.8),
                     Signal("passive", 90.0, 0.9),

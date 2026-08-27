@@ -197,6 +197,10 @@ class HistoricalContextReplay:
                     confidence=idea.confidence,
                     modules=active,
                     spread=spread,
+                    # The grader could never read the plan's own length because
+                    # nothing ever handed it one. `expected_horizon_minutes` has
+                    # been on every proposal this engine has produced.
+                    horizon_minutes=idea.expected_horizon_minutes,
                     regime=next(
                         (
                             str(signal.details.get("regime", ""))

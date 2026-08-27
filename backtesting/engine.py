@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from math import e, sqrt
+from math import ceil, e, sqrt
 from statistics import NormalDist
 
 import numpy as np
@@ -69,6 +69,25 @@ class BacktestOrder:
     #: first says switch it off, the second says only let it fire where it
     #: works. Empty when the replay did not record one.
     regime: str = ""
+    #: How long the plan that produced this order said it would take.
+    #:
+    #: THE MEASUREMENT CARRIED THE SAME DEFECT AS THE LIVE EXIT, and here it is
+    #: worse, because the measurement is what everything else was decided from.
+    #: The engine held every order for `max_holding_bars` — 500 M5 bars, which
+    #: is forty-one and a half hours — whatever the proposal's horizon said. A
+    #: thirty-minute quick plan and a twenty-four hour swing plan were graded
+    #: over the same forty-one hours.
+    #:
+    #: Every conclusion this tool has produced was produced under that hold:
+    #: the target-distance table that moved `minimum_r_multiple` from 0.75 to
+    #: 0.35, the cost-band table, and the finding that no detector beat a coin
+    #: flip taking the same moments. None of those are wrong *about a
+    #: forty-one-hour hold*. None of them were ever about the horizon the
+    #: module in question actually claims to read.
+    #:
+    #: None keeps the old cap, so an order built by hand or by an older caller
+    #: is replayed exactly as it was.
+    horizon_minutes: int | None = None
 
     @property
     def risk(self) -> float:
@@ -146,7 +165,7 @@ class PessimisticBacktester:
             future = frame[frame.index > order.decided_at]
             if future.empty:
                 continue
-            future = future.iloc[: self.assumptions.max_holding_bars]
+            future = future.iloc[: self._holding_bars(order, frame)]
             trades.append(self._replay(order, future))
         return self._summarise(trades)
 
@@ -165,10 +184,41 @@ class PessimisticBacktester:
             future = frame[frame.index > order.decided_at]
             if future.empty:
                 continue
-            trade = self._replay(order, future.iloc[: self.assumptions.max_holding_bars])
+            trade = self._replay(order, future.iloc[: self._holding_bars(order, frame)])
             trades.append(trade)
             unavailable_until = trade.exited_at
         return self._summarise(trades)
+
+    def _holding_bars(self, order: BacktestOrder, frame: pd.DataFrame) -> int:
+        """How many bars this ORDER may be held, not how many any order may be.
+
+        `max_holding_bars` was applied to every order alike: 500 bars, and the
+        replay runs on M5, so forty-one and a half hours. The engine that
+        produced these orders had already decided a horizon for each of them —
+        thirty minutes, three hours or twenty-four — and the grader ignored it.
+
+        That is the same defect as the live time exit and it matters more here,
+        because this tool is the evidence the rest of the system was tuned
+        against. A detector that claims to read the next thirty minutes,
+        replayed over forty-one hours, is graded almost entirely on movement it
+        never spoke about — and it will look like a coin flip whether or not it
+        is one.
+
+        The bar length is taken from the frame rather than assumed, because the
+        caller chooses it and an M1 replay and an M5 replay would otherwise
+        disagree about what 500 bars means. Falls back to the flat cap whenever
+        the order has no horizon or the frame is too short to date, which is
+        the old behaviour exactly.
+        """
+        cap = self.assumptions.max_holding_bars
+        if order.horizon_minutes is None or order.horizon_minutes <= 0 or len(frame.index) < 2:
+            return cap
+        step = (frame.index[1] - frame.index[0]).total_seconds() / 60.0
+        if step <= 0:
+            return cap
+        # At least one bar: a horizon shorter than the replay's own resolution
+        # is a plan this frame cannot express, and zero bars is not a trade.
+        return max(1, min(cap, ceil(order.horizon_minutes / step)))
 
     def _replay(self, order: BacktestOrder, future: pd.DataFrame) -> BacktestTrade:
         entered_at = future.index[0].to_pydatetime()
