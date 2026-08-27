@@ -963,3 +963,125 @@ class TestTheHealthExitReachesAScalpTooWhenItGoesWrong:
         health_line = source[health : source.index("\n", health)]
         assert settled < health
         assert "settled" not in health_line
+
+
+class TestTheLaneRunsEveryGateAndNotJustTheCalendar:
+    """Six of eight overnight trades landed between 03:33 and 06:34 UTC.
+
+    Four of them were NDX100 -- a US index -- and the first opened at 03:33,
+    five hours after the Nasdaq closed. That is the Asian session and the
+    rollover: the widest spreads of the day, on a market nobody was pricing.
+
+    The lane's own docstring explains why, and it was written to justify asking
+    the CALENDAR directly:
+
+        "This lane is reached from `_record_skip`, so it runs on setups the
+         main path REFUSED -- and the commonest refusal, NO_SIGNAL, is raised
+         at the confluence engine, which sits BEFORE `self.filters.check`."
+
+    Everything else in that chain is in exactly the same position and none of
+    it was asked: the session filter, the spread filter, the liveliness filter,
+    the headline filter, the volume-spike filter. The calendar was singled out
+    because a red folder had already cost real money; nothing generalised the
+    lesson.
+
+    The account had already found and fixed this same failure for section one.
+    The overlay says so, about the same instrument:
+
+        "NDX100 short om 00:51 UTC, vijf uur nadat de Nasdaq dichtging...
+         door het filter heen, want Azie loopt en Azie staat in de lijst --
+         terwijl Azie geen van beide instrumenten prijst."
+
+    Section six had its own lane, so it kept the hole -- and a scalp reaching
+    for a few spreads is the trade that can least afford a dead market and a
+    wide quote.
+    """
+
+    def lane(self, *verdicts):  # type: ignore[no-untyped-def]
+        """A runner whose chain holds exactly these filters, in order."""
+        service = runner()
+        asked: list[str] = []
+
+        def make(name, passed, detail):  # type: ignore[no-untyped-def]
+            def check(ctx):  # type: ignore[no-untyped-def]
+                asked.append(name)
+                return SimpleNamespace(
+                    passed=passed, filter_name=name, detail=detail, reason=None, data={}
+                )
+
+            return SimpleNamespace(check=check)
+
+        filters = tuple(make(*v) for v in verdicts)
+
+        def chain_check(ctx):  # type: ignore[no-untyped-def]
+            for filter_ in filters:
+                verdict = filter_.check(ctx)
+                if not verdict.passed:
+                    return verdict, {}
+            return (
+                SimpleNamespace(
+                    passed=True, filter_name="chain", detail="clear", reason=None, data={}
+                ),
+                {},
+            )
+
+        service.filters = SimpleNamespace(  # type: ignore[assignment]
+            filters=filters, find=lambda _k: filters[0], check=chain_check
+        )
+        service.clock = SimpleNamespace(now=lambda: __import__("datetime").datetime.now())  # type: ignore[assignment]
+        return service, asked
+
+    def test_a_closed_market_stops_it(self) -> None:
+        """The trade at 03:33. Nothing in the arguments says the Nasdaq is
+        shut; the session filter does, and it was never asked."""
+        service, asked = self.lane(("session", False, "NDX100: no home session is open"))
+
+        assert service._scalp_news_verdict("XAUUSD") is not None
+        assert asked == ["session"]
+
+    def test_a_wide_spread_stops_it(self) -> None:
+        """The one gate a scalp needs most. Its whole margin is a few spreads
+        wide, and it was the only route that never checked."""
+        service, _asked = self.lane(("spread", False, "spread 4.1 pips over the 2.0 limit"))
+
+        verdict = service._scalp_news_verdict("XAUUSD")
+        assert verdict is not None and "spread" in verdict
+
+    def test_the_refusal_names_which_gate_refused(self) -> None:
+        """It used to return a bare news detail, so any other refusal would
+        have been unattributable in the journal even once it existed."""
+        service, _asked = self.lane(
+            ("news", True, "clear"), ("liveliness", False, "market has not moved in 40 minutes")
+        )
+
+        verdict = service._scalp_news_verdict("XAUUSD")
+        assert verdict is not None
+        assert verdict.startswith("liveliness")
+
+    def test_every_gate_runs_before_it_is_allowed_through(self) -> None:
+        service, asked = self.lane(
+            ("news", True, "clear"), ("session", True, "london"), ("spread", True, "0.9 pips")
+        )
+
+        assert service._scalp_news_verdict("XAUUSD") is None
+        assert asked == ["news", "session", "spread"]
+
+    def test_a_chain_that_raises_refuses_rather_than_assuming_clear(self) -> None:
+        """No data is not permission -- the account's standing rule, and the
+        one that must survive every refactor of this method."""
+        service = runner()
+
+        def boom(_ctx):  # type: ignore[no-untyped-def]
+            raise RuntimeError("the calendar provider is down")
+
+        service.filters = SimpleNamespace(  # type: ignore[assignment]
+            filters=(object(),), find=lambda _k: None, check=boom
+        )
+
+        assert service._scalp_news_verdict("XAUUSD") is not None
+
+    def test_an_empty_chain_is_not_permission_either(self) -> None:
+        service = runner()
+        service.filters = SimpleNamespace(filters=(), find=lambda _k: None)  # type: ignore[assignment]
+
+        assert service._scalp_news_verdict("XAUUSD") is not None
