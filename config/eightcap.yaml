@@ -48,7 +48,57 @@ instruments:
   #      de regimeblokkade en is deze regel overbodig.
   #   2. Wat zegt `WHICH DETECTOR, IN WHICH REGIME` over olie op meer data?
   # Een gemeten reden om hem terug te zetten weegt zwaarder dan deze regel.
-  blocklist: [UKOUSD, USOUSD]
+  # 28 AUGUSTUS: DE MARKTEN DIE ELKE CYCLUS OPNIEUW WORDEN GEWEIGERD.
+  #
+  # Zodra de filterregel zijn eigen naam ging meelogen (27 augustus, daarvoor
+  # stond er tachtig keer "filter blocked entry" en verder niets) werd in een
+  # klap zichtbaar wat de scanner de hele dag aan het doen was. Om 08:27 UTC,
+  # met Londen open:
+  #
+  #     USDHKD    volume_spike / liveliness
+  #     USDTRY    liveliness -- MARKET_TOO_QUIET
+  #     EURSGD    liveliness -- MARKET_TOO_QUIET
+  #     GBPSGD    liveliness -- MARKET_TOO_QUIET
+  #     NZDSGD    liveliness -- MARKET_TOO_QUIET
+  #     EURPLN    liveliness -- MARKET_TOO_QUIET
+  #     USDPLN    liveliness -- MARKET_TOO_QUIET
+  #     CN50      liveliness -- MARKET_TOO_QUIET
+  #     SG30      liveliness -- MARKET_TOO_QUIET
+  #     CAN60     liveliness -- MARKET_TOO_QUIET
+  #     CORN      liveliness -- MARKET_TOO_QUIET
+  #     USDX      liveliness -- MARKET_TOO_QUIET
+  #     WBTCUSD   liveliness -- MARKET_TOO_QUIET
+  #
+  # DE FILTER HEEFT GELIJK EN DAT IS HET PUNT. `MARKET_TOO_QUIET` betekent dat
+  # de M5-bars niet eens een hele spread bewegen, en voor deze instrumenten is
+  # dat om tien uur 's ochtends net zo waar als om drie uur 's nachts. USDHKD
+  # hangt in een band vastgeklonken aan de dollar; die KAN niet bewegen. De
+  # SGD- en PLN-kruisen, CN50, SG30, CAN60, CORN en USDX zijn dun van
+  # constructie. WBTCUSD is een afgeleide van een afgeleide.
+  #
+  # Dus dit is geen afwijzing die morgen anders uitvalt. Het is dezelfde
+  # afwijzing, elke cyclus, voor altijd -- en tot die tijd betaalt elke cyclus
+  # er data, analyse en logregels voor. Een filter die altijd nee zegt hoort
+  # niet in de scan, hij hoort ervoor.
+  #
+  # `blocklist` en niet `ignored_symbols`, om dezelfde reden als bij olie
+  # hierboven: dit weigert alleen een NIEUWE entry. Stond er onverhoopt iets
+  # open, dan blijft het gewoon beheerd met stop en health-read.
+  #
+  # WANNEER DIT ERAF MAG: als `whynot.cmd` laat zien dat een van deze namen
+  # het wél haalt op een dag dat de markt beweegt. Dat is dan een gemeten
+  # reden, en die weegt zwaarder dan deze regel.
+  #
+  # WAT HIER NIET IN STAAT en er ook nooit in hoort: geen enkele major, geen
+  # goud, geen US30, geen NDX100. Dit raakt uitsluitend wat aantoonbaar niet
+  # beweegt.
+  blocklist: [
+    UKOUSD, USOUSD,
+    USDHKD, USDTRY,
+    EURSGD, GBPSGD, NZDSGD, EURPLN, USDPLN,
+    CN50, SG30, CAN60,
+    CORN, USDX, WBTCUSD,
+  ]
   # Gold is deliberately owned outside Jarvis: not opened, adopted, managed,
   # closed, flattened or counted. Stronger than a blocklist entry — even an
   # already-open XAUUSD ticket remains untouched.
