@@ -2192,17 +2192,27 @@ class JarvisRunner:
             )
             analysed = analysed[:allowed]
         if analysed:
+            # WHICH ones, in the message. Same fix as the filter line, and the
+            # same reason: "ranked 4 tradeable setups" told the operator that
+            # four markets got this far and gave him no way to find out which
+            # four, so he could not connect them to the refusals on the cycle
+            # line underneath. The names were already assembled here and lived
+            # only in `extra`, which the console formatter does not render.
+            best = [
+                f"{item.symbol} {item.idea.direction.name if item.idea.direction else '?'}"
+                f" {item.selection_score:.1f} [{item.market_priority_label}]"
+                for item in analysed[:5]
+            ]
+            more = f" (+{len(analysed) - len(best)} more)" if len(analysed) > len(best) else ""
             log.info(
-                "ranked %d tradeable setups by market priority and conviction",
+                "ranked %d tradeable setups by market priority and conviction: %s%s",
                 len(analysed),
+                "; ".join(best),
+                more,
                 extra={
                     "event": "conviction_ranking",
                     "candidates": len(analysed),
-                    "best": [
-                        f"{item.symbol} {item.idea.direction.name if item.idea.direction else '?'}"
-                        f" {item.selection_score:.1f} [{item.market_priority_label}]"
-                        for item in analysed[:5]
-                    ],
+                    "best": best,
                 },
             )
         return analysed

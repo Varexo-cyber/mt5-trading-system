@@ -263,10 +263,103 @@ def check_disk(now: datetime) -> Check:
     return Check("disk", OK, f"{free_gb:.0f} GB free")
 
 
+def check_breakers(now: datetime) -> Check:
+    """Has a detector switched ITSELF off while nobody was looking?
+
+    THE ONE STATE CHANGE NOTHING ANNOUNCED. `section_breakers` exists so a
+    module that starts losing stops on its own -- eight losers in a row for the
+    swing pair, ten for the fast ones. That is the entire reason it is
+    acceptable to run detectors whose record is thin or unmeasured.
+
+    And a tripped breaker looks, from outside, exactly like a quiet market. The
+    operator's own question was "how do I know everything is working", and
+    "four of your five detectors switched themselves off overnight" is the
+    single most important answer nothing was able to give him.
+
+    A module with no verdict yet is not a finding: below `minimum_trades` the
+    breaker deliberately says nothing, and reporting that silence as either
+    health or failure would be a lie.
+    """
+    # The only check here that needs no clock: a breaker's verdict is over the
+    # last N closed trades, not over a window of time.
+    del now
+    path = ROOT / "journal" / "trading.db"
+    if not path.exists():
+        return Check("breakers", WARN, "no journal yet; nothing to judge")
+    try:
+        from risk.section_breaker import tripped_modules
+
+        # THE OVERLAY, like every other check in this file. Without it this
+        # reads the base config, where `section_breakers` is empty -- so the
+        # check reported "no section breakers configured" on an account that
+        # has five of them armed. A health check that describes a different
+        # config than the one running is worse than no check.
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        breakers = settings.risk.section_breakers
+        if not breakers:
+            return Check("breakers", WARN, "no section breakers configured")
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            tripped = tripped_modules(conn, breakers)
+    except Exception as exc:  # noqa: BLE001 - a check that cannot read must say so
+        return Check("breakers", WARN, f"cannot judge: {type(exc).__name__}: {exc}")
+
+    if not tripped:
+        return Check("breakers", OK, f"{len(breakers)} armed, none tripped")
+    # A tripped breaker on a LIVE module is the loud case: that detector is not
+    # trading, and the account is quieter than the operator thinks it is.
+    live = set(settings.analysis.confluence.live_enabled_modules)
+    names = ", ".join(sorted(tripped))
+    state = FAIL if set(tripped) & live else WARN
+    return Check("breakers", state, f"switched themselves off: {names}")
+
+
+def check_trading(now: datetime) -> Check:
+    """Is the funnel producing trades, or only decisions?
+
+    `check_journal` counts decisions, and decisions are the thing that keeps
+    happening whether or not anything works: 66,140 of them in twelve hours
+    produced two trades, and every layer reported healthy throughout. That is
+    the failure this check exists for -- a system that is up, busy, logging,
+    and not trading.
+
+    It states the ratio rather than judging it, because there is no correct
+    number of trades per day and inventing one would make this alarm on a
+    legitimately quiet Sunday. WARN only when a full day of decisions produced
+    nothing at all, which is the case worth walking over to look at.
+    """
+    path = ROOT / "journal" / "trading.db"
+    if not path.exists():
+        return Check("trading", WARN, "no journal yet")
+    since = (now - timedelta(hours=24)).isoformat()
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5) as conn:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trades'"
+            ).fetchone():
+                return Check("trading", WARN, "journal has no tables yet")
+            decisions = conn.execute(
+                "SELECT COUNT(*) FROM analysis_cycles WHERE ts > ?", (since,)
+            ).fetchone()[0]
+            opened = conn.execute(
+                "SELECT COUNT(*) FROM trades WHERE opened_at > ?", (since,)
+            ).fetchone()[0]
+    except sqlite3.Error as exc:
+        return Check("trading", FAIL, f"cannot read: {exc}")
+
+    if not decisions:
+        return Check("trading", WARN, "no decisions in 24h; is the runner scanning?")
+    if not opened:
+        return Check("trading", WARN, f"{decisions} decisions in 24h and 0 trades - run whynot.cmd")
+    return Check("trading", OK, f"{opened} trades from {decisions} decisions in 24h")
+
+
 CHECKS = (
     check_kill_switch,
     check_heartbeat,
     check_journal,
+    check_trading,
+    check_breakers,
     check_calendar,
     check_brain,
     check_headlines,
