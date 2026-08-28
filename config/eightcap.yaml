@@ -94,11 +94,57 @@ instruments:
   # beweegt.
   blocklist: [
     UKOUSD, USOUSD,
-    USDHKD, USDTRY,
-    EURSGD, GBPSGD, NZDSGD, EURPLN, USDPLN,
+    # Deze staan OOK in `ignored_symbols` hieronder, en die lijst is degene die
+    # het werk doet. Ze blijven hier als vangnet: haalt iemand later een naam
+    # uit `ignored_symbols`, dan is hij weer zichtbaar in de scan maar nog
+    # steeds niet te openen, en dat is de veilige volgorde van die twee fouten.
+    USDHKD, USDTRY, ZARJPY, CNHJPY,
+    EURSGD, GBPSGD, NZDSGD, USDSGD, EURPLN, USDPLN,
     CN50, SG30, CAN60,
     CORN, USDX, WBTCUSD,
   ]
+
+  # HETZELFDE LIJSTJE, MAAR DAN OP DE LIJST DIE HET DAADWERKELIJK DOET.
+  #
+  # DIT IS EEN CORRECTIE OP MEZELF VAN EEN UUR GELEDEN. Ik zette die dertien
+  # markten op `blocklist` om ze uit de scan te krijgen, de eigenaar draaide
+  # update.cmd en herstartte, en ze stonden er allemaal nog:
+  #
+  #     EURPLN.i: liveliness blocked entry — MARKET_TOO_QUIET
+  #     USDPLN.i: liveliness blocked entry — MARKET_TOO_QUIET
+  #     CORN:     liveliness blocked entry — MARKET_TOO_QUIET
+  #
+  # `blocklist` weigert alleen een NIEUWE ENTRY. Het symbool wordt nog gewoon
+  # gescand, opgehaald, geanalyseerd en door de filterketen gehaald -- alleen
+  # helemaal aan het eind komt er nee uit. `ignored_symbols` is degene die uit
+  # de SCAN haalt, en `scanner/universe.py` past die ook echt toe.
+  #
+  # De schema-docstring zegt dat verschil met zoveel woorden, en ik heb het
+  # gelezen, in mijn eigen config-comment geciteerd als reden om `blocklist` te
+  # kiezen -- "dit weigert alleen een nieuwe entry, een openstaand ticket
+  # blijft beheerd" -- en niet gemerkt dat precies die eigenschap het
+  # ongeschikt maakte voor wat ik wilde. Ik heb het mechanisme gekozen waarvan
+  # de documentatie mij vertelde dat het mijn doel niet haalt.
+  #
+  # WAT HIER WEL EN NIET IN MAG. `ignored_symbols` is totaal: geen scan, geen
+  # adoptie, geen positiebeheer, geen noodsluiting, niet meegeteld in het
+  # risico. Voor een markt die nooit een positie heeft gehad en er nooit een
+  # krijgt is dat precies goed. Voor OLIE is het dat NIET -- UKOUSD en USOUSD
+  # hebben vier echte trades gehad, dus die blijven uitsluitend op `blocklist`
+  # staan, waar een openstaand ticket met stop en health-read beheerd blijft.
+  #
+  # ZARJPY, CNHJPY en USDSGD zijn erbij gekomen: die verschenen op het scherm
+  # van vanochtend met dezelfde MARKET_TOO_QUIET, elke cyclus, twee keer.
+  #
+  # ETHUSD, SOLUSD, US2000 en EUSTX50 staan er BEWUST NIET IN. Die werden
+  # vanochtend ook geweigerd, maar dat zijn echte markten die wel degelijk
+  # kunnen bewegen. Een dag met weinig volume is geen structurele dode markt,
+  # en ik heb vandaag al een keer te ver doorgepakt.
+  #
+  # De lijst zelf staat verderop, bij de bestaande `ignored_symbols`. Twee keer
+  # dezelfde sleutel in één YAML-mapping is geen fout die iets zegt: de laatste
+  # wint en de eerste verdwijnt zonder een woord. Dat is precies wat hier
+  # gebeurde bij de eerste poging.
   # Gold is deliberately owned outside Jarvis: not opened, adopted, managed,
   # closed, flattened or counted. Stronger than a blocklist entry — even an
   # already-open XAUUSD ticket remains untouched.
@@ -118,7 +164,18 @@ instruments:
   # Scanning it produces analysis rows in the journal and nothing else; no
   # order can be built from it, because the entry gate refuses the symbol by
   # name before sizing is ever reached.
-  ignored_symbols: []
+  #
+  # 28 AUGUSTUS: DE STRUCTUREEL DODE MARKTEN. Zie de lange motivering bij
+  # `blocklist` hierboven -- deze lijst is degene die ze uit de SCAN haalt, en
+  # `scanner/universe.py` past hem ook echt toe. Goud staat er niet meer in en
+  # hoort daar niet in; dat is `observation_only_symbols`, om de vier redenen
+  # hierboven.
+  ignored_symbols: [
+    USDHKD, USDTRY, ZARJPY, CNHJPY,
+    EURSGD, GBPSGD, NZDSGD, USDSGD, EURPLN, USDPLN,
+    CN50, SG30, CAN60,
+    CORN, USDX, WBTCUSD,
+  ]
 
   # GOUD VAN "NIET AANRAKEN" NAAR "NIET OVERNEMEN", 26 augustus, op verzoek van
   # de eigenaar en nadat bleek dat die twee dingen hier één knop waren.

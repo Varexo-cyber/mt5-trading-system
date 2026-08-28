@@ -107,11 +107,49 @@ def terminal_path_from_env() -> str:
 # ---------------------------------------------------------------- helpers ---
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """A loader that refuses a mapping with the same key twice.
+
+    YAML's rule is last-one-wins, silently. In a 3,600-line config that governs
+    real money, that means an edit can be complete, correct, committed, pulled
+    and deployed -- and have no effect, with nothing anywhere saying so.
+
+    IT HAPPENED ON 28 AUGUSTUS AND IT COST A DEPLOY. Sixteen dead markets were
+    added to `instruments.ignored_symbols` to get them out of the scan. There
+    was already an `ignored_symbols: []` ninety lines further down, so the
+    empty list won and the scan was unchanged. The operator ran update.cmd,
+    restarted, and watched exactly the same markets be refused exactly as
+    before. The only reason it was caught is that the value was read back and
+    asserted afterwards rather than assumed.
+
+    That is the defect class this whole account keeps producing -- a change
+    that exists, is correct, and never reaches the path the code takes -- and
+    here the config format itself is the mechanism. So it stops being possible.
+    """
+
+    def construct_mapping(self, node, deep: bool = False):  # type: ignore[no-untyped-def]
+        seen: dict[Any, int] = {}
+        for key_node, _value in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            line = key_node.start_mark.line + 1
+            if key in seen:
+                raise ConfigError(
+                    f"duplicate key {key!r} in a YAML mapping: first at line "
+                    f"{seen[key]}, again at line {line}. YAML keeps the LAST one "
+                    f"and discards the first without a word, so one of these two "
+                    f"edits is doing nothing. Merge them into a single key."
+                )
+            seen[key] = line
+        return super().construct_mapping(node, deep=deep)
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"configuration file not found: {path}")
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        loaded = yaml.load(path.read_text(encoding="utf-8"), Loader=_StrictLoader)
+    except ConfigError as exc:
+        raise ConfigError(f"{path}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise ConfigError(f"could not parse {path}: {exc}") from exc
     if loaded is None:
