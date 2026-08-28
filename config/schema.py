@@ -2144,6 +2144,77 @@ class CandleMomentumConfig(Base):
         return self
 
 
+class VwapReversionConfig(Base):
+    """SECTION TWO, replacing `drift_burst`. How far is price from the day?
+
+    VWAP is the volume-weighted average price since the session opened -- not
+    an indicator drawn over the chart but a summary of it, the average price at
+    which the day's business was actually done. An execution desk is measured
+    against it, so a desk working a large order becomes a buyer below it and a
+    seller above it. That is a real, dated, one-directional pressure, and it is
+    the only defensible half of the usual "price snaps back to VWAP" telling.
+
+    WHY THIS ACCOUNT, from its own scorecard and not from theory: every losing
+    regime is a sideways one (`range` -2.04R, `transition` -1.76R) while the two
+    trending ones are positive. That is exactly where trend followers should
+    lose and mean reversion should work -- and the only mean-reversion reader on
+    the book fired nine times in a day against `trend_momentum`'s 58,612.
+
+    IT REPLACES SECTION TWO because `drift_burst` finished 89 observed setups at
+    19% hit and -64.07R, and because a slot that has already been given the
+    paper-first discipline is the honest place to put a tenth detector.
+    """
+
+    enabled: bool = True
+    #: Bars per decision. M5 over a full session is roughly 280 bars, which is
+    #: enough for a stable volume-weighted mean without carrying yesterday.
+    timeframe: str = "M5"
+    #: How much session to summarise. Deliberately a bar count and not a clock:
+    #: this account trades gold, indices and FX, and their sessions open at
+    #: different hours. 288 M5 bars is 24 hours, so on a continuous market it is
+    #: a rolling day and on a session market it is everything since the open
+    #: plus whatever preceded it -- both of which are the volume that traded.
+    session_bars: int = Field(default=288, ge=30, le=2000)
+    #: The stretch that is worth fading, in the session's OWN standard
+    #: deviations rather than pips. Two sigma on a quiet day and two sigma on a
+    #: violent one are different distances and the same statement.
+    minimum_sigma: float = Field(default=2.0, ge=0.5, le=6.0)
+    #: Past this the score stops rising. A five-sigma print is usually a data
+    #: fault or a halt, and it must not outrank the population this was built
+    #: for.
+    saturation_sigma: float = Field(default=1.5, gt=0.0, le=6.0)
+    #: How many bars back the stall is measured over.
+    stall_bars: int = Field(default=3, ge=1, le=30)
+    #: THE HALF THAT STOPS IT STANDING IN FRONT OF A TRAIN. Distance alone
+    #: cannot separate a mispricing from a repricing: two sigma below VWAP on a
+    #: quiet drift and two sigma below on a release are the same number with
+    #: opposite futures. So the stretch must have STOPPED -- the last
+    #: `stall_bars` may add no more than this much of it, in the same units.
+    #: Zero would demand a perfectly flat pause; 0.25 allows a drifting one.
+    maximum_extension: float = Field(default=0.25, ge=0.0, le=2.0)
+    #: The score at exactly `minimum_sigma`, rising to `maximum_score` at
+    #: saturation. Starts under the live threshold of 35 on purpose: a bare
+    #: two-sigma stretch should need a second reader to agree, and only a real
+    #: outlier speaks for itself.
+    base_score: float = Field(default=30.0, ge=0.0, le=100.0)
+    maximum_score: float = Field(default=70.0, ge=0.0, le=100.0)
+    base_confidence: float = Field(default=0.45, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.75, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _score_and_confidence_rise(self) -> VwapReversionConfig:
+        if self.maximum_score < self.base_score:
+            raise ValueError(
+                "analysis.vwap_reversion.maximum_score may not be below base_score -- "
+                "a bigger stretch cannot score less than a smaller one"
+            )
+        if self.maximum_confidence < self.base_confidence:
+            raise ValueError(
+                "analysis.vwap_reversion.maximum_confidence may not be below " "base_confidence"
+            )
+        return self
+
+
 class BasketDivergenceConfig(Base):
     """SECTION FIVE. One index stepped out of line with the others.
 
@@ -3480,6 +3551,7 @@ class AnalysisConfig(Base):
     session_breakout: SessionBreakoutConfig = SessionBreakoutConfig()
     seasonality: SeasonalityConfig = SeasonalityConfig()
     drift_burst: DriftBurstConfig = DriftBurstConfig()
+    vwap_reversion: VwapReversionConfig = VwapReversionConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()
     candle_momentum: CandleMomentumConfig = CandleMomentumConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
