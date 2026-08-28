@@ -1407,14 +1407,99 @@ class TestARegimeThisAccountRefusesToTrade:
         days. Fisher exact against the rest of the book: p = 0.0502.
 
         Ten trades is thin and the p-value is on the line. Pinned so both
-        decisions have to be argued rather than drifted into."""
+        decisions have to be argued rather than drifted into.
+
+        AND ON 28 AUGUST THE ARGUMENT WENT THE OTHER WAY, so `range` came out
+        too and this test now pins the reasoning rather than the verdict.
+
+        Look again at the four detectors the block rested on. Every one of them
+        -- drift_continuation, impulse_break, session_breakout, fast_ema_cross
+        -- is a trend or breakout CONTINUATION reader, and every one of them is
+        switched off today. The only non-continuation reader in that sample was
+        `candle_momentum`, one trade, and it WON. What those numbers measure is
+        not "range is untradeable"; it is "a continuation claim inside a range
+        loses", which is a far narrower statement.
+
+        That narrower statement is already enforced, separately and by name, in
+        `continuation_contradicting_regimes`. So for `trend_momentum` -- the one
+        continuation module live -- nothing changes: a range still refuses it.
+        What the blanket rule added on top was blocking the four others,
+        including `basket_divergence`, a mean-reversion reader betting a gap
+        closes, whose whole mechanism is at its best in a range.
+
+        The block also cost 32,032 of 66,140 decisions in twelve hours, and it
+        had made itself unfalsifiable: its own stated condition for review was
+        thirty range trades in the scorecard, and no range trade could be taken
+        while it stood."""
         from config.loader import load_settings
 
         settings = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         )
+        confluence = settings.analysis.confluence
 
-        assert settings.analysis.confluence.refused_regimes == ("range",)
+        assert confluence.refused_regimes == ()
+        # THE PART THAT MUST NOT DRIFT WITH IT. Dropping the blanket rule is
+        # only defensible because the targeted one still stands: a continuation
+        # module inside a range or a transition is still refused, by name.
+        assert confluence.refuse_trend_continuation_in_range
+        assert set(confluence.continuation_contradicting_regimes) == {"range", "transition"}
+        assert "trend_momentum" in confluence.trend_continuation_modules
+
+    def test_a_continuation_module_alone_in_a_range_is_still_refused(self) -> None:
+        """The property that replaced the blanket rule, exercised rather than
+        described. If this ever comes back approved, dropping `range` from
+        `refused_regimes` was a real loosening instead of a narrowing.
+
+        THE REFUSAL REASON IS ASSERTED, not just the refusal. The first version
+        of this test used the file's generic stub modules, named "one" and
+        "two", which carry no weight in the shipped config -- so it was refused
+        as "no weighted directional evidence" and passed without the rule under
+        test ever running. A green test that never reaches its subject is the
+        exact defect this whole config keeps producing.
+        """
+        from config.loader import load_settings
+
+        confluence = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.confluence
+        # The real module name, so it carries real weight and is on the real
+        # continuation list.
+        engine = ConfluenceEngine(
+            [
+                StubModule(Signal("trend_momentum", 70, 0.8, invalidation_price=1.1050)),
+                StubModule(Signal("market_regime", 0, 0.0, details={"regime": "range"})),
+            ],
+            confluence,
+        )
+
+        verdict = engine.evaluate(context(), TradingMode.MICRO_LIVE)
+
+        assert not verdict.approved
+        assert "range" in verdict.reason
+        assert "trend_momentum" in verdict.reason
+        assert "continuing" in verdict.reason
+
+    def test_the_same_module_outside_a_range_is_not_refused_by_that_rule(self) -> None:
+        """The other half, or the test above proves nothing: it must be the
+        REGIME doing the refusing and not the module simply never passing."""
+        from config.loader import load_settings
+
+        confluence = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.confluence
+        engine = ConfluenceEngine(
+            [
+                StubModule(Signal("trend_momentum", 70, 0.8, invalidation_price=1.1050)),
+                StubModule(Signal("market_regime", 0, 0.0, details={"regime": "trend_up"})),
+            ],
+            confluence,
+        )
+
+        verdict = engine.evaluate(context(), TradingMode.MICRO_LIVE)
+
+        # It may still fail a later gate; what it must not do is fail THIS one.
+        assert "assert a trend is continuing" not in verdict.reason
 
     def test_an_empty_list_trades_every_regime(self) -> None:
         engine = ConfluenceEngine(self._modules("transition"), self._config())
