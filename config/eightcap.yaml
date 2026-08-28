@@ -1922,7 +1922,37 @@ analysis:
     # WAT DIT NIET DOET, en dat hoort erbij: de band die overblijft staat zelf
     # ook op -0,091R. Dit maakt het systeem niet winstgevend. Het haalt de
     # duurste 9% eruit voor negen procent minder volume, en dat is het.
-    max_spread_share_of_stop: 0.03
+    #
+    # ------------------------------------------------------------------------
+    # 28 AUGUSTUS: 0,03 -> 0,08 TERUG. DIT IS EEN CORRECTIE OP MEZELF EN DE
+    # REDEN IS EEN GETAL, GEEN GEVOEL.
+    #
+    # `whynot.cmd 12` -- de eerste keer dat de trechter zichtbaar was, want dat
+    # gereedschap had geen launcher -- over twaalf uur live:
+    #
+    #     1.501 setups gevormd
+    #       350 daarvan geweigerd op SPREAD_EATS_THE_STOP
+    #
+    # Dat is 23%. De tabel hierboven voorspelde 9%.
+    #
+    # HET VERSCHIL IS DE POPULATIE, EN DAT IS DE FOUT. Die tabel is gemeten op
+    # vijf markten: vier majors en goud. De poort draait live over 230 markten,
+    # en de spread daarvan is een veelvoud van EURUSD. Een grens gekalibreerd op
+    # de smalste vijf instrumenten die er zijn, toegepast op de hele catalogus,
+    # bijt drie keer zo hard als waar hij op afgesteld was. Dat is niet "iets
+    # strenger uitgevallen", dat is een getal buiten het bereik waarop het is
+    # afgeleid.
+    #
+    # 0,08 was zelf ook al een aanscherping (van 0,25, op 26 augustus) en die
+    # stond onder dezelfde meting. Terug daarheen is terug naar de laatste
+    # waarde die niet op vijf markten is geijkt en op 230 is losgelaten.
+    #
+    # WAT ER OVERBLIJFT VAN HET ARGUMENT VOOR 0,03: de band 3%-6% stond op
+    # -0,488R tegen -0,091R eronder, en dat blijft waar. Alleen is de manier om
+    # die staart te knippen niet een grens die op EURUSD is uitgerekend. Als
+    # het teruggaat, gaat het per assetklasse -- zoals `filters.spread` het al
+    # doet met max_spread_bps -- en niet met een getal voor de hele catalogus.
+    max_spread_share_of_stop: 0.08
 
     # Explicitly promoted to live. NONE of these has passed the registered
     # out-of-sample protocol yet — `python scripts/audit_live_promotion.py`
@@ -2499,7 +2529,12 @@ analysis:
     # 27 augustus: 0,08 -> 0,03, mee met dezelfde gate. De gemeten band staat
     # daar; deze twee moeten hetzelfde getal houden, anders weigert de ene
     # poort wat de andere doorlaat en is de meting niet meer toe te schrijven.
-    max_spread_share_of_stop: 0.03
+    #
+    # 28 augustus: terug naar 0,08, om dezelfde reden mee. Zie de motivering
+    # bij `analysis`: de band was op vijf markten gemeten en de poort draait
+    # over 230, en live weigerde hij 350 van de 1.501 gevormde setups waar de
+    # tabel er 9% voorspelde.
+    max_spread_share_of_stop: 0.08
 
     # Van 60 naar 75, op verzoek van de eigenaar: liever weinig trades waar hij
     # zeker van is dan veel marginale.
