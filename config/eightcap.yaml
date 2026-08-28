@@ -92,17 +92,7 @@ instruments:
   # WAT HIER NIET IN STAAT en er ook nooit in hoort: geen enkele major, geen
   # goud, geen US30, geen NDX100. Dit raakt uitsluitend wat aantoonbaar niet
   # beweegt.
-  blocklist: [
-    UKOUSD, USOUSD,
-    # Deze staan OOK in `ignored_symbols` hieronder, en die lijst is degene die
-    # het werk doet. Ze blijven hier als vangnet: haalt iemand later een naam
-    # uit `ignored_symbols`, dan is hij weer zichtbaar in de scan maar nog
-    # steeds niet te openen, en dat is de veilige volgorde van die twee fouten.
-    USDHKD, USDTRY, ZARJPY, CNHJPY,
-    EURSGD, GBPSGD, NZDSGD, USDSGD, EURPLN, USDPLN,
-    CN50, SG30, CAN60,
-    CORN, USDX, WBTCUSD,
-  ]
+  blocklist: [UKOUSD, USOUSD]
 
   # HETZELFDE LIJSTJE, MAAR DAN OP DE LIJST DIE HET DAADWERKELIJK DOET.
   #
@@ -170,12 +160,7 @@ instruments:
   # `scanner/universe.py` past hem ook echt toe. Goud staat er niet meer in en
   # hoort daar niet in; dat is `observation_only_symbols`, om de vier redenen
   # hierboven.
-  ignored_symbols: [
-    USDHKD, USDTRY, ZARJPY, CNHJPY,
-    EURSGD, GBPSGD, NZDSGD, USDSGD, EURPLN, USDPLN,
-    CN50, SG30, CAN60,
-    CORN, USDX, WBTCUSD,
-  ]
+  ignored_symbols: []
 
   # GOUD VAN "NIET AANRAKEN" NAAR "NIET OVERNEMEN", 26 augustus, op verzoek van
   # de eigenaar en nadat bleek dat die twee dingen hier één knop waren.

@@ -3126,6 +3126,14 @@ class JarvisRunner:
                 SetupState.WAIT_RESUMPTION,
             ):
                 reason = Reason.AWAITING_CONFIRMATION
+            elif lifecycle.state in (SetupState.WAIT_PULLBACK, SetupState.DETECTED):
+                # ALIVE AND TRACKED, NOT REFUSED. These two used to fall into
+                # the else below and be reported as ENTRY_OVEREXTENDED, which
+                # is what `setup_lifecycle` exists to NOT do -- its own
+                # docstring says "an overextended idea is not discarded". The
+                # counter then read as a quarter of all setups being rejected
+                # by the entry rules, and the next fix was aimed there.
+                reason = Reason.AWAITING_PULLBACK
             else:
                 reason = Reason.ENTRY_OVEREXTENDED
             cycle_pk = self._record_skip(
@@ -6166,6 +6174,14 @@ class JarvisRunner:
                 SetupState.WAIT_RESUMPTION,
             ):
                 reason = Reason.AWAITING_CONFIRMATION
+            elif lifecycle.state in (SetupState.WAIT_PULLBACK, SetupState.DETECTED):
+                # ALIVE AND TRACKED, NOT REFUSED. These two used to fall into
+                # the else below and be reported as ENTRY_OVEREXTENDED, which
+                # is what `setup_lifecycle` exists to NOT do -- its own
+                # docstring says "an overextended idea is not discarded". The
+                # counter then read as a quarter of all setups being rejected
+                # by the entry rules, and the next fix was aimed there.
+                reason = Reason.AWAITING_PULLBACK
             else:
                 reason = Reason.ENTRY_OVEREXTENDED
             return fail(reason, lifecycle.reason, binding)

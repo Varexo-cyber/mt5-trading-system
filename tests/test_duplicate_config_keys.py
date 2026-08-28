@@ -89,43 +89,55 @@ class TestEverythingLegalStillLoads:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
 
-        assert settings.instruments.ignored_symbols
+        assert settings.instruments.symbol_suffix == ".i"
 
 
-class TestTheListThatWasBeingEaten:
-    def test_the_dead_markets_are_out_of_the_scan_and_not_merely_unbuyable(self) -> None:
-        """`blocklist` refuses an ENTRY; the symbol is still fetched, analysed
-        and run through the filter chain. `ignored_symbols` is the one that
-        removes it from the universe, and `scanner/universe.py` applies it.
+class TestTheTwoListsAreNotTheSameThing:
+    """The mistake the duplicate key was hiding, kept as a standing fact.
 
-        Choosing the first when the goal was the second is the mistake this
-        pins: the schema docstring states the difference plainly, it was read,
-        it was quoted in the config comment as the REASON for the choice, and
-        the property being quoted was the one that made it unfit.
-        """
+    Sixteen dead markets were put on `blocklist` to get them out of the scan.
+    `blocklist` refuses an ENTRY -- the symbol is still fetched, analysed and
+    run through the whole filter chain, and only at the end does the answer
+    come back no. `ignored_symbols` is the one that removes it from the
+    universe. The schema docstring states the difference plainly; it was read,
+    quoted in the config comment as the REASON for choosing `blocklist`, and
+    the property being quoted was the one that made it unfit.
+
+    THE OWNER THEN CHOSE TO KEEP EVERY MARKET IN THE SCAN -- "gwn laten" -- so
+    both lists are back to what they were. These tests therefore pin the
+    DISTINCTION and not any particular list, because the distinction is what
+    was misunderstood and the list is his call.
+    """
+
+    def test_a_blocklisted_symbol_is_still_scanned(self) -> None:
         instruments = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).instruments
 
-        for symbol in ("USDPLN", "CORN", "SG30", "CAN60", "USDX", "WBTCUSD", "USDHKD"):
-            assert instruments.is_ignored(symbol), symbol
-            # The broker quotes most forex with a suffix. Matching only the
-            # bare name would leave every one of these in the scan.
-            assert instruments.is_ignored(f"{symbol}.i"), symbol
+        assert "UKOUSD" in instruments.blocklist
+        # Refused an entry, and still in the universe. That is the whole
+        # difference, and it is why the first attempt changed nothing.
+        assert not instruments.is_ignored("UKOUSD")
 
-    def test_nothing_tradeable_was_caught_in_the_net(self) -> None:
-        instruments = load_settings(
-            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
-        ).instruments
+    def test_only_the_ignore_list_reaches_the_scanner(self) -> None:
+        """Asserted over the source because the two are one word apart at the
+        call site, and picking the wrong one produces a config that looks
+        applied, tests green, and does nothing."""
+        import inspect
 
-        for symbol in ("EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "XAUUSD", "US30", "NDX100"):
-            assert not instruments.is_ignored(symbol), symbol
+        from scanner import universe
 
-    def test_oil_stays_on_the_blocklist_and_out_of_the_ignore_list(self) -> None:
-        """UKOUSD and USOUSD have four real trades behind them. `ignored_symbols`
-        drops a symbol out of position management and emergency flattening too,
-        so a live oil ticket would stop being managed. The dead markets have
-        never held a position and never will; oil has."""
+        source = " ".join(inspect.getsource(universe).split())
+
+        assert "is_ignored(item.name)" in source
+        assert "blocklist" not in source
+
+    def test_oil_is_on_the_blocklist_and_that_is_the_right_list_for_it(self) -> None:
+        """UKOUSD and USOUSD have four real trades behind them, and
+        `ignored_symbols` drops a symbol out of position management and
+        emergency flattening as well. A live oil ticket would stop being
+        managed. For a market that has held a position, `blocklist` is the
+        correct instrument and `ignored_symbols` would be dangerous."""
         instruments = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).instruments
