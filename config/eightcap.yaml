@@ -1403,8 +1403,58 @@ analysis:
     #
     # Dit is dus geen terugdraaien van een meting. Het is dezelfde vraag
     # opnieuw stellen aan een andere machine, met een veel hogere lat ervoor.
-    refused_regimes:
-      - range
+    # ------------------------------------------------------------------------
+    # 28 AUGUSTUS: LEEG. `range` eruit, en de motivering hieronder is precies
+    # de reden -- ze bewijst iets smallers dan waarvoor ze gebruikt is.
+    #
+    # DIT WAS DE GROOTSTE POORT IN HET SYSTEEM. `whynot.cmd` over twaalf uur:
+    # 32.032 van de 66.140 beslissingen, 48% van alles, geweigerd voordat er
+    # ook maar één module mocht stemmen. Daarna volgden er twee trades.
+    #
+    # WAAR HET BEWIJS OVER GING. De tabel hieronder noemt vijf detectoren:
+    #
+    #     drift_continuation   6 trades  1 won  -7,33   continuation   UIT
+    #     impulse_break        4 trades  0 won  -6,71   continuation   UIT
+    #     session_breakout     2 trades  0 won  -2,14   continuation   UIT
+    #     fast_ema_cross       3 trades  1 won  -1,94   continuation   UIT
+    #     candle_momentum      1 trade   1 won  +1,07   niet-cont.     LIVE
+    #
+    # Alle vier de negatieve rijen zijn trend- of breakout-voortzetters, en
+    # alle vier staan inmiddels uit. De enige niet-voortzetter in het monster
+    # WON. Wat hier gemeten is, is niet "range is onhandelbaar" maar "een
+    # voortzettingsclaim in een range verliest" -- en dat is een andere en veel
+    # smallere uitspraak.
+    #
+    # EN DIE SMALLERE UITSPRAAK STAAT AL APART GEREGELD, in
+    # `continuation_contradicting_regimes: [range, transition]` verderop. Die
+    # weigert `trend_momentum` -- de enige continuation-module die live staat --
+    # in een range, bij naam en met een eigen reden in het journaal. Voor de
+    # module waar dit bewijs over gaat verandert er dus NIETS.
+    #
+    # Wat de blanket-regel er bovenop deed was de vier andere blokkeren:
+    # market_structure, m1_micro_breakout, candle_momentum en
+    # basket_divergence. Die laatste is een MEAN-REVERSION lezer -- hij wedt
+    # dat een gat tussen indices dichtloopt -- en een range is precies de markt
+    # waarin dat mechanisme werkt. De blanket-regel blokkeerde de ene module
+    # wiens hele stelling bij dit regime past.
+    #
+    # DE OUDERE METING WEES AL DE ANDERE KANT OP en staat vier alinea's hoger
+    # in deze zelfde config: over 90 trades stond `range` op 6 trades, 100%
+    # gewonnen, +9,57 EUR, +1,59 per trade. Samen met de tien hieronder is dat
+    # zestien trades met acht winnaars. Dat is ruis, en het sloot de helft van
+    # het systeem.
+    #
+    # EN DE REGEL KON ZICHZELF NIET MEER OPHEFFEN. De voorwaarde die hieronder
+    # staat -- "als `range` over een week met dertig trades weer positief staat
+    # in de scorecard, dan gaat dit terug" -- is onbereikbaar zolang de regel
+    # geldt, want er worden geen range-trades meer genomen om te meten. Een
+    # blokkade die haar eigen herzieningsvoorwaarde onmogelijk maakt, blijft
+    # staan omdat ze er staat.
+    #
+    # WAT ERONDER LIGT als dit misgaat: elke andere poort staat er nog, en
+    # `section_breakers` dekt nu alle vijf de live modules -- acht verliezers op
+    # rij bij de swing-paren, tien bij de snelle, en de module zet zichzelf uit.
+    refused_regimes: []
     # RANGE ERUIT OP 25 AUGUSTUS, en transition er tegelijk weer in. Dat is
     # geen aarzeling, het zijn twee verschillende metingen.
     #
