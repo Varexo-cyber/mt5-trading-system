@@ -74,7 +74,36 @@ class Reason(StrEnum):
     #: Direction may be sound, but the current market order would chase a move
     #: already stretched to the edge of its recent M5 range. Rechecked every
     #: cycle; a pullback/retest can clear it without changing the thesis.
+    #:
+    #: NARROWED ON 28 AUGUST TO MEAN WHAT IT SAYS. It was the else-branch for
+    #: every lifecycle state that was not `PULLBACK_RECEIVED` or
+    #: `WAIT_RESUMPTION`, which swept in `WAIT_PULLBACK` and `DETECTED` -- two
+    #: states in which the setup is ALIVE, TRACKED, and deliberately held open
+    #: until its entry is timely. That is the stated purpose of
+    #: `setup_lifecycle`: "an overextended idea is not discarded".
+    #:
+    #: The cost was a wrong diagnosis. `whynot.cmd` reported 381 of these
+    #: against 1,501 formed setups, which reads as "the entry rules refuse a
+    #: quarter of everything" -- and that is where the next fix was aimed. Most
+    #: of the 381 were setups still being tracked, waiting for exactly the
+    #: pullback the design asks for. A refusal and a wait look identical in a
+    #: counter and need opposite answers.
     ENTRY_OVEREXTENDED = "ENTRY_OVEREXTENDED"
+    #: The setup is tracked and alive; the entry is not timely YET.
+    #:
+    #: `setup_lifecycle` carries a valid thesis across scan cycles and enters
+    #: when price comes back. `WAIT_PULLBACK` is waiting for the retest,
+    #: `DETECTED` is the first sighting. Neither is a refusal and neither is
+    #: dead: the tracker keeps them for `lifecycle_expiry_minutes` -- 30 for
+    #: quick, 240 for intraday, 1440 for swing -- and enters the moment the
+    #: pullback arrives.
+    #:
+    #: Separate from AWAITING_CONFIRMATION on purpose, because the two answer
+    #: different questions. That one means the retest HAS come and price is
+    #: still running against us. This one means the retest has not come at all.
+    #: Together they made "waiting for a pullback that never arrived in a
+    #: one-way market" indistinguishable from "the entry gate is too tight".
+    AWAITING_PULLBACK = "AWAITING_PULLBACK"
     #: Claude agreed with the direction but explicitly judged the current price
     #: too extended for a market order. Different from AI_VETO: the setup is not
     #: remembered as bad and is offered again when its price shape changes.

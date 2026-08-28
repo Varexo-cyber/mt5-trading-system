@@ -107,7 +107,10 @@ _STAGES: tuple[tuple[str, frozenset[str]], ...] = (
             }
         ),
     ),
-    ("entry timing", frozenset({"AWAITING_CONFIRMATION", "ENTRY_OVEREXTENDED"})),
+    (
+        "entry timing",
+        frozenset({"AWAITING_CONFIRMATION", "AWAITING_PULLBACK", "ENTRY_OVEREXTENDED"}),
+    ),
     (
         "can the trade pay its own costs",
         frozenset(
@@ -184,6 +187,7 @@ _EXPECTED = {
     "SECTOR_CONCENTRATION",
     "LOSS_COOLDOWN",
     "AWAITING_CONFIRMATION",
+    "AWAITING_PULLBACK",
     "ENTRY_OVEREXTENDED",
     "AI_WAIT_RETEST",
     "ENTRY_MOVED_DURING_REVIEW",
@@ -228,6 +232,15 @@ _ADVICE = {
         "as soon as the adverse move stops. If it dominates all day, either the "
         "analysis is consistently calling turns too soon or "
         "`analysis.confluence.confirmation_max_adverse_atr` is too tight."
+    ),
+    "AWAITING_PULLBACK": (
+        "NOT A REFUSAL. The setup is tracked and alive and the tracker is holding it "
+        "open until price comes back -- 30 minutes for a quick plan, 4 hours intraday, "
+        "24 hours swing. It enters by itself the moment the pullback arrives. If this "
+        "dominates a whole session it means the market went one way and never gave the "
+        "retest back, and the question to ask is whether "
+        "`analysis.entry_quality.lifecycle_pullback_atr` asks for more pullback than "
+        "these markets actually give -- NOT whether the signal thresholds are too high."
     ),
     "ENTRY_OVEREXTENDED": (
         "The direction passed, but entering now would chase an ATR-extended move at "
