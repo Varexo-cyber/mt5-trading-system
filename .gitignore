@@ -39,3 +39,7 @@ htmlcov/
 *.egg-info/
 build/
 dist/
+
+# `weekend.cmd` schrijft hier zijn rapporten naartoe. Die bevatten posities,
+# saldi en tickets van een echte rekening en horen niet in een repository.
+reports/
