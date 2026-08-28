@@ -60,6 +60,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import numpy as np
 import pandas as pd
 
 from analysis import ConfluenceEngine
@@ -79,6 +80,7 @@ from backtesting.playbook_replay import (
 from backtesting.replay import REPLAY_TIMEFRAMES, HistoricalContextReplay
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.data_manager import DataManager
+from core.errors import SymbolNotAvailableError
 from core.mt5_connector import MT5Connector
 from core.types import Timeframe
 
@@ -130,9 +132,65 @@ def history(
         # Reach back past `start` so the first decision already has its 300
         # bars of context instead of being skipped for want of history.
         warmup = start - timeframe.duration * 400
-        raw = connector.copy_rates_range(symbol, timeframe.mt5_value, warmup, end)
+        try:
+            raw = _fetch_in_slices(connector, symbol, timeframe, warmup, end)
+        except SymbolNotAvailableError:
+            # AN OPTIONAL CHART MUST NEVER DELETE THE SYMBOL.
+            #
+            # `--with-m1` went on by default on 27 August and the very next run
+            # returned "No proposals in the window. Nothing to measure." for
+            # every market: MT5 answered `[-2] Invalid params` to a 90-day M1
+            # range, the exception escaped, and the caller's `except` dropped
+            # the whole symbol -- all five of them, every timeframe, gone.
+            #
+            # Turning M1 on cost the entire report. That is the same defect as
+            # the replay's own completeness check, which is why it is fixed the
+            # same way: the REQUIRED set is fatal, an extra is offered when it
+            # can be had and left out when it cannot.
+            if timeframe in REPLAY_TIMEFRAMES:
+                raise
+            print(f"    no {timeframe.value} history; grading without it")
+            continue
         frames[timeframe] = DataManager._to_frame(raw)
     return frames
+
+
+#: How many bars to ask MT5 for in one `copy_rates_range` call.
+#:
+#: 90 days of M1 is about 130,000 bars and the terminal refuses the request
+#: outright rather than truncating it, so the whole point of asking for M1 was
+#: lost to a limit nobody had hit before: D1 through M5 over the same window
+#: are all comfortably under it.
+_SLICE_BARS = 20_000
+
+
+def _fetch_in_slices(
+    connector: MT5Connector,
+    symbol: str,
+    timeframe: Timeframe,
+    start: datetime,
+    end: datetime,
+):  # type: ignore[no-untyped-def]
+    """`copy_rates_range` in pieces small enough for the terminal to answer.
+
+    One call when the window is small, which is every timeframe except M1 over
+    a long run, so nothing that worked before takes a different path.
+    """
+    span = timeframe.duration * _SLICE_BARS
+    if end - start <= span:
+        return connector.copy_rates_range(symbol, timeframe.mt5_value, start, end)
+
+    pieces = []
+    cursor = start
+    while cursor < end:
+        stop = min(cursor + span, end)
+        chunk = connector.copy_rates_range(symbol, timeframe.mt5_value, cursor, stop)
+        if chunk is not None and len(chunk):
+            pieces.append(chunk)
+        cursor = stop
+    if not pieces:
+        raise SymbolNotAvailableError(f"{symbol}: no {timeframe.value} bars in the window")
+    return np.concatenate(pieces)
 
 
 @dataclass(frozen=True, slots=True)

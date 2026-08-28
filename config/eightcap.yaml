@@ -904,7 +904,49 @@ analysis:
     #
     # Zes verliezers op 1% is 6% van de rekening. Dat is de maximale prijs van
     # deze proef voordat hij zichzelf stopt.
-    own_lane_enabled: true
+    #
+    # ------------------------------------------------------------------------
+    # 28 AUGUSTUS, 's AVONDS: UIT. De sweep heeft geantwoord.
+    #
+    # `section6.cmd --sweep` staat in zijn eigen banner beschreven als "de run
+    # die beslist of deze baan terugkomt". Hij is gedraaid, over 30 dagen en
+    # vijf goudmarkten, en dit is wat eruit kwam:
+    #
+    #     poort   kosten   trades   win   per trade    totaal
+    #        5    28,0%       853   42%     -0,332R   -282,9R
+    #        7    20,0%       776   42%     -0,293R   -227,7R
+    #       10    14,0%       684   42%     -0,259R   -177,1R
+    #       14    10,0%       564   42%     -0,229R   -129,3R   <- live
+    #       20     7,0%       401   41%     -0,227R    -90,8R
+    #       28     5,0%       240   42%     -0,143R    -34,4R
+    #       40     3,5%       111   43%     -0,064R     -7,1R
+    #       56     2,5%        39   49%     +0,001R     +0,0R
+    #
+    # DE TREFKANS BEWEEGT NIET. 42% bij elke poort, van 5 tot 40. Als de instap
+    # een richting-edge had, zou een strengere poort betere trades overhouden en
+    # zou die kolom stijgen. Dat doet hij niet. Wat wel meebeweegt is de
+    # kostenband: van 28% van R naar 2,5%.
+    #
+    # Het hele verschil tussen -0,332R en +0,001R is dus KOSTEN en geen
+    # selectie. Deze baan wordt bij nul kosten exact nul. Er is geen poort
+    # waarbij hij betaalt; er is alleen een poort waarbij hij niets meer kost,
+    # en die laat 39 trades in 30 dagen over -- iets meer dan een per dag, op
+    # een uitkomst van +0,001R die van nul niet te onderscheiden is.
+    #
+    # EN DE LIVE CIJFERS ZEGGEN HETZELFDE. `scorecard --days 7`:
+    # candle_momentum 32 trades, 20 gewonnen, +0,00R, -13,49 EUR. Twintig van
+    # de tweeendertig gewonnen en per saldo nul in R met geld eraf -- dezelfde
+    # vorm als de sweep, uit een compleet andere bron.
+    #
+    # WAT DIT NIET IS: een oordeel over de detector. `candle_momentum` blijft
+    # op `live_enabled_modules` staan en mag in sectie een gewoon meestemmen.
+    # Wat hier uitgaat is zijn EIGEN BAAN -- alleen mogen handelen op een M1-
+    # kaars, zonder dat iets anders het eens is.
+    #
+    # TERUGZETTEN is deze ene regel, en de lat ervoor staat vast: een sweep
+    # waarin de trefkans MEEBEWEEGT met de poort. Dat is het verschil tussen
+    # een instap die iets ziet en een instap die alleen minder betaalt.
+    own_lane_enabled: false
     # RISICO-GESIZED IN PLAATS VAN VAST, 26 augustus, op verzoek van de
     # eigenaar en omdat het argument voor de vaste lot verlopen was.
     #
