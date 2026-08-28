@@ -62,6 +62,7 @@ from analysis import (
     TrendMomentum,
     VolatilityRegime,
     VolatilitySqueeze,
+    VwapReversion,
     apply_cross_market_context,
     assess_entry_quality,
     assess_opportunity,
@@ -422,6 +423,7 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # which is what makes it the only candidate that can ever be a genuine
         # second family for the nine that follow.
         DriftBurst(analysis.drift_burst),
+        VwapReversion(analysis.vwap_reversion),
         # SECTION FIVE, and the first reader that is MEANINGLESS on a single
         # chart. It measures a move between two M1 closes, which has no open
         # question about surviving the coarsening.

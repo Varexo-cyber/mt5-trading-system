@@ -2507,6 +2507,25 @@ analysis:
       # wegen om een van de negen prijsvormlezers tegen te kunnen spreken.
       drift_burst: 0.7
 
+      # SECTIE TWEE, DE VERVANGER. 28 augustus, op instructie van de eigenaar
+      # nadat `drift_burst` op 89 waargenomen setups uitkwam met 19% raak en
+      # -64,07R.
+      #
+      # 0,7, hetzelfde als degene die hij vervangt en om dezelfde reden: als
+      # deze ooit live gaat is hij een eigen familie die niemand anders levert
+      # -- negen lezers kijken naar de VORM van de koers, deze naar de prijs
+      # waar de dag werkelijk gehandeld is -- en dan moet hij zwaar genoeg
+      # wegen om een van die negen tegen te kunnen spreken.
+      #
+      # HET GEWICHT IS NIET HETZELFDE ALS TOESTEMMING. Hij staat NIET op
+      # `live_enabled_modules`, dus `effective_weights` zet hem live op nul en
+      # hij beslist geen cent. Wat dit gewicht wel doet is hem meetbaar maken:
+      # zonder gewicht stemt hij ook in de backtest niet mee, komt hij in geen
+      # enkele tabel voor, en zou ik een module hebben gebouwd die per
+      # constructie nooit beoordeeld kan worden. Dat is precies wat er drie
+      # detectoren lang met M1 is gebeurd.
+      vwap_reversion: 0.7
+
       # SECTIE VIJF, en deze gaat WEL live.
       #
       # Het verschil met sectie twee en vier: die rusten op een statistiek die

@@ -34,6 +34,7 @@ from analysis.seasonality import Seasonality
 from analysis.session_breakout import SessionBreakout
 from analysis.setup_lifecycle import LifecycleDecision, SetupLifecycleBook, SetupState
 from analysis.volatility_squeeze import VolatilitySqueeze
+from analysis.vwap_reversion import VwapReversion
 
 __all__ = [
     "BASKET_META_KEY",
@@ -66,6 +67,7 @@ __all__ = [
     "TrendMomentum",
     "VolatilityRegime",
     "VolatilitySqueeze",
+    "VwapReversion",
     "apply_cross_market_context",
     "assess_entry_quality",
     "assess_opportunity",
