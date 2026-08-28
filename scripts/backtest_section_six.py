@@ -42,8 +42,10 @@ import argparse
 import contextlib
 import sys
 from collections import defaultdict
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from statistics import NormalDist
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -214,6 +216,202 @@ def sweep(
     return rows
 
 
+def payoff_sweep(
+    orders: list[BacktestOrder], minute: pd.DataFrame, ratios: tuple[float, ...]
+) -> list[tuple]:
+    """The same entries, re-priced at every payoff ratio, against chance.
+
+    THE COST SWEEP CANNOT ANSWER WHETHER THE ENTRY READS ANYTHING. It varies
+    the gate and the gate only moves the cost: across gates 5 to 40 the win
+    rate sat at 42% and never budged, while the cost band fell from 28% of R
+    to 3.5%. So the whole difference between -0.332R and -0.064R was the
+    spread, and the detector's opinion contributed nothing measurable either
+    way.
+
+    AND 42% IS EXACTLY WHAT CHANCE PAYS HERE. The lane targets 1.4 spans
+    against a 1.0 span stop, so a coin flip resolves in its favour
+    1/(1+1.4) = 41.7% of the time. The entry beat that by three tenths of a
+    percentage point. The banner already carried the same conclusion in R --
+    "it is worth +0.03R" -- without anything anywhere putting it beside the
+    number it has to beat.
+
+    So this sweep varies the RATIO instead of the gate, and prints the
+    break-even rate next to the achieved one. If the entry sees anything at
+    all, there is a ratio where the gap is positive and larger than noise. If
+    the gap is flat around zero at every ratio, the detector is a coin and no
+    exit rule, no cost gate and no lot size repairs that -- which is a finding
+    worth having outright rather than after another month of live trades.
+
+    Every other term is held: same moments, same stops, same non-overlap
+    selection. Only the distance to the target moves.
+    """
+    backtester = PessimisticBacktester()
+    rows: list[tuple] = []
+    for ratio in ratios:
+        repriced = [
+            replace(
+                order,
+                take_profit=order.entry + int(order.direction) * ratio * order.risk,
+            )
+            for order in orders
+            if order.risk > 0
+        ]
+        if not repriced:
+            rows.append((ratio, 0, 0.0, 0.0, 0.0, 0.0))
+            continue
+        result = backtester.run_non_overlapping(minute, repriced)
+        if not result.sample_size:
+            rows.append((ratio, 0, 0.0, 0.0, 0.0, 0.0))
+            continue
+
+        # ONLY THE TRADES THAT ACTUALLY REACHED A BARRIER, and this is the
+        # whole correctness of the table.
+        #
+        # `1/(1+ratio)` is the first-touch probability for a driftless walk
+        # between a stop at -1 and a target at +ratio. It says nothing about a
+        # trade that reached neither and was closed by the clock. `win_rate`
+        # counts any positive net R as a win, TIME exits included -- so
+        # comparing the two mixes a first-touch model with a population that
+        # did not touch anything.
+        #
+        # A CONTROL RUN CAUGHT IT. Fed a pure random walk, the first version of
+        # this reported edges of +10% to +17% at every ratio and printed
+        # "Positive edge +16.7%". A tool built to say whether a detector beats
+        # chance manufactured an edge out of noise, which is worse than the
+        # question going unanswered.
+        resolved = [
+            trade
+            for trade in result.trades
+            if trade.outcome.startswith("TP") or trade.outcome.startswith("SL")
+        ]
+        if not resolved:
+            rows.append((ratio, 0, 0.0, 1.0 / (1.0 + ratio), 0.0, 0.0))
+            continue
+        hits = sum(1 for trade in resolved if trade.outcome.startswith("TP"))
+        won = hits / len(resolved)
+        chance = 1.0 / (1.0 + ratio)
+        rows.append(
+            (
+                ratio,
+                len(resolved),
+                won,
+                chance,
+                won - chance,
+                float(np.mean([trade.net_r for trade in resolved])),
+            )
+        )
+    return rows
+
+
+def render_payoff(rows: list[tuple], window: str) -> str:
+    lines = [
+        "",
+        "=" * 78,
+        f"  DOES THE ENTRY READ ANYTHING AT ALL?  {window}",
+        "=" * 78,
+        "",
+        "  The same entries and the same stops, with only the target moved. CHANCE is",
+        "  what a coin flip resolves at for that ratio -- 1/(1+ratio) -- and EDGE is",
+        "  how far the detector beat it. That column is the whole question: a cost",
+        "  gate, an exit rule and a lot size all divide into an edge and none of them",
+        "  creates one.",
+        "",
+        "  Only trades that REACHED a barrier are counted. One closed by the clock",
+        "  touched neither and says nothing about a first-touch probability.",
+        "",
+        f"  {'target':>8}{'trades':>8}{'won':>7}{'chance':>9}{'edge':>9}"
+        f"{'sigma':>8}{'per trade':>12}",
+        "  " + "-" * 63,
+    ]
+    verdicts: list[tuple[float, float, int, float]] = []
+    for ratio, trades, won, chance, edge, expectancy in rows:
+        if not trades:
+            lines.append(f"  {ratio:>7.1f}R{trades:>8}       (nothing reached a barrier)")
+            continue
+        sigma = _sigmas(won, chance, trades)
+        verdicts.append((sigma, edge, trades, ratio))
+        lines.append(
+            f"  {ratio:>7.1f}R{trades:>8}{won:>6.0%}{chance:>9.1%}"
+            f"{edge:>+8.1%}{sigma:>+8.1f}{expectancy:>+11.3f}R"
+        )
+
+    bar = _significance_bar(len(verdicts))
+    lines.append("")
+    lines.append("  SIGMA is the gap divided by its own standard error, and the bar is NOT two.")
+    lines.append(f"  This table reports the best of {len(verdicts)} ratios, so a plain two-sigma")
+    lines.append("  test fires on chance about once every ten runs -- which a control on a")
+    lines.append(f"  random walk duly did, at +2.1. The bar for {len(verdicts)} comparisons is")
+    lines.append(f"  {bar:.2f} sigma, and the widest ratios carry the fewest trades: exactly")
+    lines.append("  where a reader most wants to believe a number.")
+    lines.append("")
+    if not verdicts:
+        lines.append("  Nothing reached a barrier at any ratio.")
+    else:
+        sigma, edge, trades, ratio = max(verdicts)
+        if sigma < bar:
+            lines.append(
+                f"  Best is {edge:+.1%} at {ratio:.1f}R over {trades} trades, {sigma:+.1f} sigma"
+                f" against a bar of {bar:.2f}."
+            )
+            lines.append("  That is chance. No target, no stop and no cost gate turns a coin into")
+            lines.append("  a strategy -- the ENTRY has to change, or the lane stays off.")
+        else:
+            lines.append(
+                f"  {edge:+.1%} at {ratio:.1f}R over {trades} trades, {sigma:+.1f} sigma"
+                f" against a bar of {bar:.2f}."
+            )
+            lines.append("  That is outside chance. Now read `per trade`: an edge can still lose")
+            lines.append("  money once the round trip is paid, and that is a cost question.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _significance_bar(comparisons: int, alpha: float = 0.05) -> float:
+    """How many sigma the BEST of `comparisons` ratios has to clear.
+
+    NOT TWO, AND THE CONTROL RUN IS WHY. With a plain two-sigma test on four
+    ratios, one random-walk seed out of four came back at +2.1 sigma and the
+    table would have said "outside chance" about a coin. Four independent looks
+    at a 5% test give roughly a one-in-ten chance that at least one fires, and
+    this report exists specifically to be scanned for its best row.
+
+    So the bar is corrected for how many times the question was asked --
+    Bonferroni, the blunt version, deliberately: the ratios are correlated
+    (they share entries and stops) so the true bar is somewhat lower than this,
+    and erring toward "not proven" is the direction that costs money the
+    account still has.
+
+    At the six shipped ratios this is 2.64 sigma rather than 2.00. That is the
+    difference between switching a lane back on because of a coin and leaving
+    it off until something real turns up.
+    """
+    if comparisons <= 0:
+        return float("inf")
+    return NormalDist().inv_cdf(1.0 - alpha / (2.0 * comparisons))
+
+
+def _sigmas(won: float, chance: float, trades: int) -> float:
+    """How many standard errors the gap is, which is the only honest reading.
+
+    THE CONTROL RUN CAUGHT THIS TWICE. Fed a pure random walk, the first
+    version of this table reported edges of +10% to +17% and printed "Positive
+    edge +16.7%": it compared a first-touch probability against a win rate that
+    counted clock exits. Restricting to barrier-resolved trades brought that to
+    +4% to +8% -- still positive, still on noise, because the standard error of
+    a 33% rate over 34 samples is 8.1%.
+
+    A percentage-point column with no error bar makes small samples look like
+    discoveries, and the smallest samples sit at the widest ratios, which is
+    exactly where a reader wants to believe one. A tool built to say whether a
+    detector beats chance must not manufacture an edge out of noise; that is
+    worse than leaving the question unanswered.
+    """
+    if trades <= 0 or chance <= 0.0 or chance >= 1.0:
+        return 0.0
+    error = (chance * (1.0 - chance) / trades) ** 0.5
+    return (won - chance) / error if error > 0 else 0.0
+
+
 def render_sweep(rows: list[tuple], window: str) -> str:
     lines = [
         "",
@@ -305,6 +503,22 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--payoff",
+        action="store_true",
+        help=(
+            "instead of the cost gate, move the TARGET and print the achieved "
+            "win rate beside the rate a coin flip pays at that ratio. The cost "
+            "sweep cannot answer whether the entry reads anything; this can."
+        ),
+    )
+    parser.add_argument(
+        "--ratios",
+        nargs="*",
+        type=float,
+        default=[0.5, 0.8, 1.0, 1.4, 2.0, 3.0],
+        help="the target distances --payoff walks, in multiples of the stop.",
+    )
+    parser.add_argument(
         "--gates",
         nargs="*",
         type=float,
@@ -314,7 +528,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     settings = load_settings(DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml")
-    if args.sweep:
+    # Both sweeps need the full superset of setups, so the gate comes off
+    # for either of them.
+    if args.sweep or args.payoff:
         # THE GATE IS SWITCHED OFF FOR THE PASS, NOT LOWERED.
         #
         # The sweep needs the full superset of setups so every gate above can
@@ -369,7 +585,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    {len(orders)} setups")
             if not orders:
                 continue
-            if args.sweep:
+            if args.sweep or args.payoff:
                 swept.append((symbol, orders, frames[Timeframe.M1]))
                 continue
             result = backtester.run_non_overlapping(frames[Timeframe.M1], orders)
@@ -420,6 +636,25 @@ def main(argv: list[str] | None = None) -> int:
             per = weighted / trades if trades else 0.0
             totals.append((gate, setups, trades, wins / trades if trades else 0.0, per, total))
         print(render_sweep(totals, f"{args.days:.0f} days"))
+        return 0
+
+    if args.payoff:
+        ratios = tuple(sorted(float(r) for r in args.ratios if r > 0))
+        totals = []
+        for ratio in ratios:
+            trades = 0
+            wins = weighted = 0.0
+            for _symbol, orders, minute in swept:
+                row = payoff_sweep(orders, minute, (ratio,))[0]
+                trades += row[1]
+                wins += row[2] * row[1]
+                weighted += row[5] * row[1]
+            won = wins / trades if trades else 0.0
+            chance = 1.0 / (1.0 + ratio)
+            totals.append(
+                (ratio, trades, won, chance, won - chance, weighted / trades if trades else 0.0)
+            )
+        print(render_payoff(totals, f"{args.days:.0f} days"))
         return 0
 
     print(render(rows, f"{args.days:.0f} days"))
