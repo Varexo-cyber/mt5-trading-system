@@ -23,24 +23,45 @@ echo  real to improve.
 echo.
 echo  No orders. No Claude API. Nothing written anywhere.
 echo.
-echo  MEASURED 26 AUGUST: 1,681 trades over 30 days, -0.304R each, -511.73R.
-echo  The entry is not the problem - on gold it reads the minute correctly,
-echo  43%% against the 41.7%% that a 1.4:1 payoff needs. It is worth +0.03R.
-echo  The round trip costs 0.235R.
+echo  THE LANE IS OFF since 28 August, and the sweep is what switched it off.
 echo.
-echo  THE LANE IS ON. This banner said "switched OFF" until 27 August and the
-echo  config said `enabled: true` the whole time - the line was written when it
-echo  was off, the lane came back after the entry was reworked, and the banner
-echo  did not follow. That is a launcher lying to its operator about what is
-echo  trading his money, which is worse than any number on this screen.
+echo  This banner keeps saying so because the last time it drifted out of step
+echo  with the config it said "switched OFF" for a day while the lane was
+echo  trading real money. Whatever else is wrong on this screen, that line has
+echo  to be true.
 echo.
-echo  It is on as a BOUNDED experiment and here is the whole bound:
-echo    stake 1.0%% per trade, two at a time, counted in the book cap, and a
-echo    section breaker that switches the lane off by itself after six losers
-echo    in a row. Six losers at 1%% is 6%% of the account. That is the most this
-echo    trial can cost before it stops without anyone watching.
+echo  WHAT THE SWEEP FOUND, over 30 days and five gold markets:
+echo.
+echo    gate     cost   trades   win   per trade
+echo       5    28.0%%      853   42%%    -0.332R
+echo      14    10.0%%      564   42%%    -0.229R   ^<- what was live
+echo      40     3.5%%      111   43%%    -0.064R
+echo      56     2.5%%       39   49%%    +0.001R
+echo.
+echo  THE WIN RATE DOES NOT MOVE. 42%% at every gate. If the entry read a
+echo  direction, a stricter gate would keep better trades and that column would
+echo  climb. What moves instead is the cost band, 28%% of R down to 2.5%% - so
+echo  the whole distance from -0.332R to +0.001R is the spread, not selection.
+echo  This lane goes to exactly zero as costs go to zero.
+echo.
+echo  And 42%% is what CHANCE pays here: a 1.4:1 payoff needs 41.7%%. The entry
+echo  beat a coin by three tenths of a percentage point, worth +0.03R, against
+echo  a round trip that costs 0.235R.
+echo.
+echo  Live said the same from a different direction: candle_momentum over seven
+echo  days, 32 trades, 20 won, +0.00R, -13.49 EUR.
+echo.
+echo  WHAT COMES BACK ON, AND WHEN. Not a gate and not a target - the ENTRY has
+echo  to change. `--payoff` is the run that says whether a change worked: it
+echo  moves the target instead of the gate and prints the achieved rate beside
+echo  the rate a coin pays. The bar is a corrected sigma, not a percentage,
+echo  because a random walk through that table prints +4%% to +8%% edges.
+echo.
+echo  The detector itself stays live in section one, where it can confirm what
+echo  something else already saw. What it lost is the right to trade alone.
 echo.
 echo  section6.cmd --sweep              IS there a gate where this pays?
+echo  section6.cmd --payoff             DOES THE ENTRY READ ANYTHING AT ALL?
 echo  section6.cmd --days 60            longer history
 echo  section6.cmd --symbols XAUUSD     one market
 echo  section6.cmd --stride 2           faster, coarser
