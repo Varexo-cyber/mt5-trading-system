@@ -3457,7 +3457,41 @@ modes:
     # still sized at `risk.risk_per_trade_pct`; this is the most that
     # conviction scaling may reach, and the sizer clamps to it.
     max_risk_per_trade_pct: 8.0
-    max_sl_pips: 30
+    # 30 -> 40 op 28 augustus. DEZE STOND STRAKKER DAN WAT DE REKENING TOELAAT.
+    #
+    # De rekensom, op het saldo van vandaag:
+    #
+    #     saldo                        EUR 214
+    #     gewone inzet 2%              EUR   4,28
+    #     minimum lot                  0,01
+    #     -> breedste stop die past    42,8 pips op EURUSD
+    #
+    # Het plafond stond op 30. Elke forex-setup met een stop tussen 30 en 42,8
+    # pips werd dus geweigerd als SL_TOO_WIDE_FOR_ACCOUNT terwijl de rekening
+    # hem op precies de bedoelde 2% had kunnen nemen. `whynot.cmd` telde er 88
+    # in twaalf uur.
+    #
+    # DIT VERHOOGT HET RISICO NIET, en dat is geen inschatting maar hoe de
+    # sizer werkt. De positie wordt altijd gesized op 2% van het saldo; een
+    # bredere stop betekent een kleiner lot, niet meer geld. Een stop van 40
+    # pips en een van 30 verliezen allebei EUR 4,28.
+    #
+    # EN ER KAN NIETS DOOR HEEN GLIPPEN. De betaalbaarheidscheck staat ERONDER
+    # en is exact: past het minimumlot niet binnen het bedrag, dan volgt
+    # TRADE_SKIPPED_UNDERCAPITALIZED en gaat de trade alsnog niet door. Dit
+    # plafond kan een weigering dus alleen verplaatsen van "te breed" naar
+    # "trade" of naar "onbetaalbaar" -- er is geen pad naar te veel risico.
+    #
+    # Alleen FOREX. Een "pip" op goud is een cent, dus een pip-plafond daar
+    # zou een stop van dertig cent betekenen; voor niet-forex is de
+    # geldcheck de bindende grens. Zie de opmerking in `position_sizer.py`.
+    #
+    # WANNEER DIT MEE MOET BEWEGEN: dit getal hangt aan het saldo. Groeit de
+    # rekening, dan groeit de betaalbare stop mee en mag dit omhoog. Zakt hij,
+    # dan moet dit omlaag -- onder EUR 150 is 40 pips niet meer betaalbaar en
+    # verschuift de weigering vanzelf naar UNDERCAPITALIZED, wat zichtbaar is
+    # maar het verkeerde woord voor de situatie.
+    max_sl_pips: 40
     max_trades_per_day: 0
     daily_loss_limit_pct: 0
     # Four is the owner-authorised experimental-live capacity at every equity
