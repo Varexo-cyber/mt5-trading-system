@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import sys
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -50,7 +51,7 @@ DEFAULT_SYMBOLS = (
     "FRA40",
     "GER40",
 )
-CHECKPOINT_VERSION = 2
+CHECKPOINT_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +88,20 @@ class Verdict:
     profit_factor: float | None
     max_drawdown_r: float
     dsr: float
+
+
+@dataclass(frozen=True, slots=True)
+class Diagnostic:
+    section: str
+    strategy: str
+    symbol: str
+    segment: str
+    decisions: int
+    firings: int
+    approved: int
+    trades: int
+    total_r: float
+    top_refusal: str
 
 
 def parser() -> argparse.ArgumentParser:
@@ -276,6 +291,26 @@ def render(rows: list[Verdict], *, holdout: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_diagnostics(rows: list[Diagnostic]) -> str:
+    """Separate detector opportunities from engine-approved setups by market."""
+    if not rows:
+        return ""
+    lines = [
+        "",
+        "BY MARKET — firing is a raw detector opinion; approved is an executable setup",
+        f"{'strategy':<20}{'symbol':<12}{'segment':<12}{'fired':>8}{'approved':>10}"
+        f"{'trades':>8}{'total':>10}  top refusal",
+        "-" * 112,
+    ]
+    for row in rows:
+        lines.append(
+            f"{row.strategy:<20}{row.symbol:<12}{row.segment:<12}{row.firings:>8}"
+            f"{row.approved:>10}{row.trades:>8}{row.total_r:>+9.2f}R  "
+            f"{row.top_refusal[:45]}"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def save_checkpoint(
     path: Path,
     *,
@@ -283,6 +318,7 @@ def save_checkpoint(
     start: datetime,
     end: datetime,
     rows: list[Verdict],
+    diagnostics: list[Diagnostic] | None = None,
 ) -> None:
     """Persist every completed strategy so an interruption resumes safely."""
 
@@ -295,6 +331,7 @@ def save_checkpoint(
                 "start": start.isoformat(),
                 "end": end.isoformat(),
                 "rows": [asdict(row) for row in rows],
+                "diagnostics": [asdict(row) for row in diagnostics or []],
             },
             indent=2,
             allow_nan=False,
@@ -324,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         "config": hashlib.sha256(settings.model_dump_json().encode()).hexdigest(),
     }
     rows: list[Verdict] = []
+    diagnostics: list[Diagnostic] = []
     saved: dict[str, object] | None = None
     if checkpoint.exists() and not args.fresh:
         with contextlib.suppress(ValueError, OSError, json.JSONDecodeError):
@@ -334,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         start = datetime.fromisoformat(str(saved["start"]))
         end = datetime.fromisoformat(str(saved["end"]))
         rows = [Verdict(**row) for row in saved.get("rows", [])]
+        diagnostics = [Diagnostic(**row) for row in saved.get("diagnostics", [])]
         completed = sorted({f"{row.section}/{row.strategy}" for row in rows})
         print(f"resuming checkpoint; already complete: {', '.join(completed)}", flush=True)
     else:
@@ -407,13 +446,39 @@ def main(argv: list[str] | None = None) -> int:
                     mode=TradingMode.BACKTEST,
                     context_enricher=enricher,
                 )
-                orders = replay.orders(
+                orders: list[BacktestOrder] = []
+                decisions: Counter[str] = Counter()
+                firings: Counter[str] = Counter()
+                approvals: Counter[str] = Counter()
+                refusals: dict[str, Counter[str]] = {
+                    name: Counter() for name, _, _ in segments
+                }
+                for decided_at, spread, idea in replay.ideas(
                     symbol,
                     frames,
                     point=specs[symbol].point,
                     start=start,
                     end=fetch_end,
-                )
+                ):
+                    segment = next(
+                        (name for name, left, right in segments if left <= decided_at < right),
+                        None,
+                    )
+                    if segment is None:
+                        continue
+                    decisions[segment] += 1
+                    target = next(
+                        (signal for signal in idea.signals if signal.module == strategy.module),
+                        None,
+                    )
+                    if target is not None and target.score != 0 and target.confidence > 0:
+                        firings[segment] += 1
+                    order = replay.order_from_idea(symbol, decided_at, spread, idea)
+                    if order is None:
+                        refusals[segment][idea.reason] += 1
+                    else:
+                        approvals[segment] += 1
+                        orders.append(order)
                 execution = frames[strategy.execution_timeframe]
                 for name, left, right in segments:
                     selected = [order for order in orders if left <= order.decided_at < right]
@@ -429,6 +494,23 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     per_segment_setups[name] += len(selected)
                     per_segment_returns[name].extend(trade.net_r for trade in result.trades)
+                    top_refusal = (
+                        refusals[name].most_common(1)[0][0] if refusals[name] else "-"
+                    )
+                    diagnostics.append(
+                        Diagnostic(
+                            strategy.section,
+                            strategy.module,
+                            symbol,
+                            name,
+                            decisions[name],
+                            firings[name],
+                            approvals[name],
+                            len(result.trades),
+                            sum(trade.net_r for trade in result.trades),
+                            top_refusal,
+                        )
+                    )
             for name, _, _ in segments:
                 rows.append(
                     summarise(
@@ -445,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
                 start=start,
                 end=end,
                 rows=rows,
+                diagnostics=diagnostics,
             )
 
         lane_selected = "own_lane" in selected_strategies
@@ -498,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     report = output_dir / f"weekend-sections-{stamp}.txt"
     payload = output_dir / f"weekend-sections-{stamp}.json"
-    rendered = render(rows, holdout=args.unlock_holdout)
+    rendered = render(rows, holdout=args.unlock_holdout) + render_diagnostics(diagnostics)
     report.write_text(rendered, encoding="utf-8")
     payload.write_text(
         json.dumps(
@@ -509,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
                 "holdout_unlocked": args.unlock_holdout,
                 "symbols": list(frames_by_symbol),
                 "rows": [asdict(row) for row in rows],
+                "diagnostics": [asdict(row) for row in diagnostics],
             },
             indent=2,
             allow_nan=False,
