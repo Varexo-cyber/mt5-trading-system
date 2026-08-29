@@ -232,43 +232,50 @@ class HistoricalContextReplay:
         for decided_at, spread, idea in self.ideas(
             symbol, frames, point=point, start=start, end=end
         ):
-            if not idea.approved or idea.direction is None:
-                continue
-            active = tuple(
-                signal.module
-                for signal in idea.signals
-                if signal.score * int(idea.direction) > 0
-                and signal.confidence > 0
-                and self.engine.config.weights.get(signal.module, 0.0) > 0
-                and signal.confidence >= self.engine.config.minimum_confidence
-            )
-            orders.append(
-                BacktestOrder(
-                    symbol=symbol,
-                    decided_at=decided_at,
-                    direction=idea.direction,
-                    entry=idea.entry,
-                    stop_loss=idea.stop_loss,
-                    take_profit=idea.take_profit,
-                    score=idea.score,
-                    confidence=idea.confidence,
-                    modules=active,
-                    spread=spread,
-                    # The grader could never read the plan's own length because
-                    # nothing ever handed it one. `expected_horizon_minutes` has
-                    # been on every proposal this engine has produced.
-                    horizon_minutes=idea.expected_horizon_minutes,
-                    regime=next(
-                        (
-                            str(signal.details.get("regime", ""))
-                            for signal in idea.signals
-                            if signal.module == "market_regime"
-                        ),
-                        "",
-                    ),
-                )
-            )
+            order = self.order_from_idea(symbol, decided_at, spread, idea)
+            if order is not None:
+                orders.append(order)
         return orders
+
+    def order_from_idea(
+        self,
+        symbol: str,
+        decided_at: datetime,
+        spread: float,
+        idea: TradeIdea,
+    ) -> BacktestOrder | None:
+        """Convert one verdict while leaving refusals visible to validators."""
+        if not idea.approved or idea.direction is None:
+            return None
+        active = tuple(
+            signal.module
+            for signal in idea.signals
+            if signal.score * int(idea.direction) > 0
+            and signal.confidence > 0
+            and self.engine.config.weights.get(signal.module, 0.0) > 0
+            and signal.confidence >= self.engine.config.minimum_confidence
+        )
+        return BacktestOrder(
+            symbol=symbol,
+            decided_at=decided_at,
+            direction=idea.direction,
+            entry=idea.entry,
+            stop_loss=idea.stop_loss,
+            take_profit=idea.take_profit,
+            score=idea.score,
+            confidence=idea.confidence,
+            modules=active,
+            spread=spread,
+            horizon_minutes=idea.expected_horizon_minutes,
+            regime=next(
+                (
+                    str(signal.details.get("regime", ""))
+                    for signal in idea.signals
+                    if signal.module == "market_regime"
+                ),
+                "",
+            ),
+        )
 
 
 def frame_from_mt5(raw: object) -> pd.DataFrame:

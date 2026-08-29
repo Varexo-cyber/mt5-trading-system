@@ -5,9 +5,11 @@ from pathlib import Path
 from config.loader import load_settings
 from scripts.validate_weekend_sections import (
     STRATEGY_NAMES,
+    Diagnostic,
     Verdict,
     isolated_engine,
     passed,
+    render_diagnostics,
     save_checkpoint,
 )
 
@@ -86,3 +88,25 @@ def test_every_weekend_strategy_can_be_selected_individually() -> None:
         "vwap_reversion",
         "own_lane",
     )
+
+
+def test_diagnostics_distinguish_firings_from_approved_setups() -> None:
+    report = render_diagnostics(
+        [
+            Diagnostic(
+                "2",
+                "vwap_reversion",
+                "EURUSD.i",
+                "validation",
+                100,
+                7,
+                0,
+                0,
+                0.0,
+                "target unavailable",
+            )
+        ]
+    )
+    assert "firing is a raw detector opinion" in report
+    assert "EURUSD.i" in report
+    assert "       7         0" in report
