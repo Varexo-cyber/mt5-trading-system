@@ -2791,6 +2791,45 @@ class EntryQualityConfig(Base):
     #: late. The setup waits for a real pullback and then a newly closed bar
     #: resuming in its direction; it is not silently discarded and rediscovered.
     lifecycle_enabled: bool = True
+    #: THE FAMILIES THAT HAVE A LEVEL TO COME BACK TO.
+    #:
+    #: A breakout retests the resistance it just cleared. A trend-continuation
+    #: reader has no level -- only a move -- so for those the
+    #: pullback-from-extreme below is the right measure and is unchanged.
+    #:
+    #: For two months there was one rule for both: wait for a pullback of
+    #: `lifecycle_pullback_atr` from the running high. On a break that ran
+    #: three ATR that is an entry two and a half ATR above the level anyone
+    #: would call the retest -- the textbook trade enters AT the broken
+    #: resistance with the stop just under it, and this entered near the top
+    #: with the stop an ATR and a half below. Different trades, and the
+    #: scorecard says which one it was:
+    #:
+    #:     bought at 80-95% of its own range   14 trades   -1.65R
+    #:     bought at 95-100%                    8 trades   -0.99R
+    #:     bought at 60-80%                    21 trades   +0.66R
+    #:
+    #: The only positive row is the one that is NOT extended. It bought
+    #: extended, and buying extended is what a retest without a level produces.
+    #:
+    #: Matched on substring: `setup_family` is `{module}_{timeframe}`.
+    lifecycle_level_retest_modules: tuple[str, ...] = (
+        "market_structure",
+        "impulse_break",
+        "session_breakout",
+        "m1_micro_breakout",
+        "volatility_squeeze",
+        "range_break",
+    )
+    #: How close to the broken level counts as having retested it, in ATR.
+    #:
+    #: Not zero. A retest that demands the exact tick never fills, and the
+    #: level itself is an estimate -- the detector's own published level where
+    #: it has one, the detection price where it does not. 0.35 ATR is inside
+    #: the 0.40 the old pullback rule asked for, so this is not a looser gate
+    #: wearing a new name: it is the same distance measured from the right
+    #: place.
+    lifecycle_retest_level_atr: float = Field(default=0.35, ge=0.0, le=3.0)
     lifecycle_pullback_atr: dict[str, float] = Field(
         default_factory=lambda: {"quick": 0.20, "intraday": 0.30, "swing": 0.40}
     )

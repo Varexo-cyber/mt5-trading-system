@@ -536,6 +536,8 @@ class JarvisRunner:
             pullback_atr=entry.lifecycle_pullback_atr,
             resumption_atr=entry.lifecycle_resumption_atr,
             expiry_minutes=entry.lifecycle_expiry_minutes,
+            level_retest_modules=entry.lifecycle_level_retest_modules,
+            retest_level_atr=entry.lifecycle_retest_level_atr,
         )
         self.scout_throttle = ScoutThrottle(root / "runtime" / "market_scout_state.json")
         self._cycle_observations: list[MarketObservation] = []
