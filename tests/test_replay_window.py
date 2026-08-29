@@ -233,6 +233,27 @@ class TestTheDecisionClockIsTheStrategyClock:
                 )
             )
 
+    def test_thin_m1_execution_history_skips_instead_of_crashing(self) -> None:
+        frames = {tf: ending_at(tf, 400) for tf in REPLAY_TIMEFRAMES}
+        frames[Timeframe.M1] = ending_at(Timeframe.M1, 100)
+        minute = frames[Timeframe.M1]
+        replay = HistoricalContextReplay(
+            self._engine(),  # type: ignore[arg-type]
+            decision_timeframe=Timeframe.M1,
+        )
+
+        produced = list(
+            replay.ideas(
+                "TEST",
+                frames,
+                point=0.01,
+                start=minute.index[0].to_pydatetime(),
+                end=(minute.index[-1] + Timeframe.M1.duration).to_pydatetime(),
+            )
+        )
+
+        assert produced == []
+
     def test_context_enricher_runs_before_the_engine(self) -> None:
         seen: list[bool] = []
 

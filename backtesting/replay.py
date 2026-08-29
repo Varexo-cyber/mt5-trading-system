@@ -163,7 +163,14 @@ class HistoricalContextReplay:
         # is offered to the detectors when it has history and simply left out
         # when it does not — an extra chart must never be able to void a
         # decision the required five could answer on their own.
-        required = set(REPLAY_TIMEFRAMES)
+        # The standard ladder is always required.  A caller-provided extra is
+        # optional only when it is genuinely supplementary.  The decision and
+        # execution clocks cannot be optional: skipping a thin M1 series and
+        # then indexing `series[M1]` produced the weekend validator's crash.
+        required = set(REPLAY_TIMEFRAMES) | {
+            self.decision_timeframe,
+            self.execution_timeframe,
+        }
         close_times = {tf: frame.index + tf.duration for tf, frame in frames.items()}
         for sequence, opened_at in enumerate(eligible.index):
             if sequence % self.decision_stride_bars:
