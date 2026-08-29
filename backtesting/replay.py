@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from math import isfinite
@@ -50,7 +50,7 @@ class SegmentEvidence:
 
 
 class HistoricalContextReplay:
-    """Recreate exactly what modules could know at each closed H1 bar."""
+    """Recreate exactly what modules could know on their decision clock."""
 
     def __init__(
         self,
@@ -58,7 +58,10 @@ class HistoricalContextReplay:
         *,
         history_bars: int = 300,
         decision_stride_bars: int = 1,
+        decision_timeframe: Timeframe = Timeframe.H1,
+        execution_timeframe: Timeframe | None = None,
         mode: TradingMode = TradingMode.BACKTEST,
+        context_enricher: Callable[[MarketContext], None] | None = None,
     ) -> None:
         if history_bars < 120:
             raise ValueError("history_bars must be at least 120")
@@ -67,6 +70,11 @@ class HistoricalContextReplay:
         self.engine = engine
         self.history_bars = history_bars
         self.decision_stride_bars = decision_stride_bars
+        self.decision_timeframe = decision_timeframe
+        self.execution_timeframe = execution_timeframe or (
+            Timeframe.M1 if decision_timeframe is Timeframe.M1 else Timeframe.M5
+        )
+        self.context_enricher = context_enricher
         # WHICH ENGINE IS BEING MEASURED.
         #
         # This was hardcoded to BACKTEST, and `live_enabled_modules` is only
@@ -110,8 +118,16 @@ class HistoricalContextReplay:
         missing = set(REPLAY_TIMEFRAMES) - set(frames)
         if missing:
             raise ValueError(f"replay missing timeframes: {sorted(tf.value for tf in missing)}")
-        decisions = frames[Timeframe.H1]
-        closed_at = decisions.index + Timeframe.H1.duration
+        if self.decision_timeframe not in frames:
+            raise ValueError(
+                f"replay decision timeframe {self.decision_timeframe.value} is missing"
+            )
+        if self.execution_timeframe not in frames:
+            raise ValueError(
+                f"replay execution timeframe {self.execution_timeframe.value} is missing"
+            )
+        decisions = frames[self.decision_timeframe]
+        closed_at = decisions.index + self.decision_timeframe.duration
         eligible = decisions[(closed_at >= start) & (closed_at < end)]
         # Close times per timeframe, computed once instead of per decision.
         #
@@ -152,7 +168,7 @@ class HistoricalContextReplay:
         for sequence, opened_at in enumerate(eligible.index):
             if sequence % self.decision_stride_bars:
                 continue
-            decided_at = (opened_at + Timeframe.H1.duration).to_pydatetime()
+            decided_at = (opened_at + self.decision_timeframe.duration).to_pydatetime()
             moment = pd.Timestamp(decided_at)
             series: dict[Timeframe, Series] = {}
             complete = True
@@ -169,7 +185,7 @@ class HistoricalContextReplay:
                 series[timeframe] = Series(symbol, timeframe, available, decided_at)
             if not complete:
                 continue
-            executable = series[Timeframe.M5].df.iloc[-1]
+            executable = series[self.execution_timeframe].df.iloc[-1]
             mid = float(executable["close"])
             spread_points = max(float(executable.get("spread", 0.0)), 0.0)
             spread = spread_points * point
@@ -179,9 +195,10 @@ class HistoricalContextReplay:
                 bid=mid - spread / 2,
                 ask=mid + spread / 2,
             )
-            yield decided_at, spread, self.engine.evaluate(
-                MarketContext(symbol, decided_at, series, tick), self.mode
-            )
+            context = MarketContext(symbol, decided_at, series, tick)
+            if self.context_enricher is not None:
+                self.context_enricher(context)
+            yield decided_at, spread, self.engine.evaluate(context, self.mode)
 
     def orders(
         self,
