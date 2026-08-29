@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import sys
 from dataclasses import asdict, dataclass
@@ -49,6 +50,7 @@ DEFAULT_SYMBOLS = (
     "FRA40",
     "GER40",
 )
+CHECKPOINT_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +94,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--symbols", nargs="*", default=list(DEFAULT_SYMBOLS))
     result.add_argument("--stride", type=int, default=1)
     result.add_argument(
+        "--fresh",
+        action="store_true",
+        help="ignore and replace a matching unfinished checkpoint",
+    )
+    result.add_argument(
         "--unlock-holdout",
         action="store_true",
         help="include the untouched final 20%%; use only after reviewing validation",
@@ -118,7 +125,14 @@ def isolated_engine(settings, module: str) -> ConfluenceEngine:  # type: ignore[
             "weights": {name: 1.0 if name == module else 0.0 for name in names},
         }
     )
-    return ConfluenceEngine(build_analysis_modules(settings), confluence)
+    # The old validator set seventeen weights to zero but still executed all
+    # eighteen readers on every M1 close.  A zero-weight opinion cannot affect
+    # the isolated verdict, yet it consumed almost the whole runtime.  Keep
+    # only the selected detector and the two regime readers the engine itself
+    # consults as safety/context inputs.
+    required = {module, "market_regime", "volatility_regime"}
+    modules = [reader for reader in build_analysis_modules(settings) if reader.name in required]
+    return ConfluenceEngine(modules, confluence)
 
 
 def basket_enricher(
@@ -130,6 +144,12 @@ def basket_enricher(
 ):  # type: ignore[no-untyped-def]
     """Attach simultaneous, closed peer bars instead of scan-order leftovers."""
 
+    peer_close_times = {
+        other: frames[Timeframe.M1].index + Timeframe.M1.duration
+        for other, frames in frames_by_symbol.items()
+        if Timeframe.M1 in frames
+    }
+
     def enrich(context) -> None:  # type: ignore[no-untyped-def]
         if asset_classes.get(symbol) != "index":
             return
@@ -140,10 +160,12 @@ def basket_enricher(
             minute = frames.get(Timeframe.M1)
             if minute is None or minute.empty:
                 continue
-            closed = minute[(minute.index + Timeframe.M1.duration) <= context.now]
-            if len(closed) < move_bars + 1:
+            cut = int(
+                peer_close_times[other].searchsorted(pd.Timestamp(context.now), side="right")
+            )
+            if cut < move_bars + 1:
                 continue
-            sample = closed.iloc[-(move_bars + 1) :]
+            sample = minute.iloc[cut - (move_bars + 1) : cut]
             first, last = float(sample["close"].iloc[0]), float(sample["close"].iloc[-1])
             if first <= 0 or last <= 0:
                 continue
@@ -247,6 +269,34 @@ def render(rows: list[Verdict], *, holdout: bool) -> str:
     return "\n".join(lines) + "\n"
 
 
+def save_checkpoint(
+    path: Path,
+    *,
+    signature: dict[str, object],
+    start: datetime,
+    end: datetime,
+    rows: list[Verdict],
+) -> None:
+    """Persist every completed strategy so an interruption resumes safely."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "signature": signature,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "rows": [asdict(row) for row in rows],
+            },
+            indent=2,
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if args.days < 30:
@@ -254,8 +304,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.stride < 1:
         raise SystemExit("--stride must be positive")
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml")
-    end = datetime.now(UTC)
-    start = end - timedelta(days=args.days)
+    output_dir = ROOT / "runtime" / "validation"
+    checkpoint = output_dir / "weekend-sections-checkpoint.json"
+    signature = {
+        "version": CHECKPOINT_VERSION,
+        "days": args.days,
+        "stride": args.stride,
+        "holdout": args.unlock_holdout,
+        "symbols": list(args.symbols),
+        "config": hashlib.sha256(settings.model_dump_json().encode()).hexdigest(),
+    }
+    rows: list[Verdict] = []
+    saved: dict[str, object] | None = None
+    if checkpoint.exists() and not args.fresh:
+        with contextlib.suppress(ValueError, OSError, json.JSONDecodeError):
+            candidate = json.loads(checkpoint.read_text(encoding="utf-8"))
+            if candidate.get("signature") == signature:
+                saved = candidate
+    if saved is not None:
+        start = datetime.fromisoformat(str(saved["start"]))
+        end = datetime.fromisoformat(str(saved["end"]))
+        rows = [Verdict(**row) for row in saved.get("rows", [])]
+        completed = sorted({f"{row.section}/{row.strategy}" for row in rows})
+        print(f"resuming checkpoint; already complete: {', '.join(completed)}", flush=True)
+    else:
+        end = datetime.now(UTC)
+        start = end - timedelta(days=args.days)
     train_end = start + (end - start) * 0.60
     validation_end = start + (end - start) * 0.80
     segments = [("train", start, train_end), ("validation", train_end, validation_end)]
@@ -293,12 +367,21 @@ def main(argv: list[str] | None = None) -> int:
         if not frames_by_symbol:
             raise RuntimeError("No requested symbol returned complete history")
 
-        rows: list[Verdict] = []
         for strategy in STRATEGIES:
+            if any(
+                row.section == strategy.section and row.strategy == strategy.module
+                for row in rows
+            ):
+                print(
+                    f"checkpoint: skipping section {strategy.section} / {strategy.module}",
+                    flush=True,
+                )
+                continue
             print(f"replaying section {strategy.section} / {strategy.module} ...", flush=True)
             per_segment_returns = {name: [] for name, _, _ in segments}
             per_segment_setups = {name: 0 for name, _, _ in segments}
             for symbol, frames in frames_by_symbol.items():
+                print(f"  {strategy.module}: {symbol}", flush=True)
                 enricher = None
                 if strategy.module == "basket_divergence":
                     enricher = basket_enricher(
@@ -347,11 +430,22 @@ def main(argv: list[str] | None = None) -> int:
                         per_segment_returns[name],
                     )
                 )
+            save_checkpoint(
+                checkpoint,
+                signature=signature,
+                start=start,
+                end=end,
+                rows=rows,
+            )
 
-        print("replaying section 6 / own_lane ...", flush=True)
+        lane_complete = any(row.section == "6" and row.strategy == "own_lane" for row in rows)
+        if lane_complete:
+            print("checkpoint: skipping section 6 / own_lane", flush=True)
+        else:
+            print("replaying section 6 / own_lane ...", flush=True)
         lane_returns = {name: [] for name, _, _ in segments}
         lane_setups = {name: 0 for name, _, _ in segments}
-        for symbol, frames in frames_by_symbol.items():
+        for symbol, frames in frames_by_symbol.items() if not lane_complete else ():
             if asset_classes[symbol] not in {"index", "metal", "crypto"}:
                 continue
             orders: list[BacktestOrder] = section_six_proposals(
@@ -372,14 +466,23 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 lane_setups[name] += len(selected)
                 lane_returns[name].extend(trade.net_r for trade in result.trades)
-        for name, _, _ in segments:
-            rows.append(summarise("6", "own_lane", name, lane_setups[name], lane_returns[name]))
+        if not lane_complete:
+            for name, _, _ in segments:
+                rows.append(
+                    summarise("6", "own_lane", name, lane_setups[name], lane_returns[name])
+                )
+            save_checkpoint(
+                checkpoint,
+                signature=signature,
+                start=start,
+                end=end,
+                rows=rows,
+            )
     finally:
         with contextlib.suppress(Exception):
             connector.shutdown()
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    output_dir = ROOT / "runtime" / "validation"
     output_dir.mkdir(parents=True, exist_ok=True)
     report = output_dir / f"weekend-sections-{stamp}.txt"
     payload = output_dir / f"weekend-sections-{stamp}.json"
@@ -403,6 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\n" + rendered)
     print(f"Report: {report}")
     print(f"Data:   {payload}")
+    checkpoint.unlink(missing_ok=True)
     return 0
 
 
