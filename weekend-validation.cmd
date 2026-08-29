@@ -8,6 +8,7 @@ echo.
 echo  No orders are sent. No Claude API is called. Live settings are not changed.
 echo  Every strategy is measured separately on its own H1, M5 or M1 clock.
 echo  Spread, commission and slippage are charged. The final 20%% stays locked.
+echo  Use --strategy NAME to run one module instead of the whole suite.
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (

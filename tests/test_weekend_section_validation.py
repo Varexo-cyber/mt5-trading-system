@@ -4,6 +4,7 @@ from pathlib import Path
 
 from config.loader import load_settings
 from scripts.validate_weekend_sections import (
+    STRATEGY_NAMES,
     Verdict,
     isolated_engine,
     passed,
@@ -73,3 +74,15 @@ def test_checkpoint_keeps_completed_strategy_rows(tmp_path: Path) -> None:
     assert saved["signature"] == {"run": 1}
     assert saved["rows"][0]["strategy"] == "example"
     assert not path.with_suffix(".tmp").exists()
+
+
+def test_every_weekend_strategy_can_be_selected_individually() -> None:
+    assert STRATEGY_NAMES == (
+        "market_structure",
+        "trend_momentum",
+        "m1_micro_breakout",
+        "basket_divergence",
+        "candle_momentum",
+        "vwap_reversion",
+        "own_lane",
+    )

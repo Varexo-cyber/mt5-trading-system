@@ -50,7 +50,7 @@ DEFAULT_SYMBOLS = (
     "FRA40",
     "GER40",
 )
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +71,7 @@ STRATEGIES = (
     StrategySpec("1", "candle_momentum", Timeframe.M1, Timeframe.M1),
     StrategySpec("2", "vwap_reversion", Timeframe.M5, Timeframe.M5),
 )
+STRATEGY_NAMES = (*(spec.module for spec in STRATEGIES), "own_lane")
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +94,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--days", type=int, default=180)
     result.add_argument("--symbols", nargs="*", default=list(DEFAULT_SYMBOLS))
     result.add_argument("--stride", type=int, default=1)
+    result.add_argument(
+        "--strategy",
+        action="append",
+        choices=STRATEGY_NAMES,
+        help="test only this strategy; repeat the option to select more than one",
+    )
     result.add_argument(
         "--fresh",
         action="store_true",
@@ -304,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.stride < 1:
         raise SystemExit("--stride must be positive")
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml")
+    selected_strategies = set(args.strategy or STRATEGY_NAMES)
     output_dir = ROOT / "runtime" / "validation"
     checkpoint = output_dir / "weekend-sections-checkpoint.json"
     signature = {
@@ -312,6 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         "stride": args.stride,
         "holdout": args.unlock_holdout,
         "symbols": list(args.symbols),
+        "strategies": sorted(selected_strategies),
         "config": hashlib.sha256(settings.model_dump_json().encode()).hexdigest(),
     }
     rows: list[Verdict] = []
@@ -367,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
         if not frames_by_symbol:
             raise RuntimeError("No requested symbol returned complete history")
 
-        for strategy in STRATEGIES:
+        for strategy in (item for item in STRATEGIES if item.module in selected_strategies):
             if any(
                 row.section == strategy.section and row.strategy == strategy.module
                 for row in rows
@@ -438,14 +447,17 @@ def main(argv: list[str] | None = None) -> int:
                 rows=rows,
             )
 
+        lane_selected = "own_lane" in selected_strategies
         lane_complete = any(row.section == "6" and row.strategy == "own_lane" for row in rows)
         if lane_complete:
             print("checkpoint: skipping section 6 / own_lane", flush=True)
-        else:
+        elif lane_selected:
             print("replaying section 6 / own_lane ...", flush=True)
         lane_returns = {name: [] for name, _, _ in segments}
         lane_setups = {name: 0 for name, _, _ in segments}
-        for symbol, frames in frames_by_symbol.items() if not lane_complete else ():
+        for symbol, frames in (
+            frames_by_symbol.items() if lane_selected and not lane_complete else ()
+        ):
             if asset_classes[symbol] not in {"index", "metal", "crypto"}:
                 continue
             orders: list[BacktestOrder] = section_six_proposals(
@@ -466,7 +478,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 lane_setups[name] += len(selected)
                 lane_returns[name].extend(trade.net_r for trade in result.trades)
-        if not lane_complete:
+        if lane_selected and not lane_complete:
             for name, _, _ in segments:
                 rows.append(
                     summarise("6", "own_lane", name, lane_setups[name], lane_returns[name])
