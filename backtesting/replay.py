@@ -172,6 +172,11 @@ class HistoricalContextReplay:
             self.execution_timeframe,
         }
         close_times = {tf: frame.index + tf.duration for tf, frame in frames.items()}
+        # Slow timeframes do not change on every M1 decision.  Rebuilding the
+        # same 300-row D1/H4/H1/M15/M5 slices thousands of times made a
+        # 30-day smoke test take hours.  Cache by the binary-search cut point;
+        # the visible bars and therefore every module input are identical.
+        series_cache: dict[Timeframe, tuple[int, Series]] = {}
         for sequence, opened_at in enumerate(eligible.index):
             if sequence % self.decision_stride_bars:
                 continue
@@ -183,13 +188,19 @@ class HistoricalContextReplay:
                 # `side="right"` counts the bars whose close is at or before the
                 # decision, which is exactly what `<= decided_at` selected.
                 cut = int(close_times[timeframe].searchsorted(moment, side="right"))
+                cached = series_cache.get(timeframe)
+                if cached is not None and cached[0] == cut:
+                    series[timeframe] = cached[1]
+                    continue
                 available = frames[timeframe].iloc[max(0, cut - self.history_bars) : cut]
                 if cut < 120 or len(available) < 120:
                     if timeframe in required:
                         complete = False
                         break
                     continue
-                series[timeframe] = Series(symbol, timeframe, available, decided_at)
+                visible = Series(symbol, timeframe, available, decided_at)
+                series[timeframe] = visible
+                series_cache[timeframe] = (cut, visible)
             if not complete:
                 continue
             executable = series[self.execution_timeframe].df.iloc[-1]
