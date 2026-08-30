@@ -278,6 +278,64 @@ class TestGoldGetsAStopItCanAfford:
         assert wide.invalidation_price < narrow.invalidation_price
 
 
+class TestItCanActuallyTradeOnItsOwn:
+    """THE MEASURED STRATEGY IS A STANDALONE ONE.
+
+    18,828 trades at 67.9% were taken on this signal alone -- no second module
+    agreeing, no confluence. If the live engine will only let it trade when
+    something else happens to concur, what runs is not what was measured.
+
+    `lone_module_minimum_confidence` is 0.65 on this account. The module first
+    shipped with a base confidence of 0.58, and because the fill sits at
+    `level + tolerance` the `closeness` term is near zero on almost every real
+    signal -- so a typical setup landed around 0.60 and was silently refused.
+    It would have looked like the strategy just not firing.
+    """
+
+    def test_the_weakest_qualifying_setup_still_clears_the_lone_gate(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        config = settings.analysis.impulse_retest
+
+        assert config.base_confidence >= settings.analysis.confluence.lone_module_minimum_confidence
+
+    def test_the_weakest_qualifying_setup_still_clears_the_score_bar(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        confluence = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.confluence
+        config = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.impulse_retest
+
+        # A lone module's score is |raw| x confidence.
+        assert config.base_score * config.base_confidence >= confluence.score_threshold
+
+    def test_a_real_signal_at_the_tolerance_edge_clears_it(self) -> None:
+        """Not the config in the abstract -- an actual signal off actual bars,
+        filled where the limit really rests."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        confluence = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.confluence
+        engine = ImpulseRetest(ImpulseRetestConfig())
+
+        signal = engine.analyze(_context(_broke_and_returned(1.05, 0.10)))
+
+        assert signal.score != 0, signal.reasoning
+        assert signal.confidence >= confluence.lone_module_minimum_confidence
+        assert abs(signal.score) * signal.confidence >= confluence.score_threshold
+
+    def test_the_confidence_is_anchored_to_the_measured_hit_rate(self) -> None:
+        """0.68, because that is what it hits. Not a preference."""
+        assert ImpulseRetestConfig().base_confidence == pytest.approx(0.68, abs=0.01)
+
+
 class TestTheLiveWiring:
     def test_the_runner_builds_it(self) -> None:
         from config.loader import DEFAULT_CONFIG_PATH, load_settings

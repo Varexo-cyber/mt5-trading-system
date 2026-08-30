@@ -2205,7 +2205,20 @@ class ImpulseRetestConfig(Base):
     stop_beyond_atr_by_symbol: dict[str, float] = Field(default_factory=lambda: {"XAUUSD": 1.35})
     base_score: float = Field(default=58.0, ge=0.0, le=100.0)
     quality_score_bonus: float = Field(default=14.0, ge=0.0, le=50.0)
-    base_confidence: float = Field(default=0.58, ge=0.0, le=1.0)
+    #: CONFIDENCE IS THE MEASURED HIT RATE, and it has to be, because this is a
+    #: STANDALONE strategy and `lone_module_minimum_confidence` is 0.65.
+    #:
+    #: At 0.58 the typical setup was silently unable to trade on its own. The
+    #: fill sits at `level + tolerance`, so `closeness` is near zero on almost
+    #: every real signal, and a median impulse leaves confidence around 0.60 --
+    #: under the gate. The module would then only ever have traded when some
+    #: other detector happened to agree, which is not the thing that was
+    #: measured at 67.9% over 18,828 trades. A module that cannot reach the
+    #: path that makes it work is the defect this whole account keeps
+    #: producing, and it would have looked like the strategy simply not firing.
+    #:
+    #: 0.68 is not a preference. It is what the strategy hits.
+    base_confidence: float = Field(default=0.68, ge=0.0, le=1.0)
     quality_confidence_bonus: float = Field(default=0.22, ge=0.0, le=1.0)
     maximum_confidence: float = Field(default=0.88, ge=0.0, le=1.0)
 
