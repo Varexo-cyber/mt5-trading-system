@@ -16,6 +16,7 @@ from analysis.entry_quality import (
 from analysis.evidence_families import family_for, supporting_families
 from analysis.fast_ema_cross import FastEmaCross
 from analysis.impulse_break import ImpulseBreak
+from analysis.level_retest import LevelRetest
 from analysis.m1_micro_breakout import M1MicroBreakout
 from analysis.market_intelligence import (
     MarketObservation,
@@ -49,6 +50,7 @@ __all__ = [
     "FastEmaCross",
     "ImpulseBreak",
     "LevelReaction",
+    "LevelRetest",
     "LifecycleDecision",
     "LiquiditySweep",
     "M1MicroBreakout",

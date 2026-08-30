@@ -868,6 +868,27 @@ class PositionManager:
         if health.action == "hold":
             self._health_interventions.pop(position.ticket, None)
             return None
+        # THE EXIT THAT NEVER ONCE HELPED. Fifty-nine closes across three
+        # settings of `health_broken_at`, zero winners, and the only column
+        # that asks the counterfactual says stepping in was -0.26R where
+        # leaving it alone was +0.14R. `health_exit_closes` is the off switch
+        # this rule pre-registered for itself in the config. The reading is
+        # still taken and still journalled, so the counterfactual keeps
+        # accruing on live trades instead of going dark.
+        if health.action == "exit" and not config.health_exit_closes:
+            self._health_interventions.pop(position.ticket, None)
+            return ManagementEvent(
+                position.ticket,
+                "HEALTH_EXIT_SUPPRESSED",
+                f"{health.reason} at {r_now:.2f}R; not closing — this rule has closed "
+                f"59 trades for zero winners and a -0.40R lift against doing nothing. "
+                f"The stop the trade opened with stands.",
+                # No exit price and no realised money: nothing was closed, and
+                # `_record_management` keys the close row on both being set.
+                None,
+                None,
+                r_at_action=r_now,
+            )
         if health.action in ("secure", "exit") and not self._worth_paying_to_leave(
             position, risk, tick
         ):
