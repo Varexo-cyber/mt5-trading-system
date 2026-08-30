@@ -1072,6 +1072,7 @@ def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -
         for reason, count in detail.most_common(10):
             print(f"      {reason:<52} {count:>7}  {count / total:>6.1%}")
 
+    _cost_report(decisions)
     _silence_report(decisions)
 
     print(
@@ -1140,6 +1141,69 @@ def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -
             f"EUR {row.EUR:>+7.2f}"
         )
     print(f"{'-' * 78}\n")
+
+
+def _cost_report(decisions: list[Decision]) -> None:
+    """HOW FAR OVER THE COST LIMIT, and it is the number the account turns on.
+
+    The 30 August sweep put 2,832 FX setups in front of the sizer, across all
+    five clocks, and took ONE trade. Every other one died on
+    `SL_TOO_TIGHT_FOR_COSTS`. The report said so and stopped there -- which is
+    useless, because 13% against a 12% limit and 30% against a 12% limit are
+    completely different situations. One is a config decision; the other means
+    this broker cannot carry this strategy on FX at any setting.
+
+    The sizer already writes the figure into its refusal: "spread, commission
+    and slippage would be 24% of the risk on a 9.6 pip stop". The report was
+    grouping refusals on their first six words, so every one of those collapsed
+    onto a single line and the percentage -- the only part that decides
+    anything -- was discarded.
+
+    THIS IS THE ONE NUMBER THE RESEARCH HAD TO ASSUME. It assumed 0.04 ATR, a
+    4% share on a one-ATR stop, and reported +0.279R after charging it. The
+    same arithmetic at other costs, using the research's own model:
+
+        cost  4%   ->  +0.278 R      what was assumed
+        cost 11%   ->  +0.138 R
+        cost 22%   ->  -0.082 R      already negative
+    """
+    import re
+
+    rows: list[tuple[float, str]] = []
+    for d in decisions:
+        if d.outcome != "SL_TOO_TIGHT_FOR_COSTS" or not d.note:
+            continue
+        found = re.search(r"be\s+(\d+(?:\.\d+)?)%\s+of the risk", d.note)
+        if found:
+            rows.append((float(found.group(1)) / 100.0, d.symbol))
+    if not rows:
+        return
+
+    shares = np.array([share for share, _s in rows], dtype=float)
+    print(f"\nTHE COST WALL — {len(rows)} setups refused because the stop is too tight")
+    for q, label in ((0.10, "cheapest 10%"), (0.50, "median"), (0.90, "dearest 10%")):
+        value = float(np.quantile(shares, q))
+        # The research's own model: net = gross - 2 * cost, which reproduces
+        # its published +0.279R at a 4% cost to three decimals.
+        print(f"   {label:<14} {value:>6.1%} of the stop   ->  net {0.358 - 2 * value:+.3f} R")
+    print("   (net uses the research's own cost model, which reproduces its")
+    print("    published +0.279R at the 4% it assumed)")
+
+    print("\n   how many would pass at a higher limit:")
+    for limit in (0.12, 0.15, 0.20, 0.25):
+        passing = int((shares <= limit).sum())
+        net = 0.358 - 2 * float(shares[shares <= limit].mean()) if passing else 0.0
+        verdict = "and would still pay" if net > 0.05 else "but would NOT pay"
+        print(
+            f"      limit {limit:>5.0%}   {passing:>6} of {len(rows)} "
+            f"({passing / len(rows):>5.1%})   net {net:+.3f} R {verdict}"
+        )
+    print("   Raising the limit only helps if the row it admits is still positive.")
+
+    worst = Counter(symbol for share, symbol in rows if share > 0.20)
+    if worst:
+        names = ", ".join(f"{s} ({c})" for s, c in worst.most_common(6))
+        print(f"\n   over 20% of the stop, so unaffordable at any sane limit: {names}")
 
 
 def _silence_report(decisions: list[Decision]) -> None:

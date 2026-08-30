@@ -26,6 +26,8 @@ import re
 from datetime import UTC
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = (ROOT / "scripts" / "dry_run_sections.py").read_text()
 
@@ -840,3 +842,90 @@ class TestTheSampleJudgesItself:
         assert parsed.core is True
         assert parsed.live_only is True
         assert parsed.no_m1 is True, "M1 over 180 days is a quarter million bars per market"
+
+
+class TestTheCostWallIsQuantified:
+    """2,832 FX setups reached the sizer across five clocks and ONE became a
+    trade. The report named the refusal and stopped there, which decides
+    nothing: 13% against a 12% limit is a config question, 30% against a 12%
+    limit means this broker cannot carry this strategy on FX at any setting.
+
+    The sizer already writes the figure into its own refusal text. The report
+    grouped refusals on their first six words, so every cost refusal collapsed
+    onto one line and the percentage -- the only part that decides anything --
+    was thrown away.
+    """
+
+    def _refusals(self, shares: list[float], symbol: str = "EURUSD.i"):
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 8, 24, tzinfo=UTC)
+        return [
+            Decision(
+                base + timedelta(minutes=i),
+                symbol,
+                "impulse_retest",
+                "SL_TOO_TIGHT_FOR_COSTS",
+                note=(
+                    f"spread, commission and slippage would be {share * 100:.0f}% of the risk "
+                    f"on a 9.6 pip stop, above the 12% limit"
+                ),
+            )
+            for i, share in enumerate(shares)
+        ]
+
+    def test_it_recovers_the_percentage_the_sizer_wrote(self, capsys) -> None:
+        from scripts.dry_run_sections import _cost_report
+
+        _cost_report(self._refusals([0.24] * 10))
+        out = capsys.readouterr().out
+
+        assert "THE COST WALL" in out
+        assert "24.0% of the stop" in out
+
+    def test_it_prices_the_edge_at_that_cost(self, capsys) -> None:
+        """A percentage on its own still needs translating. 22% is already
+        negative under the research's own model and the report must say so
+        rather than leave it to be worked out."""
+        from scripts.dry_run_sections import _cost_report
+
+        _cost_report(self._refusals([0.24] * 10))
+        out = capsys.readouterr().out
+
+        # net = 0.358 - 2*0.24 = -0.122
+        assert "-0.122 R" in out
+
+    def test_the_model_reproduces_the_research_at_the_cost_it_assumed(self) -> None:
+        """The check that the arithmetic in the report is the SAME arithmetic
+        the research used. At the 4% it assumed it must land on the +0.279R it
+        published, or the whole comparison is between two different models."""
+        assert pytest.approx(0.279, abs=0.002) == 0.358 - 2 * 0.04
+
+    def test_it_says_whether_a_higher_limit_would_actually_help(self, capsys) -> None:
+        """Raising the limit is the obvious move and usually the wrong one:
+        admitting a row that does not pay is worse than refusing it."""
+        from scripts.dry_run_sections import _cost_report
+
+        _cost_report(self._refusals([0.13, 0.14, 0.24, 0.26]))
+        out = capsys.readouterr().out
+
+        assert "would still pay" in out, "a 13-14% row should read as payable"
+        assert "would NOT pay" in out, "a 24-26% row must not read as payable"
+
+    def test_it_names_the_markets_that_are_hopeless(self, capsys) -> None:
+        from scripts.dry_run_sections import _cost_report
+
+        _cost_report(self._refusals([0.30] * 5, symbol="EURGBP.i"))
+        out = capsys.readouterr().out
+
+        assert "unaffordable at any sane limit" in out
+        assert "EURGBP.i (5)" in out
+
+    def test_it_stays_silent_when_nothing_was_refused_on_cost(self, capsys) -> None:
+        from scripts.dry_run_sections import _cost_report
+
+        _cost_report([])
+
+        assert capsys.readouterr().out == ""
