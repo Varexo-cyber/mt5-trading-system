@@ -27,8 +27,9 @@ from scripts.lab import data
 from scripts.lab.resolve import chance, expectancy, resolve, sigmas
 from scripts.lab.strategies import CATALOGUE, HORIZON_BARS
 from scripts.lab.zoo2 import ALL as _ZOO_ALL
+from scripts.lab.zoo3 import ALL3 as _ZOO3
 
-CATALOGUE = {**CATALOGUE, **_ZOO_ALL}
+CATALOGUE = {**CATALOGUE, **_ZOO_ALL, **_ZOO3}
 
 RATIOS = (1.0, 1.5, 2.0, 3.0)
 SPLIT = pd.Timestamp("2017-01-01", tz="UTC")

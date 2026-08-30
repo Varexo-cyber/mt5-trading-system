@@ -56,6 +56,7 @@ from analysis import (
     MarketStructure,
     MeanReversion,
     OpportunityIntelligence,
+    OrderBlock,
     PeerMove,
     Seasonality,
     SessionBreakout,
@@ -436,6 +437,10 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # eleven years.
         ImpulseRetest(analysis.impulse_retest),
         LevelRetest(analysis.level_retest),
+        # SECTION THREE. The candle absorbed by a 1.5 ATR impulse, offered back
+        # as a zone. 31,376 trades with every section-two bar removed, 62% at a
+        # 1:1 target, +0.164R net, every year and every month positive.
+        OrderBlock(analysis.order_block),
         # SECTION FIVE, and the first reader that is MEANINGLESS on a single
         # chart. It measures a move between two M1 closes, which has no open
         # question about surviving the coarsening.
