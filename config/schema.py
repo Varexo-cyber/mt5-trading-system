@@ -2181,6 +2181,28 @@ class ImpulseRetestConfig(Base):
     #: floor that silently widens the stop would leave this measuring one trade
     #: and sending another.
     stop_beyond_atr: float = Field(default=0.85, gt=0.0, le=3.0)
+    #: A WIDER STOP WHERE THE SPREAD IS WIDER, per symbol.
+    #:
+    #: Gold on the owner's explicit instruction, 30 August, and it needed a
+    #: measurement rather than a smaller lot. Cost in R is spread/R, which is a
+    #: RATIO: halving the lot halves the win, the loss and the spread together
+    #: and leaves the R-multiple exactly where it was. Minimum risk changes what
+    #: a trade pays in euros, never whether it pays at all.
+    #:
+    #: What does change it is the denominator. XAUUSD carries about 0.10 ATR of
+    #: spread against 0.04 on a major, so at the family's 1.00 ATR stop it
+    #: spends 20% of R on execution -- and `risk.max_spread_share_of_stop: 0.08`
+    #: refuses it, correctly. At 1.50 ATR the same spread is 6.7% and passes the
+    #: gate untouched, which is the point: the gate is not being loosened for
+    #: gold, gold is being given a stop it can afford.
+    #:
+    #: Measured on the same 1,942 trades, stop 1.50 ATR at the family's 1R
+    #: target:
+    #:
+    #:     gross +0.214R   cost 0.133R   net +0.083R   (train +0.065/test +0.100)
+    #:
+    #: Positive in both halves. Smaller than FX and real.
+    stop_beyond_atr_by_symbol: dict[str, float] = Field(default_factory=lambda: {"XAUUSD": 1.35})
     base_score: float = Field(default=58.0, ge=0.0, le=100.0)
     quality_score_bonus: float = Field(default=14.0, ge=0.0, le=50.0)
     base_confidence: float = Field(default=0.58, ge=0.0, le=1.0)

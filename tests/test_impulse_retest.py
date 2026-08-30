@@ -19,7 +19,8 @@ another -- and each of them is worth a specific, quantified amount:
     the 1:1 target          at 3:1 the same setups net +0.016R
     the 0.15 ATR tolerance  by 0.60 ATR out the edge changes sign
     the 1.00 ATR stop       below 0.8 the confluence floor silently widens it
-    gold stays out          works there (+0.324R gross), unaffordable (-0.099R)
+    gold's wider stop       at the family stop its spread is 20% of R and the
+                            live gate refuses it; at 1.50 ATR it is 6.7%
 """
 
 from __future__ import annotations
@@ -213,6 +214,68 @@ class TestWhatIsSentIsWhatWasMeasured:
         assert signal.invalidation_price is not None
         assert signal.key_levels
         assert signal.invalidation_price < signal.key_levels[0]
+
+
+class TestGoldGetsAStopItCanAfford:
+    """The owner asked for gold on 30 August and was right that it belongs --
+    but not for the reason given.
+
+    "Minimal risk" does not make an unaffordable trade affordable. Cost in R is
+    spread/R, a RATIO: halve the lot and the win, the loss and the spread all
+    halve together, leaving the R-multiple untouched. Lot size decides what a
+    trade pays in euros, never whether it pays.
+
+    What does decide it is the denominator. Gold carries ~0.10 ATR of spread
+    against 0.04 on a major, so at a 1.00 ATR stop it spends 20% of R on
+    execution and `max_spread_share_of_stop: 0.08` refuses it. At 1.50 ATR the
+    same spread is 6.7% and the gate passes it untouched.
+
+        stop 1.50 ATR, 1R target, 1,942 trades
+        gross +0.214R   cost 0.133R   net +0.083R   (train +0.065/test +0.100)
+    """
+
+    def test_gold_carries_a_wider_stop_than_the_majors(self) -> None:
+        config = ImpulseRetestConfig()
+
+        gold = config.stop_beyond_atr_by_symbol.get("XAUUSD")
+
+        assert gold is not None
+        assert gold > config.stop_beyond_atr
+
+    def test_the_wider_stop_clears_the_live_spread_gate(self) -> None:
+        """THE WHOLE REASON FOR THE OVERRIDE. Gold at the family's own stop
+        would be refused by `max_spread_share_of_stop`, so it must be given a
+        stop it fits inside rather than the gate being loosened around it."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        config = settings.analysis.impulse_retest
+        gold_r = config.tolerance_atr + config.stop_beyond_atr_by_symbol["XAUUSD"]
+        # Gold's spread measured as a share of ATR in the study.
+        assert 0.10 / gold_r <= settings.analysis.confluence.max_spread_share_of_stop
+
+    def test_a_major_is_untouched_by_the_override(self) -> None:
+        config = ImpulseRetestConfig()
+
+        assert "EURUSD" not in config.stop_beyond_atr_by_symbol
+
+    def test_the_override_actually_reaches_the_stop(self) -> None:
+        """A per-symbol setting nothing reads is the defect this account keeps
+        producing. Two contexts, same bars, different symbol names: the
+        published invalidation must differ."""
+        engine = ImpulseRetest(ImpulseRetestConfig(stop_beyond_atr_by_symbol={"XAUUSD": 1.35}))
+        frame = _broke_and_returned(1.4, 0.05)
+
+        major = _context(frame)
+        gold = MarketContext("XAUUSD", major.now, major.series, major.tick)
+        wide = engine.analyze(gold)
+        narrow = engine.analyze(major)
+
+        assert wide.invalidation_price is not None
+        assert narrow.invalidation_price is not None
+        assert wide.invalidation_price < narrow.invalidation_price
 
 
 class TestTheLiveWiring:
