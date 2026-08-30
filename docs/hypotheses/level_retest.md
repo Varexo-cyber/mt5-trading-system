@@ -96,9 +96,49 @@ sign. This is why `lifecycle_retest_level_atr` moved from 0.35 to 0.15.
 
 The Bollinger/RSI row is the gold scalp the owner was quoted. It has no edge.
 
+## Correction, 30 August: the result above was my own bug
+
+The measurement that produced +0.340R/+0.347R checked the setup's FAILURE
+before its FILL:
+
+    if failed: break        <- first
+    if touched: enter
+
+The entry sits between the level and the stop, so price cannot reach the stop
+without passing through the limit order. Every bar that swept through both at
+once was therefore discarded instead of entered -- and those are the worst
+losses the strategy has. Six to sixteen percent of the sample, all losers,
+silently removed.
+
+With the two checks in the right order, on the same bars:
+
+| stop | before | after |
+|---|---|---|
+| 0.50 ATR | +0.336R | **+0.063R** |
+| 0.90 ATR | +0.133R | **+0.036R** |
+
+And net of a spread, across every asset class and timeframe measured:
+
+| asset | tf | R | gross | cost | net | sigma |
+|---|---|---|---|---|---|---|
+| index | M5 | 0.90 | +0.098 | 0.178 | **−0.079** | +3.5 |
+| index | H1 | 0.90 | +0.090 | 0.178 | **−0.088** | +3.0 |
+| fx | H1 | 0.90 | +0.084 | 0.089 | **−0.004** | +2.9 |
+| fx | M15 | 0.90 | +0.034 | 0.089 | **−0.054** | +1.2 |
+| metal | H1 | 0.90 | +0.084 | 0.222 | **−0.138** | +2.5 |
+
+Gross positive everywhere. Net negative in all fourteen rows measured. The
+best of them is zero.
+
+**What survives the correction:** the retest is still 0.10–0.20R better than
+buying the same break (−0.067R), and that comparison is untouched by the bug —
+a break entry has no limit order and so no fill-ordering question. Choosing the
+level over the extreme remains right. Claiming it pays for itself does not.
+
 ## Verdict
 
-**Live, weighted 1.0, with a section breaker at 40 trades / 65% losers.**
+**NOT live.** Pulled from `live_enabled_modules` on 30 August, the same day it
+was added, once the harness bug was found.
 
 What is *not* established, and it is the whole residual risk: this is HistData
 M15 **bid** bars on forex and gold. It contains no Eightcap feed, no indices,
@@ -112,7 +152,7 @@ silently widens it would leave the module measuring one trade and sending
 another. That costs expectancy (+0.134R against +0.340R) and buys the guarantee
 that what was measured is what gets sent.
 
-**The pre-registered kill condition:** 40 live trades at 65% losers. Expected
+**If it is ever re-enabled, the pre-registered kill condition is:** 40 live trades at 65% losers. Expected
 is 55% losers at a 2R target, so 65% over forty is about four sigma the wrong
 way — that is a measurement which does not hold on this feed, not bad luck.
 

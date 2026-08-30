@@ -69,13 +69,20 @@ def retest_signals(
             else:
                 failed = close[j] > level + stop_beyond * unit0
                 touched = high[j] >= level - tolerance * unit0
-            if failed:
-                break
+            # TOUCHED BEFORE FAILED, and this ordering was wrong until
+            # 30 August. The entry sits between the level and the stop, so
+            # price cannot reach the stop without passing through the limit
+            # order first. Testing the failure first DISCARDED every bar that
+            # swept through both at once -- 6% to 16% of the sample, all of
+            # them losses -- and that alone accounted for three quarters of
+            # this strategy's apparent edge (+0.336R -> +0.063R).
             if touched:
                 entry = level + direction * tolerance * unit0
                 unit = (stop_beyond + tolerance) * unit0
                 out.append((i, Signal(j, direction, entry, unit)))
                 i = j
+                break
+            if failed:
                 break
         i += 1
     return out
