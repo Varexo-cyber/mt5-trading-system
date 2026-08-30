@@ -48,12 +48,27 @@ WHY THE STOP IS 1.00 ATR AND NOT THE 0.50 THAT MEASURED BEST. 0.50 ATR nets
 floors the stop at 0.8, and a floor that silently widens it would leave this
 measuring one trade and sending another. 1.00 ATR passes through untouched.
 
-WHY NOT GOLD. It works there and cannot be afforded there:
+GOLD, and a correction I owe the record. This file first said gold could not
+be afforded, quoting -0.099R. That number was measured at a 0.50 ATR stop with
+a 2R target -- a configuration that was then NOT shipped. At the configuration
+that IS shipped, gold is positive:
 
-    XAUUSD M15   gross +0.324R   spread 0.40R   net -0.099R
+    XAUUSD M15, stop 1.00 ATR, 1R   1,945 trades   +0.144R   (tr +0.104/te +0.184)
 
-The spread is 0.10 ATR. That is the same arithmetic that produced this
-account's 595 real gold trades at -0.203R, and no setting fixes it.
+The conclusion had been carried over from one table to a different setting.
+
+Gold still needs a wider stop than a major, and not for profitability. Its
+spread is ~0.10 ATR against 0.04, so at the family's one-ATR stop it spends 20%
+of R on execution and `max_spread_share_of_stop: 0.08` refuses it -- correctly.
+`stop_beyond_atr_by_symbol` gives it 1.50 ATR, where the same spread is 6.7%
+and the gate passes it untouched. The gate is not loosened for gold; gold is
+given a stop it fits inside. Measured there: +0.083R, train +0.065 / test
++0.100.
+
+WHAT DOES NOT HELP IS A SMALLER LOT. Cost in R is spread/R, a ratio: halving
+the lot halves the win, the loss and the spread together and leaves the
+R-multiple exactly where it was. Position size decides what a trade pays in
+euros, never whether it pays.
 
 WHAT THE MEASUREMENT SUBTRACTS, because without it this file would be wrong.
 The harness was checked with random entries, and random entries are not free:
@@ -109,8 +124,12 @@ class ImpulseRetest:
         if unit <= 0.0:
             return Signal.neutral(self.name, "ATR unavailable")
 
+        # A wider stop where the spread is wider. Gold spends 20% of a
+        # one-ATR stop on execution and `max_spread_share_of_stop` refuses it;
+        # at 1.50 ATR the same spread is 6.7% and the gate passes it untouched.
+        stop_beyond = config.stop_beyond_atr_by_symbol.get(ctx.symbol, config.stop_beyond_atr)
         price = ctx.tick.mid if ctx.tick is not None else float(frame["close"].iloc[-1])
-        found = self._live_break(frame, unit, price)
+        found = self._live_break(frame, unit, price, stop_beyond)
         if found is None:
             return Signal.neutral(
                 self.name,
@@ -146,10 +165,10 @@ class ImpulseRetest:
             reasoning=(
                 f"{config.channel_period}-bar level broken by {impulse:.2f} ATR "
                 f"{age} bars ago and retested to within {above:.2f} ATR "
-                f"({config.timeframe}); stop {config.stop_beyond_atr:.2f} ATR beyond it"
+                f"({config.timeframe}); stop {stop_beyond:.2f} ATR beyond it"
             ),
             key_levels=(level,),
-            invalidation_price=level - direction * config.stop_beyond_atr * unit,
+            invalidation_price=level - direction * stop_beyond * unit,
             details={
                 "timeframe": config.timeframe,
                 "setup": self.name,
@@ -161,7 +180,7 @@ class ImpulseRetest:
         )
 
     def _live_break(
-        self, frame: pd.DataFrame, unit: float, price: float
+        self, frame: pd.DataFrame, unit: float, price: float, stop_beyond: float
     ) -> tuple[int, float, float, int] | None:
         """The unspent decisive break whose level price is nearest, or None.
 
@@ -196,7 +215,7 @@ class ImpulseRetest:
             if impulse < config.minimum_impulse_atr:
                 continue
             # Given up? Then it is not a level any more.
-            beyond = level - direction * config.stop_beyond_atr * unit
+            beyond = level - direction * stop_beyond * unit
             after = close[i + 1 :]
             if len(after) and (
                 (direction > 0 and float(after.min()) < beyond)

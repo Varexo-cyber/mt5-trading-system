@@ -116,11 +116,29 @@ Prediction 4, the target curve at a one-ATR stop:
 Prediction 1, on the same population: buying the break is **−0.067R** over
 190,505 signals at −29 sigma, flat across every ratio from 1:1 to 5:1.
 
-Prediction 5, gold: gross **+0.324R**, spread 0.40R, net **−0.099R**. It works
-and cannot be paid for — the same arithmetic behind this account's 595 real
-gold trades at −0.203R.
+Prediction 5, gold: **wrong as first written, and corrected on the owner's
+challenge.** The −0.099R quoted was measured at a 0.50 ATR stop with a 2R
+target — a configuration that was then not shipped. At the shipped stop and
+target gold is positive:
 
-All five predictions held.
+| config | trades | hit | gross | cost | net | train / test |
+|---|---|---|---|---|---|---|
+| stop 1.00 ATR, 1R | 1,945 | 67.1% | +0.342 | 0.200 | **+0.144** | +0.104 / +0.184 |
+| stop 1.50 ATR, 1R | 1,942 | 60.7% | +0.214 | 0.133 | **+0.083** | +0.065 / +0.100 |
+
+Gold ships at the 1.50 ATR stop, and not because it pays better — it pays
+less. At 1.00 ATR its 0.10-ATR spread is 20% of R and
+`max_spread_share_of_stop: 0.08` refuses the trade. At 1.50 ATR it is 6.7% and
+passes the gate untouched. The gate is not loosened for gold; gold is given a
+stop it fits inside.
+
+**A smaller lot would not have helped.** Cost in R is spread/R, a ratio: halve
+the lot and the win, the loss and the spread halve together, leaving the
+R-multiple unchanged. Position size decides what a trade pays in euros, never
+whether it pays.
+
+Four of five predictions held; the fifth was my own error of transcription
+between two tables.
 
 ### What else was measured, and failed
 
@@ -158,6 +176,8 @@ The breaker is set for exactly that failure.
 
 ## Related
 
+- `config/schema.py` → `ImpulseRetestConfig.stop_beyond_atr_by_symbol` — the
+  per-symbol stop, and why gold needs one.
 - `analysis/level_retest.py` — the same idea without the impulse filter.
   Measured, gross positive, net negative everywhere; not live.
 - `analysis/setup_lifecycle.py` — sends the other breakout families back to
