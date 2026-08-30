@@ -714,11 +714,31 @@ class TestTheRaisedEnvelopeAgreesWithItselfEverywhere:
 
         assert CONTRACT_VERSION >= 3
 
-    def test_the_capital_floor_did_not_move_with_it(self) -> None:
-        """The one number that must NOT scale with the stake. Raising risk
-        shortens the runway to this floor from roughly 36 ordinary losers to
-        24, and that shortening is the cost of the decision — hiding it by
-        lowering the floor would remove the only unconditional stop left."""
-        from promotion.experimental import EXPERIMENTAL_EQUITY_FLOOR
+    def test_the_capital_floor_never_moves_to_make_room_for_the_stake(self) -> None:
+        """The one number that must not be relaxed to accommodate a bigger
+        stake. Raising risk shortens the runway to it, and that shortening is
+        the cost of the decision -- lowering the floor to hide it would remove
+        the only unconditional stop left.
 
-        assert EXPERIMENTAL_EQUITY_FLOOR == 50.0
+        50 -> 150 on 30 August, and note the DIRECTION: the owner raised it in
+        the same session he raised the ceiling, which tightens the account
+        rather than loosening it. The two interact and the arithmetic is worth
+        stating:
+
+            equity 215, floor 150   ->  EUR 65 of room
+            at the ordinary 2%          about 15 losers
+            at the 10% ceiling          about  3 losers
+
+        So the test is that the floor is never LOWERED, not that it holds one
+        value."""
+        from promotion.experimental import (
+            EXPERIMENTAL_EQUITY_FLOOR,
+            EXPERIMENTAL_MAX_STAKE_PCT,
+        )
+
+        assert EXPERIMENTAL_EQUITY_FLOOR >= 50.0
+        assert EXPERIMENTAL_EQUITY_FLOOR == 150.0
+        # And it is a floor in account currency, never a fraction of the stake,
+        # so it cannot erode as the stake grows.
+        assert isinstance(EXPERIMENTAL_EQUITY_FLOOR, float)
+        assert EXPERIMENTAL_MAX_STAKE_PCT == 10.0

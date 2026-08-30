@@ -42,7 +42,12 @@ def account(
     login: int = 5_049_535,
     server: str = "Eightcap-Live",
     currency: str = "EUR",
-    equity: float = 100.0,
+    # 100 -> 215 on 30 August. The capital floor went from 50 to 150 at the
+    # owner's request, so a 100 EUR fixture is now BELOW the floor and every
+    # compatibility test failed on "equity reached contract floor" -- which is
+    # the floor working, not the code breaking. 215 is the account's real
+    # equity at the time of the change.
+    equity: float = 215.34,
     is_demo: bool = False,
 ) -> AccountSnapshot:
     return AccountSnapshot(
@@ -382,14 +387,31 @@ def test_the_floor_survives_a_contract_written_by_an_older_build(tmp_path: Path)
     assert stale.equity_floor == pytest.approx(EXPERIMENTAL_EQUITY_FLOOR)
 
 
-def test_the_floor_is_below_the_drawdown_breaker_not_instead_of_it(tmp_path: Path) -> None:
-    """Two backstops, and this is the deeper one.
+def test_the_floor_is_the_only_backstop_left(tmp_path: Path) -> None:
+    """It used to be the deeper of two, and it is not any more.
 
-    The 15% peak-to-current circuit breaker measures from the all-time equity
-    high and normally halts trading well before the absolute floor is reached.
-    Reading the floor as "the point at which I stop losing money" would be
-    wrong by a wide margin, in the safe direction.
+    THIS TEST WAS STALE AND SAID THE OPPOSITE. It asserted the floor sits below
+    where a 15% peak-to-current breaker would trip, describing the floor as a
+    wide-margin last resort. That breaker is OFF for this experiment --
+    `EXPERIMENTAL_MAX_DRAWDOWN_PCT` is 0.0, switched off by the operator -- so
+    the comparison was against a number that no longer exists, and the test
+    only kept passing because 50 was below almost anything.
+
+    Raising the floor to 150 broke it, which is the test doing its job one
+    layer up from where it was pointed. `EXPERIMENTAL_EQUITY_FLOOR`'s own
+    comment has said the true thing all along: "With the peak-to-current
+    breaker off, this is not the deeper of two backstops any more -- it is the
+    only one that cannot be reset, waited out, or recovered by a new day."
+
+    So that is what is asserted. Nothing automatic stands between current
+    equity and this number.
     """
-    contract = write_contract(tmp_path, account(equity=100.0))
-    peak_breaker_trips_at = 100.0 * (1.0 - EXPERIMENTAL_MAX_DRAWDOWN_PCT / 100.0)
-    assert contract.equity_floor < peak_breaker_trips_at
+    contract = write_contract(tmp_path, account())
+
+    assert EXPERIMENTAL_MAX_DRAWDOWN_PCT == 0.0, (
+        "the peak-to-current breaker is back on; this test needs to compare "
+        "the two backstops again rather than assert there is one"
+    )
+    assert contract.equity_floor == pytest.approx(EXPERIMENTAL_EQUITY_FLOOR)
+    # And it has to leave real room, or arming is pointless.
+    assert 0.0 < contract.equity_floor < account().equity
