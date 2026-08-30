@@ -321,9 +321,29 @@ class PositionSizer:
         volume = spec.round_volume_down(min(raw_volume, spec.volume_max))
 
         # -- 5. can this account express the trade at all? ----------------
+        took_minimum_lot = False
         if volume < spec.volume_min:
             shortfall_pct = spec.min_risk_pct(sl_distance, equity)
             affordable_pips = spec.max_sl_pips_for_risk(intended_money)
+
+        # THE OWNER'S OVERRIDE, 30 August: take it at the broker minimum
+        # rather than skip it.
+        #
+        # The instruction was "reduce the lot size". That is not a thing that
+        # exists -- `volume_min` IS the floor, one ounce on gold, and the only
+        # direction available is UP. So this rounds up and accepts MORE risk
+        # than the target, never less.
+        #
+        # No ceiling check is needed here: step 6 below already refuses
+        # anything over `effective_max_risk_pct`, and it will now be doing real
+        # work rather than guarding an impossibility. An instrument whose
+        # minimum lot lands past 8% is one this equity cannot trade, and no
+        # setting changes that.
+        if volume < spec.volume_min and self.settings.risk.allow_minimum_lot_above_target:
+            volume = spec.volume_min
+            took_minimum_lot = True
+
+        if volume < spec.volume_min:
             return result(
                 RiskDecision.block(
                     Reason.UNDERCAPITALIZED,
@@ -359,6 +379,13 @@ class PositionSizer:
             f"{volume:g} lots risks {actual_money:.2f} ({actual_pct:.2f}%) over a "
             f"{sl_pips:.1f} pip stop, R:R 1:{reward_risk:.2f}"
         )
+        if took_minimum_lot:
+            # Loud on purpose. This trade carries more risk than the account
+            # asked for, and the multiple is the number worth reading back.
+            detail += (
+                f" — TOOK MINIMUM LOT: {intended_pct:.2f}% was intended, this is "
+                f"{actual_pct / max(intended_pct, 1e-9):.1f}x that"
+            )
         if capped:
             detail += f" — capped at the broker's {spec.volume_max:g} lot maximum"
 

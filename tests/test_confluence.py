@@ -1212,8 +1212,14 @@ class TestTrendMomentumIsBackOnItsNarrowedRecord:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.confluence
 
-    def test_it_trades_live_again(self) -> None:
-        assert "trend_momentum" in self._confluence().live_enabled_modules
+    def test_it_is_off_real_money_again(self) -> None:
+        """Back off on 30 August, and this time on a number rather than a
+        judgement. Ten years of data put it at +0.02R gross -- statistically
+        real at +8 sigma and economically worthless, since any cost above 1%
+        of R eats it whole. That agrees with the earlier live measurement of
+        -0.365R over 163 trades at t = -4.01, which is what took it off the
+        first time."""
+        assert "trend_momentum" not in self._confluence().live_enabled_modules
 
     def test_and_it_can_stop_itself(self) -> None:
         """The condition of it being on. Eight losers in a row, or twelve of
@@ -1465,6 +1471,16 @@ class TestARegimeThisAccountRefusesToTrade:
         ).analysis.confluence
         # The real module name, so it carries real weight and is on the real
         # continuation list.
+        #
+        # And live-enabled HERE rather than relying on the account's list:
+        # `trend_momentum` came off real money on 30 August, which zeroed its
+        # live weight and sent this test back to "no weighted directional
+        # evidence" -- passing again without the regime rule ever running. The
+        # rule under test is about regimes, not about which sections the owner
+        # has switched on this week, so the fixture states what it needs.
+        confluence = confluence.model_copy(
+            update={"live_enabled_modules": ("trend_momentum", "market_regime")}
+        )
         engine = ConfluenceEngine(
             [
                 StubModule(Signal("trend_momentum", 70, 0.8, invalidation_price=1.1050)),

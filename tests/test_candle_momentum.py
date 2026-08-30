@@ -550,7 +550,15 @@ class TestItIsLiveAndBraked:
         assert module.risk_pct == 1.0
         assert module.fixed_lots == 0.0
         confluence = settings.analysis.confluence
-        assert "candle_momentum" in confluence.live_enabled_modules
+        # OFF REAL MONEY SINCE 30 AUGUST, with sections one, five and six, on
+        # the owner's instruction that only the two measured sections trade.
+        # This line used to assert it was live; asserting a business decision
+        # is what the comment above says not to do, so what is checked now is
+        # the invariant that made letting it vote safe in the first place.
+        assert "candle_momentum" not in confluence.live_enabled_modules
+        # THE ARITHMETIC INVARIANT, which holds whether it is live or not: its
+        # ceiling sits under the bar, so it can never open a trade alone
+        # however loudly it reads.
         assert module.base_score * module.maximum_confidence < confluence.score_threshold
         # Its own stop stays, and it is the strict one: this section takes
         # several trades a day, so ten losses in a row is half a day paying
