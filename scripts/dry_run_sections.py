@@ -97,13 +97,36 @@ class Decision:
 
 
 def _context(symbol: str, frames: dict, upto: datetime, spread: float) -> MarketContext | None:
-    """Everything knowable at `upto`, and nothing that closed after it."""
+    """Everything knowable at `upto`, and nothing that closed after it.
+
+    WHY THIS IS WRITTEN WITH `searchsorted` AND NOT A MASK.
+
+    It used to read:
+
+        visible = frame[frame.index + timeframe.duration <= upto]
+        ... visible.tail(WARMUP)
+
+    which is correct and quadratic. Every call shifted the ENTIRE index,
+    compared the entire thing, copied every matching row, and then threw all
+    but the last 260 away. Over a 180-day window that is a 52,000-row M5 frame
+    walked in full for each of ~17,000 M15 bars, on each of sixteen markets --
+    about 1.4e10 row operations, and it is why a six-month run took hours while
+    the MT5 fetch it was blamed on took seconds.
+
+    The bars are sorted, so the cut point is a binary search: `index <= upto -
+    duration` is exactly `searchsorted(upto - duration, side="right")`, and the
+    warmup is then a plain positional slice. O(log n) instead of O(n), same
+    answer -- `test_the_fast_context_matches_the_slow_one` compares them bar
+    for bar rather than taking that on trust.
+    """
     series: dict[Timeframe, Series] = {}
     for timeframe, frame in frames.items():
-        visible = frame[frame.index + timeframe.duration <= upto]
-        if len(visible) < WARMUP:
+        index = frame.index
+        # A bar is visible once it has CLOSED, i.e. open + duration <= upto.
+        cut = int(index.searchsorted(upto - timeframe.duration, side="right"))
+        if cut < WARMUP:
             return None
-        series[timeframe] = Series(symbol, timeframe, visible.tail(WARMUP), upto)
+        series[timeframe] = Series(symbol, timeframe, frame.iloc[cut - WARMUP : cut], upto)
     price = float(series[Timeframe.M5].df["close"].iloc[-1])
     half = spread / 2.0
     return MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))

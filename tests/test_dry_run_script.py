@@ -929,3 +929,36 @@ class TestTheCostWallIsQuantified:
         _cost_report([])
 
         assert capsys.readouterr().out == ""
+
+
+class TestTheQuickLauncher:
+    """A minute-long check, so a change can be verified without a six-month
+    run. It must be honest about what a 30-day window can and cannot say."""
+
+    LAUNCHER = (ROOT / "quick.cmd").read_text()
+
+    def test_its_command_line_parses(self) -> None:
+        from scripts.dry_run_sections import build_parser
+
+        parsed = build_parser().parse_args(cmd_argv(self.LAUNCHER, **{"%DAYS%": "30"}))
+
+        assert parsed.days == 30
+        assert parsed.core is True
+        assert parsed.live_only is True
+        assert parsed.no_m1 is True
+
+    def test_it_takes_no_comma_arguments(self) -> None:
+        for line in self.LAUNCHER.splitlines():
+            if line.strip().startswith("set "):
+                assert "," not in line, line
+
+    def test_it_writes_to_its_own_csv(self) -> None:
+        """Sharing a filename with history.cmd would have a one-minute check
+        overwrite a six-hour measurement."""
+        assert "runtime\\quick.csv" in self.LAUNCHER
+        assert "runtime\\history.csv" not in self.LAUNCHER
+
+    def test_it_says_a_short_window_cannot_conclude(self) -> None:
+        """The whole risk of a fast launcher is that its number gets quoted as
+        an answer. It says so on screen, and the verdict block says so again."""
+        assert "NOT enough to conclude" in self.LAUNCHER
