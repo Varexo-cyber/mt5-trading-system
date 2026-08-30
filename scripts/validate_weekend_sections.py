@@ -182,9 +182,7 @@ def basket_enricher(
             minute = frames.get(Timeframe.M1)
             if minute is None or minute.empty:
                 continue
-            cut = int(
-                peer_close_times[other].searchsorted(pd.Timestamp(context.now), side="right")
-            )
+            cut = int(peer_close_times[other].searchsorted(pd.Timestamp(context.now), side="right"))
             if cut < move_bars + 1:
                 continue
             sample = minute.iloc[cut - (move_bars + 1) : cut]
@@ -239,10 +237,7 @@ def passed(row: Verdict) -> bool:
 
     profit_factor = float("inf") if row.profit_factor is None else row.profit_factor
     return (
-        row.trades >= 100
-        and row.expectancy_r >= 0.05
-        and profit_factor >= 1.10
-        and row.dsr >= 0.80
+        row.trades >= 100 and row.expectancy_r >= 0.05 and profit_factor >= 1.10 and row.dsr >= 0.80
     )
 
 
@@ -417,8 +412,7 @@ def main(argv: list[str] | None = None) -> int:
 
         for strategy in (item for item in STRATEGIES if item.module in selected_strategies):
             if any(
-                row.section == strategy.section and row.strategy == strategy.module
-                for row in rows
+                row.section == strategy.section and row.strategy == strategy.module for row in rows
             ):
                 print(
                     f"checkpoint: skipping section {strategy.section} / {strategy.module}",
@@ -450,9 +444,7 @@ def main(argv: list[str] | None = None) -> int:
                 decisions: Counter[str] = Counter()
                 firings: Counter[str] = Counter()
                 approvals: Counter[str] = Counter()
-                refusals: dict[str, Counter[str]] = {
-                    name: Counter() for name, _, _ in segments
-                }
+                refusals: dict[str, Counter[str]] = {name: Counter() for name, _, _ in segments}
                 for decided_at, spread, idea in replay.ideas(
                     symbol,
                     frames,
@@ -494,9 +486,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     per_segment_setups[name] += len(selected)
                     per_segment_returns[name].extend(trade.net_r for trade in result.trades)
-                    top_refusal = (
-                        refusals[name].most_common(1)[0][0] if refusals[name] else "-"
-                    )
+                    top_refusal = refusals[name].most_common(1)[0][0] if refusals[name] else "-"
                     diagnostics.append(
                         Diagnostic(
                             strategy.section,
@@ -556,16 +546,12 @@ def main(argv: list[str] | None = None) -> int:
                 selected = [order for order in orders if left <= order.decided_at < right]
                 minute = frames[Timeframe.M1]
                 segment_execution = minute[(minute.index >= left) & (minute.index < right)]
-                result = PessimisticBacktester().run_non_overlapping(
-                    segment_execution, selected
-                )
+                result = PessimisticBacktester().run_non_overlapping(segment_execution, selected)
                 lane_setups[name] += len(selected)
                 lane_returns[name].extend(trade.net_r for trade in result.trades)
         if lane_selected and not lane_complete:
             for name, _, _ in segments:
-                rows.append(
-                    summarise("6", "own_lane", name, lane_setups[name], lane_returns[name])
-                )
+                rows.append(summarise("6", "own_lane", name, lane_setups[name], lane_returns[name]))
             save_checkpoint(
                 checkpoint,
                 signature=signature,

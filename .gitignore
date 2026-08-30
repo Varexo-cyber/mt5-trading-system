@@ -47,3 +47,7 @@ reports/
 # Ten years of M15 bars used by scripts/measure_edges.py. 118 MB of public
 # HistData; the script header says how to refetch it.
 data/m15/
+
+# Research bars for scripts/lab (about 750 MB of public HistData).
+# scripts/lab/data.py says how to refetch them.
+data/research/

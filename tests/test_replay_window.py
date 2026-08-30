@@ -179,8 +179,7 @@ class TestTheDecisionClockIsTheStrategyClock:
 
         assert len(produced) == 100
         assert all(
-            right[0] - left[0] == Timeframe.M1.duration
-            for left, right in pairwise(produced)
+            right[0] - left[0] == Timeframe.M1.duration for left, right in pairwise(produced)
         )
 
     def test_m1_clock_uses_the_m1_quote_not_a_stale_m5_close(self) -> None:

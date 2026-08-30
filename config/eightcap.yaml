@@ -2021,6 +2021,24 @@ analysis:
     # De bereiktest vraagt al om de rekenkundige break-even reach rate. De extra
     # vaste drie procentpunten waren een tweede veiligheidsmarge bovenop spread-
     # en kostengates. Weg ermee; de marktmeting zelf blijft hard actief.
+    # SECTIE TWEE HANDELT OP 1:1, DE REST BLIJFT OP 3,0.
+    #
+    # `impulse_retest` is op elke verhouding van 0,75 tot 3,0 gemeten en zijn
+    # optimum is 1:1. Dat is geen smaak, het is de curve:
+    #
+    #     0,75R  +0,245      1,5R  +0,176
+    #     1,00R  +0,279      2,0R  +0,081
+    #     1,25R  +0,235      3,0R  +0,016
+    #
+    # De edge zit in een hoge trefkans vlak bij het niveau, niet in een lange
+    # loop. Hem onder de 3,0 van deze rekening versturen maakt van +0,28R een
+    # strategie die bijna niks doet.
+    #
+    # 1:1 is bovendien het punt waar de meetbias van de opstelling zelf nul is
+    # (-0,002R tegen +0,073R op 3:1), dus dit is ook het minst besmette getal
+    # op de hele curve.
+    target_r_multiple_by_family:
+      impulse_retest: 1.0
     target_reach_margin_pct: 0.0
     # Van 20% naar 25% van de stop. Quick/intraday-plannen hebben kleinere
     # stops en raakten hierdoor eerder de grens, zelfs wanneer de spread binnen
@@ -2367,7 +2385,7 @@ analysis:
     # `setup_lifecycle`-wijziging die breakout-families naar hun niveau laat
     # terugkomen blijft dus, want die kiest tussen twee instappen. Wat vervalt
     # is de claim dat dit op zichzelf geld verdient.
-    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum]
+    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum, impulse_retest]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2580,6 +2598,24 @@ analysis:
       # en goud, niet op de feed van Eightcap en niet op indices. Dat is het
       # ene stuk dat nog niet vaststaat, en `section_breakers` staat eronder.
       level_retest: 1.0
+
+      # SECTIE TWEE, EN HET ENIGE GEWICHT HIER DAT UIT EEN GEMETEN STRATEGIE
+      # KOMT DIE OOK NA KOSTEN OVERBLIJFT.
+      #
+      # Vierennegentig detectoren over zestien markten en zes timeframes.
+      # Overleefd: een Bonferroni-lat over het hele rooster, een holdout die
+      # zelfstandig moest kloppen, een sigma geclusterd per dag, en een
+      # muntworp-controle die NIET op nul uitkwam en er dus af moest.
+      #
+      #     M15   18.828 trades   68% raak   +0,279R netto  (tr +0,272/te +0,285)
+      #     H1     5.235 trades   68% raak   +0,281R netto  (tr +0,276/te +0,284)
+      #
+      # Elf jaar, elf keer positief, van +0,181R tot +0,394R.
+      #
+      # 1,2 en dus het zwaarste gewicht op de rekening: hij is het enige
+      # verhaal hier met een out-of-sample cijfer, en hij hoort zwaarder te
+      # wegen dan negen lezers die dezelfde prijsvorm bekijken.
+      impulse_retest: 1.2
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3434,6 +3470,21 @@ risk:
       minimum_trades: 40
       maximum_loss_share: 0.65
       losing_streak: 10
+
+    # IMPULSE_RETEST. Verwacht 68% raak op 1:1, dus 32% verliezers.
+    #
+    # 45% verliezers over veertig trades is ongeveer vier sigma de verkeerde
+    # kant op bij die verwachting. Dat is geen pech meer maar een meting die
+    # op deze feed niet geldt -- en dat is precies het ene stuk dat nog niet
+    # vaststaat: HistData M15 bid-bars kennen de spread van Eightcap niet.
+    #
+    # De streak staat op 8 en niet hoger: bij 32% verliezers is acht op rij
+    # een kans van 1 op 9.000. Als dat gebeurt klopt er iets niet.
+    impulse_retest:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.45
+      losing_streak: 8
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde
