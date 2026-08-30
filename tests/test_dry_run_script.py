@@ -1384,3 +1384,84 @@ class TestTheRunSaysWhatItIsDoing:
         header = SOURCE.index("DRY RUN — measuring")
 
         assert passes_built < header
+
+
+class TestAShadowedSectionCanActuallyVote:
+    """`history-one.cmd impulse_retest 180` returned ZERO trades on all
+    sixteen markets, and nothing was wrong with the detector.
+
+    `ConfluenceConfig.effective_weights` forces every module absent from
+    `live_enabled_modules` to weight zero when the mode is live. That is
+    correct -- it is what stops a switched-off section spending money. This
+    script evaluates in MICRO_LIVE, so `impulse_retest` entered every pass at
+    weight zero, failed `if weight > 0`, and every bar came back "no weighted
+    directional evidence".
+
+    I FIXED THIS TWICE AT THE WRONG LEVEL FIRST. Keeping the module's weight
+    in the config did nothing. Sweeping every known module instead of only the
+    live ones did nothing. Both were necessary; neither was sufficient,
+    because the engine zeroes the weight one layer below both. Three attempts
+    at one defect, and the first two produced a confident-looking run whose
+    every number was zero.
+    """
+
+    def _settings(self):
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+    def test_the_measured_section_carries_its_weight_in_its_own_pass(self) -> None:
+        from config.schema import TradingMode
+        from scripts.dry_run_sections import _retimed
+
+        tuned = _retimed(self._settings(), "impulse_retest", "M15")
+        weights = tuned.analysis.confluence.effective_weights(TradingMode.MICRO_LIVE)
+
+        assert weights.get("impulse_retest", 0.0) > 0.0
+
+    def test_without_the_grant_it_would_be_zero(self) -> None:
+        """The half that was missing, stated as its own assertion so the fix
+        cannot be quietly undone."""
+        from config.schema import TradingMode
+
+        settings = self._settings()
+        weights = settings.analysis.confluence.effective_weights(TradingMode.MICRO_LIVE)
+
+        assert "impulse_retest" not in settings.analysis.confluence.live_enabled_modules
+        assert weights.get("impulse_retest", 0.0) == 0.0
+
+    def test_measuring_a_section_does_not_make_it_live(self) -> None:
+        """THE LINE THAT MUST NOT BE CROSSED. The grant lives on a settings
+        COPY used only by the measurement; the account's own allowlist is
+        untouched, and no broker ever sees the copy."""
+        from scripts.dry_run_sections import _retimed
+
+        settings = self._settings()
+        before = tuple(settings.analysis.confluence.live_enabled_modules)
+
+        _retimed(settings, "impulse_retest", "M15")
+
+        assert tuple(settings.analysis.confluence.live_enabled_modules) == before
+        assert "impulse_retest" not in before
+
+    def test_the_grant_is_additive_not_a_replacement(self) -> None:
+        """Replacing the list would silence order_block in impulse_retest's
+        pass, which changes what the confluence sees."""
+        from scripts.dry_run_sections import _retimed
+
+        tuned = _retimed(self._settings(), "impulse_retest", "M15")
+        allowed = set(tuned.analysis.confluence.live_enabled_modules)
+
+        assert {"impulse_retest", "order_block"} <= allowed
+
+    def test_a_live_section_is_unchanged_by_the_grant(self) -> None:
+        from scripts.dry_run_sections import _retimed
+
+        settings = self._settings()
+        tuned = _retimed(settings, "order_block", "M30")
+
+        assert set(tuned.analysis.confluence.live_enabled_modules) == set(
+            settings.analysis.confluence.live_enabled_modules
+        )

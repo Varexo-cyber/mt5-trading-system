@@ -504,13 +504,41 @@ def _under_the_slot_cap(trades: list[Decision], slots: int) -> list[Decision]:
 
 
 def _retimed(settings, module_name: str, timeframe: str):
-    """The same settings with one section moved to another timeframe."""
+    """One section, moved to one clock, and ALLOWED TO VOTE.
+
+    THE SHADOW MEASUREMENT WAS STRUCTURALLY IMPOSSIBLE WITHOUT THE SECOND
+    HALF, and it took three attempts to reach the actual cause.
+
+    `ConfluenceConfig.effective_weights` forces every module absent from
+    `live_enabled_modules` to weight ZERO whenever the mode is live -- which is
+    correct, and is exactly what stops a switched-off section spending money.
+    This script evaluates in MICRO_LIVE. So `impulse_retest`, switched off on
+    30 August, entered every pass at weight zero, failed
+    `if weight > 0`, and every single bar came back "no weighted directional
+    evidence". Sixteen markets, 180 days, zero trades, and nothing wrong with
+    the detector.
+
+    I had already "fixed" this twice at the wrong level: first by keeping the
+    module's weight in the config, then by sweeping every known module rather
+    than only the live ones. Both were necessary and neither was sufficient,
+    because the engine zeroes the weight one layer below both.
+
+    So a pass measuring a section grants that section permission -- on a COPY
+    of the settings that exists only for the measurement and is never handed to
+    a broker. The live allowlist in `config/eightcap.yaml` is untouched, which
+    `test_measuring_a_section_does_not_make_it_live` checks.
+    """
     analysis = settings.analysis
     section = getattr(analysis, module_name)
+    confluence = analysis.confluence
+    allowed = tuple(dict.fromkeys((*confluence.live_enabled_modules, module_name)))
     return settings.model_copy(
         update={
             "analysis": analysis.model_copy(
-                update={module_name: section.model_copy(update={"timeframe": timeframe})}
+                update={
+                    module_name: section.model_copy(update={"timeframe": timeframe}),
+                    "confluence": confluence.model_copy(update={"live_enabled_modules": allowed}),
+                }
             )
         }
     )
