@@ -30,6 +30,28 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = (ROOT / "scripts" / "dry_run_sections.py").read_text()
 
 
+def cmd_argv(launcher: str, **values: str) -> list[str]:
+    """The argv a .cmd file actually hands the script, given its variables.
+
+    Two cmd behaviours matter and both have bitten this script. Arguments are
+    split on whitespace AND on commas, and an EMPTY variable expands to nothing
+    at all rather than to an empty argument -- so `%SCOPE%` unset removes the
+    word entirely instead of passing "".
+
+    Every launcher test goes through here, so adding a variable to a .cmd file
+    without teaching the tests about it fails loudly instead of leaving a
+    `%SCOPE%` literal to be silently accepted as a filename.
+    """
+    line = next(ln for ln in launcher.splitlines() if "scripts.dry_run_sections" in ln)
+    argv: list[str] = []
+    for token in line.split("scripts.dry_run_sections", 1)[1].split():
+        if token.startswith("%") and token.endswith("%"):
+            assert token in values, f"the launcher uses {token} and this test does not set it"
+            token = values[token]
+        argv.extend(piece for piece in token.split(",") if piece)
+    return argv
+
+
 class TestItCallsTheRealApi:
     def test_the_connector_gets_the_settings_block_first(self) -> None:
         """`MT5Connector(config, credentials, ...)`. Passing only credentials
@@ -162,15 +184,13 @@ class TestTheLauncherSurvivesCmd:
         """
         from scripts.dry_run_sections import build_parser
 
-        line = next(ln for ln in self.LAUNCHER.splitlines() if "scripts.dry_run_sections" in ln)
-        flags = line.split("scripts.dry_run_sections", 1)[1].split()
-        # Substitute the batch variables the way cmd would.
-        argv = [{"%DAYS%": "7", "%LIMIT%": "40"}.get(token, token) for token in flags]
+        argv = cmd_argv(self.LAUNCHER, **{"%DAYS%": "7", "%LIMIT%": "40", "%SCOPE%": ""})
 
         parsed = build_parser().parse_args(argv)
 
         assert parsed.days == 7
         assert parsed.limit == 40
+        assert parsed.core is False
         assert parsed.sweep == ["M5", "M15", "M30", "H1", "H4"]
 
     def test_every_flag_the_code_reads_is_a_flag_the_parser_defines(self) -> None:
@@ -332,15 +352,22 @@ class TestTheLiveOnlyLauncher:
     def test_its_command_line_parses(self) -> None:
         from scripts.dry_run_sections import build_parser
 
-        line = next(ln for ln in self.LAUNCHER.splitlines() if "scripts.dry_run_sections" in ln)
-        flags = line.split("scripts.dry_run_sections", 1)[1].split()
-        argv = [{"%DAYS%": "30"}.get(token, token) for token in flags]
+        # Both forms the launcher can emit: the default core run, and the
+        # "all" run where %SCOPE% expands to nothing.
+        core = build_parser().parse_args(
+            cmd_argv(self.LAUNCHER, **{"%DAYS%": "30", "%SCOPE%": "--core"})
+        )
 
-        parsed = build_parser().parse_args(argv)
+        assert core.days == 30
+        assert core.live_only is True
+        assert core.core is True
+        assert core.sweep == []
 
-        assert parsed.days == 30
-        assert parsed.live_only is True
-        assert parsed.sweep == []
+        every = build_parser().parse_args(cmd_argv(self.LAUNCHER, **{"%DAYS%": "7", "%SCOPE%": ""}))
+
+        assert every.days == 7
+        assert every.live_only is True
+        assert every.core is False
 
     def test_it_takes_no_comma_arguments(self) -> None:
         for line in self.LAUNCHER.splitlines():
@@ -350,3 +377,116 @@ class TestTheLiveOnlyLauncher:
     def test_live_only_beats_a_sweep_that_is_also_present(self) -> None:
         """Otherwise the flag is advisory and the run costs what it always did."""
         assert "if args.live_only:\n            args.sweep = []" in SOURCE
+
+
+class TestTheCoreUniverse:
+    """232 symbols x 5 clocks x M1 history is a run that does not get run.
+
+    And the cut is not arbitrary. Both sections were chosen, tuned and
+    holdout-tested on eleven FX majors and gold; every other market in the
+    catalogue is an extrapolation, so most of that time was spent on markets
+    that cannot confirm or refute the finding.
+    """
+
+    def test_it_is_the_set_the_research_used(self) -> None:
+        from scripts.dry_run_sections import CORE_UNIVERSE
+
+        majors = {
+            "EURUSD",
+            "GBPUSD",
+            "USDJPY",
+            "USDCHF",
+            "USDCAD",
+            "AUDUSD",
+            "NZDUSD",
+            "EURGBP",
+            "EURJPY",
+            "GBPJPY",
+            "EURCHF",
+        }
+
+        assert majors <= set(CORE_UNIVERSE)
+        assert "XAUUSD" in CORE_UNIVERSE, "gold is shipped with its own stop and must be measured"
+        assert len(CORE_UNIVERSE) <= 20, "the point of this list is that it is short"
+
+    def test_it_matches_a_broker_that_decorates_its_symbol_names(self) -> None:
+        """Suffixes for account type, a dot, a trailing m for micro. Matching
+        the literal string would return an EMPTY list on such a broker, and an
+        empty list reads as "no setups" rather than "no symbols" -- which is
+        this run's signature failure in another costume."""
+        from types import SimpleNamespace
+
+        from scripts.dry_run_sections import _core_universe
+
+        catalogue = [
+            SimpleNamespace(name=name, path=f"forex\\{name}")
+            for name in ("EURUSD.r", "GBPUSD.r", "XAUUSD.r", "US30.r", "EURUSDX", "NOTAPAIR")
+        ]
+        connector = SimpleNamespace(symbols=lambda: catalogue)
+        settings = SimpleNamespace(instruments=SimpleNamespace(is_ignored=lambda _n: False))
+
+        found = _core_universe(connector, settings)
+
+        assert "EURUSD.r" in found
+        assert "XAUUSD.r" in found
+        assert "NOTAPAIR" not in found
+
+    def test_the_exact_base_beats_a_longer_lookalike(self) -> None:
+        """EURUSD must not match EURUSDX when EURUSD itself is on the books."""
+        from types import SimpleNamespace
+
+        from scripts.dry_run_sections import _core_universe
+
+        catalogue = [
+            SimpleNamespace(name=name, path="forex\\majors")
+            for name in ("EURUSDX", "EURUSD", "EURUSD.pro")
+        ]
+        connector = SimpleNamespace(symbols=lambda: catalogue)
+        settings = SimpleNamespace(instruments=SimpleNamespace(is_ignored=lambda _n: False))
+
+        assert "EURUSD" in _core_universe(connector, settings)
+
+    def test_it_honours_the_ignore_list(self) -> None:
+        from types import SimpleNamespace
+
+        from scripts.dry_run_sections import _core_universe
+
+        catalogue = [SimpleNamespace(name="EURUSD", path="forex\\majors")]
+        connector = SimpleNamespace(symbols=lambda: catalogue)
+        settings = SimpleNamespace(instruments=SimpleNamespace(is_ignored=lambda n: n == "EURUSD"))
+
+        assert _core_universe(connector, settings) == []
+
+    def test_both_launchers_offer_it_and_both_command_lines_parse(self) -> None:
+        """The flag has to survive cmd, which is where every previous version
+        of this died."""
+        from scripts.dry_run_sections import build_parser
+
+        fast = build_parser().parse_args(
+            cmd_argv(
+                (ROOT / "dryrun-live.cmd").read_text(),
+                **{"%DAYS%": "7", "%SCOPE%": "--core"},
+            )
+        )
+
+        assert fast.core is True and fast.live_only is True and fast.days == 7
+
+        sweep = build_parser().parse_args(
+            cmd_argv(
+                (ROOT / "dryrun.cmd").read_text(),
+                **{"%DAYS%": "7", "%LIMIT%": "0", "%SCOPE%": "--core"},
+            )
+        )
+
+        assert sweep.core is True and sweep.sweep == ["M5", "M15", "M30", "H1", "H4"]
+
+    def test_an_empty_scope_variable_still_parses(self) -> None:
+        """cmd expands an unset variable to nothing, so the flagless form is
+        the OTHER command line each launcher can emit."""
+        from scripts.dry_run_sections import build_parser
+
+        parsed = build_parser().parse_args(
+            ["--days", "7", "--limit", "0", "--sweep", "M5", "--csv", "x.csv"]
+        )
+
+        assert parsed.core is False

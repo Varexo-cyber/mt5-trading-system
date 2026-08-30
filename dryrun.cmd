@@ -26,10 +26,15 @@ echo    - the news blackout is not replayed, so this is an UPPER BOUND
 echo.
 echo  MT5 must be running and logged in.
 echo.
-echo  USAGE -- plain numbers only
-echo    dryrun.cmd            7 days, every market
-echo    dryrun.cmd 30         30 days, every market
-echo    dryrun.cmd 7 40       7 days, first 40 markets only (quick look)
+echo  THIS ONE IS SLOW ON PURPOSE. Ten section/clock combinations over the
+echo  whole catalogue is hours of work. If you want "would I have made money",
+echo  run dryrun-live.cmd instead -- sixteen markets, two passes, minutes.
+echo.
+echo  USAGE -- plain words, no commas
+echo    dryrun.cmd            every market, 7 days     (hours)
+echo    dryrun.cmd 7 core     core markets, 7 days     (minutes)
+echo    dryrun.cmd 30 core    core markets, 30 days
+echo    dryrun.cmd 7 40       first 40 markets only
 echo.
 
 rem ARGUMENTS ARE PLAIN NUMBERS, and that is deliberate.
@@ -45,10 +50,16 @@ rem below and the only things anyone types are two numbers.
 set DAYS=%1
 if "%DAYS%"=="" set DAYS=7
 set LIMIT=%2
+set SCOPE=
+if /i "%2"=="core" (set SCOPE=--core& set LIMIT=0)
 if "%LIMIT%"=="" set LIMIT=0
 
 echo  Window: last %DAYS% days
-if "%LIMIT%"=="0" (echo  Markets: the whole scan universe) else (echo  Markets: first %LIMIT% only)
+if defined SCOPE (
+  echo  Markets: the core set -- the eleven majors, gold, four indices
+) else (
+  if "%LIMIT%"=="0" (echo  Markets: the whole scan universe) else (echo  Markets: first %LIMIT% only)
+)
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (
@@ -59,7 +70,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --limit %LIMIT% --sweep M5 M15 M30 H1 H4 --csv runtime\dryrun.csv
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --limit %LIMIT% %SCOPE% --sweep M5 M15 M30 H1 H4 --csv runtime\dryrun.csv
 
 if errorlevel 1 (
   echo.

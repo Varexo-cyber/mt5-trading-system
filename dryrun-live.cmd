@@ -9,29 +9,31 @@ echo  ============================================
 echo.
 echo  impulse_retest on M15 and order_block on M30 -- their own clocks, nothing
 echo  else. One position per symbol. The account's own concurrent-position cap.
+echo  Plus: what the break-even rule costs or earns, on the same trades.
 echo.
-echo  This is the number that answers "would I have made money". dryrun.cmd
-echo  answers a different question: which CLOCK is best on this broker's feed,
-echo  and to do that it runs ten combinations that will never run together.
+echo  SIXTEEN MARKETS, NOT 232. The eleven FX majors the research was done on,
+echo  gold, and four index CFDs. Every other market in the catalogue is an
+echo  extrapolation -- measuring them cannot confirm or refute the finding, and
+echo  it makes the run take all night.
 echo.
-echo  One fifth of the work, so a month over the whole catalogue finishes.
+echo  Roughly a fifteenth of the work of a full sweep.
 echo.
 echo  MT5 must be running and logged in.
 echo.
-echo  USAGE -- one plain number
-echo    dryrun-live.cmd          7 days
-echo    dryrun-live.cmd 30       30 days
+echo  USAGE
+echo    dryrun-live.cmd            7 days, core markets
+echo    dryrun-live.cmd 30         30 days, core markets
+echo    dryrun-live.cmd 7 all      7 days, EVERY market  (slow)
 echo.
 
-rem PLAIN NUMBERS ONLY. cmd splits arguments on commas, so a timeframe list
+rem PLAIN WORDS ONLY, NO COMMAS. cmd splits arguments on commas, so a list
 rem typed at the prompt loses the rest of the command line before the script
-rem is ever called. Nothing here is a list.
+rem is ever called.
 
 set DAYS=%1
 if "%DAYS%"=="" set DAYS=7
-
-echo  Window: last %DAYS% days, every market in the scan universe
-echo.
+set SCOPE=--core
+if /i "%2"=="all" set SCOPE=
 
 if not exist ".venv-live\Scripts\python.exe" (
   echo  ERROR: .venv-live\Scripts\python.exe not found. Run update.cmd first.
@@ -41,7 +43,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --live-only --csv runtime\dryrun-live.csv
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% %SCOPE% --live-only --csv runtime\dryrun-live.csv
 
 if errorlevel 1 (
   echo.

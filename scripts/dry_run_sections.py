@@ -306,6 +306,89 @@ def _one_pass(
     return decisions
 
 
+#: The markets worth measuring first, and the reason is not "the big ones".
+#:
+#: THE RESEARCH WAS DONE ON ELEVEN FX MAJORS. Both sections were chosen, tuned
+#: and holdout-tested on those and on gold; every other market in the broker's
+#: catalogue is an extrapolation. A 232-symbol run spends most of its time
+#: measuring markets that cannot confirm or refute the finding, and it takes
+#: long enough that it does not get run.
+#:
+#: So this is the confirmation set: the instruments the numbers came from,
+#: plus the four index CFDs with enough volume that a spread assumption is
+#: defensible on them. Sixteen markets against 232 is roughly a fifteenth of
+#: the work.
+CORE_UNIVERSE: tuple[str, ...] = (
+    # The eleven the research measured.
+    "EURUSD",
+    "GBPUSD",
+    "USDJPY",
+    "USDCHF",
+    "USDCAD",
+    "AUDUSD",
+    "NZDUSD",
+    "EURGBP",
+    "EURJPY",
+    "GBPJPY",
+    "EURCHF",
+    # Measured separately, and shipped with its own wider stop.
+    "XAUUSD",
+    # Not measured. Included because they are where the volume is and because
+    # the sweep needs SOMETHING outside the training set to disagree with.
+    "US30",
+    "NDX100",
+    "SPX500",
+    "GER40",
+)
+
+
+def _core_universe(connector, settings) -> list[str]:
+    """`CORE_UNIVERSE` as this broker actually spells it.
+
+    Brokers decorate symbol names -- suffixes for account type, a dot, a
+    trailing `m` for micro. Matching the literal string would silently return
+    an empty list on a broker that appends anything at all, and an empty list
+    reads as "no setups" rather than as "no symbols", which is the failure this
+    run keeps producing in other forms.
+    """
+
+    def base(name: str) -> str:
+        return "".join(ch for ch in name.upper() if ch.isalnum())
+
+    catalogue = [
+        item.name for item in connector.symbols() if not settings.instruments.is_ignored(item.name)
+    ]
+
+    def rank(name: str, key: str) -> tuple[int, int]:
+        """Lower is a better match.
+
+        Shortest-name-wins is NOT good enough and the counterexample is real:
+        against `EURUSD`, the decorated `EURUSD.r` is EIGHT characters and the
+        unrelated `EURUSDX` is seven, so length alone picks the wrong market
+        and does it silently.
+
+        What separates them is what FOLLOWS the key in the undecorated name: a
+        broker's decoration starts with a separator (`.`, `-`, `_`, a space),
+        another instrument's name continues with a letter.
+        """
+        if base(name) == key:
+            return (0, len(name))
+        tail = name.upper().replace(key, "", 1) if key in name.upper() else ""
+        separated = bool(tail) and not tail[0].isalnum()
+        return (1 if separated else 2, len(name))
+
+    found: list[str] = []
+    for wanted in CORE_UNIVERSE:
+        key = base(wanted)
+        matches = sorted(
+            (name for name in catalogue if base(name).startswith(key)),
+            key=lambda name: rank(name, key),
+        )
+        if matches:
+            found.append(matches[0])
+    return found
+
+
 def _break_even_rule(settings) -> tuple[float, float] | None:
     """`(trigger_r, offset_r)` for the break-even move, or None if it is off.
 
@@ -425,6 +508,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip M1 history (much faster on a large universe; coarser resolution)",
     )
     parser.add_argument(
+        "--core",
+        action="store_true",
+        help=(
+            "only the markets the research was done on -- eleven FX majors, gold, "
+            "and four index CFDs. Sixteen instead of 232, and they are the ones "
+            "that can actually confirm or refute the finding."
+        ),
+    )
+    parser.add_argument(
         "--live-only",
         action="store_true",
         help=(
@@ -477,6 +569,9 @@ def main() -> None:
         # scans a couple of hundred.
         if args.symbols:
             symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        elif args.core:
+            symbols = _core_universe(connector, settings)
+            print(f"core universe: {len(symbols)} markets -- {', '.join(symbols)}")
         else:
             # The scanner's OWN classifier, not an approximation of it. A
             # substring match on the folder name would quietly disagree with
