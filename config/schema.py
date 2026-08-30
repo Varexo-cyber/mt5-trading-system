@@ -3657,6 +3657,32 @@ class ConfluenceConfig(Base):
     #: refused, on both gates.
     entry_timing_max_adverse_atr: float = Field(default=1.00, gt=0.0, le=5.0)
 
+    #: Setup families the timing gate above may not judge, because for them the
+    #: adverse move IS the setup.
+    #:
+    #: A break-retest buys the level precisely because price came back to it.
+    #: `_entry_timing_conflict` refuses entries the immediate price action is
+    #: moving against, so for these families it refuses every valid entry there
+    #: is -- and it did. Seven days on the live feed, eleven FX majors:
+    #: `impulse_retest` formed 52 signals, 0.76 per pair per day against the
+    #: 0.62 measured over eleven years of research. The account took NONE of
+    #: them.
+    #:
+    #: The arithmetic is not marginal. The gate allows 1.0 ATR of adverse
+    #: travel over six closed bars, measured in the entry timeframe's own ATR
+    #: (M5). A retest's pullback is one M15 ATR by construction and an M15 ATR
+    #: is about 1.7 M5 ATRs, so every qualifying retest is over the limit
+    #: before it is looked at, and a MORE decisive break is further over.
+    #:
+    #: Raising the limit is the wrong repair: it would loosen the gate for the
+    #: trend entries it was written for, where eleven of the first twelve paid
+    #: reviews vetoed exactly this and were right. The distinction is the setup,
+    #: not the threshold.
+    #:
+    #: Matched on substring against `setup_family`, the same way
+    #: `target_r_multiple_by_family` is.
+    entry_timing_exempt_families: tuple[str, ...] = ()
+
     #: Higher timeframes checked for an established trend the trade would be
     #: taken straight into. There was a timing gate below the bias and nothing
     #: above it, so shorts were proposed on indices in multi-week uptrends that

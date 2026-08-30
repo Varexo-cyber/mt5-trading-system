@@ -2044,6 +2044,29 @@ analysis:
       # +0,172R, 1,5R geeft +0,099R. Allebei leunen ze op een lokale voorraad
       # orders, en die is snel op.
       order_block: 1.0
+    # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
+    #
+    # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
+    # terugval IS de setup. `_entry_timing_conflict` weigert een entry waar de
+    # directe prijsactie tegenin gaat, en voor deze twee families is dat elke
+    # geldige entry die er bestaat.
+    #
+    # Gemeten op de live feed, 30 augustus, zeven dagen, elf FX-majors:
+    # impulse_retest vormde 52 signalen, 0,76 per pair per dag tegen de 0,62
+    # die het onderzoek over elf jaar mat. De detector doet het dus precies
+    # zoals gemeten. De rekening nam er NUL van.
+    #
+    # De rekensom is niet krap. De poort staat 1,0 ATR tegenbeweging toe over
+    # zes gesloten bars, gemeten in de ATR van het ENTRY-timeframe (M5). De
+    # terugval van een retest is per definitie een M15-ATR, en een M15-ATR is
+    # ongeveer 1,7 M5-ATR. Elke kwalificerende retest komt dus al over de grens
+    # binnen, en hoe decisiever de break hoe verder erover.
+    #
+    # De grens verhogen is de verkeerde reparatie: dat verslapt de poort ook
+    # voor de trend-entries waar hij voor geschreven is, en waar elf van de
+    # eerste twaalf betaalde reviews precies dit vetoden en gelijk hadden. Het
+    # onderscheid zit in de setup, niet in de drempel.
+    entry_timing_exempt_families: [impulse_retest, order_block]
     target_reach_margin_pct: 0.0
     # Van 20% naar 25% van de stop. Quick/intraday-plannen hebben kleinere
     # stops en raakten hierdoor eerder de grens, zelfs wanneer de spread binnen

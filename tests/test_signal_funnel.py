@@ -149,3 +149,38 @@ class TestItDoesNotDivideByZero:
         assert funnel.bars == 0
         # `_print` guards on `of` being zero; exercise the same arithmetic.
         assert (funnel.broke / funnel.bars if funnel.bars else 0.0) == pytest.approx(0.0)
+
+
+class TestTheTouchCounterCountsBars:
+    """`touched_intrabar` is compared against `fired`, and `fired` counts BARS.
+
+    It incremented inside the candidate loop, so a bar sitting near three live
+    levels scored three touches against one possible fire. The ratio between
+    those two numbers is the entire measurement -- it is the estimate of how
+    much a resting limit order would catch that a once-per-bar check does not
+    -- so counting them on different units made the headline figure wrong. The
+    first output read 411 touches against 79 fires.
+    """
+
+    def test_it_can_never_exceed_the_bar_count(self) -> None:
+        frame = _flat()
+        # Several overlapping breaks, so more than one level is live at once.
+        frame.iloc[250:260, :] += 1.5
+        frame.iloc[260:270, :] += 2.5
+        frame.iloc[270:280, :] += 3.5
+        frame.iloc[280:340, :] += 1.0
+
+        funnel = _walk(frame, _config())
+
+        assert funnel.touched_intrabar <= funnel.bars
+        assert funnel.touched_intrabar <= funnel.right_side
+
+    def test_it_is_accumulated_once_per_bar(self) -> None:
+        import inspect
+
+        from scripts import signal_funnel
+
+        source = inspect.getsource(signal_funnel._walk)
+
+        assert "funnel.touched_intrabar += 1" not in source, "counted per level, not per bar"
+        assert "funnel.touched_intrabar += saw_touch" in source

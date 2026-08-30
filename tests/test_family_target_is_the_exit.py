@@ -224,3 +224,108 @@ class TestBothLiveSectionsArePlannedOnAFastClock:
 
         assert profile.minimum_htf_conflicts >= 2
         assert "W1" not in profile.htf_trend_timeframes
+
+
+class TestTheTimingGateDoesNotRefuseTheRetestItself:
+    """FINDING SIX, and the one that actually cost every FX trade.
+
+    Seven days on the live feed, eleven FX majors, measured by
+    `scripts/signal_funnel.py`:
+
+        impulse_retest formed 52 signals
+        0.76 per pair per day, against the 0.62 the research measured
+        over eleven years and 18,828 trades
+
+    The detector is fine. The setups are there, at the rate the research says.
+    The account took ZERO of them.
+
+    `_entry_timing_conflict` refuses an entry the immediate price action is
+    moving against. A break-retest buys the level BECAUSE price came back to
+    it, so the adverse move IS the setup and the gate refuses every valid entry
+    the strategy has.
+
+    And it is not marginal. The gate allows 1.0 ATR of adverse travel over six
+    closed bars in the ENTRY timeframe's ATR -- M5. A retest's pullback is one
+    M15 ATR by construction, and an M15 ATR is roughly 1.7 M5 ATRs. Every
+    qualifying retest is over the limit before it is looked at.
+    """
+
+    def _confluence(self):
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.confluence
+
+    def test_both_live_families_are_exempt(self) -> None:
+        confluence = self._confluence()
+
+        for module in confluence.live_enabled_modules:
+            assert any(
+                family in module for family in confluence.entry_timing_exempt_families
+            ), f"{module} is still judged by the timing gate that refuses its own mechanism"
+
+    def test_the_base_config_exempts_nobody(self) -> None:
+        """The gate stays fully armed for every other account and every other
+        setup. This is a carve-out for two measured families, not a loosening."""
+        assert (
+            load_settings(env_overrides=False).analysis.confluence.entry_timing_exempt_families
+            == ()
+        )
+
+    def test_the_threshold_itself_is_untouched(self) -> None:
+        """Raising `entry_timing_max_adverse_atr` would have been the wrong
+        repair: it loosens the gate for the trend entries it was written for,
+        where eleven of the first twelve paid reviews vetoed exactly this and
+        were right."""
+        assert self._confluence().entry_timing_max_adverse_atr == pytest.approx(1.0)
+
+    def test_an_exempt_family_survives_a_pullback_that_refuses_everyone_else(self) -> None:
+        """THE BEHAVIOUR, not the config. Same market, same direction, same
+        adverse move -- refused for an ordinary family, allowed for a retest."""
+        confluence = self._confluence()
+        engine = ConfluenceEngine([], confluence)
+        profile = confluence.horizon_profiles["intraday"]
+
+        # A hard pullback on the fast clocks: price falling into a long.
+        #
+        # The slope has to beat `entry_timing_max_adverse_atr` measured in the
+        # frame's OWN ATR, and a first draft did not: a 0.0050 drift over sixty
+        # bars against a 0.0010 bar range is 0.5 ATR over six bars, under the
+        # 1.0 limit. The assert below exists because that fixture proved
+        # nothing while looking like it proved everything.
+        bars = 60
+        index = pd.date_range("2026-01-01", periods=bars, freq="5min", tz="UTC")
+        close = pd.Series(np.linspace(1.1200, 1.1000, bars), index=index)
+        frame = pd.DataFrame(
+            {"open": close, "high": close + 0.00005, "low": close - 0.00005, "close": close},
+            index=index,
+        )
+        when = index[-1]
+        series = {tf: Series("EURUSD", tf, frame, when) for tf in (Timeframe.M5, Timeframe.M1)}
+        ctx = MarketContext("EURUSD", when, series, Tick("EURUSD", when, 1.1000, 1.1000))
+
+        verdict = engine._entry_timing_conflict(
+            ctx, Direction.LONG, timeframes=profile.entry_timing_timeframes
+        )
+
+        assert verdict is not None, "the fixture must be adverse or this test proves nothing"
+        assert "moving against" in verdict
+
+        # ...and the engine skips that check entirely for an exempt family.
+        exempt = any(f in "impulse_retest_m15" for f in confluence.entry_timing_exempt_families)
+        ordinary = any(f in "trend_momentum_swing" for f in confluence.entry_timing_exempt_families)
+
+        assert exempt is True
+        assert ordinary is False
+
+    def test_the_exemption_is_wired_into_evaluate(self) -> None:
+        """A config nothing reads is this account's signature defect, and
+        `target_r_multiple_by_family` already shipped that way once -- correct,
+        documented, tested by substring, and never consulted on the live path."""
+        import inspect
+
+        from analysis import confluence as module
+
+        source = " ".join(inspect.getsource(module.ConfluenceEngine.evaluate).split())
+
+        assert "self.config.entry_timing_exempt_families" in source
+        assert "if exempt" in source
