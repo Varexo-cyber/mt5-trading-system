@@ -1036,10 +1036,6 @@ def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -
     print(f"{'-' * 78}\n")
 
 
-if __name__ == "__main__":
-    main()
-
-
 def _silence_report(decisions: list[Decision]) -> None:
     """WHICH MARKETS SAID NOTHING, and whether the module or a gate silenced them.
 
@@ -1101,3 +1097,7 @@ def _silence_report(decisions: list[Decision]) -> None:
             "\n   If those are the markets the strategy was MEASURED on, this run has"
             "\n   not tested the strategy -- it has tested an extrapolation of it."
         )
+
+
+if __name__ == "__main__":
+    main()
