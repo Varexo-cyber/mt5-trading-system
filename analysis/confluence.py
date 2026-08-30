@@ -396,8 +396,37 @@ class ConfluenceEngine:
         if against_the_tide is not None:
             return self._reject(ctx, signals, against_the_tide, score, confidence)
 
-        adverse = self._entry_timing_conflict(
-            ctx, direction, timeframes=profile.entry_timing_timeframes
+        # THE GATE THAT REFUSED THE STRATEGY'S OWN MECHANISM.
+        #
+        # A break-retest buys the level BECAUSE price came back to it. The
+        # pullback IS the setup. `_entry_timing_conflict` refuses an entry the
+        # immediate price action is moving against -- which, for these two
+        # families, is every valid entry there is.
+        #
+        # Measured on the live feed, 30 August, seven days, eleven FX majors:
+        # `impulse_retest` formed 52 signals, 0.76 per pair per day against the
+        # 0.62 the research measured over eleven years. THE DETECTOR IS FINE
+        # AND THE SETUPS ARE THERE. The account took zero of them.
+        #
+        # The arithmetic is not close either. The gate allows 1.0 ATR of
+        # adverse move over six closed bars measured in the ENTRY timeframe's
+        # own ATR -- M5. The retest's pullback is one M15 ATR by construction,
+        # and an M15 ATR is roughly 1.7 M5 ATRs. Every qualifying retest
+        # arrives over the limit, and the more decisive the break the further
+        # over it goes.
+        #
+        # The gate is not wrong; it is right for the entries it was written
+        # for. Eleven of the first twelve paid reviews vetoed a trend entry for
+        # exactly this reason and that finding stands. It is wrong for an entry
+        # whose whole thesis is the pullback, and nothing distinguished the
+        # two.
+        exempt = any(family in setup_family for family in self.config.entry_timing_exempt_families)
+        adverse = (
+            None
+            if exempt
+            else self._entry_timing_conflict(
+                ctx, direction, timeframes=profile.entry_timing_timeframes
+            )
         )
         if adverse is not None:
             return self._reject(ctx, signals, adverse, score, confidence)

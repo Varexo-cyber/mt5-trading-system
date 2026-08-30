@@ -119,7 +119,7 @@ def _walk(frame: pd.DataFrame, config) -> Funnel:
         oldest = max(config.channel_period + 1, now - config.lookback_bars)
 
         best_gap: float | None = None
-        saw_break = saw_decisive = saw_alive = saw_side = False
+        saw_break = saw_decisive = saw_alive = saw_side = saw_touch = False
         for i in range(now, oldest - 1, -1):
             if not np.isfinite(upper[i]) or not np.isfinite(lower[i]):
                 continue
@@ -149,14 +149,22 @@ def _walk(frame: pd.DataFrame, config) -> Funnel:
                 best_gap = gap
             # Did the bar TOUCH the band even though the close did not sit in
             # it? A resting limit fills there; a once-per-bar check misses it.
+            #
+            # ONCE PER BAR, NOT ONCE PER LEVEL. This incremented inside the
+            # candidate loop, so one bar sitting near three live levels counted
+            # three touches -- against a `fired` counter that counts bars. The
+            # ratio between those two IS the measurement, so counting them on
+            # different units made the headline number wrong. The first output
+            # read 411 touches against 79 fires; the honest figure is lower.
             extreme = float(low[now]) if direction > 0 else float(high[now])
             if direction * (extreme - level) / unit <= config.tolerance_atr:
-                funnel.touched_intrabar += 1
+                saw_touch = True
 
         funnel.broke += saw_break
         funnel.decisive += saw_decisive
         funnel.alive += saw_alive
         funnel.right_side += saw_side
+        funnel.touched_intrabar += saw_touch
         if best_gap is not None:
             if best_gap <= config.tolerance_atr:
                 funnel.fired += 1
