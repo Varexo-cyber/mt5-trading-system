@@ -675,3 +675,168 @@ class TestNothingIsDefinedAfterTheEntryPoint:
             "_core_universe",
         ):
             assert name in defined, f"{name} is not defined before main() is called"
+
+
+class TestTheSampleJudgesItself:
+    """ "Is 59.3% over 82 trades good?" had no answer in the output, only in a
+    paragraph afterwards. It belongs in the report."""
+
+    def _trades(self, n: int, win_rate: float, days: int = 40, spread: float = 0.0):
+        """`n` trades over `days` days at a fixed win rate."""
+        import random
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        # SEEDED RANDOM, not `i % 100 < 62`. That arithmetic aliases against
+        # the `i % days` calendar: at 600 trades over 90 days it produced a
+        # 46% May and a 73% June out of a flat 62% process, so the fixture
+        # failed the every-month box for a reason that had nothing to do with
+        # the code under test. A fixture with structure the test does not
+        # intend is a test that reports on its own fixture.
+        rng = random.Random(4242)
+        base = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+        rows = []
+        for i in range(n):
+            r = 1.0 if rng.random() < win_rate else -1.0
+            rows.append(
+                Decision(
+                    base + timedelta(days=(i % days), minutes=i),
+                    "NDX100",
+                    "order_block",
+                    "TRADE",
+                    result_r=r + spread * ((i % 7) - 3),
+                    pnl_money=r * 8.0,
+                    pass_key=("order_block", "M30"),
+                )
+            )
+        return rows
+
+    def test_a_tiny_sample_refuses_to_say_anything(self, capsys) -> None:
+        from scripts.dry_run_sections import _is_this_real
+
+        _is_this_real(self._trades(12, 0.6, days=3), [("order_block", "M30")])
+        out = capsys.readouterr().out
+
+        assert "Not enough to say anything at all" in out
+        assert "win rate" not in out, "a 12-trade win rate must not be printed as a finding"
+
+    def test_a_real_edge_over_a_long_window_clears_every_box(self, capsys) -> None:
+        from scripts.dry_run_sections import _is_this_real
+
+        _is_this_real(self._trades(600, 0.62, days=90), [("order_block", "M30")])
+        out = capsys.readouterr().out
+
+        assert "clears every bar" in out
+        assert "[x]" in out and "[ ]" not in out
+
+    def test_a_coin_flip_is_refused_however_many_trades(self, capsys) -> None:
+        """THE CHECK THAT MATTERS. A 50% win rate at 1R is worth zero, and no
+        sample size may turn it into a conclusion."""
+        from scripts.dry_run_sections import _is_this_real
+
+        _is_this_real(self._trades(600, 0.50, days=90), [("order_block", "M30")])
+        out = capsys.readouterr().out
+
+        assert "NOT ENOUGH TO CONCLUDE" in out
+
+    def test_a_short_window_is_refused_even_when_it_wins(self, capsys) -> None:
+        """82 trades at 59.3% over one week -- the actual 30 August result."""
+        from scripts.dry_run_sections import _is_this_real
+
+        _is_this_real(self._trades(82, 0.59, days=5), [("order_block", "M30")])
+        out = capsys.readouterr().out
+
+        assert "NOT ENOUGH TO CONCLUDE" in out
+        assert "at least 200 resolved trades" in out
+
+    def test_sigma_is_measured_on_days_not_trades(self, capsys) -> None:
+        """Sixteen markets breaking on one morning are ONE observation.
+        Counting them as sixteen overstates significance by about the square
+        root of the number that moved together, and that correction was the
+        largest single one in the original research.
+
+        WHAT THE PROPERTY ACTUALLY IS, because a first draft got it wrong.
+        That draft packed the same INDEPENDENT trades into fewer days and
+        expected sigma to fall. It does not, and the arithmetic says why: with
+        n independent trades over D days, each day holds n/D of them, so
+        `std(daily)` is about `sqrt(n/D)` and `SE = std(daily) * sqrt(D)` comes
+        to `sqrt(n)` whatever D is. Day-clustering costs nothing when the
+        trades are independent -- which is the correct behaviour, and the
+        reason the wrong test read 4.34 against 4.00.
+
+        Clustering costs sigma when the trades inside a day AGREE. So both
+        samples below hold 400 trades over 40 days at the same win rate and
+        very nearly the same total R; in one, a day's outcome is drawn per
+        trade, and in the other the whole day shares one draw. The second is
+        eleven pairs breaking on the same morning, and it must read lower.
+        """
+        import random
+        import re
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision, _is_this_real
+
+        def sample(correlated: bool) -> list[Decision]:
+            rng = random.Random(99)
+            base = datetime(2026, 5, 1, 9, 0, tzinfo=UTC)
+            rows: list[Decision] = []
+            for day in range(40):
+                shared = 1.0 if rng.random() < 0.62 else -1.0
+                for k in range(10):
+                    r = shared if correlated else (1.0 if rng.random() < 0.62 else -1.0)
+                    rows.append(
+                        Decision(
+                            base + timedelta(days=day, minutes=k),
+                            "NDX100",
+                            "order_block",
+                            "TRADE",
+                            result_r=r,
+                            pnl_money=r * 8.0,
+                            pass_key=("order_block", "M30"),
+                        )
+                    )
+            return rows
+
+        def sigma_of(rows: list[Decision]) -> tuple[float, float]:
+            _is_this_real(rows, [("order_block", "M30")])
+            text = capsys.readouterr().out
+            return (
+                float(re.search(r"([+-][\d.]+) sigma from zero", text).group(1)),
+                float(re.search(r"([+-][\d.]+) R,", text).group(1)),
+            )
+
+        independent, independent_r = sigma_of(sample(correlated=False))
+        clustered, clustered_r = sigma_of(sample(correlated=True))
+
+        # Comparable edges, so the sigma difference is about correlation.
+        assert abs(independent_r - clustered_r) < 0.35 * abs(independent_r)
+        assert clustered < independent, (
+            "a day where every market moved together must count for less than "
+            f"a day of independent trades ({clustered} vs {independent})"
+        )
+
+    def test_it_names_a_section_too_thin_to_judge(self, capsys) -> None:
+        """impulse_retest had 10 trades beside order_block's 71, and the
+        combined line hid that completely."""
+        from scripts.dry_run_sections import _is_this_real
+
+        trades = self._trades(400, 0.62, days=90)
+        for d in trades[:6]:
+            d.pass_key = ("impulse_retest", "M15")
+
+        _is_this_real(trades, [("order_block", "M30"), ("impulse_retest", "M15")])
+        out = capsys.readouterr().out
+
+        assert "impulse_retest has only 6 trades of its own; it is unjudged" in out
+
+    def test_the_launcher_command_line_parses(self) -> None:
+        from scripts.dry_run_sections import build_parser
+
+        launcher = (ROOT / "history.cmd").read_text()
+        parsed = build_parser().parse_args(cmd_argv(launcher, **{"%DAYS%": "180"}))
+
+        assert parsed.days == 180
+        assert parsed.core is True
+        assert parsed.live_only is True
+        assert parsed.no_m1 is True, "M1 over 180 days is a quarter million bars per market"
