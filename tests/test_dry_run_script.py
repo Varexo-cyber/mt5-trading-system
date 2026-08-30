@@ -126,6 +126,37 @@ class TestItMeasuresTheUniverseThatTrades:
         assert "for tf in used if tf in frames" in SOURCE
 
 
+class TestTheLauncherSurvivesCmd:
+    """`dryrun.cmd 7 M15,M30 --limit 40` died on the owner's machine because
+    CMD SPLITS ARGUMENTS ON COMMAS. The shell handed the script "M15" and
+    "M30" as separate words, `--limit` collected "M30", and argparse rejected
+    the rest. No validation inside the script could have caught it: the damage
+    is done before it is called.
+
+    Two fixes, and both are needed. The launcher no longer takes timeframes at
+    all -- only two numbers -- and the parser accepts the split form anyway,
+    because someone will type a comma sooner or later.
+    """
+
+    LAUNCHER = (ROOT / "dryrun.cmd").read_text()
+
+    def test_the_launcher_takes_no_comma_arguments(self) -> None:
+        set_lines = [line for line in self.LAUNCHER.splitlines() if line.strip().startswith("set ")]
+        for line in set_lines:
+            assert "," not in line, f"a comma in an argument will be split by cmd: {line}"
+
+    def test_the_launcher_writes_the_timeframes_itself(self) -> None:
+        """So the list never passes through the shell."""
+        assert "--sweep M5 M15 M30 H1 H4" in self.LAUNCHER
+
+    def test_the_parser_accepts_the_split_form(self) -> None:
+        assert 'nargs="*"' in SOURCE
+
+    def test_the_parser_also_accepts_a_comma_list(self) -> None:
+        """Both arrive in practice, so both have to work."""
+        assert 'str(chunk).split(",")' in SOURCE
+
+
 class TestTheSweepIsHonest:
     def test_it_resolves_on_a_finer_timeframe_than_it_decides_on(self) -> None:
         """An M30 trade resolved on M30 bars cannot tell which barrier the bar
