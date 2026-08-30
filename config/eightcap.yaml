@@ -2431,7 +2431,31 @@ analysis:
     # Wat blijft staan is het enige met een out-of-sample cijfer. Alle vijf
     # blijven ze in de boom met hun gewicht, dus de backtest en het journaal
     # blijven ze meten. Alleen de toestemming is weg.
-    live_enabled_modules: [impulse_retest, order_block]
+    # SECTIE 2 ERAF, 30 AUGUSTUS, op de meting van dertig dagen Eightcap-data.
+    #
+    #                     trades   win     R        EUR
+    #     order_block        204  54,4%  +18,00   +85,14
+    #     impulse_retest      48  39,6%  -10,00   -68,05
+    #     samen                              +8,00   +17,09
+    #
+    # Sectie 2 eet driekwart op van wat sectie 3 verdient. Los gedraaid was
+    # order_block +39,5% over die dertig dagen en het saldo +7,9%.
+    #
+    # HIJ IS NIET BEWEZEN SLECHT. 48 trades op 39,6% is -1,44 sigma, en dat
+    # overkomt een neutrale strategie regelmatig. Maar "niet bewezen slecht" is
+    # geen reden om er echt geld op te houden terwijl de andere sectie er last
+    # van heeft, en in geen enkel venster tot nu toe heeft hij een steekproef
+    # gehad die iets liet zien: 7, 9, 10, 48 trades.
+    #
+    # ORDER_BLOCK IS OOK NIET BEWEZEN GOED -- 204 trades op 54,4% is +1,26
+    # sigma, en het gezamenlijke oordeel las +0,50 sigma, oftewel ruis. Wat hem
+    # overeind houdt is consistentie in plaats van significantie: positief in
+    # elk venster en op elk van drie klokken (M15 58%, M30 54-59%, H1 56%).
+    #
+    # Het gewicht blijft staan, dus sectie 2 wordt gewoon doorgemeten.
+    # Uitgezet is niet verwijderd. `history.cmd 180` geeft hem ~300 trades;
+    # als hij daar positief uitkomt gaat hij terug op deze regel.
+    live_enabled_modules: [order_block]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #

@@ -153,6 +153,21 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     reproduced their training half; the modules that came off carry either a
     negative measurement (`trend_momentum`, -0.365R over 163 live trades) or
     none at all (`m1_micro_breakout`, `basket_divergence`).
+
+    AND `impulse_retest` CAME OFF ON 30 AUGUST, on thirty days of this
+    broker's own data:
+
+        order_block      204 trades   54.4%   +18.00 R   EUR +85.14
+        impulse_retest    48 trades   39.6%   -10.00 R   EUR -68.05
+
+    Section two was eating three quarters of what section three earned; run
+    alone, order_block was +39.5% over the window and the pair was +7.9%.
+
+    It is NOT proven bad -- 48 trades at 39.6% is -1.44 sigma, which a neutral
+    strategy produces often enough -- but it has never once had a sample worth
+    reading (7, 9, 10, 48 trades), and "not proven bad" does not earn real
+    money. The weight stays, so it is still measured. Only the permission is
+    gone.
     """
     from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
@@ -161,7 +176,7 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     )
     live = set(settings.analysis.confluence.live_enabled_modules)
 
-    assert live == {"impulse_retest", "order_block"}
+    assert live == {"order_block"}
     # Every live module keeps a breaker. That was the real content of this
     # test and it survives the change.
     for module in live:

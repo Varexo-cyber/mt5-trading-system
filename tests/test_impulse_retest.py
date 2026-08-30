@@ -347,14 +347,29 @@ class TestTheLiveWiring:
 
         assert "impulse_retest" in {m.name for m in build_analysis_modules(settings)}
 
-    def test_it_is_live_and_weighted(self) -> None:
+    def test_it_is_weighted_but_no_longer_permitted_real_money(self) -> None:
+        """OFF SINCE 30 AUGUST, on thirty days of this broker's own data:
+        48 trades, 39.6% win, -10.00R, EUR -68.05, beside order_block's 204
+        trades at 54.4% and +85.14. Run alone order_block was +39.5% over the
+        window; the pair was +7.9%. Section two was eating three quarters of
+        what section three earned.
+
+        NOT proven bad -- 48 trades at 39.6% is -1.44 sigma and a neutral
+        strategy does that regularly -- but it has never had a sample worth
+        reading (7, 9, 10, 48 trades), and "not proven bad" does not earn real
+        money.
+
+        The WEIGHT stays, and that is the half that matters here: a module with
+        no weight cannot be measured, which is how three M1 detectors went
+        unjudged for months. `history.cmd 180` gives this one about 300 trades.
+        If it comes back positive over that, it goes back on the live list."""
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
         confluence = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.confluence
 
-        assert "impulse_retest" in confluence.live_enabled_modules
+        assert "impulse_retest" not in confluence.live_enabled_modules
         assert confluence.weights.get("impulse_retest", 0.0) > 0.0
 
     def test_it_has_a_breaker_matched_to_its_expected_hit_rate(self) -> None:
