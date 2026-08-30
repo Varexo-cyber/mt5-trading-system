@@ -1039,3 +1039,95 @@ class TestTheScanUniverseIsTheLiveOne:
             cmd_argv(launcher, **{"%DAYS%": "7", "%SCOPE%": "--core", "%FINE%": ""})
         )
         assert core.core is True and core.no_m1 is False
+
+
+class TestTheVerdictJudgesTheConfigurationThatRuns:
+    """THE REPORT JUDGED THE WRONG COLUMN AND IT CHANGED THE ANSWER.
+
+    `result_r` is the fixed-stop exit -- what the research measured.
+    `managed_r` is the same trade under `TradeManagementConfig`, and
+    `break_even_at_r` is ON, so `managed_r` is what the account actually does.
+
+    Every headline, sigma and verdict was computed on `result_r`. The 180-day
+    run therefore printed
+
+        total   -2.00 R,  -0.05 sigma from zero
+        -> NOT ENOUGH TO CONCLUDE
+
+    while three lines above, the same report said the configuration that
+    actually runs made +66.20 R and EUR +480.37. The owner was handed the
+    number for a setup he does not trade, and I drew a conclusion from it.
+    """
+
+    def _paired(self, n: int, fixed: float, managed_value: float):
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        return [
+            Decision(
+                base + timedelta(days=i % 120, minutes=i),
+                "NDX100",
+                "order_block",
+                "TRADE",
+                result_r=fixed,
+                pnl_money=fixed * 8.0,
+                managed_r=managed_value,
+                managed_money=managed_value * 8.0,
+                pass_key=("order_block", "M30"),
+            )
+            for i in range(n)
+        ]
+
+    def test_the_verdict_reads_the_managed_column_when_management_is_on(self, capsys) -> None:
+        """A book that is flat on the fixed stop and strongly positive on the
+        managed one must read as positive. Under the old code it read flat."""
+        from scripts.dry_run_sections import _is_this_real
+
+        _is_this_real(self._paired(400, 0.0, 1.0), [("order_block", "M30")], managed=True)
+        out = capsys.readouterr().out
+
+        assert "+400.00 R" in out
+        assert "BREAK-EVEN exit, which is what the account runs" in out
+
+    def test_and_the_fixed_column_when_it_is_off(self, capsys) -> None:
+        from scripts.dry_run_sections import _is_this_real
+
+        _is_this_real(self._paired(400, 0.0, 1.0), [("order_block", "M30")], managed=False)
+        out = capsys.readouterr().out
+
+        assert "+0.00 R" in out
+        assert "fixed stop" in out
+
+    def test_one_function_decides_which_column_is_live(self) -> None:
+        """Two places computing 'the live exit' is how they drifted apart in
+        the first place."""
+        from scripts.dry_run_sections import Decision, _live_exit
+
+        row = Decision(
+            when=__import__("datetime").datetime(2026, 3, 1, tzinfo=UTC),
+            symbol="X",
+            module="m",
+            outcome="TRADE",
+            result_r=-1.0,
+            managed_r=0.1,
+        )
+
+        assert _live_exit(row, managed=True) == pytest.approx(0.1)
+        assert _live_exit(row, managed=False) == pytest.approx(-1.0)
+
+    def test_no_report_line_still_reaches_for_result_r_on_the_live_block(self) -> None:
+        """The live block and the verdict must go through `_live_exit`. The
+        sweep may keep the fixed stop -- it compares clocks and wants the exit
+        rule held still -- and says so in a comment."""
+        import inspect
+
+        from scripts import dry_run_sections
+
+        for name in ("_live_config_report", "_is_this_real"):
+            source = inspect.getsource(getattr(dry_run_sections, name))
+            body = source.split('"""')[-1]
+
+            assert "d.result_r" not in body, f"{name} still reads the fixed column"
+            assert "_live_exit(" in body

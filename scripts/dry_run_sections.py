@@ -797,6 +797,27 @@ def main() -> None:
         print(f"\nevery decision written to {path}")
 
 
+def _live_exit(decision: Decision, managed: bool) -> float | None:
+    """The R this trade ACTUALLY produces under the settings that run.
+
+    THE REPORT JUDGED THE WRONG COLUMN, and it changed the answer.
+
+    `result_r` is the fixed-stop exit -- the one the research measured.
+    `managed_r` is the same trade under `TradeManagementConfig`, and
+    `break_even_at_r` is switched ON. So `managed_r` is what the account does
+    and `result_r` is the counterfactual.
+
+    Every headline, every sigma and every verdict was computed on `result_r`.
+    On the 180-day run that read -2.00 R at -0.05 sigma and printed NOT ENOUGH
+    TO CONCLUDE, while three lines below it the same report said the
+    configuration that actually runs made +66.20 R. The owner was shown the
+    number for a setup he does not trade.
+
+    One function, so the two can no longer drift apart.
+    """
+    return decision.managed_r if managed else decision.result_r
+
+
 def _live_config_report(results: dict, settings, equity: float, days: int) -> None:
     """WHAT THE ACCOUNT WOULD ACTUALLY HAVE DONE. Read this one.
 
@@ -825,13 +846,18 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     slots = settings.effective_max_positions(equity)
     everything = [d for key in keys for d in results[key] if d.outcome == "TRADE"]
     trades = _under_the_slot_cap(everything, slots)
-    closed = [d for d in trades if d.result_r is not None]
+    managed = _break_even_rule(settings) is not None
+    closed = [d for d in trades if _live_exit(d, managed) is not None]
 
     print("\n" + "=" * 78)
     print("THE LIVE CONFIGURATION -- this is the one that answers the question")
     print("=" * 78)
     print("  " + ", ".join(f"{name} on {clock}" for name, clock in keys))
     print(f"  max {slots} positions at once at EUR {equity:.2f}, one per symbol")
+    print(
+        "  exit: "
+        + ("break-even stop, which is what the account runs" if managed else "fixed stop")
+    )
     if len(everything) != len(trades):
         print(f"  {len(everything) - len(trades)} signals dropped: every slot was already busy")
 
@@ -839,9 +865,9 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
         print("\n  No resolved trades in this window.")
         return
 
-    wins = [d for d in closed if (d.result_r or 0) > 0]
-    total_r = sum(d.result_r or 0.0 for d in closed)
-    money = sum(d.pnl_money or 0.0 for d in closed)
+    wins = [d for d in closed if (_live_exit(d, managed) or 0) > 0]
+    total_r = sum(_live_exit(d, managed) or 0.0 for d in closed)
+    money = sum((d.managed_money if managed else d.pnl_money) or 0.0 for d in closed)
     print(
         f"\n  {len(trades)} trades taken, {len(closed)} resolved"
         f"   ({len(trades) / max(days, 1):.1f} a day)"
@@ -851,22 +877,26 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     print(f"  per trade           {total_r / len(closed):+.3f} R")
     print(f"  PROFIT              EUR {money:+.2f}   on EUR {equity:.2f} = {money / equity:+.1%}")
     for name, clock in keys:
-        rows = [d for d in trades if d.pass_key == (name, clock) and d.result_r is not None]
+        rows = [
+            d for d in trades if d.pass_key == (name, clock) and _live_exit(d, managed) is not None
+        ]
         if not rows:
             continue
-        won = sum(1 for d in rows if (d.result_r or 0) > 0)
-        row_r = sum(d.result_r or 0 for d in rows)
-        row_money = sum(d.pnl_money or 0 for d in rows)
+        won = sum(1 for d in rows if (_live_exit(d, managed) or 0) > 0)
+        row_r = sum(_live_exit(d, managed) or 0 for d in rows)
+        row_money = sum((d.managed_money if managed else d.pnl_money) or 0 for d in rows)
         print(
             f"    {name:<16s} {clock:<4s} {len(rows):>4d} trades  "
             f"{won / len(rows):>5.1%} win  {row_r:+7.2f} R  EUR {row_money:+8.2f}"
         )
 
     _break_even_verdict(trades, settings)
-    _is_this_real(trades, keys)
+    _is_this_real(trades, keys, managed)
 
 
-def _is_this_real(trades: list[Decision], keys: list[tuple[str, str]]) -> None:
+def _is_this_real(
+    trades: list[Decision], keys: list[tuple[str, str]], managed: bool = False
+) -> None:
     """Is the sample big enough to conclude anything, and does it clear zero?
 
     THE QUESTION THE OWNER KEPT HAVING TO ASK ME. Every report so far has
@@ -893,14 +923,18 @@ def _is_this_real(trades: list[Decision], keys: list[tuple[str, str]]) -> None:
        month positive. One good week inside a bad month is not an edge; it is
        where in the month you happened to look.
     """
-    closed = [d for d in trades if d.result_r is not None]
+    closed = [d for d in trades if _live_exit(d, managed) is not None]
     print("\n  IS THIS REAL? — the sample judging itself")
+    print(
+        "    judging the "
+        + ("BREAK-EVEN exit, which is what the account runs" if managed else "fixed stop")
+    )
     if len(closed) < 30:
         print(f"    {len(closed)} resolved trades. Not enough to say anything at all.")
         print("    Run a longer window: history.cmd 180")
         return
 
-    wins = sum(1 for d in closed if (d.result_r or 0) > 0)
+    wins = sum(1 for d in closed if (_live_exit(d, managed) or 0) > 0)
     n = len(closed)
     rate = wins / n
     # Wilson interval, which stays sane at small n where the normal one does not.
@@ -910,7 +944,7 @@ def _is_this_real(trades: list[Decision], keys: list[tuple[str, str]]) -> None:
 
     by_day: dict[object, float] = {}
     for d in closed:
-        by_day[d.when.date()] = by_day.get(d.when.date(), 0.0) + (d.result_r or 0.0)
+        by_day[d.when.date()] = by_day.get(d.when.date(), 0.0) + (_live_exit(d, managed) or 0.0)
     daily = np.array(list(by_day.values()), dtype=float)
     total_r = float(daily.sum())
     days_traded = len(daily)
@@ -930,7 +964,7 @@ def _is_this_real(trades: list[Decision], keys: list[tuple[str, str]]) -> None:
 
     by_month: dict[str, list[float]] = {}
     for d in closed:
-        by_month.setdefault(f"{d.when:%Y-%m}", []).append(d.result_r or 0.0)
+        by_month.setdefault(f"{d.when:%Y-%m}", []).append(_live_exit(d, managed) or 0.0)
     if len(by_month) > 1:
         print("\n    by month")
         for month in sorted(by_month):
@@ -1066,6 +1100,10 @@ def _sweep_report(results: dict, equity: float, days: int) -> None:
         spread_out = sum(1 for d in decisions if "SPREAD" in d.outcome or "COST" in d.outcome)
         r_total = sum(d.result_r or 0.0 for d in closed)
         money = sum(d.pnl_money or 0.0 for d in closed)
+        # The SWEEP deliberately reads the fixed stop: it compares clocks
+        # against each other, and a comparison is cleaner without the exit
+        # rule moving underneath it. The LIVE block above reads the managed
+        # exit, because that is the one the account trades.
         wins = sum(1 for d in closed if (d.result_r or 0) > 0)
         win = f"{wins / len(closed):.0%}" if closed else "-"
         print(
