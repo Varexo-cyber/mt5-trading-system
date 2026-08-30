@@ -17,6 +17,7 @@ decision before enough history exists.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 
 import pandas as pd
 import pytest
@@ -147,6 +148,142 @@ class TestTheReplayStillRefusesThinHistory:
         )
 
         assert produced == []
+
+
+class TestTheDecisionClockIsTheStrategyClock:
+    """Loading M1 is not measuring M1 when decisions are still sampled hourly."""
+
+    @staticmethod
+    def _engine():  # type: ignore[no-untyped-def]
+        class _Engine:
+            config = type("_C", (), {"weights": {}, "minimum_confidence": 0.0})()
+
+            def evaluate(self, ctx, _mode):  # type: ignore[no-untyped-def]
+                from analysis.confluence import TradeIdea
+
+                return TradeIdea(ctx.symbol, False, None, 0.0, 0.0, 0.0, 0.0, 0.0, "clock", ())
+
+        return _Engine()
+
+    def test_m1_clock_evaluates_every_closed_minute(self) -> None:
+        frames = {tf: ending_at(tf, 400) for tf in (*REPLAY_TIMEFRAMES, Timeframe.M1)}
+        minute = frames[Timeframe.M1]
+        start = minute.index[300].to_pydatetime()
+        end = (minute.index[-1] + Timeframe.M1.duration).to_pydatetime()
+
+        replay = HistoricalContextReplay(
+            self._engine(),  # type: ignore[arg-type]
+            decision_timeframe=Timeframe.M1,
+        )
+        produced = list(replay.ideas("TEST", frames, point=0.01, start=start, end=end))
+
+        assert len(produced) == 100
+        assert all(
+            right[0] - left[0] == Timeframe.M1.duration
+            for left, right in pairwise(produced)
+        )
+
+    def test_m1_clock_uses_the_m1_quote_not_a_stale_m5_close(self) -> None:
+        seen_mid: list[float] = []
+
+        class _QuoteEngine:
+            config = type("_C", (), {"weights": {}, "minimum_confidence": 0.0})()
+
+            def evaluate(self, ctx, _mode):  # type: ignore[no-untyped-def]
+                from analysis.confluence import TradeIdea
+
+                seen_mid.append((ctx.tick.bid + ctx.tick.ask) / 2)
+                return TradeIdea(ctx.symbol, False, None, 0.0, 0.0, 0.0, 0.0, 0.0, "x", ())
+
+        frames = {tf: ending_at(tf, 400) for tf in (*REPLAY_TIMEFRAMES, Timeframe.M1)}
+        minute = frames[Timeframe.M1].copy()
+        minute.loc[:, "close"] = range(len(minute))
+        minute.loc[:, "spread"] = 2.0
+        frames[Timeframe.M1] = minute
+        start = minute.index[300].to_pydatetime()
+        end = (minute.index[301] + Timeframe.M1.duration).to_pydatetime()
+
+        replay = HistoricalContextReplay(
+            _QuoteEngine(),  # type: ignore[arg-type]
+            decision_timeframe=Timeframe.M1,
+        )
+        produced = list(replay.ideas("TEST", frames, point=0.01, start=start, end=end))
+
+        assert len(produced) == 2
+        assert produced[0][1] == pytest.approx(0.02)
+        # A decision at the open time of bar 300 may only use bar 299, which
+        # has actually closed. The next decision advances to bar 300.
+        assert seen_mid == [299.0, 300.0]
+
+    def test_missing_requested_clock_is_an_explicit_error(self) -> None:
+        frames = {tf: ending_at(tf, 400) for tf in REPLAY_TIMEFRAMES}
+        replay = HistoricalContextReplay(
+            self._engine(),  # type: ignore[arg-type]
+            decision_timeframe=Timeframe.M1,
+        )
+
+        with pytest.raises(ValueError, match="decision timeframe M1 is missing"):
+            list(
+                replay.ideas(
+                    "TEST",
+                    frames,
+                    point=0.01,
+                    start=frames[Timeframe.H1].index[300].to_pydatetime(),
+                    end=(frames[Timeframe.H1].index[-1] + Timeframe.H1.duration).to_pydatetime(),
+                )
+            )
+
+    def test_thin_m1_execution_history_skips_instead_of_crashing(self) -> None:
+        frames = {tf: ending_at(tf, 400) for tf in REPLAY_TIMEFRAMES}
+        frames[Timeframe.M1] = ending_at(Timeframe.M1, 100)
+        minute = frames[Timeframe.M1]
+        replay = HistoricalContextReplay(
+            self._engine(),  # type: ignore[arg-type]
+            decision_timeframe=Timeframe.M1,
+        )
+
+        produced = list(
+            replay.ideas(
+                "TEST",
+                frames,
+                point=0.01,
+                start=minute.index[0].to_pydatetime(),
+                end=(minute.index[-1] + Timeframe.M1.duration).to_pydatetime(),
+            )
+        )
+
+        assert produced == []
+
+    def test_context_enricher_runs_before_the_engine(self) -> None:
+        seen: list[bool] = []
+
+        class _Engine:
+            config = type("_C", (), {"weights": {}, "minimum_confidence": 0.0})()
+
+            def evaluate(self, ctx, _mode):  # type: ignore[no-untyped-def]
+                from analysis.confluence import TradeIdea
+
+                seen.append(bool(ctx.meta.get("peers_attached")))
+                return TradeIdea(ctx.symbol, False, None, 0.0, 0.0, 0.0, 0.0, 0.0, "x", ())
+
+        frames = {tf: ending_at(tf, 400) for tf in REPLAY_TIMEFRAMES}
+        replay = HistoricalContextReplay(
+            _Engine(),  # type: ignore[arg-type]
+            context_enricher=lambda ctx: ctx.meta.update({"peers_attached": True}),
+        )
+        hourly = frames[Timeframe.H1].index
+
+        list(
+            replay.ideas(
+                "TEST",
+                frames,
+                point=0.01,
+                start=hourly[300].to_pydatetime(),
+                end=(hourly[-1] + Timeframe.H1.duration).to_pydatetime(),
+            )
+        )
+
+        assert seen and all(seen)
 
 
 class TestTheRoundTripCrossesTheSpread:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from math import isfinite
@@ -50,7 +50,7 @@ class SegmentEvidence:
 
 
 class HistoricalContextReplay:
-    """Recreate exactly what modules could know at each closed H1 bar."""
+    """Recreate exactly what modules could know on their decision clock."""
 
     def __init__(
         self,
@@ -58,7 +58,10 @@ class HistoricalContextReplay:
         *,
         history_bars: int = 300,
         decision_stride_bars: int = 1,
+        decision_timeframe: Timeframe = Timeframe.H1,
+        execution_timeframe: Timeframe | None = None,
         mode: TradingMode = TradingMode.BACKTEST,
+        context_enricher: Callable[[MarketContext], None] | None = None,
     ) -> None:
         if history_bars < 120:
             raise ValueError("history_bars must be at least 120")
@@ -67,6 +70,11 @@ class HistoricalContextReplay:
         self.engine = engine
         self.history_bars = history_bars
         self.decision_stride_bars = decision_stride_bars
+        self.decision_timeframe = decision_timeframe
+        self.execution_timeframe = execution_timeframe or (
+            Timeframe.M1 if decision_timeframe is Timeframe.M1 else Timeframe.M5
+        )
+        self.context_enricher = context_enricher
         # WHICH ENGINE IS BEING MEASURED.
         #
         # This was hardcoded to BACKTEST, and `live_enabled_modules` is only
@@ -110,8 +118,16 @@ class HistoricalContextReplay:
         missing = set(REPLAY_TIMEFRAMES) - set(frames)
         if missing:
             raise ValueError(f"replay missing timeframes: {sorted(tf.value for tf in missing)}")
-        decisions = frames[Timeframe.H1]
-        closed_at = decisions.index + Timeframe.H1.duration
+        if self.decision_timeframe not in frames:
+            raise ValueError(
+                f"replay decision timeframe {self.decision_timeframe.value} is missing"
+            )
+        if self.execution_timeframe not in frames:
+            raise ValueError(
+                f"replay execution timeframe {self.execution_timeframe.value} is missing"
+            )
+        decisions = frames[self.decision_timeframe]
+        closed_at = decisions.index + self.decision_timeframe.duration
         eligible = decisions[(closed_at >= start) & (closed_at < end)]
         # Close times per timeframe, computed once instead of per decision.
         #
@@ -147,12 +163,24 @@ class HistoricalContextReplay:
         # is offered to the detectors when it has history and simply left out
         # when it does not — an extra chart must never be able to void a
         # decision the required five could answer on their own.
-        required = set(REPLAY_TIMEFRAMES)
+        # The standard ladder is always required.  A caller-provided extra is
+        # optional only when it is genuinely supplementary.  The decision and
+        # execution clocks cannot be optional: skipping a thin M1 series and
+        # then indexing `series[M1]` produced the weekend validator's crash.
+        required = set(REPLAY_TIMEFRAMES) | {
+            self.decision_timeframe,
+            self.execution_timeframe,
+        }
         close_times = {tf: frame.index + tf.duration for tf, frame in frames.items()}
+        # Slow timeframes do not change on every M1 decision.  Rebuilding the
+        # same 300-row D1/H4/H1/M15/M5 slices thousands of times made a
+        # 30-day smoke test take hours.  Cache by the binary-search cut point;
+        # the visible bars and therefore every module input are identical.
+        series_cache: dict[Timeframe, tuple[int, Series]] = {}
         for sequence, opened_at in enumerate(eligible.index):
             if sequence % self.decision_stride_bars:
                 continue
-            decided_at = (opened_at + Timeframe.H1.duration).to_pydatetime()
+            decided_at = (opened_at + self.decision_timeframe.duration).to_pydatetime()
             moment = pd.Timestamp(decided_at)
             series: dict[Timeframe, Series] = {}
             complete = True
@@ -160,16 +188,22 @@ class HistoricalContextReplay:
                 # `side="right"` counts the bars whose close is at or before the
                 # decision, which is exactly what `<= decided_at` selected.
                 cut = int(close_times[timeframe].searchsorted(moment, side="right"))
+                cached = series_cache.get(timeframe)
+                if cached is not None and cached[0] == cut:
+                    series[timeframe] = cached[1]
+                    continue
                 available = frames[timeframe].iloc[max(0, cut - self.history_bars) : cut]
                 if cut < 120 or len(available) < 120:
                     if timeframe in required:
                         complete = False
                         break
                     continue
-                series[timeframe] = Series(symbol, timeframe, available, decided_at)
+                visible = Series(symbol, timeframe, available, decided_at)
+                series[timeframe] = visible
+                series_cache[timeframe] = (cut, visible)
             if not complete:
                 continue
-            executable = series[Timeframe.M5].df.iloc[-1]
+            executable = series[self.execution_timeframe].df.iloc[-1]
             mid = float(executable["close"])
             spread_points = max(float(executable.get("spread", 0.0)), 0.0)
             spread = spread_points * point
@@ -179,9 +213,10 @@ class HistoricalContextReplay:
                 bid=mid - spread / 2,
                 ask=mid + spread / 2,
             )
-            yield decided_at, spread, self.engine.evaluate(
-                MarketContext(symbol, decided_at, series, tick), self.mode
-            )
+            context = MarketContext(symbol, decided_at, series, tick)
+            if self.context_enricher is not None:
+                self.context_enricher(context)
+            yield decided_at, spread, self.engine.evaluate(context, self.mode)
 
     def orders(
         self,
@@ -197,43 +232,50 @@ class HistoricalContextReplay:
         for decided_at, spread, idea in self.ideas(
             symbol, frames, point=point, start=start, end=end
         ):
-            if not idea.approved or idea.direction is None:
-                continue
-            active = tuple(
-                signal.module
-                for signal in idea.signals
-                if signal.score * int(idea.direction) > 0
-                and signal.confidence > 0
-                and self.engine.config.weights.get(signal.module, 0.0) > 0
-                and signal.confidence >= self.engine.config.minimum_confidence
-            )
-            orders.append(
-                BacktestOrder(
-                    symbol=symbol,
-                    decided_at=decided_at,
-                    direction=idea.direction,
-                    entry=idea.entry,
-                    stop_loss=idea.stop_loss,
-                    take_profit=idea.take_profit,
-                    score=idea.score,
-                    confidence=idea.confidence,
-                    modules=active,
-                    spread=spread,
-                    # The grader could never read the plan's own length because
-                    # nothing ever handed it one. `expected_horizon_minutes` has
-                    # been on every proposal this engine has produced.
-                    horizon_minutes=idea.expected_horizon_minutes,
-                    regime=next(
-                        (
-                            str(signal.details.get("regime", ""))
-                            for signal in idea.signals
-                            if signal.module == "market_regime"
-                        ),
-                        "",
-                    ),
-                )
-            )
+            order = self.order_from_idea(symbol, decided_at, spread, idea)
+            if order is not None:
+                orders.append(order)
         return orders
+
+    def order_from_idea(
+        self,
+        symbol: str,
+        decided_at: datetime,
+        spread: float,
+        idea: TradeIdea,
+    ) -> BacktestOrder | None:
+        """Convert one verdict while leaving refusals visible to validators."""
+        if not idea.approved or idea.direction is None:
+            return None
+        active = tuple(
+            signal.module
+            for signal in idea.signals
+            if signal.score * int(idea.direction) > 0
+            and signal.confidence > 0
+            and self.engine.config.weights.get(signal.module, 0.0) > 0
+            and signal.confidence >= self.engine.config.minimum_confidence
+        )
+        return BacktestOrder(
+            symbol=symbol,
+            decided_at=decided_at,
+            direction=idea.direction,
+            entry=idea.entry,
+            stop_loss=idea.stop_loss,
+            take_profit=idea.take_profit,
+            score=idea.score,
+            confidence=idea.confidence,
+            modules=active,
+            spread=spread,
+            horizon_minutes=idea.expected_horizon_minutes,
+            regime=next(
+                (
+                    str(signal.details.get("regime", ""))
+                    for signal in idea.signals
+                    if signal.module == "market_regime"
+                ),
+                "",
+            ),
+        )
 
 
 def frame_from_mt5(raw: object) -> pd.DataFrame:
