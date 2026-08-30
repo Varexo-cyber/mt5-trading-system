@@ -57,6 +57,7 @@ from backtesting.replay import fetch_mt5_history
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
 from core.types import Timeframe
+from risk.position_sizer import PositionSizer
 
 #: Bars of history a candidate may look back over before its first signal.
 WARMUP = 120
@@ -353,17 +354,33 @@ def stats(trades: Trades) -> tuple[float, float, float, int]:
     return total, total / n, (total / se if se > 0 else 0.0), n
 
 
-def _cost_share(settings, asset_class: str, spec, stop_price: float) -> float:
-    """What a round trip costs as a fraction of the stop, from the real
-    schedule. Only forex pays commission on this account, which is why forex
-    is where the cost wall sits."""
-    per_side = settings.risk.commission_by_asset_class.get(
-        asset_class, settings.risk.commission_per_lot_per_side
-    )
-    slippage_pips = settings.risk.stop_slippage_pips.get(asset_class, 1.0)
-    pip = spec.point * 10.0
-    commission_price = (per_side * 2.0) * pip / 10.0
-    return (commission_price + slippage_pips * pip) / stop_price if stop_price > 0 else 1.0
+def _cost_share(sizer, spec, stop_price: float) -> float:
+    """What a round trip costs as a fraction of the stop.
+
+    DELEGATED TO THE SIZER, and the first version of this function is why.
+
+    I reimplemented it here as
+
+        pip = spec.point * 10.0
+        commission_price = (per_side * 2.0) * pip / 10.0
+
+    which is dimensionally nonsense: commission is account currency per lot,
+    and multiplying it by a tenth of a pip does not convert it to price. It
+    needs the instrument's pip VALUE, which depends on contract size and
+    quote currency -- exactly what `spec.money_per_lot` and
+    `spec.pips_to_price` already know.
+
+    The result showed up as gold reading a 62% cost share on H1 against 0.2%
+    on M30. Same instrument, same formula, and cost must FALL on a slower
+    clock because the stop is wider. A number that moves 300x the wrong way
+    is not a property of gold.
+
+    `PositionSizer._cost_share` is the definition the account charges, its own
+    docstring warns that "two definitions of the same cost would eventually
+    disagree", and I wrote the second one anyway.
+    """
+    commission = sizer.settings.risk.commission_per_lot(spec.asset_class.value)
+    return sizer._cost_share(spec, stop_price, commission)
 
 
 def random_control(frame: pd.DataFrame, seed: int) -> np.ndarray:
@@ -486,7 +503,11 @@ def main() -> None:
         start = end - timedelta(days=args.days)
         split = start + (end - start) * 0.6
 
+        sizer = PositionSizer(settings)
         cells: dict[tuple[str, str, str], Cell] = {}
+        #: (clock, asset class) -> cost share, printed with the result. It is
+        #: the number the whole search turns on and it was invisible.
+        costs: dict[tuple[str, str], float] = {}
         print(
             f"\nSEARCHING {len(symbols)} markets x {len(clocks)} clocks "
             f"x {len(CANDIDATES)} candidates, {args.days} days"
@@ -512,7 +533,8 @@ def main() -> None:
                 if len(frame) < WARMUP + HORIZON + 200:
                     continue
                 stop_price = args.stop_atr * float(np.nanmedian(_atr(frame)))
-                cost_r = _cost_share(settings, asset_class, spec, stop_price)
+                cost_r = _cost_share(sizer, spec, stop_price)
+                costs[(clock_name, asset_class)] = cost_r
 
                 for name, detector in CANDIDATES.items():
                     key = (name, clock_name, asset_class)
@@ -541,7 +563,7 @@ def main() -> None:
     finally:
         connector.shutdown()
 
-    _report(cells, args)
+    _report(cells, args, costs)
 
 
 def _split_into(found: Trades, split: datetime, cell: Cell) -> None:
@@ -552,7 +574,7 @@ def _split_into(found: Trades, split: datetime, cell: Cell) -> None:
         target.when.append(when)
 
 
-def _report(cells: dict, args) -> None:
+def _report(cells: dict, args, costs: dict | None = None) -> None:
     """What survived, and if nothing did, what stopped each one.
 
     A SEARCH THAT ONLY PRINTS ITS WINNERS IS A STORY. The near misses are the
@@ -577,6 +599,14 @@ def _report(cells: dict, args) -> None:
     print(f"  Bonferroni bar at {len(tested)} live cells: {bar:.2f} sigma on train")
     print("     (2.0 would be the bar for ONE hypothesis. Keeping the best of")
     print("      many finds a 2-sigma result on pure noise most of the time.)")
+
+    if costs:
+        print("\n  WHAT A ROUND TRIP COSTS, as a share of the stop")
+        for (clock, asset_class), share in sorted(costs.items(), key=lambda kv: -kv[1]):
+            flag = "  <- SUSPECT" if share > 0.5 else ""
+            print(f"    {asset_class:<10} {clock:<4} {share:>7.1%}{flag}")
+        print("    Above ~25% nothing pays, whatever the entry does. A share")
+        print("    that RISES on a slower clock is a bug, not a market.")
 
     print("\n  THE HARNESS'S OWN BIAS — random entries on the same bars")
     for (clock, asset_class), cell in sorted(controls.items()):

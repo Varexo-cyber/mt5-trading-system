@@ -374,3 +374,116 @@ class TestEveryCandidateCanActuallyFire:
 
         assert "NEVER FIRED" in source
         assert "TOO THIN TO JUDGE" in source
+
+
+class TestTheCostModelIsTheAccountsOwn:
+    """I reimplemented `_cost_share` here and got it dimensionally wrong.
+
+        pip = spec.point * 10.0
+        commission_price = (per_side * 2.0) * pip / 10.0
+
+    Commission is account currency per lot; multiplying it by a tenth of a pip
+    does not convert it to price. It needs the instrument's pip VALUE, which
+    depends on contract size and quote currency -- exactly what
+    `spec.money_per_lot` and `spec.pips_to_price` already know.
+
+    It surfaced as gold reading a 62% cost share on H1 against 0.2% on M30.
+    Same instrument, same formula, and cost MUST fall on a slower clock
+    because the stop is wider. A number that moves 300x the wrong way is not a
+    property of gold.
+
+    `PositionSizer._cost_share` is what the account actually charges, and its
+    own docstring warns that "two definitions of the same cost would
+    eventually disagree". I wrote the second one anyway.
+    """
+
+    def test_it_calls_the_sizer_rather_than_recomputing(self) -> None:
+        import inspect
+
+        from scripts import search_section_four
+
+        source = inspect.getsource(search_section_four._cost_share)
+        body = source.split('"""')[-1]
+
+        assert "sizer._cost_share(" in body
+        assert "spec.point" not in body, "the hand-rolled conversion is back"
+
+    def test_cost_falls_as_the_stop_widens(self) -> None:
+        """THE PROPERTY THE BUG VIOLATED. A wider stop carries the same fixed
+        commission and slippage over more distance, so the share must fall --
+        monotonically, at every width."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from risk.position_sizer import PositionSizer
+        from scripts.search_section_four import _cost_share
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        sizer = PositionSizer(settings)
+
+        class Spec:
+            """Minimal stand-in: the two conversions the real cost uses."""
+
+            asset_class = type("A", (), {"value": "forex"})()
+            point = 0.00001
+
+            @staticmethod
+            def money_per_lot(distance: float) -> float:
+                return distance * 100_000.0
+
+            @staticmethod
+            def pips_to_price(pips: float) -> float:
+                return pips * 0.0001
+
+        shares = [_cost_share(sizer, Spec(), stop) for stop in (0.0005, 0.0010, 0.0020, 0.0040)]
+
+        assert shares == sorted(shares, reverse=True), shares
+        assert all(0.0 < s < 1.0 for s in shares[1:]), shares
+
+    def test_the_report_prints_the_share_and_flags_an_impossible_one(self) -> None:
+        """It is the number the whole search turns on and it was invisible --
+        the 62% only showed up indirectly, as a random control reading
+        -0.6184 R."""
+        import inspect
+
+        from scripts import search_section_four
+
+        source = inspect.getsource(search_section_four._report)
+
+        assert "WHAT A ROUND TRIP COSTS" in source
+        assert "SUSPECT" in source
+
+
+class TestOppositeDirectionsCannotBothPay:
+    """`gap_fade` is literally `-gap_continuation`, so within ONE cell their
+    expectancies must sum to minus twice the cost:
+
+        continuation   2p - 1 - c
+        fade           1 - 2p - c
+        sum                  -2c
+
+    The owner read the search result as both being strong. They appeared in
+    the top four on DIFFERENT clocks and asset classes, which is not a
+    contradiction -- but it is also not a mechanism, because a real gap effect
+    points the same way everywhere. This test pins the arithmetic so the claim
+    can be checked rather than argued.
+    """
+
+    def test_the_pair_sums_to_minus_twice_the_cost_on_the_same_bars(self) -> None:
+        from scripts.search_section_four import CANDIDATES, resolve
+
+        frame = _realistic(6000)
+        cost = 0.05
+
+        forward = resolve(
+            frame, CANDIDATES["gap_continuation"](frame), stop_atr=1.0, ratio=1.0, cost_r=cost
+        )
+        backward = resolve(
+            frame, CANDIDATES["gap_fade"](frame), stop_atr=1.0, ratio=1.0, cost_r=cost
+        )
+
+        assert len(forward) > 50 and len(backward) > 50
+        each = sum(forward.r) / len(forward) + sum(backward.r) / len(backward)
+
+        assert each < 0.0, "opposite entries on one market cannot both pay"
+        assert each == pytest.approx(-2 * cost, abs=0.25)
