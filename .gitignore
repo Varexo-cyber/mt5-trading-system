@@ -43,3 +43,7 @@ dist/
 # `weekend.cmd` schrijft hier zijn rapporten naartoe. Die bevatten posities,
 # saldi en tickets van een echte rekening en horen niet in een repository.
 reports/
+
+# Ten years of M15 bars used by scripts/measure_edges.py. 118 MB of public
+# HistData; the script header says how to refetch it.
+data/m15/

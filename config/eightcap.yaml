@@ -2337,7 +2337,7 @@ analysis:
     # `basket_divergence` komen in geen van beide tabellen voor: ze zijn niet
     # slecht bevonden, ze zijn niet gemeten. `candle_momentum` kan niet alleen
     # handelen (33,75 tegen een lat van 35) en kan dus alleen bevestigen.
-    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum]
+    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum, level_retest]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2525,6 +2525,31 @@ analysis:
       # constructie nooit beoordeeld kan worden. Dat is precies wat er drie
       # detectoren lang met M1 is gebeurd.
       vwap_reversion: 0.7
+
+      # HET ENIGE GEWICHT OP DEZE REKENING DAT UIT EEN METING KOMT.
+      #
+      # Tien jaar M15, acht instrumenten (XAUUSD en zeven majors), 1,84
+      # miljoen bars, first-touch met de stop OOK binnen de invulbar getoetst
+      # en onbesliste trades weggelaten. Parameters gekozen op 2012-2017, de
+      # holdout 2018-2021 een keer gelezen:
+      #
+      #     de break KOPEN        190.505 signalen   E -0,067R   -29 sigma
+      #     de retest, GELEVERD    55.582 trades     E +0,134R   +22 sigma
+      #
+      # Dezelfde detector, dezelfde breaks. Het verschil is WAAR er wordt
+      # ingestapt.
+      #
+      # De beste cel in de sweep is niet de geleverde. Met de stop op 0,35 ATR
+      # voorbij het niveau staat er E +0,340R (train, 49.700 trades) en
+      # E +0,347R op de holdout (30.507 trades, een keer gelezen). Die stop
+      # valt echter onder `min_stop_atr: 0,8`, en een vloer die de stop
+      # stilletjes oprekt levert een andere trade dan er gemeten is. Geleverd
+      # wordt 0,15 + 0,75 = 0,90 ATR: die gaat ongemoeid door de vloer heen.
+      #
+      # 1,0 en niet hoger: het is gemeten op HistData M15 bid-bars voor forex
+      # en goud, niet op de feed van Eightcap en niet op indices. Dat is het
+      # ene stuk dat nog niet vaststaat, en `section_breakers` staat eronder.
+      level_retest: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3359,6 +3384,27 @@ risk:
       maximum_loss_share: 0.60
       losing_streak: 8
 
+    # LEVEL_RETEST, en zijn noodstop is de losste van allemaal met opzet.
+    #
+    # Hij gaat live op 80.207 gemeten trades -- meer dan duizend keer het
+    # monster waarop elke andere module hier is beoordeeld -- met een holdout
+    # die de training tot op 0,007R reproduceerde. De trefkans die verwacht
+    # wordt is 44,9% bij een doel van 2R.
+    #
+    # WAAROM DAN TOCH EEN BREAKER. De meting is HistData M15 bid-bars op forex
+    # en goud. Wat er NIET in zit: de feed van Eightcap, de indices, de echte
+    # spread, commissie en slippage. Dat is precies het stuk dat elke andere
+    # M1-module hier de kop heeft gekost.
+    #
+    # 40 trades en 65%: bij een verwachte trefkans van 44,9% is 65% verliezers
+    # over veertig trades ongeveer vier sigma de verkeerde kant op. Dat is geen
+    # pech meer, dat is een meting die op deze feed niet geldt.
+    level_retest:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 10
+
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde
     # er vier, en een daarvan (`drift_burst`) staat niet eens live. Twee van de
@@ -3747,6 +3793,26 @@ trade_management:
   # STEPPING IN BEAT LEAVING IT ALONE`. Blijft `lift` negatief, dan is er geen
   # instelling die dit repareert.
   health_broken_at: 0.85
+  # EN NU GAAT HIJ UIT, precies zoals hierboven beloofd was.
+  #
+  # "WAT ER GEBEURT ALS DIT NIET HELPT: dan is de regel zelf het probleem en
+  # gaat hij uit, niet omhoog." Dat staat er sinds 24 augustus. De rij die
+  # gelezen moest worden staat er inmiddels:
+  #
+  #     broken_at 0,65   13 trades   0 gewonnen   -EUR 20,33   lift -0,40R
+  #     broken_at 0,75   12 trades   0 gewonnen   -EUR 36,82   lift -0,06R
+  #     broken_at 0,85   34 trades   0 gewonnen   -EUR 45,89   lift -0,42R
+  #
+  # Drie instellingen, 59 sluitingen, nul winnaars, en de lift bleef negatief.
+  # De voorwaarde die deze regel voor zichzelf had opgeschreven is gehaald.
+  #
+  # `health_broken_at` blijft op 0,85 staan omdat de LEZING zelf blijft
+  # draaien -- hij verkrapt nog steeds stops en borgt nog steeds winst. Alleen
+  # het SLUITEN gaat eruit, en elke onderdrukte sluiting komt als
+  # HEALTH_EXIT_SUPPRESSED in het journaal met de R waarop hij dicht zou zijn
+  # gegaan. De tegenfeitelijke meting loopt dus door; hij kost alleen geen geld
+  # meer terwijl hij loopt.
+  health_exit_closes: false
   # DE PROFIT-LOCK NAAR WAAR DEZE TRADES ECHT LEVEN.
   #
   # Hij armeerde op 0,7R en borgde de helft van de top. Over 39 gesloten

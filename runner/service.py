@@ -46,6 +46,7 @@ from analysis import (
     FastEmaCross,
     ImpulseBreak,
     LevelReaction,
+    LevelRetest,
     LifecycleDecision,
     LiquiditySweep,
     M1MicroBreakout,
@@ -424,6 +425,11 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # second family for the nine that follow.
         DriftBurst(analysis.drift_burst),
         VwapReversion(analysis.vwap_reversion),
+        # THE ONE DETECTOR CHOSEN BY MEASUREMENT. Ten years of M15 on eight
+        # instruments: buying the channel break is -0.067R at -29 sigma over
+        # 190,505 signals, and buying its retest is +0.134R at +22 sigma over
+        # 55,582. Same breaks; the difference is where the trade is entered.
+        LevelRetest(analysis.level_retest),
         # SECTION FIVE, and the first reader that is MEANINGLESS on a single
         # chart. It measures a move between two M1 closes, which has no open
         # question about surviving the coarsening.

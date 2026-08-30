@@ -2144,6 +2144,59 @@ class CandleMomentumConfig(Base):
         return self
 
 
+class LevelRetestConfig(Base):
+    """The only detector on this account chosen by measurement, not argument.
+
+    Ten years of M15, eight instruments, 1.84 million bars, first-touch with
+    the stop checked inside the fill bar and unresolved trades excluded:
+
+        buying the channel break    190,505 signals   E -0.067R   -29 sigma
+        buying its retest            55,582 signals   E +0.134R   +22 sigma
+
+    Same detector, same breaks, 0.2R apart on where the trade is entered.
+    """
+
+    enabled: bool = True
+    #: M15 because that is the timeframe the edge was measured on. Nothing
+    #: here has been shown to hold on M1, and the three M1 modules on this
+    #: account are exactly the ones that were never measured at all.
+    timeframe: str = "M15"
+    #: Both 20 and 40 measured well (+22 and +23 sigma at the shipped stop);
+    #: 20 gives 40% more signals for a slightly smaller edge, and this account
+    #: needs trades.
+    channel_period: int = Field(default=20, ge=5, le=200)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    #: How far back a break stays worth retesting. 96 M15 bars is 24 hours,
+    #: the horizon the measurement resolved trades over.
+    lookback_bars: int = Field(default=96, ge=4, le=500)
+    #: THE PARAMETER. The edge is monotone in it and changes sign:
+    #:
+    #:     0.15 ATR   +11.3 points over chance   +54 sigma
+    #:     0.35 ATR    +5.0 points               +20 sigma
+    #:     0.60 ATR    -3.4 points               NEGATIVE
+    #:
+    #: Slack here is not tolerance, it is the edge being given away.
+    tolerance_atr: float = Field(default=0.15, gt=0.0, le=1.0)
+    #: 0.35 measured better (E +0.340 against +0.134) but sits under
+    #: `ConfluenceConfig.min_stop_atr`, and a floor that silently widens the
+    #: stop would leave this measuring one trade and sending another.
+    #: 0.15 + 0.75 = 0.90 ATR clears the floor.
+    stop_beyond_atr: float = Field(default=0.75, gt=0.0, le=3.0)
+    base_score: float = Field(default=55.0, ge=0.0, le=100.0)
+    closeness_score_bonus: float = Field(default=15.0, ge=0.0, le=50.0)
+    base_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    closeness_confidence_bonus: float = Field(default=0.20, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.85, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _confidence_is_ordered(self) -> LevelRetestConfig:
+        if self.maximum_confidence < self.base_confidence:
+            raise ValueError(
+                "analysis.level_retest.maximum_confidence may not be below base_confidence"
+            )
+        return self
+
+
 class VwapReversionConfig(Base):
     """SECTION TWO, replacing `drift_burst`. How far is price from the day?
 
@@ -2823,13 +2876,25 @@ class EntryQualityConfig(Base):
     )
     #: How close to the broken level counts as having retested it, in ATR.
     #:
-    #: Not zero. A retest that demands the exact tick never fills, and the
-    #: level itself is an estimate -- the detector's own published level where
-    #: it has one, the detection price where it does not. 0.35 ATR is inside
-    #: the 0.40 the old pullback rule asked for, so this is not a looser gate
-    #: wearing a new name: it is the same distance measured from the right
-    #: place.
-    lifecycle_retest_level_atr: float = Field(default=0.35, ge=0.0, le=3.0)
+    #: 0.35 -> 0.15 ON MEASUREMENT, and this is the correction to the value
+    #: shipped hours earlier on reasoning alone.
+    #:
+    #: Ten years of M15 on eight instruments, the same break entered at
+    #: different distances from the level it cleared:
+    #:
+    #:     within 0.15 ATR   +11.3 points over chance   +54 sigma
+    #:     within 0.35 ATR    +5.0 points               +20 sigma
+    #:     within 0.60 ATR    -3.4 points               NEGATIVE
+    #:
+    #: Monotone across three channel lengths and 27 configurations, and it
+    #: changes sign. 0.35 was picked to sit inside the 0.40 the old pullback
+    #: rule asked for -- a defensible argument that happens to give away more
+    #: than half the edge. The distance is not a tolerance around the strategy,
+    #: it IS the strategy.
+    #:
+    #: Not zero: a retest demanding the exact tick never fills, and the level
+    #: is an estimate.
+    lifecycle_retest_level_atr: float = Field(default=0.15, ge=0.0, le=3.0)
     lifecycle_pullback_atr: dict[str, float] = Field(
         default_factory=lambda: {"quick": 0.20, "intraday": 0.30, "swing": 0.40}
     )
@@ -3590,6 +3655,7 @@ class AnalysisConfig(Base):
     session_breakout: SessionBreakoutConfig = SessionBreakoutConfig()
     seasonality: SeasonalityConfig = SeasonalityConfig()
     drift_burst: DriftBurstConfig = DriftBurstConfig()
+    level_retest: LevelRetestConfig = LevelRetestConfig()
     vwap_reversion: VwapReversionConfig = VwapReversionConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()
     candle_momentum: CandleMomentumConfig = CandleMomentumConfig()
@@ -4089,6 +4155,36 @@ class TradeManagementConfig(Base):
     #: `_worth_paying_to_leave` still applies, so a position whose stop is
     #: nearer than the exit costs is left to the stop.
     exit_on_second_independent_warning: bool = True
+    #: MAY A HEALTH READING CLOSE A TRADE AT ALL.
+    #:
+    #: The rule pre-registered its own kill condition in `config/eightcap.yaml`
+    #: in these words: "blijft `lift` negatief, dan is er geen instelling die
+    #: dit repareert". It has now been measured at three settings and the lift
+    #: was negative at all three:
+    #:
+    #:     broken_at 0.65   13 trades   0 won   -EUR 20,33   lift -0.40R
+    #:     broken_at 0.75   12 trades   0 won   -EUR 36,82   lift -0.06R
+    #:     broken_at 0.85   34 trades   0 won   -EUR 45,89   lift -0.42R
+    #:
+    #: Zero winners in fifty-nine closes is not by itself damning -- the rule
+    #: fires on trades whose thesis broke, so losers are what it should be
+    #: catching. The counterfactual column is what damns it:
+    #:
+    #:     stepping in was   -0.26R
+    #:     doing nothing was +0.14R
+    #:
+    #: Doing nothing was PROFITABLE. And the damage is concentrated in one
+    #: sequence -- tighten the stop, then close anyway:
+    #:
+    #:     stop moved, then closed   6 trades   lift -0.80R
+    #:     stop untouched            2 trades   lift +0.82R
+    #:
+    #: False downgrades an "exit" reading to "hold" and journals it as
+    #: HEALTH_EXIT_SUPPRESSED with the R it would have closed at, so the
+    #: counterfactual keeps being measured on live trades rather than going
+    #: dark. Tightening and profit-securing are untouched; this is only the
+    #: close. The stop the trade was opened with does the work instead.
+    health_exit_closes: bool = True
 
     #: The per-second read of how an open trade is actually behaving — has the
     #: structure broken, has momentum turned, is it running against us, has the
