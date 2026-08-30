@@ -1,18 +1,26 @@
 """The first module on this account with a number behind it.
 
-Ten years of M15, eight instruments, 1.84 million bars. Parameters chosen on
-2012-2017; the 2018-2021 holdout read once, for the sweep's best cell:
+CORRECTED 30 AUGUST, AND THE MODULE IS NO LONGER LIVE. The numbers that put
+it there (+0.340R train, +0.347R holdout) came from a harness that checked the
+setup's FAILURE before its FILL. The entry sits between the level and the stop,
+so price cannot reach the stop without passing through the limit order; testing
+the failure first discarded every bar that swept through both at once -- 6% to
+16% of the sample, all of them losses.
 
-    best cell, train    49,700 trades   hit 44.7%   +53.6 sigma   E +0.340R
-    best cell, holdout  30,507 trades   hit 44.9%   +42.9 sigma   E +0.347R
-    SHIPPED cell        55,582 trades   hit 37.8%   +22.3 sigma   E +0.134R
+    stop 0.50 ATR   +0.336R  ->  +0.063R
+    stop 0.90 ATR   +0.133R  ->  +0.036R
 
-The shipped cell carries a wider stop so `min_stop_atr` cannot silently widen
-it, and has no holdout of its own -- what is out-of-sample here is the family.
+Gross positive on every asset class and timeframe measured, and NET NEGATIVE on
+all fourteen of them once a spread is charged. The best row is fx H1 at -0.004R.
 
-Against the same breaks entered AT the break instead:
+What survives: the retest still beats buying the same break (-0.067R) by 0.10
+to 0.20R, and that comparison is untouched -- a break entry has no limit order
+and so no fill-ordering question. Entering at the level rather than at the
+extreme is still right. Paying for itself is not established.
 
-    donchian_break  190,505 signals  E -0.067R  -29 sigma
+These tests therefore guard SHAPE, not profitability: that the module reads the
+level it was built to read, that its stop is the one that was measured, and
+that it stays out of `live_enabled_modules`.
 
 These tests do not re-measure that. They guard the things that would make the
 shipped module a different strategy from the measured one -- and every one of
@@ -217,6 +225,18 @@ class TestItIsWiredIn:
         )
 
         assert "level_retest" in {m.name for m in build_analysis_modules(settings)}
+
+    def test_it_is_not_live(self) -> None:
+        """Corrected measurement: gross positive, net negative everywhere.
+        The weight stays so the backtest can keep grading it; permission does
+        not."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        confluence = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.confluence
+
+        assert "level_retest" not in confluence.live_enabled_modules
 
     def test_it_carries_a_weight_so_the_backtest_can_grade_it(self) -> None:
         from config.loader import DEFAULT_CONFIG_PATH, load_settings

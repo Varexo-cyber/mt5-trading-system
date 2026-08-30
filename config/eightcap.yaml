@@ -2337,7 +2337,37 @@ analysis:
     # `basket_divergence` komen in geen van beide tabellen voor: ze zijn niet
     # slecht bevonden, ze zijn niet gemeten. `candle_momentum` kan niet alleen
     # handelen (33,75 tegen een lat van 35) en kan dus alleen bevestigen.
-    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum, level_retest]
+    # LEVEL_RETEST IS ER WEER UIT, 30 augustus, en de reden is mijn eigen
+    # meetfout en niet de markt.
+    #
+    # Hij ging vanochtend live op E +0,340R train / +0,347R holdout. Dat getal
+    # was fout. In de meetopstelling stond de faal-check VOOR de vul-check:
+    #
+    #     if failed: break        <- eerst
+    #     if touched: enter
+    #
+    # De instap ligt tussen het niveau en de stop in, dus prijs KAN de stop
+    # niet raken zonder eerst door de limietorder te gaan. Elke bar die in een
+    # keer door allebei veegde werd daardoor weggegooid in plaats van
+    # ingestapt -- en dat zijn precies de zwaarste verliezers. 6% tot 16% van
+    # het monster, allemaal verlies, stilletjes verwijderd.
+    #
+    # Met de check in de goede volgorde:
+    #
+    #     R = 0,50 ATR   E +0,336R  ->  +0,063R
+    #     R = 0,90 ATR   E +0,133R  ->  +0,036R
+    #
+    # Bruto nog steeds positief op elke markt en elk timeframe, en netto na
+    # spread NEGATIEF op alle veertien gemeten combinaties. De beste rij is
+    # fx H1 op -0,004R, en dat is nul.
+    #
+    # WAT WEL BLIJFT STAAN: de retest is nog altijd 0,10 tot 0,20R beter dan
+    # dezelfde break kopen (-0,067R). Dat verschil is niet door deze bug
+    # geraakt -- de break heeft geen limietorder en dus geen vulvolgorde. De
+    # `setup_lifecycle`-wijziging die breakout-families naar hun niveau laat
+    # terugkomen blijft dus, want die kiest tussen twee instappen. Wat vervalt
+    # is de claim dat dit op zichzelf geld verdient.
+    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #

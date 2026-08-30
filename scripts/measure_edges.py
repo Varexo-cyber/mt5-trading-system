@@ -183,14 +183,21 @@ def donchian_retest(
             else:
                 failed = close[j] > level + 0.5 * unit_at_break
                 touched = high[j] >= level - tolerance * unit_at_break
-            if failed:
-                break
+            # TOUCHED BEFORE FAILED, and this ordering was wrong until
+            # 30 August. The entry sits between the level and the stop, so
+            # price cannot reach the stop without passing through the limit
+            # order first. Testing the failure first DISCARDED every bar that
+            # swept through both at once -- 6% to 16% of the sample, all of
+            # them losses -- and that alone accounted for three quarters of
+            # this strategy's apparent edge (+0.336R -> +0.063R).
             if touched:
                 entry = level + direction * tolerance * unit_at_break
                 # The stop sits half an ATR beyond the level it retested.
                 unit = 0.5 * unit_at_break + tolerance * unit_at_break
                 out.append(Signal(j, direction, entry, unit))
                 i = j
+                break
+            if failed:
                 break
         i += 1
     return out
