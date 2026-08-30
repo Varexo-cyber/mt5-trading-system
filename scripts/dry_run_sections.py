@@ -268,16 +268,42 @@ def main() -> None:
         account = connector.account()
         equity = args.equity or account.equity
 
-        symbols = (
-            [s.strip() for s in args.symbols.split(",") if s.strip()]
-            or list(settings.active_whitelist)
-            or ["EURUSD", "GBPUSD"]
-        )
+        # THE UNIVERSE THE SCANNER ACTUALLY WALKS, not `active_whitelist`.
+        # The whitelist is four names; the live scan reads the broker's whole
+        # catalogue filtered by asset class and the ignore list, which is why
+        # the first run of this reported "4 symbols" against an account that
+        # scans a couple of hundred.
+        if args.symbols:
+            symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        else:
+            # The scanner's OWN classifier, not an approximation of it. A
+            # substring match on the folder name would quietly disagree with
+            # the live filter, and then this would be measuring a different
+            # universe from the one that trades.
+            from scanner.universe import UniverseScanner
+
+            wanted = {c.lower() for c in settings.scanner.priority_asset_classes}
+            symbols = [
+                item.name
+                for item in connector.symbols()
+                if not settings.instruments.is_ignored(item.name)
+                and (not wanted or UniverseScanner._path_class(item.path).value in wanted)
+            ]
+            if args.limit:
+                symbols = symbols[: args.limit]
         end = datetime.now(UTC)
         start = end - timedelta(days=args.days)
-        # Warmup has to come from before the window or the first day is blind.
-        fetch_from = start - timedelta(days=max(20, args.days))
         fetch_these = tuple(tf for tf in NEEDED if not (args.no_m1 and tf is Timeframe.M1))
+
+        # WARMUP IS MEASURED IN BARS, SO THE WINDOW IS PER TIMEFRAME.
+        #
+        # A single 27-day fetch gives M15 about 2,600 bars and H4 about 160 --
+        # under the 270 the guard wants, so EVERY symbol was skipped "for want
+        # of history" and the first run reported zero decisions on a working
+        # account. 1.6x pads the weekends out of the calendar days.
+        def _fetch_from(tf: Timeframe) -> datetime:
+            bars_needed = (WARMUP + 20) * tf.duration
+            return start - max(bars_needed * 1.6, timedelta(days=3))
 
         print(f"\n{'=' * 78}")
         print(f"DRY RUN — sections {', '.join(sorted(live))}")
@@ -311,14 +337,18 @@ def main() -> None:
             try:
                 spec = connector.spec(symbol)
                 frames = {
-                    tf: fetch_mt5_history(connector, symbol, tf, fetch_from, end)
+                    tf: fetch_mt5_history(connector, symbol, tf, _fetch_from(tf), end)
                     for tf in fetch_these
                 }
             except Exception as exc:  # noqa: BLE001 - one bad symbol must not stop the run
                 skipped_symbols += 1
                 print(f"  [{index}/{len(symbols)}] {symbol}: no history ({exc})")
                 continue
-            if any(len(f) < WARMUP + 10 for f in frames.values()):
+            # Only the clocks a pass will actually use need to be deep enough.
+            # Requiring it of every fetched timeframe threw away symbols over a
+            # frame nothing was going to read.
+            used = {Timeframe.parse(tf) for _, tf in passes} | {finest}
+            if any(len(frames.get(tf, [])) < WARMUP + 10 for tf in used if tf in frames):
                 skipped_symbols += 1
                 continue
 

@@ -258,7 +258,7 @@ def prior_week_fade(frame, a, *, stop=1.0):
 @detector("trend_day_continuation")
 def trend_day_continuation(frame, a, *, stop=1.0):
     """Yesterday closed in the top or bottom tenth of its range. Follow it."""
-    high, low, close = (frame[c].to_numpy() for c in ("high", "low", "close"))
+    _high, _low, close = (frame[c].to_numpy() for c in ("high", "low", "close"))
     day = frame.index.normalize()
     grouped = frame.groupby(day)
     hi = grouped["high"].max().shift(1).reindex(day).to_numpy()

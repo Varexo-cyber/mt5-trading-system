@@ -95,6 +95,37 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
         assert check < connect
 
 
+class TestItMeasuresTheUniverseThatTrades:
+    def test_it_uses_the_scanner_own_classifier(self) -> None:
+        """`active_whitelist` is four names; the live scan walks the broker's
+        whole catalogue filtered by asset class. The first run of this reported
+        "4 symbols" on an account that scans a couple of hundred, so it was
+        measuring a universe the account does not trade.
+
+        And the filter is the scanner's own `_path_class`, not a substring
+        match on the folder name -- an approximation would quietly disagree
+        with the live filter, which is the same defect one level down."""
+        assert "UniverseScanner._path_class" in SOURCE
+        assert "settings.active_whitelist" not in SOURCE
+
+    def test_the_classifier_is_reachable_as_used(self) -> None:
+        from scanner.universe import UniverseScanner
+
+        assert UniverseScanner._path_class("forex\\majors").value == "forex"
+
+    def test_history_is_fetched_per_timeframe(self) -> None:
+        """Warmup is counted in BARS. One 27-day window gives M15 about 2,600
+        bars and H4 about 160 -- under the guard -- so every symbol was skipped
+        "for want of history" and the run reported zero decisions."""
+        assert "def _fetch_from(tf: Timeframe)" in SOURCE
+        assert "(WARMUP + 20) * tf.duration" in SOURCE
+
+    def test_only_the_clocks_in_use_must_be_deep_enough(self) -> None:
+        """Requiring the warmup of every fetched timeframe threw symbols away
+        over a frame no pass was going to read."""
+        assert "for tf in used if tf in frames" in SOURCE
+
+
 class TestTheSweepIsHonest:
     def test_it_resolves_on_a_finer_timeframe_than_it_decides_on(self) -> None:
         """An M30 trade resolved on M30 bars cannot tell which barrier the bar
