@@ -460,7 +460,13 @@ class ConfluenceEngine:
             )
         horizon_bars = self._horizon_bars(risk, natural_risk, profile, frame=frame)
         target, target_note = self._reachable_target(
-            ctx, entry, risk, direction, profile=profile, horizon=horizon_bars
+            ctx,
+            entry,
+            risk,
+            direction,
+            profile=profile,
+            horizon=horizon_bars,
+            setup_family=setup_family,
         )
         if target is None:
             return self._reject(ctx, signals, target_note, score, confidence)
@@ -613,6 +619,7 @@ class ConfluenceEngine:
         *,
         profile: HorizonProfileConfig | None = None,
         horizon: int | None = None,
+        setup_family: str = "",
     ) -> tuple[float | None, str]:
         """Place the target where this market actually goes, not where R says.
 
@@ -632,7 +639,18 @@ class ConfluenceEngine:
         into something not worth taking.
         """
         config = self.config
-        planned = risk * config.target_r_multiple
+        # A FAMILY MAY NAME ITS OWN RATIO. One number cannot be right for two
+        # different trades: `impulse_retest` was measured at every ratio from
+        # 0.75 to 3.0 and nets +0.28R at 1:1 against +0.016R at 3:1, so sending
+        # it out under the account's 3.0 would trade a measured strategy at
+        # nearly zero. Matched on substring because `setup_family` is
+        # `{module}_{timeframe}`.
+        ratio = config.target_r_multiple
+        for family, override in config.target_r_multiple_by_family.items():
+            if family in setup_family:
+                ratio = override
+                break
+        planned = risk * ratio
         planning_timeframe = (
             Timeframe.parse(profile.planning_timeframe) if profile else Timeframe.H1
         )

@@ -46,6 +46,7 @@ from analysis import (
     FastEmaCross,
     ImpulseBreak,
     LevelReaction,
+    ImpulseRetest,
     LevelRetest,
     LifecycleDecision,
     LiquiditySweep,
@@ -429,6 +430,11 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # instruments: buying the channel break is -0.067R at -29 sigma over
         # 190,505 signals, and buying its retest is +0.134R at +22 sigma over
         # 55,582. Same breaks; the difference is where the trade is entered.
+        # SECTION TWO. Measured, not argued: 24,063 trades over eleven FX
+        # majors, 68% at a 1:1 target against a one-ATR stop, +0.28R net of
+        # spread and of the harness's own measured bias, positive in all
+        # eleven years.
+        ImpulseRetest(analysis.impulse_retest),
         LevelRetest(analysis.level_retest),
         # SECTION FIVE, and the first reader that is MEANINGLESS on a single
         # chart. It measures a move between two M1 closes, which has no open

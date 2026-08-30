@@ -2144,6 +2144,58 @@ class CandleMomentumConfig(Base):
         return self
 
 
+class ImpulseRetestConfig(Base):
+    """SECTION TWO. The one strategy here chosen by measurement.
+
+    Ninety-four detectors over sixteen instruments and six timeframes; this is
+    what survived a Bonferroni bar across the whole grid, a holdout that had to
+    agree on its own, a day-clustered sigma, and a coin-flip control that
+    turned out NOT to read zero.
+
+        M15   18,828 trades   hit 67.9%   net +0.279R  (train +0.272/test +0.285)
+        H1     5,235 trades   hit 67.9%   net +0.281R  (train +0.276/test +0.284)
+
+    Positive in all eleven years, +0.181R to +0.394R, no losing year.
+    """
+
+    enabled: bool = True
+    #: M15. H1 measured identically (+0.281R against +0.279R) and either is
+    #: defensible; M15 gives three times the trades for the same edge.
+    timeframe: str = "M15"
+    channel_period: int = Field(default=20, ge=5, le=200)
+    atr_period: int = Field(default=14, ge=2, le=200)
+    #: 96 bars is the horizon every trade was resolved over.
+    lookback_bars: int = Field(default=96, ge=4, le=500)
+    #: THE FILTER THAT MAKES IT WORK. The break bar must CLOSE at least this
+    #: far past the level. Without it the same retest nets roughly zero; with
+    #: it, +0.28R. A break that closes a full ATR clear has taken every resting
+    #: offer on the way and left a queue; one that pokes through has not.
+    minimum_impulse_atr: float = Field(default=1.0, ge=0.0, le=5.0)
+    #: Impulse above the minimum at which the score saturates.
+    impulse_span_atr: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: How close to the level the fill must be. The edge is monotone in this
+    #: and changes sign by 0.60 ATR out.
+    tolerance_atr: float = Field(default=0.15, gt=0.0, le=1.0)
+    #: 0.85 + 0.15 = 1.00 ATR of risk. 0.50 ATR measured better (+0.242R at a
+    #: 2R target) but sits under `ConfluenceConfig.min_stop_atr: 0.8`, and a
+    #: floor that silently widens the stop would leave this measuring one trade
+    #: and sending another.
+    stop_beyond_atr: float = Field(default=0.85, gt=0.0, le=3.0)
+    base_score: float = Field(default=58.0, ge=0.0, le=100.0)
+    quality_score_bonus: float = Field(default=14.0, ge=0.0, le=50.0)
+    base_confidence: float = Field(default=0.58, ge=0.0, le=1.0)
+    quality_confidence_bonus: float = Field(default=0.22, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.88, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _confidence_is_ordered(self) -> ImpulseRetestConfig:
+        if self.maximum_confidence < self.base_confidence:
+            raise ValueError(
+                "analysis.impulse_retest.maximum_confidence may not be below base_confidence"
+            )
+        return self
+
+
 class LevelRetestConfig(Base):
     """The only detector on this account chosen by measurement, not argument.
 
@@ -3360,6 +3412,16 @@ class ConfluenceConfig(Base):
     #: can be.
     prefer_sooner_targets: bool = True
     target_r_multiple: float = Field(default=2.0, ge=1.0, le=10.0)
+    #: PER-FAMILY TARGET, because one number cannot be right for two different
+    #: trades. `impulse_retest` was measured at every ratio from 0.75 to 3.0
+    #: and its optimum is 1:1 -- 68% hit, +0.28R net -- while at 3:1 the same
+    #: setups net +0.016R. Sending it out under the account's 3.0 would take a
+    #: measured +0.28R strategy and trade it at nearly zero.
+    #:
+    #: The reachability cap still applies on top: the engine takes the smaller
+    #: of this and what the instrument actually travels in the horizon, so this
+    #: is a ceiling on ambition, not a promise.
+    target_r_multiple_by_family: dict[str, float] = Field(default_factory=dict)
     #: The target is also bounded by how far this instrument actually travels.
     #: `entry + 2R` is arithmetic and never asks whether the market goes there;
     #: a slow instrument gets a target it reaches once a month, and the trade
@@ -3655,6 +3717,7 @@ class AnalysisConfig(Base):
     session_breakout: SessionBreakoutConfig = SessionBreakoutConfig()
     seasonality: SeasonalityConfig = SeasonalityConfig()
     drift_burst: DriftBurstConfig = DriftBurstConfig()
+    impulse_retest: ImpulseRetestConfig = ImpulseRetestConfig()
     level_retest: LevelRetestConfig = LevelRetestConfig()
     vwap_reversion: VwapReversionConfig = VwapReversionConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()
