@@ -659,12 +659,6 @@ def main() -> None:
             bars_needed = (WARMUP + 20) * tf.duration
             return start - max(bars_needed * 1.6, timedelta(days=3))
 
-        print(f"\n{'=' * 78}")
-        print(f"DRY RUN — sections {', '.join(sorted(live))}")
-        print(f"{args.days} days to {end:%Y-%m-%d %H:%M} UTC, equity EUR {equity:.2f}")
-        print(f"{len(symbols)} symbols, {settings.effective_risk_pct():.1f}% risk per trade")
-        print(f"{'=' * 78}\n")
-
         # WHICH SECTIONS ON WHICH CLOCKS. The shipped timeframes were chosen
         # on HistData; a sweep asks the same question against this broker's
         # spreads, which is the number that actually decides it.
@@ -722,6 +716,22 @@ def main() -> None:
             for name in sorted(measured):
                 passes.append((name, getattr(settings.analysis, name).timeframe))
 
+        # THE HEADER NAMES WHAT IS MEASURED, not what is allowed to trade.
+        #
+        # It printed `live_enabled_modules`, so `history-one.cmd
+        # impulse_retest 180` announced "DRY RUN — sections order_block" and
+        # then spent twenty minutes measuring impulse_retest in silence. The
+        # owner reasonably concluded it had hung.
+        print(f"\n{'=' * 78}")
+        print(f"DRY RUN — measuring {', '.join(sorted({name for name, _tf in passes}))}")
+        shadowed = sorted({name for name, _tf in passes} - live)
+        if shadowed:
+            print(f"  shadowed (measured, NOT permitted real money): {', '.join(shadowed)}")
+        print(f"  clocks: {', '.join(sorted({tf for _n, tf in passes}))}")
+        print(f"{args.days} days to {end:%Y-%m-%d %H:%M} UTC, equity EUR {equity:.2f}")
+        print(f"{len(symbols)} symbols, {settings.effective_risk_pct():.1f}% risk per trade")
+        print(f"{'=' * 78}\n")
+
         finest = Timeframe.M5 if args.no_m1 else Timeframe.M1
         results: dict[tuple[str, str], list[Decision]] = {key: [] for key in passes}
         skipped_symbols = 0
@@ -775,8 +785,16 @@ def main() -> None:
                 for d in v
                 if d.symbol == symbol and d.outcome == "TRADE"
             )
-            if done:
-                print(f"  [{index}/{len(symbols)}] {symbol}: {done} trades")
+            # EVERY SYMBOL, TRADES OR NOT. This printed only when a symbol
+            # produced trades, so a run whose first eleven markets are FX --
+            # which form setups and lose every one of them to the cost wall --
+            # showed nothing at all for eleven markets. Silence and a hang look
+            # identical from the outside, and the owner sat on one for ten
+            # minutes before asking.
+            print(
+                f"  [{index}/{len(symbols)}] {symbol}: {done} trades",
+                flush=True,
+            )
 
         decisions = [d for v in results.values() for d in v]
     finally:
