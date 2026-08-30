@@ -237,7 +237,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    settings = load_settings(env_overrides=True)
+    # THE OVERLAY, or there are no live modules at all. The base config ships
+    # `live_enabled_modules` empty on purpose -- permission to trade real money
+    # is an account-level decision, and it lives in the Eightcap overlay. Load
+    # without it and this exits with "no live modules" while the account is
+    # perfectly well configured.
+    settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=True)
     settings = settings.model_copy(
         update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
     )
@@ -245,6 +250,13 @@ def main() -> None:
     # uses. Passing only the credentials made the connector read
     # `credentials.terminal_path`, which does not exist, and the run died
     # before it fetched a single bar.
+    live = set(settings.analysis.confluence.live_enabled_modules)
+    if not live:
+        raise SystemExit(
+            "no live modules in this configuration: nothing to dry-run. "
+            "Check `analysis.confluence.live_enabled_modules` in config/eightcap.yaml."
+        )
+
     credentials = load_credentials(required=True)
     connector = MT5Connector(
         settings.mt5,
@@ -255,9 +267,6 @@ def main() -> None:
     try:
         account = connector.account()
         equity = args.equity or account.equity
-        live = set(settings.analysis.confluence.live_enabled_modules)
-        if not live:
-            raise SystemExit("no live modules: nothing to dry-run")
 
         symbols = (
             [s.strip() for s in args.symbols.split(",") if s.strip()]
@@ -345,7 +354,7 @@ def main() -> None:
 
         decisions = [d for v in results.values() for d in v]
     finally:
-        connector.disconnect()
+        connector.shutdown()
 
     if args.sweep:
         _sweep_report(results, equity, args.days)
