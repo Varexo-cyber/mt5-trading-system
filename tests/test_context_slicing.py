@@ -161,3 +161,61 @@ class TestItIsNoLongerQuadratic:
 
         assert "searchsorted" in body
         assert "frame[frame.index" not in body, "the quadratic mask is back"
+
+
+class TestTheSliceCacheChangesNothing:
+    """Walking an M30 pass, the H4 window changes once every eight bars and
+    the H1 window once every two, yet every bar re-sliced all five frames.
+    Memoising the DataFrame per (timeframe, cut) turns most of that into a
+    dict lookup -- but a cache that returns a different answer is not an
+    optimisation, it is a bug with a speedup attached."""
+
+    def test_cached_and_uncached_agree_bar_for_bar(self) -> None:
+        frames = _frames()
+        stamps = list(frames[Timeframe.M30].index[-150:])
+        cache: dict = {}
+
+        for upto in stamps:
+            cold = _context("X", frames, upto, 0.0002)
+            warm = _context("X", frames, upto, 0.0002, cache)
+
+            assert (cold is None) == (warm is None)
+            if cold is None:
+                continue
+            for timeframe in frames:
+                assert cold.series[timeframe].df.index.equals(warm.series[timeframe].df.index)
+            assert cold.tick.mid == pytest.approx(warm.tick.mid)
+
+    def test_it_actually_hits(self) -> None:
+        """A cache that never hits is pure overhead. On an M30 walk the slower
+        frames must be reused."""
+        frames = _frames()
+        cache: dict = {}
+        misses = 0
+
+        class Counting(dict):
+            def __setitem__(self, key, value):
+                nonlocal misses
+                misses += 1
+                super().__setitem__(key, value)
+
+        counting = Counting()
+        for upto in frames[Timeframe.M30].index[-40:]:
+            _context("X", frames, upto, 0.0002, counting)
+
+        # 40 bars x 5 frames = 200 slices without a cache.
+        # 25%, and the arithmetic says why: M5, M15 and M30 advance every bar
+        # and can never hit; only H1 (every 2nd) and H4 (every 8th) are reused.
+        # A first draft asserted < 140 on a guess of "about sixty percent".
+        assert misses < 160, f"{misses} misses of 200 -- the cache is not helping"
+        assert cache == {}
+
+    def test_it_stays_bounded(self) -> None:
+        """An unbounded memo would hold the whole history a second time."""
+        frames = _frames()
+        cache: dict = {}
+
+        for upto in frames[Timeframe.M30].index[-400:]:
+            _context("X", frames, upto, 0.0002, cache)
+
+        assert len(cache) <= 70
