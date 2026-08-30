@@ -299,3 +299,78 @@ class TestTheLauncher:
 
         assert parsed.days == 365
         assert parsed.clocks == ["M15", "M30"]
+
+
+def _realistic(bars: int = 4000, freq: str = "30min", seed: int = 3) -> pd.DataFrame:
+    """Bars with the three properties a naive random walk flattens away.
+
+    THE FIRST FIXTURE IN THIS FILE HAD NONE OF THEM and six of twelve
+    candidates produced exactly zero trades on it: constant spread means the
+    close always sits mid-bar, so `close_position_in_range` never fires;
+    constant volatility means `volatility_contraction` never sees a quiet
+    stretch and `range_expansion` never sees a big bar; and `open == previous
+    close` means there is never a gap.
+
+    None of that was a defect in the candidates. It was a fixture that could
+    not express what they look for, and it would have read as "these detectors
+    are broken".
+    """
+    index = pd.date_range("2025-01-01", periods=bars, freq=freq, tz="UTC")
+    rng = np.random.default_rng(seed)
+    vol = np.exp(np.cumsum(rng.normal(0, 0.05, bars)))
+    vol = 8 * vol / vol.mean()
+    step = rng.normal(0, 1, bars) * vol
+    day = index.normalize().to_numpy()
+    fresh = np.r_[False, day[1:] != day[:-1]]
+    close = 15000 + np.cumsum(step)
+    open_ = np.r_[close[0], close[:-1]].copy()
+    # A real session gap: the open jumps AWAY from the previous close.
+    open_[fresh] = np.r_[close[0], close[:-1]][fresh] + rng.normal(0, 4, fresh.sum()) * vol[fresh]
+    high = np.maximum(open_, close) + np.abs(rng.normal(0.6, 0.4, bars)) * vol
+    low = np.minimum(open_, close) - np.abs(rng.normal(0.6, 0.4, bars)) * vol
+    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close}, index=index)
+
+
+class TestEveryCandidateCanActuallyFire:
+    """A detector that never fires is not a detector that failed, and on a
+    flat fixture six of these produced nothing at all."""
+
+    @pytest.mark.parametrize("name", sorted(CANDIDATES))
+    def test_it_fires_on_bars_that_contain_what_it_looks_for(self, name: str) -> None:
+        frame = _realistic()
+
+        fired = int(np.count_nonzero(CANDIDATES[name](frame)))
+
+        assert fired > 0, f"{name} never fires even on bars built to contain its pattern"
+
+    def test_the_gap_detector_reads_a_hand_made_gap(self) -> None:
+        """Checked directly rather than through a generator, because the
+        generator built the gap back out twice: setting the fresh-day open to
+        `close - step` reproduces the previous close exactly, so the gap was
+        zero and the detector looked broken."""
+        from scripts.search_section_four import gap_continuation
+
+        index = pd.date_range("2025-01-01", periods=60, freq="30min", tz="UTC")
+        close = np.full(60, 100.0)
+        open_ = np.full(60, 100.0)
+        high, low = close + 1.0, close - 1.0
+        open_[30], high[30], close[30] = 103.0, 104.0, 103.5
+
+        signals = gap_continuation(
+            pd.DataFrame({"open": open_, "high": high, "low": low, "close": close}, index=index)
+        )
+
+        assert signals[30] == 1
+
+    def test_the_report_says_when_a_candidate_never_fired(self) -> None:
+        """Silence means a threshold that does not match this feed -- my
+        mistake, and fixable. Failure means the mechanism does not pay -- an
+        answer. They must not print the same way."""
+        import inspect
+
+        from scripts import search_section_four
+
+        source = inspect.getsource(search_section_four._report)
+
+        assert "NEVER FIRED" in source
+        assert "TOO THIN TO JUDGE" in source

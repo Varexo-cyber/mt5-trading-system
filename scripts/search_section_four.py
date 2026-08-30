@@ -608,6 +608,21 @@ def _report(cells: dict, args) -> None:
         print("  the bar. That is the expected outcome of an honest search and it")
         print("  is not a failure of the run.")
 
+    # A CANDIDATE THAT NEVER FIRED IS NOT A CANDIDATE THAT FAILED, and the
+    # two must not look the same. Silence means the threshold is wrong for
+    # this feed, which is a fixable mistake of mine; failure means the
+    # mechanism does not pay, which is an answer. A first version of this
+    # report showed neither, and six of twelve candidates producing zero
+    # trades would have been invisible.
+    silent = sorted({c.candidate for c in real if len(c.train) + len(c.test) == 0})
+    thin = sorted({c.candidate for c in real if 0 < len(c.train) + len(c.test) < 250} - set(silent))
+    if silent:
+        print(f"\n  NEVER FIRED — {len(silent)} candidates produced no trades at all")
+        print(f"    {', '.join(silent)}")
+        print("    That is a threshold that does not match this feed, not a result.")
+    if thin:
+        print(f"\n  TOO THIN TO JUDGE — fired, but under 250 trades: {', '.join(thin)}")
+
     print("\n  CLOSEST MISSES — what stopped each of the ten best")
     ranked = sorted(
         (c for c in real if len(c.train) >= 150),
