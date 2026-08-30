@@ -119,11 +119,13 @@ class TestScaling:
         assert settings.effective_max_positions(153.03) == 4
         # The stakes the owner named in the same breath, unchanged.
         assert settings.risk.conviction_risk.floor_pct == 2.0
-        assert settings.risk.conviction_risk.ceiling_pct == 8.0
-        assert settings.risk.max_risk_per_trade_pct == 8.0
+        # 8 -> 10 on 30 August at the owner's request; what this test is
+        # really guarding is the RELATION below, not the literal.
+        assert settings.risk.conviction_risk.ceiling_pct == 10.0
+        assert settings.risk.max_risk_per_trade_pct == 10.0
         # And the cap the slots do not move: two conviction trades reach it, so
         # the ceiling on money at risk is the same at four slots as at eight.
-        assert settings.risk.max_total_open_risk_pct == 16.0
+        assert settings.risk.max_total_open_risk_pct == 20.0
         assert (
             settings.risk.conviction_risk.ceiling_pct * 2 == settings.risk.max_total_open_risk_pct
         )

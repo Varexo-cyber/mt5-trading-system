@@ -49,11 +49,17 @@ class TestTheSwitchIsOnAndBounded:
         assert load_settings(env_overrides=False).risk.allow_minimum_lot_above_target is False
 
     def test_the_ceiling_is_the_accounts_own_conviction_cap(self) -> None:
-        """8%, not unlimited. "Reduce the lot size" cannot have meant one trade
-        putting a third of the account on a single stop."""
+        """BOUNDED, which is the property. "Reduce the lot size" cannot have
+        meant one trade putting a third of the account on a single stop.
+
+        The number was 8% and is 10% since 30 August at the owner's request.
+        Asserted as a bound rather than a literal, because what this test is
+        for is that a ceiling EXISTS and the ordinary stake stays at 2% --
+        `TestTheCeilingIsTenAndAllThreeKnobsAgree` owns the exact value and the
+        three knobs that have to agree on it."""
         settings = _live_settings()
 
-        assert settings.effective_max_risk_pct() == pytest.approx(8.0)
+        assert 0.0 < settings.effective_max_risk_pct() <= 10.0
         assert settings.effective_risk_pct() == pytest.approx(2.0)
 
     def test_the_final_ceiling_check_is_what_bounds_it(self) -> None:
@@ -132,3 +138,55 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
 
         assert weights.get("trend_momentum", 0.0) > 0.0
         assert weights.get("market_structure", 0.0) > 0.0
+
+
+class TestTheCeilingIsTenAndAllThreeKnobsAgree:
+    """Raised from 8% to 10% on 30 August at the owner's request.
+
+    THE CONFIG WARNS ABOUT THIS EXACT CHANGE IN ITS OWN COMMENT: there are
+    THREE ceilings and they only work together. `risk.max_risk_per_trade_pct`,
+    `risk.conviction_risk.ceiling_pct` and
+    `modes.micro_live.max_risk_per_trade_pct` each clamp the stake, so raising
+    two of the three is a silent no-op -- in the words already written there,
+    "de config zegt 9%, de rekening handelt 6%".
+
+    So the test is not "is the number 10". It is "does the number the sizer
+    actually enforces come out at 10", which is the only version that would
+    have caught the half-done edit.
+    """
+
+    def test_the_enforced_ceiling_is_ten(self) -> None:
+        settings = _live_settings()
+
+        assert settings.effective_max_risk_pct() == pytest.approx(10.0)
+
+    def test_all_three_knobs_were_moved(self) -> None:
+        settings = _live_settings()
+
+        assert settings.risk.max_risk_per_trade_pct == pytest.approx(10.0)
+        assert settings.risk.conviction_risk.ceiling_pct == pytest.approx(10.0)
+
+    def test_the_ordinary_stake_is_untouched(self) -> None:
+        """A ceiling, not a stake. An ordinary approval is still 2%; only
+        conviction scaling and the minimum-lot rounding may reach past it."""
+        settings = _live_settings()
+
+        assert settings.effective_risk_pct() == pytest.approx(2.0)
+        assert settings.risk.conviction_risk.floor_pct == pytest.approx(2.0)
+
+    def test_what_it_means_in_euros_on_this_account(self) -> None:
+        """The number worth reading before agreeing to it. The thirty-day
+        measurement put 75 of 255 trades above the 2% target because the broker
+        minimum forced them there, topping out at 7.89%. That group now has
+        room up to 10%, and there is no daily loss limit under it."""
+        settings = _live_settings()
+        equity = 215.34
+
+        assert equity * settings.effective_risk_pct() / 100 == pytest.approx(4.31, abs=0.01)
+        assert equity * settings.effective_max_risk_pct() / 100 == pytest.approx(21.53, abs=0.01)
+        # Two such trades at once is a fifth of the account on two stops.
+        assert settings.effective_max_positions(equity) * 10.0 >= 20.0
+
+    def test_the_base_config_is_not_dragged_along(self) -> None:
+        """This account's decision at this equity, not everyone's default."""
+        assert load_settings(env_overrides=False).risk.max_risk_per_trade_pct < 10.0
