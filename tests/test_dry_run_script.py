@@ -490,3 +490,111 @@ class TestTheCoreUniverse:
         )
 
         assert parsed.core is False
+
+
+class TestTheReportRunsEndToEnd:
+    """`_report` was split in half by an edit that inserted a new function into
+    the middle of its body. The tail reattached to the wrong def, referenced
+    `trades` and `closed` from a scope that no longer had them, and the file
+    still imported -- because none of the report functions were ever CALLED by
+    a test. Every assertion about them was a substring search over the source.
+
+    So these call them, with a fabricated set of decisions, and assert on what
+    lands on stdout.
+    """
+
+    def _decisions(self):
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+        rows = []
+        # A market that trades.
+        for i in range(3):
+            rows.append(
+                Decision(
+                    base + timedelta(hours=i),
+                    "NDX100",
+                    "order_block",
+                    "TRADE",
+                    direction="LONG",
+                    risk_money=8.0,
+                    risk_pct=4.0,
+                    result_r=1.0 if i else -1.0,
+                    pnl_money=8.0 if i else -8.0,
+                    exit_at=base + timedelta(hours=i, minutes=30),
+                    pass_key=("order_block", "M30"),
+                    managed_r=0.1 if i else -1.0,
+                    managed_money=0.8 if i else -8.0,
+                )
+            )
+        # A market whose detector fired and was refused every time.
+        rows += [
+            Decision(
+                base,
+                "EURUSD.i",
+                "impulse_retest",
+                "REFUSED_CONFLUENCE",
+                note="score 38.8 below threshold",
+            )
+            for _ in range(4)
+        ]
+        # A market where nothing ever fired.
+        rows += [
+            Decision(
+                base, "GBPUSD.i", "-", "REFUSED_CONFLUENCE", note="no weighted directional evidence"
+            )
+            for _ in range(4)
+        ]
+        return rows
+
+    def test_the_whole_report_prints_without_raising(self, capsys) -> None:
+        from scripts.dry_run_sections import _report
+
+        _report(self._decisions(), equity=215.34, days=7, skipped=0)
+        out = capsys.readouterr().out
+
+        assert "TRADES" in out
+        assert "BY DAY" in out
+
+    def test_it_separates_a_silent_detector_from_a_refused_one(self, capsys) -> None:
+        """The distinction the 30 August run could not make. Eleven FX majors
+        took zero trades and the report could not say whether no setup existed
+        or whether a gate ate all of them."""
+        from scripts.dry_run_sections import _report
+
+        _report(self._decisions(), equity=215.34, days=7, skipped=0)
+        out = capsys.readouterr().out
+
+        assert "PER MARKET" in out
+        assert "ALL refused by a gate" in out
+        assert "never fired at all" in out
+        assert "2 of 3 markets took no trade at all" in out
+
+    def test_it_totals_what_the_refusal_actually_said(self, capsys) -> None:
+        """`REFUSED_CONFLUENCE 98.4%` names a bucket. The engine writes a
+        sentence, this script already stored it, and the report discarded it."""
+        from scripts.dry_run_sections import _report
+
+        _report(self._decisions(), equity=215.34, days=7, skipped=0)
+        out = capsys.readouterr().out
+
+        assert "score 38.8 below threshold" in out
+        assert "no weighted directional evidence" in out
+
+    def test_the_break_even_counters_agree_with_the_total(self, capsys) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from scripts.dry_run_sections import _break_even_verdict
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        trades = [d for d in self._decisions() if d.outcome == "TRADE"]
+
+        _break_even_verdict(trades, settings)
+        out = capsys.readouterr().out
+
+        # Two winners cut from +1.00R to +0.10R.
+        assert "cut short              2" in out or "cut short           2" in out
+        assert "-1.80 R" in out

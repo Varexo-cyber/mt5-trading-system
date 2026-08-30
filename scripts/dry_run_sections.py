@@ -846,8 +846,17 @@ def _break_even_verdict(trades: list[Decision], settings) -> None:
     fixed_money = sum(d.pnl_money or 0.0 for d in paired)
     managed_money = sum(d.managed_money or 0.0 for d in paired)
 
-    scratched = [d for d in paired if (d.result_r or 0) > 0 >= (d.managed_r or 0)]
-    rescued = [d for d in paired if (d.result_r or 0) <= 0 < (d.managed_r or 0)]
+    # COUNTED BY WHETHER THE TRADE CHANGED, NOT BY WHETHER IT CHANGED SIGN.
+    #
+    # These first read `result_r > 0 >= managed_r` and `result_r <= 0 <
+    # managed_r`, and the 30 August run printed "0 scratched, 0 rescued" beside
+    # a -0.20R difference -- a total that says trades moved next to two counts
+    # that say none did. A scratched winner exits at entry PLUS the offset, so
+    # it is still positive and the sign test could never see it. The two
+    # numbers whose whole job was to explain the total were structurally
+    # incapable of doing so.
+    scratched = [d for d in paired if (d.managed_r or 0) < (d.result_r or 0) - 1e-9]
+    rescued = [d for d in paired if (d.managed_r or 0) > (d.result_r or 0) + 1e-9]
 
     print("\n  BREAK-EVEN: does protecting the trade pay?")
     print(
@@ -862,7 +871,10 @@ def _break_even_verdict(trades: list[Decision], settings) -> None:
         f"    stop protected      {managed:+8.2f} R   EUR {managed_money:+8.2f}   <- what runs now"
     )
     print(
-        f"    winners scratched   {len(scratched):>4d}" f"     losers rescued  {len(rescued):>4d}"
+        f"    cut short           {len(scratched):>4d}"
+        f" ({sum((d.managed_r or 0) - (d.result_r or 0) for d in scratched):+.2f} R)"
+        f"     rescued  {len(rescued):>4d}"
+        f" ({sum((d.managed_r or 0) - (d.result_r or 0) for d in rescued):+.2f} R)"
     )
     verdict = managed - fixed
     if abs(verdict) < 1e-9:
@@ -936,6 +948,26 @@ def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -
     for reason, count in refusals.most_common(15):
         print(f"   {reason:<34} {count:>7}  {count / total:>6.1%}")
 
+    # REFUSED_CONFLUENCE AT 98.4% IS NOT A DIAGNOSIS, IT IS THE ABSENCE OF ONE.
+    # The engine writes a sentence saying which gate refused and why, this
+    # script already stores it in `note`, and the report threw it away and
+    # printed the bucket name instead. The interesting half of the run was in
+    # the column nobody totalled.
+    #
+    # Grouped on the leading words because the tail carries numbers -- "score
+    # 38.8 below threshold" is one reason, not four thousand.
+    detail = Counter(
+        " ".join(d.note.split()[:6])
+        for d in decisions
+        if d.outcome == "REFUSED_CONFLUENCE" and d.note
+    )
+    if detail:
+        print("\n   ...and what REFUSED_CONFLUENCE actually said:")
+        for reason, count in detail.most_common(10):
+            print(f"      {reason:<52} {count:>7}  {count / total:>6.1%}")
+
+    _silence_report(decisions)
+
     print(
         f"\nTRADES      {len(trades)} taken, {len(closed)} resolved, "
         f"{len(trades) - len(closed)} still open at the end of the window"
@@ -1006,3 +1038,66 @@ def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -
 
 if __name__ == "__main__":
     main()
+
+
+def _silence_report(decisions: list[Decision]) -> None:
+    """WHICH MARKETS SAID NOTHING, and whether the module or a gate silenced them.
+
+    THE 30 AUGUST CORE RUN TOOK 42 TRADES AND NOT ONE OF THEM WAS ON FX. All
+    eleven majors -- the eleven the strategy was measured on, where the research
+    says roughly 1.6 trades per pair per day -- produced zero in seven days.
+    Everything that traded was gold and index CFDs, which is the half of the
+    universe nothing was measured on.
+
+    That is the single most important fact in the run and it appeared NOWHERE
+    in the report. It was visible only as an absence: symbols 1 to 11 were
+    missing from a progress log that prints a line per symbol that traded.
+    A finding you can only reach by noticing which lines did not print is a
+    finding that gets missed.
+
+    `REFUSED_CONFLUENCE 98.4%` does not help either, because it merges two
+    completely different diagnoses:
+
+        the module never fired          -- no setup existed. The market was
+                                           quiet, or the detector's own
+                                           thresholds are wrong for this feed.
+        the module fired and was refused -- a setup existed and a GATE took it.
+                                           That is a configuration problem and
+                                           it is fixable.
+
+    `_one_pass` already records which modules scored on every refused decision,
+    so the two are separable and were simply never separated.
+    """
+    per_symbol: dict[str, dict[str, int]] = {}
+    for d in decisions:
+        row = per_symbol.setdefault(d.symbol, {"bars": 0, "fired": 0, "trades": 0})
+        row["bars"] += 1
+        if d.outcome == "TRADE":
+            row["trades"] += 1
+            row["fired"] += 1
+        elif d.module and d.module != "-":
+            row["fired"] += 1
+    if not per_symbol:
+        return
+
+    silent = [name for name, row in per_symbol.items() if row["trades"] == 0]
+    print("\nPER MARKET — did the detector fire, or did a gate refuse it?")
+    print(f"   {'symbol':<12} {'bars':>7} {'setups':>8} {'trades':>7}   {'':<28}")
+    for name in sorted(per_symbol, key=lambda n: -per_symbol[n]["trades"]):
+        row = per_symbol[name]
+        if row["trades"]:
+            verdict = ""
+        elif row["fired"]:
+            verdict = f"{row['fired']} setups formed, ALL refused by a gate"
+        else:
+            verdict = "the detector never fired at all"
+        print(
+            f"   {name:<12} {row['bars']:>7} {row['fired']:>8} {row['trades']:>7}   {verdict:<28}"
+        )
+
+    if silent:
+        print(
+            f"\n   {len(silent)} of {len(per_symbol)} markets took no trade at all."
+            "\n   If those are the markets the strategy was MEASURED on, this run has"
+            "\n   not tested the strategy -- it has tested an extrapolation of it."
+        )

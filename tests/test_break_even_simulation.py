@@ -290,3 +290,68 @@ class TestTheVerdictIsReported:
 
         assert '"managed_r",' in source
         assert '"managed_money",' in source
+
+
+class TestTheCountersExplainTheTotal:
+    """The 30 August run printed "0 winners scratched, 0 losers rescued" beside
+    a -0.20R difference. A total that says trades moved, next to two counts
+    that say none did.
+
+    The counters tested `result_r > 0 >= managed_r`. A scratched winner exits
+    at entry PLUS the break-even offset, so it is still POSITIVE and the sign
+    test could never see it. The two numbers whose entire job was to explain
+    the total were structurally incapable of doing so.
+    """
+
+    def _counts(self, pairs: list[tuple[float, float]]) -> tuple[int, int]:
+        from scripts.dry_run_sections import Decision
+
+        trades = [
+            Decision(
+                datetime(2026, 8, 24, tzinfo=UTC),
+                "S",
+                "m",
+                "TRADE",
+                result_r=fixed,
+                managed_r=managed,
+            )
+            for fixed, managed in pairs
+        ]
+        scratched = [d for d in trades if (d.managed_r or 0) < (d.result_r or 0) - 1e-9]
+        rescued = [d for d in trades if (d.managed_r or 0) > (d.result_r or 0) + 1e-9]
+        return len(scratched), len(rescued)
+
+    def test_a_winner_cut_to_the_offset_is_counted(self) -> None:
+        """+1.00R -> +0.10R. Still positive, and the old test missed it."""
+        assert self._counts([(1.0, 0.10)]) == (1, 0)
+
+    def test_a_rescued_loser_is_counted(self) -> None:
+        assert self._counts([(-1.0, 0.10)]) == (0, 1)
+
+    def test_an_untouched_trade_is_counted_as_neither(self) -> None:
+        assert self._counts([(1.0, 1.0), (-1.0, -1.0)]) == (0, 0)
+
+    def test_the_counts_and_the_total_cannot_disagree(self) -> None:
+        """THE PROPERTY. If the totals differ, at least one counter must be
+        non-zero -- that is the invariant the old code violated."""
+        pairs = [(1.0, 0.10), (-1.0, -1.0), (1.0, 1.0), (-1.0, 0.10)]
+        scratched, rescued = self._counts(pairs)
+        moved = sum(managed - fixed for fixed, managed in pairs)
+
+        assert abs(moved) > 1e-9
+        assert scratched + rescued > 0
+        assert (scratched, rescued) == (1, 1)
+
+    def test_the_report_prints_what_each_side_is_worth(self) -> None:
+        """A count without its R is still not an explanation: one winner cut
+        and one loser rescued nets out very differently depending on where
+        each landed."""
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parent.parent / "scripts" / "dry_run_sections.py"
+        ).read_text()
+
+        assert "cut short" in source
+        assert "for d in scratched" in source
+        assert "for d in rescued" in source
