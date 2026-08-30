@@ -32,8 +32,16 @@ echo.
 
 set DAYS=%1
 if "%DAYS%"=="" set DAYS=7
+set SWEEP=%2
+if "%SWEEP%"=="" set SWEEP=M5,M15,M30,H1,H4
 
-echo  Window: last %DAYS% days.  (dryrun.cmd 30  for a month)
+echo  Window: last %DAYS% days.   (dryrun.cmd 30  for a month)
+echo  Clocks: %SWEEP%
+echo.
+echo  Each section is run on EVERY one of those timeframes, separately. The
+echo  shipped clocks (M15 for section 2, M30 for section 3) were chosen on
+echo  HistData, which could not price your spread. This can, so if another
+echo  clock wins here it wins for a reason that matters.
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (
@@ -44,7 +52,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --csv runtime\dryrun.csv
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --sweep %SWEEP% --csv runtime\dryrun.csv
 if errorlevel 1 (
   echo.
   echo  The run failed. The traceback above says why -- most often MT5 is not

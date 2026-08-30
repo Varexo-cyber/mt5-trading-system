@@ -57,8 +57,11 @@ from core.types import Direction, MarketContext, Series, Tick, Timeframe, Tradin
 from risk.position_sizer import PositionSizer
 from runner.service import build_analysis_modules
 
-#: Every timeframe the two sections read, plus the one entry quality uses.
-NEEDED = (Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1)
+#: Every timeframe a sweep may put a section on, plus M1 and M5 so a signal
+#: can be resolved on bars finer than the one that produced it. Resolving an
+#: M30 trade on M30 bars cannot see which barrier a bar touched first.
+SWEEPABLE = (Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1, Timeframe.H4)
+NEEDED = (Timeframe.M1, *SWEEPABLE)
 #: Bars of history each decision may look back over.
 WARMUP = 260
 
@@ -116,30 +119,145 @@ def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int):
     return None
 
 
+def _one_pass(
+    *,
+    engine,
+    sizer,
+    symbol: str,
+    spec,
+    frames: dict,
+    start: datetime,
+    end: datetime,
+    equity: float,
+    clock: Timeframe,
+    resolve_on: Timeframe,
+) -> list[Decision]:
+    """Every decision one configuration reaches on one symbol.
+
+    `clock` is the timeframe the section reads, so it is also the timeframe a
+    decision may be taken on -- sampling an M30 section on M15 bars would offer
+    it the same setup twice.
+
+    `resolve_on` must be FINER than the clock. Resolving an M30 trade on M30
+    bars cannot tell which barrier a bar touched first, and assuming the good
+    one is how a backtest lies.
+    """
+    decisions: list[Decision] = []
+    bars = frames[clock]
+    window = bars[(bars.index >= start) & (bars.index <= end)]
+    horizon = int(96 * clock.duration / resolve_on.duration)
+    for bar_time in window.index:
+        upto = bar_time + clock.duration
+        spread_price = float(window.loc[bar_time].get("spread", 0)) * spec.point
+        ctx = _context(symbol, frames, upto, spread_price)
+        if ctx is None:
+            continue
+        idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
+        module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
+        if not idea.approved:
+            decisions.append(
+                Decision(upto, symbol, module, "REFUSED_CONFLUENCE", note=idea.reason[:90])
+            )
+            continue
+        sized = sizer.size(
+            spec=spec,
+            equity=equity,
+            direction=idea.direction,
+            entry=idea.entry,
+            sl=idea.stop_loss,
+            tp=idea.take_profit,
+            spread_price=spread_price,
+        )
+        if not sized.decision.approved:
+            decisions.append(
+                Decision(
+                    upto,
+                    symbol,
+                    module,
+                    sized.decision.reason.name,
+                    direction=idea.direction.name,
+                    note=sized.decision.detail[:90],
+                )
+            )
+            continue
+        r = _resolve(frames[resolve_on], upto, idea, horizon_bars=horizon)
+        risk_money = sized.actual_risk_money
+        decisions.append(
+            Decision(
+                upto,
+                symbol,
+                module,
+                "TRADE",
+                direction=idea.direction.name,
+                entry=idea.entry,
+                stop=idea.stop_loss,
+                target=idea.take_profit,
+                lots=sized.volume,
+                risk_money=risk_money,
+                risk_pct=sized.actual_risk_pct,
+                result_r=r,
+                pnl_money=None if r is None else r * risk_money,
+            )
+        )
+    return decisions
+
+
+def _retimed(settings, module_name: str, timeframe: str):
+    """The same settings with one section moved to another timeframe."""
+    analysis = settings.analysis
+    section = getattr(analysis, module_name)
+    return settings.model_copy(
+        update={
+            "analysis": analysis.model_copy(
+                update={module_name: section.model_copy(update={"timeframe": timeframe})}
+            )
+        }
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--symbols", default="", help="comma list; default = the live universe")
     parser.add_argument("--csv", default="", help="write every decision to this file")
     parser.add_argument("--equity", type=float, default=0.0, help="override account equity")
+    parser.add_argument(
+        "--sweep",
+        default="",
+        help=(
+            "comma list of timeframes to try each section on, e.g. M5,M15,M30,H1,H4. "
+            "The shipped timeframes were chosen on HistData; this asks the same "
+            "question against THIS broker's spreads, which is the number that decides it."
+        ),
+    )
+    parser.add_argument(
+        "--no-m1",
+        action="store_true",
+        help="skip M1 history (much faster on a large universe; coarser resolution)",
+    )
     args = parser.parse_args()
 
     settings = load_settings(env_overrides=True)
     settings = settings.model_copy(
         update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
     )
-    credentials = load_credentials()
-    connector = MT5Connector(credentials, terminal_path=terminal_path_from_env())
+    # Two positional arguments, `settings.mt5` first -- the same shape `main.py`
+    # uses. Passing only the credentials made the connector read
+    # `credentials.terminal_path`, which does not exist, and the run died
+    # before it fetched a single bar.
+    credentials = load_credentials(required=True)
+    connector = MT5Connector(
+        settings.mt5,
+        credentials,
+        terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
+    )
     connector.connect()
     try:
         account = connector.account()
         equity = args.equity or account.equity
         live = set(settings.analysis.confluence.live_enabled_modules)
-        modules = [m for m in build_analysis_modules(settings) if m.name in live]
-        if not modules:
+        if not live:
             raise SystemExit("no live modules: nothing to dry-run")
-        engine = ConfluenceEngine(modules, settings.analysis.confluence)
-        sizer = PositionSizer(settings)
 
         symbols = (
             [s.strip() for s in args.symbols.split(",") if s.strip()]
@@ -150,6 +268,7 @@ def main() -> None:
         start = end - timedelta(days=args.days)
         # Warmup has to come from before the window or the first day is blind.
         fetch_from = start - timedelta(days=max(20, args.days))
+        fetch_these = tuple(tf for tf in NEEDED if not (args.no_m1 and tf is Timeframe.M1))
 
         print(f"\n{'=' * 78}")
         print(f"DRY RUN — sections {', '.join(sorted(live))}")
@@ -157,13 +276,34 @@ def main() -> None:
         print(f"{len(symbols)} symbols, {settings.effective_risk_pct():.1f}% risk per trade")
         print(f"{'=' * 78}\n")
 
-        decisions: list[Decision] = []
+        # WHICH SECTIONS ON WHICH CLOCKS. The shipped timeframes were chosen
+        # on HistData; a sweep asks the same question against this broker's
+        # spreads, which is the number that actually decides it.
+        #
+        # Each section is swept on its own, never together: two sections on
+        # the same clock would merge into one confluence idea and the result
+        # would say nothing about either.
+        module_config = {"impulse_retest": "impulse_retest", "order_block": "order_block"}
+        passes: list[tuple[str, str]] = []
+        if args.sweep:
+            wanted = [t.strip().upper() for t in args.sweep.split(",") if t.strip()]
+            for name in sorted(live & set(module_config)):
+                for tf in wanted:
+                    passes.append((name, tf))
+        else:
+            for name in sorted(live & set(module_config)):
+                passes.append((name, getattr(settings.analysis, name).timeframe))
+
+        finest = Timeframe.M5 if args.no_m1 else Timeframe.M1
+        results: dict[tuple[str, str], list[Decision]] = {key: [] for key in passes}
         skipped_symbols = 0
+
         for index, symbol in enumerate(symbols, 1):
             try:
                 spec = connector.spec(symbol)
                 frames = {
-                    tf: fetch_mt5_history(connector, symbol, tf, fetch_from, end) for tf in NEEDED
+                    tf: fetch_mt5_history(connector, symbol, tf, fetch_from, end)
+                    for tf in fetch_these
                 }
             except Exception as exc:  # noqa: BLE001 - one bad symbol must not stop the run
                 skipped_symbols += 1
@@ -173,72 +313,42 @@ def main() -> None:
                 skipped_symbols += 1
                 continue
 
-            # Decide on every closed M15 bar inside the window: the faster of
-            # the two sections' clocks, so neither is under-sampled.
-            clock = frames[Timeframe.M15]
-            bars = clock[(clock.index >= start) & (clock.index <= end)]
-            taken = 0
-            for bar_time in bars.index:
-                upto = bar_time + Timeframe.M15.duration
-                spread_price = float(bars.loc[bar_time].get("spread", 0)) * spec.point
-                ctx = _context(symbol, frames, upto, spread_price)
-                if ctx is None:
+            for name, tf_name in passes:
+                clock = Timeframe.parse(tf_name)
+                if clock not in frames or clock.duration <= finest.duration:
                     continue
-                idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
-                module = ",".join(sorted({s.module for s in idea.signals if s.score})) or "-"
-                if not idea.approved:
-                    decisions.append(
-                        Decision(upto, symbol, module, "REFUSED_CONFLUENCE", note=idea.reason[:90])
-                    )
-                    continue
-
-                sized = sizer.size(
-                    spec=spec,
-                    equity=equity,
-                    direction=idea.direction,
-                    entry=idea.entry,
-                    sl=idea.stop_loss,
-                    tp=idea.take_profit,
-                    spread_price=spread_price,
-                )
-                if not sized.decision.approved:
-                    decisions.append(
-                        Decision(
-                            upto,
-                            symbol,
-                            module,
-                            sized.decision.reason.name,
-                            direction=idea.direction.name,
-                            note=sized.decision.detail[:90],
-                        )
-                    )
-                    continue
-
-                r = _resolve(frames[Timeframe.M5], upto, idea, horizon_bars=96 * 3)
-                risk_money = sized.actual_risk_money
-                decisions.append(
-                    Decision(
-                        upto,
-                        symbol,
-                        module,
-                        "TRADE",
-                        direction=idea.direction.name,
-                        entry=idea.entry,
-                        stop=idea.stop_loss,
-                        target=idea.take_profit,
-                        lots=sized.volume,
-                        risk_money=risk_money,
-                        risk_pct=sized.actual_risk_pct,
-                        result_r=r,
-                        pnl_money=None if r is None else r * risk_money,
+                tuned = _retimed(settings, name, tf_name)
+                only = [m for m in build_analysis_modules(tuned) if m.name == name]
+                pass_engine = ConfluenceEngine(only, tuned.analysis.confluence)
+                results[(name, tf_name)].extend(
+                    _one_pass(
+                        engine=pass_engine,
+                        sizer=PositionSizer(tuned),
+                        symbol=symbol,
+                        spec=spec,
+                        frames=frames,
+                        start=start,
+                        end=end,
+                        equity=equity,
+                        clock=clock,
+                        resolve_on=finest,
                     )
                 )
-                taken += 1
-            if taken:
-                print(f"  [{index}/{len(symbols)}] {symbol}: {taken} trades")
+            done = sum(
+                1
+                for v in results.values()
+                for d in v
+                if d.symbol == symbol and d.outcome == "TRADE"
+            )
+            if done:
+                print(f"  [{index}/{len(symbols)}] {symbol}: {done} trades")
+
+        decisions = [d for v in results.values() for d in v]
     finally:
         connector.disconnect()
 
+    if args.sweep:
+        _sweep_report(results, equity, args.days)
     _report(decisions, equity, args.days, skipped_symbols)
     if args.csv:
         path = Path(args.csv)
@@ -283,6 +393,51 @@ def main() -> None:
                     ]
                 )
         print(f"\nevery decision written to {path}")
+
+
+def _sweep_report(results: dict, equity: float, days: int) -> None:
+    """One row per (section, timeframe), so the clock can be chosen on THIS feed.
+
+    The shipped timeframes came from HistData bid bars. The only thing that
+    could change the answer here is cost, and cost is exactly what this run
+    measures for real -- so if a different clock wins by a margin, it wins
+    because of this broker's spreads and not because of a preference.
+    """
+    print(f"\n{'=' * 78}")
+    print("TIMEFRAME SWEEP — each section on each clock, this broker, this window")
+    print(f"{'=' * 78}")
+    print(
+        f"  {'section':<18}{'tf':>5}{'trades':>8}{'closed':>8}{'win':>7}"
+        f"{'R':>9}{'EUR':>10}{'undercap':>10}{'spread':>8}"
+    )
+    rows = []
+    for (name, tf), decisions in sorted(results.items()):
+        trades = [d for d in decisions if d.outcome == "TRADE"]
+        closed = [d for d in trades if d.result_r is not None]
+        under = sum(1 for d in decisions if d.outcome == "UNDERCAPITALIZED")
+        spread_out = sum(1 for d in decisions if "SPREAD" in d.outcome or "COST" in d.outcome)
+        r_total = sum(d.result_r or 0.0 for d in closed)
+        money = sum(d.pnl_money or 0.0 for d in closed)
+        wins = sum(1 for d in closed if (d.result_r or 0) > 0)
+        win = f"{wins / len(closed):.0%}" if closed else "-"
+        print(
+            f"  {name:<18}{tf:>5}{len(trades):>8}{len(closed):>8}{win:>7}"
+            f"{r_total:>+9.2f}{money:>+10.2f}{under:>10}{spread_out:>8}"
+        )
+        rows.append((money, name, tf, len(trades)))
+    if rows:
+        rows.sort(reverse=True)
+        money, name, tf, n = rows[0]
+        share = money / equity if equity else 0.0
+        print(
+            f"\n  best on this feed: {name} on {tf} — EUR {money:+.2f} "
+            f"({share:+.1%} of equity) over {n} trades, {n / max(days, 1):.1f}/day"
+        )
+        print(
+            "  A clock that beats the shipped one here is worth taking seriously:\n"
+            "  the research could not price this broker's spread and this can."
+        )
+    print(f"{'=' * 78}")
 
 
 def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -> None:
