@@ -357,7 +357,7 @@ class TestTheLiveOnlyLauncher:
         # Both forms the launcher can emit: the default core run, and the
         # "all" run where %SCOPE% expands to nothing.
         core = build_parser().parse_args(
-            cmd_argv(self.LAUNCHER, **{"%DAYS%": "30", "%SCOPE%": "--core"})
+            cmd_argv(self.LAUNCHER, **{"%DAYS%": "30", "%SCOPE%": "--core", "%FINE%": ""})
         )
 
         assert core.days == 30
@@ -365,7 +365,9 @@ class TestTheLiveOnlyLauncher:
         assert core.core is True
         assert core.sweep == []
 
-        every = build_parser().parse_args(cmd_argv(self.LAUNCHER, **{"%DAYS%": "7", "%SCOPE%": ""}))
+        every = build_parser().parse_args(
+            cmd_argv(self.LAUNCHER, **{"%DAYS%": "7", "%SCOPE%": "", "%FINE%": "--no-m1"})
+        )
 
         assert every.days == 7
         assert every.live_only is True
@@ -467,7 +469,7 @@ class TestTheCoreUniverse:
         fast = build_parser().parse_args(
             cmd_argv(
                 (ROOT / "dryrun-live.cmd").read_text(),
-                **{"%DAYS%": "7", "%SCOPE%": "--core"},
+                **{"%DAYS%": "7", "%SCOPE%": "--core", "%FINE%": ""},
             )
         )
 
@@ -962,3 +964,78 @@ class TestTheQuickLauncher:
         """The whole risk of a fast launcher is that its number gets quoted as
         an answer. It says so on screen, and the verdict block says so again."""
         assert "NOT enough to conclude" in self.LAUNCHER
+
+
+class TestTheScanUniverseIsTheLiveOne:
+    """A correction I owed the record.
+
+    I told the owner he was "running order_block on five markets". He was not.
+    `--core` and `CORE_UNIVERSE` exist only inside the dry-run script; the live
+    scanner reads the whole broker catalogue and always did. What was true is
+    that my MEASUREMENT covered sixteen markets, of which five produced trades.
+
+    These tests pin the distinction so the two cannot be confused again.
+    """
+
+    def test_the_core_list_is_confined_to_the_measurement_script(self) -> None:
+        """If it ever appears in the runner, the scan universe has silently
+        shrunk to sixteen markets on a live account."""
+        import subprocess
+
+        hits = subprocess.run(
+            ["git", "grep", "-l", "-E", "CORE_UNIVERSE|--core|args.core"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+
+        for path in hits:
+            assert path.startswith("tests/") or path in {
+                "scripts/dry_run_sections.py",
+                "dryrun.cmd",
+                "dryrun-live.cmd",
+                "quick.cmd",
+                "history.cmd",
+            }, f"{path} is not a measurement file and must not know about --core"
+
+    def test_the_scanner_covers_every_class_except_stocks(self) -> None:
+        """The owner's words: all markets except the dumb stocks. That is what
+        the config already said, and `unknown` is out too -- anything the
+        scanner cannot classify is not something to put money on."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.instrument import AssetClass
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        scanned = set(settings.scanner.priority_asset_classes)
+
+        assert scanned == {"forex", "crypto", "metal", "index", "commodity"}
+        assert AssetClass.STOCK.value not in scanned
+        assert AssetClass.UNKNOWN.value not in scanned
+
+    def test_nothing_caps_how_many_markets_are_scanned(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert not getattr(settings.scanner, "max_symbols", 0)
+
+    def test_the_all_form_of_the_launcher_parses_and_drops_m1(self) -> None:
+        """Fourteen times the markets, so it resolves on M5. M1 over 230
+        markets is tens of millions of bars for no extra answer."""
+        from scripts.dry_run_sections import build_parser
+
+        launcher = (ROOT / "dryrun-live.cmd").read_text()
+
+        every = build_parser().parse_args(
+            cmd_argv(launcher, **{"%DAYS%": "30", "%SCOPE%": "", "%FINE%": "--no-m1"})
+        )
+        assert every.core is False and every.no_m1 is True and every.live_only is True
+
+        core = build_parser().parse_args(
+            cmd_argv(launcher, **{"%DAYS%": "7", "%SCOPE%": "--core", "%FINE%": ""})
+        )
+        assert core.core is True and core.no_m1 is False
