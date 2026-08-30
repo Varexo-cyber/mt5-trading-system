@@ -96,7 +96,9 @@ class Decision:
     managed_money: float | None = None
 
 
-def _context(symbol: str, frames: dict, upto: datetime, spread: float) -> MarketContext | None:
+def _context(
+    symbol: str, frames: dict, upto: datetime, spread: float, slices: dict | None = None
+) -> MarketContext | None:
     """Everything knowable at `upto`, and nothing that closed after it.
 
     WHY THIS IS WRITTEN WITH `searchsorted` AND NOT A MASK.
@@ -118,6 +120,18 @@ def _context(symbol: str, frames: dict, upto: datetime, spread: float) -> Market
     warmup is then a plain positional slice. O(log n) instead of O(n), same
     answer -- `test_the_fast_context_matches_the_slow_one` compares them bar
     for bar rather than taking that on trust.
+
+    AND THE SLOW FRAMES BARELY MOVE, so `slices` memoises the DataFrame per
+    (timeframe, cut). The Series wrapper is still rebuilt because it carries
+    `upto`, which differs every bar; only the slice is shared, and the frames
+    are never mutated so sharing one is safe.
+
+    THE SAVING IS 25%, NOT THE SIXTY I FIRST WROTE HERE. On an M30 walk the
+    arithmetic is not a guess: M5, M15 and M30 all advance on every bar and
+    can never hit, H1 advances every second bar and H4 every eighth, so of
+    five slices per bar about 1.25 are reused. `test_it_actually_hits`
+    measures it -- 149 misses out of 200 -- and the number in this comment is
+    that measurement rather than an estimate that sounded right.
     """
     series: dict[Timeframe, Series] = {}
     for timeframe, frame in frames.items():
@@ -126,7 +140,16 @@ def _context(symbol: str, frames: dict, upto: datetime, spread: float) -> Market
         cut = int(index.searchsorted(upto - timeframe.duration, side="right"))
         if cut < WARMUP:
             return None
-        series[timeframe] = Series(symbol, timeframe, frame.iloc[cut - WARMUP : cut], upto)
+        window = None if slices is None else slices.get((timeframe, cut))
+        if window is None:
+            window = frame.iloc[cut - WARMUP : cut]
+            if slices is not None:
+                if len(slices) > 64:
+                    # Only the newest cut of each clock is ever asked for again;
+                    # an unbounded dict would hold the whole history twice.
+                    slices.clear()
+                slices[(timeframe, cut)] = window
+        series[timeframe] = Series(symbol, timeframe, window, upto)
     price = float(series[Timeframe.M5].df["close"].iloc[-1])
     half = spread / 2.0
     return MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))
@@ -262,12 +285,14 @@ def _one_pass(
     window = bars[(bars.index >= start) & (bars.index <= end)]
     horizon = int(96 * clock.duration / resolve_on.duration)
     busy_until: datetime | None = None
+    #: Per pass, so it never outlives the frames it points into.
+    slices: dict = {}
     for bar_time in window.index:
         upto = bar_time + clock.duration
         if busy_until is not None and upto <= busy_until:
             continue  # a position is open on this symbol; live would refuse
         spread_price = float(window.loc[bar_time].get("spread", 0)) * spec.point
-        ctx = _context(symbol, frames, upto, spread_price)
+        ctx = _context(symbol, frames, upto, spread_price, slices)
         if ctx is None:
             continue
         idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
