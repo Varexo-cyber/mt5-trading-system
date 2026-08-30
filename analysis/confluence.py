@@ -645,12 +645,44 @@ class ConfluenceEngine:
         # it out under the account's 3.0 would trade a measured strategy at
         # nearly zero. Matched on substring because `setup_family` is
         # `{module}_{timeframe}`.
+        #
+        # AND THE OVERRIDE HAS TO BE THE EXIT, not a suggestion the search
+        # below is free to overrule -- which is exactly what it was.
+        #
+        # `planned` was consulted on ONE branch, the fallback taken when
+        # `_first_touch_outcomes` returns None. On the branch the code actually
+        # takes, the search swept `candidate` up to
+        # `max(target_r_multiple, minimum_r_multiple)` -- the ACCOUNT's 3.0 --
+        # and picked whatever distance its own model liked. The family's 1.0
+        # bounded nothing. The dry run of 30 August shows the damage directly:
+        # `order_block` winners averaged 1.33R where the shipped plan says 1.00,
+        # and the hit rate came in at 34% against a measured 62%.
+        #
+        # It cannot be left as a mere ceiling either. The search maximises
+        # expectancy per bar under a first-touch model, and that model is the
+        # one whose bias this account has already measured: a random entry
+        # reads +0.073R at 3:1 because a bar registers a barrier when its
+        # extreme crosses it, and the overshoot is proportionally larger on the
+        # nearer barrier. The bias grows with the ratio, so a free search is
+        # pulled toward the far target on purpose.
+        #
+        # A named family is not a market to be surveyed. 18,828 resolved trades
+        # measured ONE exit; any other exit is a different strategy that has
+        # never been measured. So when a family names its ratio, that is the
+        # target and there is no search.
         ratio = config.target_r_multiple
+        named_family = False
         for family, override in config.target_r_multiple_by_family.items():
             if family in setup_family:
                 ratio = override
+                named_family = True
                 break
         planned = risk * ratio
+        if named_family:
+            return (
+                entry + planned * int(direction),
+                f"{ratio:.2f}R fixed by the {setup_family} family, as measured",
+            )
         planning_timeframe = (
             Timeframe.parse(profile.planning_timeframe) if profile else Timeframe.H1
         )

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from datetime import UTC
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -201,3 +202,115 @@ class TestTheSweepIsHonest:
         """Two sections on one clock merge into a single confluence idea, and
         the result would then say nothing about either."""
         assert "m.name == name" in SOURCE
+
+
+class TestItMeasuresWhatTheAccountWouldActuallyDo:
+    """The 30 August run reported -1,120 EUR on a 215 EUR account, and that
+    number was not the live configuration. Three things separated them, and
+    every one of them was in this script rather than in the strategy."""
+
+    def test_it_refuses_a_second_position_on_a_busy_symbol(self) -> None:
+        """`Reason.POSITION_ALREADY_OPEN` live; nothing at all here. Without it
+        the loop takes a fresh trade on EVERY bar the setup stays valid, and
+        the over-count is BIASED: a retest that works leaves the level in a bar
+        and yields one entry, a retest that fails sits on it and yields five.
+        Duplicates are drawn from the losers."""
+        assert "busy_until" in SOURCE
+        assert "a position is open on this symbol; live would refuse" in SOURCE
+
+    def test_an_unresolved_trade_keeps_holding_the_symbol(self) -> None:
+        """Freeing the symbol on a trade that never resolved would let the same
+        signal re-enter while the position is still open."""
+        assert "busy_until = exit_at if exit_at is not None else end + clock.duration" in SOURCE
+
+    def test_the_resolver_reports_when_the_trade_left(self) -> None:
+        """The slot cap is a rule about how many trades are open AT ONCE, which
+        cannot be answered from entry times."""
+        from scripts.dry_run_sections import _resolve
+
+        assert "return -1.0, stamp" in SOURCE
+        assert _resolve.__doc__ and "exit_time" in _resolve.__doc__
+
+    def test_the_slot_cap_is_applied_in_time_order(self) -> None:
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision, _under_the_slot_cap
+
+        base = datetime(2026, 8, 24, tzinfo=UTC)
+        # Four signals inside one hour; the first two hold their slots for a day.
+        trades = [
+            Decision(
+                when=base + timedelta(minutes=15 * i),
+                symbol=f"S{i}",
+                module="m",
+                outcome="TRADE",
+                exit_at=base + timedelta(days=1),
+            )
+            for i in range(4)
+        ]
+
+        taken = _under_the_slot_cap(trades, slots=2)
+
+        assert [d.symbol for d in taken] == ["S0", "S1"]
+
+    def test_a_freed_slot_is_reused(self) -> None:
+        """The cap must not be a cap on trades per window."""
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision, _under_the_slot_cap
+
+        base = datetime(2026, 8, 24, tzinfo=UTC)
+        trades = [
+            Decision(base, "A", "m", "TRADE", exit_at=base + timedelta(minutes=30)),
+            Decision(
+                base + timedelta(hours=1), "B", "m", "TRADE", exit_at=base + timedelta(days=1)
+            ),
+        ]
+
+        assert len(_under_the_slot_cap(trades, slots=1)) == 2
+
+    def test_the_live_pair_gets_its_own_block(self) -> None:
+        """The two shipped rows were on the same screen as eight combinations
+        that will never run together, unlabelled, and the total of all ten was
+        printed as the answer. A report that must be disentangled to be read
+        will be misread."""
+        assert "def _live_config_report" in SOURCE
+        assert "_live_config_report(results, settings, equity, args.days)" in SOURCE
+
+    def test_the_live_block_uses_each_sections_configured_clock(self) -> None:
+        """Not the sweep's clocks. Picking the best row out of the sweep and
+        calling it the live result is the same lie one level up."""
+        assert 'clock = getattr(section, "timeframe", None)' in SOURCE
+
+    def test_the_live_block_applies_the_accounts_own_cap(self) -> None:
+        assert "settings.effective_max_positions(equity)" in SOURCE
+        assert "_under_the_slot_cap(everything, slots)" in SOURCE
+
+
+class TestTheLiveOnlyLauncher:
+    """A month over the whole catalogue is five times cheaper without the
+    sweep, and the sweep answers a question the owner is no longer asking."""
+
+    LAUNCHER = (ROOT / "dryrun-live.cmd").read_text()
+
+    def test_its_command_line_parses(self) -> None:
+        from scripts.dry_run_sections import build_parser
+
+        line = next(ln for ln in self.LAUNCHER.splitlines() if "scripts.dry_run_sections" in ln)
+        flags = line.split("scripts.dry_run_sections", 1)[1].split()
+        argv = [{"%DAYS%": "30"}.get(token, token) for token in flags]
+
+        parsed = build_parser().parse_args(argv)
+
+        assert parsed.days == 30
+        assert parsed.live_only is True
+        assert parsed.sweep == []
+
+    def test_it_takes_no_comma_arguments(self) -> None:
+        for line in self.LAUNCHER.splitlines():
+            if line.strip().startswith("set "):
+                assert "," not in line, line
+
+    def test_live_only_beats_a_sweep_that_is_also_present(self) -> None:
+        """Otherwise the flag is advisory and the run costs what it always did."""
+        assert "if args.live_only:\n            args.sweep = []" in SOURCE

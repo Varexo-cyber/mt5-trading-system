@@ -18,7 +18,6 @@ from analysis.fast_ema_cross import FastEmaCross
 from analysis.impulse_break import ImpulseBreak
 from analysis.impulse_retest import ImpulseRetest
 from analysis.level_retest import LevelRetest
-from analysis.order_block import OrderBlock
 from analysis.m1_micro_breakout import M1MicroBreakout
 from analysis.market_intelligence import (
     MarketObservation,
@@ -33,6 +32,7 @@ from analysis.market_regime import MarketRegime
 from analysis.market_structure import MarketStructure
 from analysis.mean_reversion import MeanReversion
 from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, VolatilityRegime
+from analysis.order_block import OrderBlock
 from analysis.seasonality import Seasonality
 from analysis.session_breakout import SessionBreakout
 from analysis.setup_lifecycle import LifecycleDecision, SetupLifecycleBook, SetupState
@@ -51,10 +51,9 @@ __all__ = [
     "EntryTimingDecision",
     "FastEmaCross",
     "ImpulseBreak",
-    "LevelReaction",
     "ImpulseRetest",
+    "LevelReaction",
     "LevelRetest",
-    "OrderBlock",
     "LifecycleDecision",
     "LiquiditySweep",
     "M1MicroBreakout",
@@ -63,6 +62,7 @@ __all__ = [
     "MarketStructure",
     "MeanReversion",
     "OpportunityIntelligence",
+    "OrderBlock",
     "PeerMove",
     "ReviewDriftAssessment",
     "Seasonality",

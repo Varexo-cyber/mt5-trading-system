@@ -82,6 +82,14 @@ class Decision:
     result_r: float | None = None
     pnl_money: float | None = None
     note: str = ""
+    #: When the trade left. Needed to apply the concurrent-position cap, which
+    #: is a rule about how many trades are open AT ONCE and cannot be checked
+    #: from entry times alone.
+    exit_at: datetime | None = None
+    #: Which (section, clock) pass produced it, so the live pair can be picked
+    #: back out of a sweep that also measured eight combinations that will
+    #: never run together.
+    pass_key: tuple[str, str] = ("", "")
 
 
 def _context(symbol: str, frames: dict, upto: datetime, spread: float) -> MarketContext | None:
@@ -103,20 +111,26 @@ def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int):
     Same rules as the research: the entry bar itself counts, a bar spanning
     both barriers is a LOSS because the order is unknowable, and a trade that
     reaches neither is reported as open rather than closed at the clock.
+
+    Returns `(r, exit_time)`. The exit time is what frees the symbol for the
+    next trade -- see `_one_pass`. A trade that resolves neither way returns
+    `(None, None)` and holds the symbol to the end of the window, which is what
+    a real open position does.
     """
     future = frame[frame.index >= start].head(horizon_bars)
     if future.empty:
-        return None
+        return None, None
     long = idea.direction is Direction.LONG
-    for _, bar in future.iterrows():
+    for stamp, bar in future.iterrows():
         hit_stop = bar["low"] <= idea.stop_loss if long else bar["high"] >= idea.stop_loss
         hit_target = bar["high"] >= idea.take_profit if long else bar["low"] <= idea.take_profit
         if hit_stop:
-            return -1.0
+            return -1.0, stamp
         if hit_target:
             risk = abs(idea.entry - idea.stop_loss)
-            return abs(idea.take_profit - idea.entry) / risk if risk > 0 else 0.0
-    return None
+            reward = abs(idea.take_profit - idea.entry) / risk if risk > 0 else 0.0
+            return reward, stamp
+    return None, None
 
 
 def _one_pass(
@@ -131,6 +145,7 @@ def _one_pass(
     equity: float,
     clock: Timeframe,
     resolve_on: Timeframe,
+    pass_key: tuple[str, str] = ("", ""),
 ) -> list[Decision]:
     """Every decision one configuration reaches on one symbol.
 
@@ -141,13 +156,25 @@ def _one_pass(
     `resolve_on` must be FINER than the clock. Resolving an M30 trade on M30
     bars cannot tell which barrier a bar touched first, and assuming the good
     one is how a backtest lies.
+
+    ONE POSITION PER SYMBOL AT A TIME, which is `Reason.POSITION_ALREADY_OPEN`
+    live and was missing here entirely. Without it this loop takes a fresh
+    trade on EVERY bar the setup stays valid, and that is not a small
+    over-count -- it is biased. A retest that works leaves the level in a bar
+    or two and yields one entry; a retest that fails sits on the level and
+    grinds, yielding five. Duplicates are drawn from the losers, so the
+    measured hit rate falls for a reason that has nothing to do with the
+    strategy. The 30 August run read 33% where the research reads 62-68%.
     """
     decisions: list[Decision] = []
     bars = frames[clock]
     window = bars[(bars.index >= start) & (bars.index <= end)]
     horizon = int(96 * clock.duration / resolve_on.duration)
+    busy_until: datetime | None = None
     for bar_time in window.index:
         upto = bar_time + clock.duration
+        if busy_until is not None and upto <= busy_until:
+            continue  # a position is open on this symbol; live would refuse
         spread_price = float(window.loc[bar_time].get("spread", 0)) * spec.point
         ctx = _context(symbol, frames, upto, spread_price)
         if ctx is None:
@@ -180,7 +207,10 @@ def _one_pass(
                 )
             )
             continue
-        r = _resolve(frames[resolve_on], upto, idea, horizon_bars=horizon)
+        r, exit_at = _resolve(frames[resolve_on], upto, idea, horizon_bars=horizon)
+        # Held to the end of the window when it never resolved, exactly as an
+        # open position holds the symbol live.
+        busy_until = exit_at if exit_at is not None else end + clock.duration
         risk_money = sized.actual_risk_money
         decisions.append(
             Decision(
@@ -197,9 +227,36 @@ def _one_pass(
                 risk_pct=sized.actual_risk_pct,
                 result_r=r,
                 pnl_money=None if r is None else r * risk_money,
+                exit_at=exit_at,
+                pass_key=pass_key,
             )
         )
     return decisions
+
+
+def _under_the_slot_cap(trades: list[Decision], slots: int) -> list[Decision]:
+    """The trades that would actually have been opened, cap included.
+
+    `max_concurrent_positions` is 4 on this account and `effective_max_positions`
+    cuts it to 2 at this equity. The dry run enforced neither, so it reported a
+    portfolio nobody could have held: on a morning when eleven markets break
+    together it counted eleven trades where the account can hold two.
+
+    Walked in time order because that is the only order in which the question
+    "is a slot free" has an answer. A trade that never resolved holds its slot
+    to the end, which is what an open position does.
+    """
+    if slots <= 0:
+        return list(trades)
+    open_until: list[datetime] = []
+    taken: list[Decision] = []
+    for trade in sorted(trades, key=lambda d: d.when):
+        open_until = [stamp for stamp in open_until if stamp > trade.when]
+        if len(open_until) >= slots:
+            continue
+        taken.append(trade)
+        open_until.append(trade.exit_at or datetime.max.replace(tzinfo=trade.when.tzinfo))
+    return taken
 
 
 def _retimed(settings, module_name: str, timeframe: str):
@@ -253,6 +310,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-m1",
         action="store_true",
         help="skip M1 history (much faster on a large universe; coarser resolution)",
+    )
+    parser.add_argument(
+        "--live-only",
+        action="store_true",
+        help=(
+            "each section on ITS OWN configured clock and nothing else. Overrides "
+            "--sweep. One fifth of the work, which is what makes a month over the "
+            "whole catalogue finishable."
+        ),
     )
     return parser
 
@@ -343,6 +409,8 @@ def main() -> None:
         # would say nothing about either.
         module_config = {"impulse_retest": "impulse_retest", "order_block": "order_block"}
         passes: list[tuple[str, str]] = []
+        if args.live_only:
+            args.sweep = []
         if args.sweep:
             # Accept "M5 M15" and "M5,M15" and any mix: cmd turns a comma list
             # into separate words before the script ever sees it, so both
@@ -402,6 +470,7 @@ def main() -> None:
                         equity=equity,
                         clock=clock,
                         resolve_on=finest,
+                        pass_key=(name, tf_name),
                     )
                 )
             done = sum(
@@ -419,6 +488,7 @@ def main() -> None:
 
     if args.sweep:
         _sweep_report(results, equity, args.days)
+    _live_config_report(results, settings, equity, args.days)
     _report(decisions, equity, args.days, skipped_symbols)
     if args.csv:
         path = Path(args.csv)
@@ -463,6 +533,72 @@ def main() -> None:
                     ]
                 )
         print(f"\nevery decision written to {path}")
+
+
+def _live_config_report(results: dict, settings, equity: float, days: int) -> None:
+    """WHAT THE ACCOUNT WOULD ACTUALLY HAVE DONE. Read this one.
+
+    THE 30 AUGUST RUN REPORTED -1,120 EUR ON A 215 EUR ACCOUNT and that number
+    was not the live configuration. It was the SWEEP TOTAL: both sections on
+    five clocks at once, ten combinations that will never run together, with no
+    position cap. The two rows that are the shipped configuration were roughly
+    flat, and they were on the same screen, unlabelled, between eight rows that
+    were not.
+
+    A report that has to be disentangled before it can be read is a report that
+    will be misread. So the live pair gets its own block: the section on the
+    clock it is configured for, nothing else, under the account's own
+    concurrent-position cap.
+    """
+    live = list(settings.analysis.confluence.live_enabled_modules)
+    keys = []
+    for name in sorted(live):
+        section = getattr(settings.analysis, name, None)
+        clock = getattr(section, "timeframe", None)
+        if clock is not None and (name, clock) in results:
+            keys.append((name, clock))
+    if not keys:
+        return
+
+    slots = settings.effective_max_positions(equity)
+    everything = [d for key in keys for d in results[key] if d.outcome == "TRADE"]
+    trades = _under_the_slot_cap(everything, slots)
+    closed = [d for d in trades if d.result_r is not None]
+
+    print("\n" + "=" * 78)
+    print("THE LIVE CONFIGURATION -- this is the one that answers the question")
+    print("=" * 78)
+    print("  " + ", ".join(f"{name} on {clock}" for name, clock in keys))
+    print(f"  max {slots} positions at once at EUR {equity:.2f}, one per symbol")
+    if len(everything) != len(trades):
+        print(f"  {len(everything) - len(trades)} signals dropped: every slot was already busy")
+
+    if not closed:
+        print("\n  No resolved trades in this window.")
+        return
+
+    wins = [d for d in closed if (d.result_r or 0) > 0]
+    total_r = sum(d.result_r or 0.0 for d in closed)
+    money = sum(d.pnl_money or 0.0 for d in closed)
+    print(
+        f"\n  {len(trades)} trades taken, {len(closed)} resolved"
+        f"   ({len(trades) / max(days, 1):.1f} a day)"
+    )
+    print(f"  win rate            {len(wins) / len(closed):.1%}  ({len(wins)}/{len(closed)})")
+    print(f"  total               {total_r:+.2f} R")
+    print(f"  per trade           {total_r / len(closed):+.3f} R")
+    print(f"  PROFIT              EUR {money:+.2f}   on EUR {equity:.2f} = {money / equity:+.1%}")
+    for name, clock in keys:
+        rows = [d for d in trades if d.pass_key == (name, clock) and d.result_r is not None]
+        if not rows:
+            continue
+        won = sum(1 for d in rows if (d.result_r or 0) > 0)
+        row_r = sum(d.result_r or 0 for d in rows)
+        row_money = sum(d.pnl_money or 0 for d in rows)
+        print(
+            f"    {name:<16s} {clock:<4s} {len(rows):>4d} trades  "
+            f"{won / len(rows):>5.1%} win  {row_r:+7.2f} R  EUR {row_money:+8.2f}"
+        )
 
 
 def _sweep_report(results: dict, equity: float, days: int) -> None:

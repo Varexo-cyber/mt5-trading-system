@@ -3377,6 +3377,26 @@ class ConfluenceConfig(Base):
         # time the gap it was entered on had long since closed and what was
         # left was an unhedged directional index position with no thesis.
         "basket_divergence",
+        # AND A FOURTH AND FIFTH TIME, to the only two modules on this account
+        # that trade real money.
+        #
+        # `impulse_retest` reads M15 and `order_block` reads M30. Neither was in
+        # either list, so both fell through to `return "swing"` and were handed
+        # H1 planning authority, a 24-bar target horizon, and the swing HTF
+        # veto — which is D1/W1 at `minimum_htf_conflicts: 1`, against
+        # intraday's H4/D1 at 2.
+        #
+        # That last number is not a detail for these two. A break-retest buys
+        # the level BECAUSE price came back to it; a daily trend pointing the
+        # other way is the normal condition of the setup, not evidence against
+        # it. A single D1 conflict vetoing it refuses the strategy on the
+        # grounds of its own mechanism, and the 30 August dry run refused 99.2%
+        # of everything it saw.
+        #
+        # Both were measured on a fixed exit within a handful of bars of the
+        # entry. A 24-bar H1 horizon is a day and a half.
+        "impulse_retest",
+        "order_block",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
