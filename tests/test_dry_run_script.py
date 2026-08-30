@@ -1131,3 +1131,77 @@ class TestTheVerdictJudgesTheConfigurationThatRuns:
 
             assert "d.result_r" not in body, f"{name} still reads the fixed column"
             assert "_live_exit(" in body
+
+
+class TestEveryReportBlockJudgesTheLiveExit:
+    """`_live_config_report` was corrected first and `_report` was the SAME
+    defect twenty lines lower, found separately. BY SECTION at the bottom is
+    the line the owner actually reads -- "is order_block positive and
+    impulse_retest not" -- and on the 180-day run it answered that about a
+    configuration the account does not trade."""
+
+    def _rows(self, n: int, fixed: float, managed_value: float, module: str = "order_block"):
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        return [
+            Decision(
+                base + timedelta(days=i % 90, minutes=i),
+                "NDX100",
+                module,
+                "TRADE",
+                risk_money=8.0,
+                risk_pct=4.0,
+                result_r=fixed,
+                pnl_money=fixed * 8.0,
+                managed_r=managed_value,
+                managed_money=managed_value * 8.0,
+                pass_key=(module, "M30"),
+            )
+            for i in range(n)
+        ]
+
+    def test_by_section_reports_the_exit_the_account_takes(self, capsys) -> None:
+        from scripts.dry_run_sections import _report
+
+        rows = self._rows(300, -1.0, 1.0, "order_block")
+        _report(rows, equity=215.34, days=90, skipped=0, managed=True)
+        out = capsys.readouterr().out
+
+        section = out.split("BY SECTION")[1]
+        assert "+300.00 R" in section, "BY SECTION is still totalling the fixed stop"
+
+    def test_and_the_fixed_stop_when_management_is_off(self, capsys) -> None:
+        from scripts.dry_run_sections import _report
+
+        _report(self._rows(300, -1.0, 1.0), equity=215.34, days=90, skipped=0, managed=False)
+        out = capsys.readouterr().out
+
+        assert "-300.00 R" in out.split("BY SECTION")[1]
+
+    def test_by_day_follows_the_same_column(self, capsys) -> None:
+        from scripts.dry_run_sections import _report
+
+        _report(self._rows(300, -1.0, 1.0), equity=215.34, days=90, skipped=0, managed=True)
+        out = capsys.readouterr().out
+
+        day_block = out.split("BY DAY")[1].split("BY SECTION")[0]
+        assert "-1.00 R" not in day_block, "BY DAY is still on the fixed stop"
+
+    def test_no_summary_line_reaches_for_the_fixed_column_directly(self) -> None:
+        import inspect
+
+        from scripts import dry_run_sections
+
+        body = inspect.getsource(dry_run_sections._report).split('"""')[-1]
+
+        assert "d.result_r" not in body
+        assert "_live_exit(" in body
+
+    def test_the_csv_names_which_column_is_live(self) -> None:
+        """A spreadsheet cannot ask which column to total, so the header has
+        to say it."""
+        assert '"result_r_fixed_stop"' in SOURCE
+        assert '"managed_r_LIVE"' in SOURCE

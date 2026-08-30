@@ -747,7 +747,7 @@ def main() -> None:
     if args.sweep:
         _sweep_report(results, equity, args.days)
     _live_config_report(results, settings, equity, args.days)
-    _report(decisions, equity, args.days, skipped_symbols)
+    _report(decisions, equity, args.days, skipped_symbols, _break_even_rule(settings) is not None)
     if args.csv:
         path = Path(args.csv)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -766,10 +766,14 @@ def main() -> None:
                     "lots",
                     "risk_money",
                     "risk_pct",
-                    "result_r",
-                    "pnl_money",
-                    "managed_r",
-                    "managed_money",
+                    # `result_r` is the fixed stop the research measured;
+                    # `managed_r` is the same trade under break-even, which is
+                    # what the account runs. Both columns, always, so a
+                    # spreadsheet cannot quietly total the wrong one.
+                    "result_r_fixed_stop",
+                    "pnl_money_fixed_stop",
+                    "managed_r_LIVE",
+                    "managed_money_LIVE",
                     "note",
                 ]
             )
@@ -1126,9 +1130,20 @@ def _sweep_report(results: dict, equity: float, days: int) -> None:
     print(f"{'=' * 78}")
 
 
-def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -> None:
+def _report(
+    decisions: list[Decision], equity: float, days: int, skipped: int, managed: bool = False
+) -> None:
+    """Every decision in the run, and BY SECTION at the bottom.
+
+    THIS BLOCK READ THE FIXED-STOP COLUMN TOO, and BY SECTION is the line the
+    owner actually asks about -- "is order_block positive and impulse_retest
+    not". On the 180-day run it answered that question about a configuration
+    the account does not trade. `_live_config_report` was corrected first;
+    this is the same defect twenty lines lower and it had to be found
+    separately, which is the argument for `_live_exit` existing at all.
+    """
     trades = [d for d in decisions if d.outcome == "TRADE"]
-    closed = [d for d in trades if d.result_r is not None]
+    closed = [d for d in trades if _live_exit(d, managed) is not None]
     refusals = Counter(d.outcome for d in decisions if d.outcome != "TRADE")
 
     print(f"\n{'-' * 78}")
@@ -1172,9 +1187,9 @@ def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -
         )
         return
 
-    wins = [d for d in closed if d.result_r and d.result_r > 0]
-    r_total = sum(d.result_r or 0.0 for d in closed)
-    money = sum(d.pnl_money or 0.0 for d in closed)
+    wins = [d for d in closed if (_live_exit(d, managed) or 0) > 0]
+    r_total = sum(_live_exit(d, managed) or 0.0 for d in closed)
+    money = sum((d.managed_money if managed else d.pnl_money) or 0.0 for d in closed)
     risks = [d.risk_money for d in closed]
     pcts = [d.risk_pct for d in closed]
 
@@ -1201,7 +1216,14 @@ def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -
         )
 
     frame = pd.DataFrame(
-        [{"day": d.when.date(), "r": d.result_r, "eur": d.pnl_money} for d in closed]
+        [
+            {
+                "day": d.when.date(),
+                "r": _live_exit(d, managed),
+                "eur": (d.managed_money if managed else d.pnl_money),
+            }
+            for d in closed
+        ]
     )
     per_day = frame.groupby("day").agg(trades=("r", "size"), R=("r", "sum"), EUR=("eur", "sum"))
     print("\nBY DAY")
@@ -1214,7 +1236,14 @@ def _report(decisions: list[Decision], equity: float, days: int, skipped: int) -
     print(f"\n   days green {int((per_day.R > 0).sum())} / {len(per_day)}")
 
     by_module = pd.DataFrame(
-        [{"module": d.module, "r": d.result_r, "eur": d.pnl_money} for d in closed]
+        [
+            {
+                "module": d.module,
+                "r": _live_exit(d, managed),
+                "eur": (d.managed_money if managed else d.pnl_money),
+            }
+            for d in closed
+        ]
     )
     print("\nBY SECTION")
     for module, row in (
