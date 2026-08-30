@@ -288,8 +288,11 @@ class TestTheVerdictIsReported:
             Path(__file__).resolve().parent.parent / "scripts" / "dry_run_sections.py"
         ).read_text()
 
-        assert '"managed_r",' in source
-        assert '"managed_money",' in source
+        # Renamed to say WHICH column the account trades: a spreadsheet
+        # cannot ask, so the header has to answer.
+        assert '"managed_r_LIVE",' in source
+        assert '"managed_money_LIVE",' in source
+        assert '"result_r_fixed_stop",' in source
 
 
 class TestTheCountersExplainTheTotal:
