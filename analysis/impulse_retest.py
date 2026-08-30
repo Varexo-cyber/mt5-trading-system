@@ -70,6 +70,14 @@ the lot halves the win, the loss and the spread together and leaves the
 R-multiple exactly where it was. Position size decides what a trade pays in
 euros, never whether it pays.
 
+IT MUST BE ABLE TO TRADE ALONE. All 18,828 trades were taken on this signal
+by itself. `lone_module_minimum_confidence` is 0.65 on this account, the fill
+sits at `level + tolerance` so the closeness term is near zero on almost every
+real signal, and the module first shipped at 0.58 base confidence -- meaning
+the typical setup was silently refused and would only ever have traded when
+some other detector happened to agree. That is not the measured strategy.
+Confidence is therefore anchored at 0.68, which is what it hits.
+
 WHAT THE MEASUREMENT SUBTRACTS, because without it this file would be wrong.
 The harness was checked with random entries, and random entries are not free:
 at a 3:1 target a coin flip reads +0.073R at +13.8 sigma, because a bar
