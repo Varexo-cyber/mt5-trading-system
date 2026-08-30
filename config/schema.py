@@ -2144,6 +2144,73 @@ class CandleMomentumConfig(Base):
         return self
 
 
+class OrderBlockConfig(Base):
+    """SECTION THREE. Found by the search that ran after section two shipped.
+
+    The first search produced only variants of the retest -- `retest_slow`
+    shared 47.5% of its trades with section two, which is the same section
+    wearing a hat. Round three was restricted to mechanisms that can fire when
+    a retest cannot: fractal swings, Fibonacci proportions, week boundaries,
+    session VWAP, cross-market divergence, and order blocks. Only this lived.
+
+        FX M30, 31,376 trades with every section-two bar removed
+        hit 62.1%   net +0.164R   train +0.168 / holdout +0.161
+        every year positive; 114 of 114 months positive
+    """
+
+    enabled: bool = True
+    #: M30. H1 measured better (+0.193R) with 40% fewer trades; M15 worse
+    #: (+0.156R) with twice as many. M30 is also a different clock from
+    #: section two's M15, which keeps the two from crowding the same bars.
+    timeframe: str = "M30"
+    atr_period: int = Field(default=14, ge=2, le=200)
+    lookback_bars: int = Field(default=96, ge=4, le=500)
+    #: THE THRESHOLD THAT CARRIES THE EDGE, measured on the impulse bar's BODY
+    #: (close minus open), not its range:
+    #:
+    #:     >= 1.0 ATR   122,927 trades   net +0.083R
+    #:     >= 1.5 ATR    37,049 trades   net +0.172R
+    #:     >= 2.0 ATR    12,441 trades   net +0.185R
+    #:
+    #: A one-ATR candle runs over nobody. 2.0 is barely better on a third of
+    #: the sample.
+    minimum_impulse_atr: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: Impulse above the minimum at which the score saturates.
+    impulse_span_atr: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: How far back to look for the last opposite-coloured candle.
+    block_search_bars: int = Field(default=5, ge=1, le=50)
+    #: How far INTO the block's body the limit rests. 0.25 measured +0.172R
+    #: against 0.50 at +0.146R: the zone is defended at its edge, and reaching
+    #: deeper into it is reaching past the orders.
+    zone_tolerance_atr: float = Field(default=0.25, ge=0.0, le=2.0)
+    #: 1.0 ATR from the fill. Clears `ConfluenceConfig.min_stop_atr: 0.8`
+    #: untouched, so nothing widens it behind the module's back.
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    #: Gold again: 0.10 ATR of spread over a 1.0 ATR stop is 20% of R and
+    #: `max_spread_share_of_stop: 0.08` refuses it. At 1.5 ATR it is 6.7%.
+    stop_atr_by_symbol: dict[str, float] = Field(default_factory=lambda: {"XAUUSD": 1.5})
+    #: 58 and not 54. A lone module's score is |raw| x confidence, so 54 x 0.66
+    #: is 35.6 against a `score_threshold` of 35.0 -- half a point of margin,
+    #: and any drift in either number silently switches the section off. 58
+    #: gives 38.3, the same margin section two carries.
+    base_score: float = Field(default=58.0, ge=0.0, le=100.0)
+    quality_score_bonus: float = Field(default=14.0, ge=0.0, le=50.0)
+    #: The measured hit rate, and it must clear
+    #: `lone_module_minimum_confidence` because every one of those 31,376
+    #: trades was taken on this signal alone.
+    base_confidence: float = Field(default=0.66, ge=0.0, le=1.0)
+    quality_confidence_bonus: float = Field(default=0.18, ge=0.0, le=1.0)
+    maximum_confidence: float = Field(default=0.84, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _confidence_is_ordered(self) -> OrderBlockConfig:
+        if self.maximum_confidence < self.base_confidence:
+            raise ValueError(
+                "analysis.order_block.maximum_confidence may not be below base_confidence"
+            )
+        return self
+
+
 class ImpulseRetestConfig(Base):
     """SECTION TWO. The one strategy here chosen by measurement.
 
@@ -3753,6 +3820,7 @@ class AnalysisConfig(Base):
     seasonality: SeasonalityConfig = SeasonalityConfig()
     drift_burst: DriftBurstConfig = DriftBurstConfig()
     impulse_retest: ImpulseRetestConfig = ImpulseRetestConfig()
+    order_block: OrderBlockConfig = OrderBlockConfig()
     level_retest: LevelRetestConfig = LevelRetestConfig()
     vwap_reversion: VwapReversionConfig = VwapReversionConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()

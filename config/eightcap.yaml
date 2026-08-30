@@ -2039,6 +2039,11 @@ analysis:
     # op de hele curve.
     target_r_multiple_by_family:
       impulse_retest: 1.0
+      # Sectie drie landt op dezelfde verhouding, en dat is hier apart gemeten
+      # en niet van sectie twee overgenomen: 0,75R geeft +0,147R, 1,0R geeft
+      # +0,172R, 1,5R geeft +0,099R. Allebei leunen ze op een lokale voorraad
+      # orders, en die is snel op.
+      order_block: 1.0
     target_reach_margin_pct: 0.0
     # Van 20% naar 25% van de stop. Quick/intraday-plannen hebben kleinere
     # stops en raakten hierdoor eerder de grens, zelfs wanneer de spread binnen
@@ -2385,7 +2390,7 @@ analysis:
     # `setup_lifecycle`-wijziging die breakout-families naar hun niveau laat
     # terugkomen blijft dus, want die kiest tussen twee instappen. Wat vervalt
     # is de claim dat dit op zichzelf geld verdient.
-    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum, impulse_retest]
+    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum, impulse_retest, order_block]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2616,6 +2621,23 @@ analysis:
       # verhaal hier met een out-of-sample cijfer, en hij hoort zwaarder te
       # wegen dan negen lezers die dezelfde prijsvorm bekijken.
       impulse_retest: 1.2
+
+      # SECTIE DRIE. Gevonden door de tweede zoektocht, nadat de eerste alleen
+      # varianten van sectie twee opleverde -- `retest_slow` deelde 47,5% van
+      # zijn trades met sectie twee en was dus dezelfde sectie met een hoedje.
+      #
+      # Ronde drie mocht alleen mechanismen bevatten die kunnen vuren wanneer
+      # een retest dat niet kan: fractale swings, Fibonacci, weekgrenzen,
+      # sessie-VWAP, cross-market divergentie, en order blocks. Alleen deze
+      # bleef staan.
+      #
+      #     FX M30, 31.376 trades met ELKE sectie-2 bar eruit gehaald
+      #     62,1% raak   netto +0,164R   train +0,168 / holdout +0,161
+      #     elk jaar positief, 114 van 114 maanden positief
+      #
+      # 1,0 en niet 1,2: hij is echt en hij is kleiner dan sectie twee
+      # (+0,164R tegen +0,279R), en het gewicht hoort dat te zeggen.
+      order_block: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3485,6 +3507,17 @@ risk:
       minimum_trades: 40
       maximum_loss_share: 0.45
       losing_streak: 8
+
+    # ORDER_BLOCK. Verwacht 62% raak op 1:1, dus 38% verliezers.
+    #
+    # 55% verliezers over veertig trades is ruim drie sigma de verkeerde kant
+    # op. Losser dan sectie twee omdat de verwachte trefkans lager ligt, en
+    # daarmee de normale spreiding breder.
+    order_block:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.55
+      losing_streak: 9
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde

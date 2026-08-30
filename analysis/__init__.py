@@ -18,6 +18,7 @@ from analysis.fast_ema_cross import FastEmaCross
 from analysis.impulse_break import ImpulseBreak
 from analysis.impulse_retest import ImpulseRetest
 from analysis.level_retest import LevelRetest
+from analysis.order_block import OrderBlock
 from analysis.m1_micro_breakout import M1MicroBreakout
 from analysis.market_intelligence import (
     MarketObservation,
@@ -53,6 +54,7 @@ __all__ = [
     "LevelReaction",
     "ImpulseRetest",
     "LevelRetest",
+    "OrderBlock",
     "LifecycleDecision",
     "LiquiditySweep",
     "M1MicroBreakout",
