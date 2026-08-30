@@ -1,0 +1,124 @@
+"""Taking the trade at the broker minimum instead of skipping it.
+
+THE OWNER'S INSTRUCTION, 30 August: "wnr die melding komt moet het gwn door
+door door tot het wel capitalized is dus dan doe je maar lotsize verminderen".
+
+REDUCING THE LOT IS NOT POSSIBLE, and that is the entire reason the refusal
+existed. `volume_min` IS the floor -- one ounce on gold -- and nothing smaller
+can be sent to the broker. So the only direction available is UP, and this
+switch rounds up and accepts MORE risk than the target, never less.
+
+It stops at `max_risk_per_trade_pct`, the account's own 8% conviction ceiling,
+which in micro_live is enforced by the sizer's existing final check. That check
+was written with the comment "should never fire" because rounding could only
+ever reduce risk. It can fire now, and it is doing real work.
+
+This reverses a rule the owner himself wrote as KRITIEK. These tests exist so
+the reversal is deliberate and bounded rather than something that happened.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from config.loader import DEFAULT_CONFIG_PATH, load_settings
+from config.schema import TradingMode
+
+
+def _live_settings(**risk_changes):
+    settings = load_settings(
+        DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+    )
+    settings = settings.model_copy(
+        update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
+    )
+    if risk_changes:
+        settings = settings.model_copy(
+            update={"risk": settings.risk.model_copy(update=risk_changes)}
+        )
+    return settings
+
+
+class TestTheSwitchIsOnAndBounded:
+    def test_it_is_enabled_on_the_live_account(self) -> None:
+        assert _live_settings().risk.allow_minimum_lot_above_target is True
+
+    def test_the_base_config_leaves_it_off(self) -> None:
+        """The instruction is this account's, at this equity. Defaulting it on
+        for everyone would generalise one owner's decision about EUR 212."""
+        assert load_settings(env_overrides=False).risk.allow_minimum_lot_above_target is False
+
+    def test_the_ceiling_is_the_accounts_own_conviction_cap(self) -> None:
+        """8%, not unlimited. "Reduce the lot size" cannot have meant one trade
+        putting a third of the account on a single stop."""
+        settings = _live_settings()
+
+        assert settings.effective_max_risk_pct() == pytest.approx(8.0)
+        assert settings.effective_risk_pct() == pytest.approx(2.0)
+
+    def test_the_final_ceiling_check_is_what_bounds_it(self) -> None:
+        """The sizer's step 6 was written as a "should never fire" guard --
+        rounding down could only reduce risk. Rounding UP is now possible, so
+        that check is the live bound and must still be there."""
+        import inspect
+
+        from risk import position_sizer
+
+        source = " ".join(inspect.getsource(position_sizer).split())
+
+        assert "Reason.RISK_EXCEEDS_CAP" in source
+        assert "actual_pct > ceiling" in source
+
+    def test_the_override_reaches_the_sizer(self) -> None:
+        """A config nothing reads is the defect this account keeps producing.
+        The switch has to be consulted where the refusal is raised."""
+        import inspect
+
+        from risk import position_sizer
+
+        source = " ".join(inspect.getsource(position_sizer).split())
+
+        assert "self.settings.risk.allow_minimum_lot_above_target" in source
+        assert "volume = spec.volume_min" in source
+
+    def test_an_overshooting_trade_is_labelled_in_the_journal(self) -> None:
+        """These trades carry up to four times the intended risk. The multiple
+        is the number worth reading back, so it goes in the detail line."""
+        import inspect
+
+        from risk import position_sizer
+
+        source = " ".join(inspect.getsource(position_sizer).split())
+
+        assert "TOOK MINIMUM LOT" in source
+
+
+class TestOnlySectionsTwoAndThreeTradeRealMoney:
+    def test_the_live_list_is_exactly_the_two_measured_sections(self) -> None:
+        confluence = _live_settings().analysis.confluence
+
+        assert set(confluence.live_enabled_modules) == {"impulse_retest", "order_block"}
+
+    def test_the_unmeasured_sections_are_off(self) -> None:
+        """Section 1 (market_structure, trend_momentum, m1_micro_breakout),
+        section 5 (basket_divergence) and section 6 (candle_momentum). Two of
+        those were never measured at all and one measured -0.365R over 163
+        live trades."""
+        live = set(_live_settings().analysis.confluence.live_enabled_modules)
+
+        for module in (
+            "market_structure",
+            "trend_momentum",
+            "m1_micro_breakout",
+            "basket_divergence",
+            "candle_momentum",
+        ):
+            assert module not in live, f"{module} may not trade real money"
+
+    def test_they_keep_their_weights_so_the_backtest_still_grades_them(self) -> None:
+        """Switched off is not deleted. A module with no weight cannot be
+        measured, and that is how three M1 detectors went unjudged for months."""
+        weights = _live_settings().analysis.confluence.weights
+
+        assert weights.get("trend_momentum", 0.0) > 0.0
+        assert weights.get("market_structure", 0.0) > 0.0

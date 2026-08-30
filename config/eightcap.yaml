@@ -2390,7 +2390,25 @@ analysis:
     # `setup_lifecycle`-wijziging die breakout-families naar hun niveau laat
     # terugkomen blijft dus, want die kiest tussen twee instappen. Wat vervalt
     # is de claim dat dit op zichzelf geld verdient.
-    live_enabled_modules: [market_structure, m1_micro_breakout, basket_divergence, candle_momentum, trend_momentum, impulse_retest, order_block]
+    # ALLEEN SECTIE 2 EN 3, op instructie van de eigenaar, 30 augustus.
+    #
+    # Wat eruit gaat en waarom het verdedigbaar is dat het eruit gaat:
+    #
+    #     market_structure     sectie 1   27 trades, -0,020R. Te dun om iets
+    #                                     van te weten.
+    #     trend_momentum       sectie 1   -0,365R over 163 trades, t = -4,01,
+    #                                     en op tien jaar data +0,02R bruto:
+    #                                     echt en waardeloos, sterft aan kosten.
+    #     m1_micro_breakout    sectie 1   NOOIT GEMETEN. Staat in geen enkele
+    #                                     tabel.
+    #     basket_divergence    sectie 5   NOOIT GEMETEN.
+    #     candle_momentum      sectie 6   plafond 33,75 tegen een lat van 35 --
+    #                                     kon sowieso nooit alleen handelen.
+    #
+    # Wat blijft staan is het enige met een out-of-sample cijfer. Alle vijf
+    # blijven ze in de boom met hun gewicht, dus de backtest en het journaal
+    # blijven ze meten. Alleen de toestemming is weg.
+    live_enabled_modules: [impulse_retest, order_block]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -3644,6 +3662,35 @@ risk:
   #   vrijkomen geven ruim twintig trades per dag; vier slots die een etmaal
   #   bezet blijven gaven er vier. De doorstroom zit in de houdtijd, niet hier.
   max_concurrent_positions: 4
+
+  # DOORPAKKEN OP UNDERCAPITALIZED, 30 augustus, op uitdrukkelijke instructie
+  # van de eigenaar: "wnr die melding komt moet het gwn door door door".
+  #
+  # WAT ER GEVRAAGD WERD EN WAT ER MOGELIJK IS. De instructie was "dan doe je
+  # maar lotsize verminderen". Dat kan niet, en dat is precies waarom deze
+  # weigering bestaat: `volume_min` IS de bodem. Op XAUUSD is dat 0,01 lot =
+  # één ounce, en kleiner bestaat niet bij de broker. De enige richting die
+  # er is, is OMHOOG.
+  #
+  # Dus dit doet het omgekeerde van wat er letterlijk stond en het enige wat
+  # er kan: het rondt naar boven af en accepteert MEER risico dan het doel.
+  #
+  # WAAR HET STOPT: bij `max_risk_per_trade_pct` (8%), de eigen
+  # conviction-plafond van deze rekening. Een minimum lot dat daar overheen
+  # gaat wordt nog steeds geweigerd -- niet uit voorzichtigheid maar omdat
+  # "verminder de lotsize" onmogelijk kan hebben betekend dat één trade een
+  # derde van de rekening op één stop zet. Zo'n instrument is te groot voor
+  # deze equity en daar is geen instelling voor.
+  #
+  # WAT HET KOST. Trades tussen de 2% en 8% dragen tot vier keer het bedoelde
+  # risico. Een verliesreeks daarop kost vier keer zoveel. Elke zo'n trade
+  # gaat met `TOOK MINIMUM LOT` en het echte percentage het journaal in.
+  #
+  # DIT IS DE REGEL DIE DE EIGENAAR ZELF ALS KRITIEK HAD OPGESCHREVEN
+  # ("het systeem mag NIET afronden naar de minimum lot"). Hij heeft hem
+  # 30 augustus zelf teruggedraaid, met "idgaf" erbij. Dat staat hier zodat
+  # niemand later denkt dat het per ongeluk is gebeurd.
+  allow_minimum_lot_above_target: true
 
   # De anti-martingale-halvering staat uit op DIT account, en alleen omdat hij
   # hier niet doet waar hij voor bedoeld is.

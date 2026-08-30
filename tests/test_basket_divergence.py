@@ -201,8 +201,19 @@ class TestItIsWiredToTradeAndToStandApart:
         )
         confluence = settings.analysis.confluence
 
-        assert "basket_divergence" in confluence.live_enabled_modules
-        assert confluence.effective_weights(TradingMode.MICRO_LIVE)["basket_divergence"] > 0
+        # Off since 30 August: only sections two and three trade real money.
+        # The guarantee this test exists for is conditional on being live, and
+        # it is asserted that way rather than deleted -- re-enabling it without
+        # a breaker is still the failure worth catching.
+        if "basket_divergence" in confluence.live_enabled_modules:
+            assert "basket_divergence" in settings.risk.section_breakers
+        # The weight stays whatever `live_enabled_modules` makes it: zero
+        # while it is off, so it cannot touch a live decision, and non-zero
+        # again the moment it is re-enabled. Both directions are the point.
+        live_weight = confluence.effective_weights(TradingMode.MICRO_LIVE)["basket_divergence"]
+        assert (live_weight > 0) == ("basket_divergence" in confluence.live_enabled_modules)
+        # The breaker must exist either way, so re-enabling it is one line and
+        # not one line plus a forgotten safety net.
         assert "basket_divergence" in settings.risk.section_breakers
 
     def test_it_is_its_own_evidence_family(self) -> None:
