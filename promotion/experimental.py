@@ -180,7 +180,29 @@ EXPERIMENTAL_MAX_DRAWDOWN_PCT = 0.0
 # any more — it is the only one that cannot be reset, waited out, or recovered
 # by a new day. Nothing automatic stands between the current equity and this
 # number. Reaching it flattens everything and halts until a human restarts.
-EXPERIMENTAL_EQUITY_FLOOR = 50.0
+#
+# 50 -> 150 op 30 augustus, op instructie van de eigenaar, en dit is de eerste
+# wijziging in deze reeks die de rekening STRAKKER zet in plaats van losser.
+#
+# HET SNIJDT TEGEN DE RISICOVERHOGING VAN VANDAAG IN, en die twee moeten samen
+# gelezen worden of het getal is misleidend:
+#
+#     saldo                        EUR 215
+#     vloer                        EUR 150
+#     ruimte tot de vloer          EUR  65
+#
+#     bij de gewone inzet van 2%   EUR  4,31   ->  ongeveer 15 verliezers
+#     bij het plafond van 10%      EUR 21,53   ->  ongeveer  3 verliezers
+#
+# Drie maximale verliezers en het experiment stopt. Dat is kort, en het is
+# kort geworden doordat beide knoppen vandaag zijn verzet: het plafond omhoog
+# en de vloer omhoog. Geen van beide is fout, maar samen laten ze veel minder
+# ruimte dan elk apart suggereert, en dat hoort hier te staan in plaats van
+# ontdekt te worden.
+#
+# Bij 20% totaal open risico kunnen twee gelijktijdige trades op het plafond
+# EUR 43 kwijtraken -- tweederde van de hele ruimte -- in een enkele beweging.
+EXPERIMENTAL_EQUITY_FLOOR = 150.0
 
 # Bumped from 1 when conviction-scaled staking arrived. A contract armed before
 # that change describes an envelope this build no longer runs — it pins one
