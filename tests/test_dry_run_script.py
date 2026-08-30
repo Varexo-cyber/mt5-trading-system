@@ -996,6 +996,7 @@ class TestTheScanUniverseIsTheLiveOne:
                 "dryrun-live.cmd",
                 "quick.cmd",
                 "history.cmd",
+                "history-one.cmd",
             }, f"{path} is not a measurement file and must not know about --core"
 
     def test_the_scanner_covers_every_class_except_stocks(self) -> None:
@@ -1333,3 +1334,53 @@ class TestOneMonthCannotCarryTheResult:
 
         assert "CONCENTRATED" not in out
         assert "[x] no single month carrying more than half the result" in out
+
+
+class TestTheRunSaysWhatItIsDoing:
+    """`history-one.cmd impulse_retest 180` announced
+
+        DRY RUN — sections order_block
+
+    and then measured impulse_retest in silence for twenty minutes. Two
+    separate defects, and together they are indistinguishable from a hang:
+    the header printed `live_enabled_modules` instead of what was being
+    measured, and the per-symbol progress line only printed when a symbol
+    produced trades -- so eleven FX markets, which form setups and lose every
+    one to the cost wall, showed nothing at all.
+
+    Silence has now been mistaken for failure in this script four times. It is
+    the same defect as "no setups" versus "no symbols" and as REFUSED_
+    CONFLUENCE at 98.4%: a run that cannot say what it is doing cannot be
+    trusted when it says nothing.
+    """
+
+    def test_the_header_names_what_is_measured_not_what_may_trade(self) -> None:
+        assert "DRY RUN — measuring" in SOURCE
+        assert "f\"DRY RUN — sections {', '.join(sorted(live))}\"" not in SOURCE
+
+    def test_the_header_flags_a_shadowed_section_explicitly(self) -> None:
+        """Measuring a section that may not trade is the normal case now, and
+        the reader must not have to infer it."""
+        assert "shadowed (measured, NOT permitted real money)" in SOURCE
+
+    def test_progress_prints_for_every_symbol(self) -> None:
+        assert (
+            'print(\n                f"  [{index}/{len(symbols)}] {symbol}: {done} trades"'
+            in SOURCE
+        )
+        assert "if done:\n                print(" not in SOURCE
+
+    def test_progress_is_flushed(self) -> None:
+        """Block-buffered output through a pipe would reintroduce exactly the
+        silence this fixes."""
+        line = SOURCE[SOURCE.index("{symbol}: {done} trades") :][:200]
+
+        assert "flush=True" in line
+
+    def test_the_header_is_printed_after_the_passes_are_known(self) -> None:
+        """It cannot name what is being measured before that is decided, which
+        is why it named the live list instead."""
+        passes_built = SOURCE.index("passes.append((name, getattr(settings.analysis, name)")
+        header = SOURCE.index("DRY RUN — measuring")
+
+        assert passes_built < header
