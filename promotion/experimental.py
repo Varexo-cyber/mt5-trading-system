@@ -102,7 +102,20 @@ EXPERIMENTAL_RISK_PER_TRADE_PCT = 2.0
 # conviction -- drew the ceiling. It now runs 0.70 to 0.90, which is what the
 # schema always documented and what "real conviction" has to mean if the word
 # is to do any work.
-EXPERIMENTAL_MAX_STAKE_PCT = 8.0
+# 8,0 -> 10,0 op 30 augustus, op verzoek van de eigenaar: "zorg dat er net
+# ietsjes meer risico genomen mag worden dus van 2% tot 10% max".
+#
+# THIS IS THE FOURTH CEILING AND IT WAS ALMOST MISSED. The overlay's own
+# comment names three -- `risk.max_risk_per_trade_pct`,
+# `conviction_risk.ceiling_pct` and `modes.micro_live.max_risk_per_trade_pct`
+# -- and this constant is a fourth, held here because the armed contract is
+# what the account is checked against at startup. Three of four would have
+# left `update.cmd` reporting an armed contract that no longer matches the
+# build.
+#
+# At 215 EUR a maximum-conviction trade now risks 21.53 EUR against a 50 EUR
+# floor. The runway from here to that floor is about eight such losers.
+EXPERIMENTAL_MAX_STAKE_PCT = 10.0
 
 # The most the whole book may risk at once, across every open position.
 #
@@ -127,7 +140,16 @@ EXPERIMENTAL_MAX_STAKE_PCT = 8.0
 # the book". At a 12% ceiling that was 24; at 8% it is 16. Leaving it at 24
 # would have allowed THREE peak trades, which is a different decision about the
 # account and not one anybody made.
-EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 16.0
+# 16 -> 20, and again it moves WITH the ceiling rather than independently.
+# The rule this number encodes has not changed: two maximum-conviction trades
+# fill the book and a third waits. At a 6% ceiling that was 12, at 8% it was
+# 16, at 10% it is 20. Leaving it at 16 would have turned the design into "one
+# big trade and a fragment" by accident.
+#
+# It does mean 20% of the account can be at risk across two open stops at
+# once, on an account with `daily_loss_limit_pct: 0.0`. That is the owner's
+# decision and it is written here so it stays a decision.
+EXPERIMENTAL_MAX_TOTAL_OPEN_RISK_PCT = 20.0
 # Zero: the automatic peak-to-current halt is off for this experiment.
 #
 # The operator turned it off after seeing what it left. At 88.28 EUR against a
@@ -170,7 +192,10 @@ EXPERIMENTAL_EQUITY_FLOOR = 50.0
 # build applies, and the difference is the operator's to approve rather than
 # this file's to assume. Live trading refuses until `rearm_experimental_live`
 # has been run.
-CONTRACT_VERSION = 4
+# 4 -> 5. A contract armed under the 8% envelope describes a smaller account
+# risk than this build applies, so it must be RE-ARMED rather than silently
+# reinterpreted. The version is what forces that.
+CONTRACT_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)

@@ -3276,7 +3276,28 @@ risk:
   # `modes.micro_live.max_risk_per_trade_pct`. Eentje verlagen en de andere
   # twee laten staan zou hetzelfde stille verschil opleveren als hierboven
   # beschreven, alleen dan de andere kant op.
-  max_risk_per_trade_pct: 8.0
+  #
+  # 8 -> 10 op 30 augustus, op verzoek van de eigenaar: "zorg dat er net
+  # ietsjes meer risico genomen mag worden dus van 2% tot 10% max".
+  #
+  # WAT DAT OP DEZE REKENING BETEKENT, en het is meer dan het klinkt, want de
+  # minimum-lot override maakt dit plafond bereikbaar op elke trade in plaats
+  # van alleen op de overtuigde:
+  #
+  #     saldo                    EUR 215
+  #     gewone inzet 2%          EUR   4,30
+  #     plafond 8%               EUR  17,20
+  #     plafond 10%              EUR  21,50
+  #
+  # De meting van dertig dagen liet 75 van de 255 trades boven de 2% uitkomen
+  # omdat het brokerminimum het afdwong, met 7,89% als hoogste. Die groep
+  # schuift nu door naar maximaal 10%: twee zulke trades tegelijk is een vijfde
+  # van de rekening op twee stops, en er is GEEN daglimiet
+  # (`daily_loss_limit_pct: 0.0`).
+  #
+  # Dat is de afweging van de eigenaar en die is uitdrukkelijk gemaakt. Het
+  # staat hier zodat het een keuze blijft en geen verrassing wordt.
+  max_risk_per_trade_pct: 10.0
 
   # Van 2.0x naar 1.5x de door MT5 berekende ordermargin. De echte broker-
   # margin moet nog steeds volledig beschikbaar zijn; alleen de extra reserve
@@ -3331,7 +3352,10 @@ risk:
   # veranderen in plaats van de inzet.
   #
   # Sectie 6 raakt dit niet: die vraagt 1% per scalp en er mogen er twee.
-  max_total_open_risk_pct: 16.0
+  # 16 -> 20 op 30 augustus, mee met het per-trade plafond. Zie
+  # `promotion/experimental.py`: dit getal is nooit een smaak geweest, het is
+  # exact twee trades op het plafond. Bij 8% was dat 16, bij 10% is het 20.
+  max_total_open_risk_pct: 20.0
 
   # De inzet schaalt mee met hoe overtuigd de reviewer is. Zie
   # config/schema.py ConvictionRiskConfig voor waarom het op ZIJN vertrouwen
@@ -3394,7 +3418,11 @@ risk:
   conviction_risk:
     enabled: true
     floor_pct: 2.0
-    ceiling_pct: 8.0
+    # 8 -> 10 op 30 augustus. Derde en laatste van de drie plafonds; zie de
+    # toelichting bij `risk.max_risk_per_trade_pct`. De config waarschuwt daar
+    # zelf dat twee van de drie verhogen een stille no-op oplevert -- "de
+    # config zegt 9%, de rekening handelt 6%" -- dus deze gaat mee.
+    ceiling_pct: 10.0
     confidence_floor: 0.70
     confidence_ceiling: 0.90
 
@@ -3821,7 +3849,10 @@ modes:
     # The per-trade CEILING, not the ordinary stake. An ordinary approval is
     # still sized at `risk.risk_per_trade_pct`; this is the most that
     # conviction scaling may reach, and the sizer clamps to it.
-    max_risk_per_trade_pct: 8.0
+    #
+    # 8 -> 10 op 30 augustus. Tweede van de drie plafonds; zie de toelichting
+    # bij `risk.max_risk_per_trade_pct`. Eentje verhogen is een stille no-op.
+    max_risk_per_trade_pct: 10.0
     # 30 -> 40 op 28 augustus. DEZE STOND STRAKKER DAN WAT DE REKENING TOELAAT.
     #
     # De rekensom, op het saldo van vandaag:

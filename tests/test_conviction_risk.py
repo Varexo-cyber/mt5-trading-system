@@ -639,7 +639,13 @@ class TestTheRaisedEnvelopeAgreesWithItselfEverywhere:
         )
 
     def test_the_ladder_runs_from_the_ordinary_stake_to_the_peak(self) -> None:
-        """2% to 8%, on the owner's instruction of 27 August, after a night in
+        """2% to 10% since 30 August, on the owner's instruction: "van 2% tot
+        10% max i.p.v 8%". Four constants had to move together for that -- see
+        `TestTheCeilingIsTenAndAllThreeKnobsAgree` and
+        `promotion/experimental.py` -- and the aggregate cap moved with it so
+        two peak trades still fill the book.
+
+        Originally 2% to 8%, on the instruction of 27 August, after a night in
         which section one carried 7.6% and 10.9% on two index trades while the
         section six scalp beside them carried 0.6%.
 
@@ -653,7 +659,7 @@ class TestTheRaisedEnvelopeAgreesWithItselfEverywhere:
         conviction = self._settings().risk.conviction_risk
 
         assert conviction.floor_pct == 2.0
-        assert conviction.ceiling_pct == 8.0
+        assert conviction.ceiling_pct == 10.0
         assert conviction.confidence_floor == 0.70
         assert conviction.confidence_ceiling == 0.90
         # The peak has to cost real conviction, not merely an approval.
