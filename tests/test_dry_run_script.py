@@ -225,11 +225,47 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
 
     def test_the_resolver_reports_when_the_trade_left(self) -> None:
         """The slot cap is a rule about how many trades are open AT ONCE, which
-        cannot be answered from entry times."""
+        cannot be answered from entry times.
+
+        Asserted by CALLING it. This test first checked for the literal
+        `return -1.0, stamp`, and the string went away the moment the resolver
+        grew its managed column -- a red test over a rename, on a behaviour
+        that had not changed. The same brittleness that made
+        `test_the_override_actually_reaches_the_target` pass over a dead
+        config, pointing the other way."""
+        from dataclasses import dataclass
+        from datetime import UTC, datetime, timedelta
+
+        import pandas as pd
+
+        from core.types import Direction
         from scripts.dry_run_sections import _resolve
 
-        assert "return -1.0, stamp" in SOURCE
-        assert _resolve.__doc__ and "exit_time" in _resolve.__doc__
+        @dataclass
+        class Idea:
+            direction: Direction
+            entry: float
+            stop_loss: float
+            take_profit: float
+
+        start = datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+        index = pd.DatetimeIndex([start, start + timedelta(minutes=1)])
+        frame = pd.DataFrame(
+            {
+                "open": [100.0, 99.5],
+                "high": [100.1, 100.0],
+                "low": [99.9, 98.5],
+                "close": [100.0, 99.0],
+            },
+            index=index,
+        )
+
+        r, exit_at, _managed = _resolve(
+            frame, start, Idea(Direction.LONG, 100.0, 99.0, 101.0), horizon_bars=2
+        )
+
+        assert r == -1.0
+        assert exit_at == index[1]
 
     def test_the_slot_cap_is_applied_in_time_order(self) -> None:
         from datetime import datetime, timedelta

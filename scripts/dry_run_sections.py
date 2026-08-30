@@ -90,6 +90,10 @@ class Decision:
     #: back out of a sweep that also measured eight combinations that will
     #: never run together.
     pass_key: tuple[str, str] = ("", "")
+    #: The SAME trade under `TradeManagementConfig`'s break-even rule, so the
+    #: two exits are compared on identical entries rather than on two runs.
+    managed_r: float | None = None
+    managed_money: float | None = None
 
 
 def _context(symbol: str, frames: dict, upto: datetime, spread: float) -> MarketContext | None:
@@ -105,32 +109,95 @@ def _context(symbol: str, frames: dict, upto: datetime, spread: float) -> Market
     return MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))
 
 
-def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int):
+def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, manage=None):
     """First touch of stop or target on the bars after entry.
 
     Same rules as the research: the entry bar itself counts, a bar spanning
     both barriers is a LOSS because the order is unknowable, and a trade that
     reaches neither is reported as open rather than closed at the clock.
 
-    Returns `(r, exit_time)`. The exit time is what frees the symbol for the
-    next trade -- see `_one_pass`. A trade that resolves neither way returns
-    `(None, None)` and holds the symbol to the end of the window, which is what
-    a real open position does.
+    Returns `(r, exit_time, managed_r)`. The exit time is what frees the symbol
+    for the next trade -- see `_one_pass`. A trade that resolves neither way
+    returns `(None, None, None)` and holds the symbol to the end of the window,
+    which is what a real open position does.
+
+    `manage` IS THE QUESTION THE RESEARCH NEVER ASKED, and `TradeManagementConfig`
+    is switched on for these sections with no per-module exception.
+
+    `break_even_at_r` is 0.25, and a second trigger --
+    `capital_protection_at_equity_pct` measured in euros rather than R -- arms
+    it as early as 0.125R on the position sizes the minimum-lot override
+    produces. The stop then jumps from 0.85 ATR BELOW entry to 0.10 ATR ABOVE
+    it.
+
+    That is a different strategy from the measured one. 18,828 trades were
+    resolved against a stop that does not move, and these two sections enter AT
+    a level, where price oscillates by construction. Every trade that ran a
+    little, came back to the level, and then went to target counts as a full
+    +1R in the research and would scratch at +0.1R here.
+
+    It cuts both ways -- the same rule rescues a loser that ran first -- so it
+    is not an argument, it is an arithmetic question about which population is
+    bigger. Both numbers come off the same bar walk, so the comparison is on
+    identical trades rather than on two runs.
     """
     future = frame[frame.index >= start].head(horizon_bars)
     if future.empty:
-        return None, None
+        return None, None, None
     long = idea.direction is Direction.LONG
+    risk = abs(idea.entry - idea.stop_loss)
+    reward_r = (abs(idea.take_profit - idea.entry) / risk) if risk > 0 else 0.0
+
+    # The managed run walks the same bars with a stop that is allowed to move.
+    # `armed` is one-way: a stop that has been pulled up is never pushed back.
+    managed_open = manage is not None and risk > 0
+    managed_r: float | None = None
+    managed_stop = idea.stop_loss
+    armed = False
+    trigger_r, offset_r = manage or (0.0, 0.0)
+    direction_sign = 1.0 if long else -1.0
+
+    fixed_r: float | None = None
+    exit_at: datetime | None = None
+
     for stamp, bar in future.iterrows():
         hit_stop = bar["low"] <= idea.stop_loss if long else bar["high"] >= idea.stop_loss
         hit_target = bar["high"] >= idea.take_profit if long else bar["low"] <= idea.take_profit
-        if hit_stop:
-            return -1.0, stamp
-        if hit_target:
-            risk = abs(idea.entry - idea.stop_loss)
-            reward = abs(idea.take_profit - idea.entry) / risk if risk > 0 else 0.0
-            return reward, stamp
-    return None, None
+
+        if managed_open:
+            # ORDER MATTERS AND IT IS NOT THE FLATTERING ONE. Within a bar the
+            # sequence is unknowable, so the managed stop is checked against
+            # the price it already sits at BEFORE this bar's excursion is
+            # allowed to arm it. Arming on the same bar's high and then
+            # surviving that bar's low is the look-ahead this account has
+            # already been bitten by twice.
+            managed_hit = bar["low"] <= managed_stop if long else bar["high"] >= managed_stop
+            if managed_hit and hit_target:
+                # Both in one bar: the order is unknowable, so take the stop.
+                managed_r = (managed_stop - idea.entry) / risk * direction_sign
+            elif managed_hit:
+                managed_r = (managed_stop - idea.entry) / risk * direction_sign
+            elif hit_target:
+                managed_r = reward_r
+            if managed_r is not None:
+                managed_open = False
+            else:
+                excursion = (bar["high"] - idea.entry) if long else (idea.entry - bar["low"])
+                if not armed and excursion / risk >= trigger_r:
+                    armed = True
+                    managed_stop = idea.entry + offset_r * risk * direction_sign
+
+        if fixed_r is None:
+            if hit_stop:
+                fixed_r, exit_at = -1.0, stamp
+            elif hit_target:
+                fixed_r, exit_at = reward_r, stamp
+        if fixed_r is not None and not managed_open:
+            break
+
+    if managed_open:
+        managed_r = None
+    return fixed_r, exit_at, managed_r
 
 
 def _one_pass(
@@ -146,6 +213,7 @@ def _one_pass(
     clock: Timeframe,
     resolve_on: Timeframe,
     pass_key: tuple[str, str] = ("", ""),
+    manage: tuple[float, float] | None = None,
 ) -> list[Decision]:
     """Every decision one configuration reaches on one symbol.
 
@@ -207,7 +275,9 @@ def _one_pass(
                 )
             )
             continue
-        r, exit_at = _resolve(frames[resolve_on], upto, idea, horizon_bars=horizon)
+        r, exit_at, managed_r = _resolve(
+            frames[resolve_on], upto, idea, horizon_bars=horizon, manage=manage
+        )
         # Held to the end of the window when it never resolved, exactly as an
         # open position holds the symbol live.
         busy_until = exit_at if exit_at is not None else end + clock.duration
@@ -229,9 +299,52 @@ def _one_pass(
                 pnl_money=None if r is None else r * risk_money,
                 exit_at=exit_at,
                 pass_key=pass_key,
+                managed_r=managed_r,
+                managed_money=None if managed_r is None else managed_r * risk_money,
             )
         )
     return decisions
+
+
+def _break_even_rule(settings) -> tuple[float, float] | None:
+    """`(trigger_r, offset_r)` for the break-even move, or None if it is off.
+
+    TWO TRIGGERS, AND THE SECOND IS THE ONE THAT BITES ON THIS ACCOUNT.
+    `break_even_at_r` is 0.25, but `_is_account_meaningful` arms the same move
+    as soon as the open profit clears `capital_protection_at_equity_pct` of
+    equity -- one percent -- which on a EUR 215 account is EUR 2.15. Against
+    the position sizes the minimum-lot override produces:
+
+        risk 2%  (EUR  4.30)   arms at 0.50 R
+        risk 4%  (EUR  8.60)   arms at 0.25 R
+        risk 8%  (EUR 17.20)   arms at 0.125 R
+
+    and 56% of last week's trades were forced to 4% or more. So the effective
+    trigger is the SMALLER of the two, which is what this returns. Taking
+    `break_even_at_r` alone would model a rule the account does not run.
+
+    Equity does not appear here and that is not an omission: the euro trigger
+    is `equity * share`, the risk is `equity * risk_pct`, and the equity
+    cancels. The crossover is `share / risk_pct` at any account size.
+
+    `break_even_offset_atr` is 0.10 ATR. Both live families are built on a
+    one-ATR stop -- 0.85 beyond the level plus up to 0.15 of tolerance for
+    `impulse_retest`, 1.00 for `order_block` -- so 0.10 ATR is 0.10R to within
+    a rounding error, and the offset is expressed in R here. That
+    approximation is worth naming: it is exact for `order_block` and up to 15%
+    generous for `impulse_retest`.
+    """
+    config = settings.trade_management
+    offset_atr = float(getattr(config, "break_even_offset_atr", 0.0) or 0.0)
+    trigger = float(getattr(config, "break_even_at_r", 0.0) or 0.0)
+    if trigger <= 0.0:
+        return None
+    share = float(getattr(config, "capital_protection_at_equity_pct", 0.0) or 0.0)
+    risk_pct = settings.effective_risk_pct()
+    if share > 0.0 and risk_pct > 0.0:
+        # money >= equity * share/100  =>  r >= share / risk_pct
+        trigger = min(trigger, share / risk_pct)
+    return trigger, offset_atr
 
 
 def _under_the_slot_cap(trades: list[Decision], slots: int) -> list[Decision]:
@@ -431,6 +544,7 @@ def main() -> None:
         finest = Timeframe.M5 if args.no_m1 else Timeframe.M1
         results: dict[tuple[str, str], list[Decision]] = {key: [] for key in passes}
         skipped_symbols = 0
+        manage = _break_even_rule(settings)
 
         for index, symbol in enumerate(symbols, 1):
             try:
@@ -471,6 +585,7 @@ def main() -> None:
                         clock=clock,
                         resolve_on=finest,
                         pass_key=(name, tf_name),
+                        manage=manage,
                     )
                 )
             done = sum(
@@ -510,6 +625,8 @@ def main() -> None:
                     "risk_pct",
                     "result_r",
                     "pnl_money",
+                    "managed_r",
+                    "managed_money",
                     "note",
                 ]
             )
@@ -529,6 +646,8 @@ def main() -> None:
                         round(d.risk_pct, 3),
                         "" if d.result_r is None else round(d.result_r, 3),
                         "" if d.pnl_money is None else round(d.pnl_money, 2),
+                        "" if d.managed_r is None else round(d.managed_r, 3),
+                        "" if d.managed_money is None else round(d.managed_money, 2),
                         d.note,
                     ]
                 )
@@ -599,6 +718,68 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
             f"    {name:<16s} {clock:<4s} {len(rows):>4d} trades  "
             f"{won / len(rows):>5.1%} win  {row_r:+7.2f} R  EUR {row_money:+8.2f}"
         )
+
+    _break_even_verdict(trades, settings)
+
+
+def _break_even_verdict(trades: list[Decision], settings) -> None:
+    """Does moving the stop to break-even help or cost, on THESE trades?
+
+    THE OWNER ASKED FOR THIS RULE AND IT WAS ALREADY ON. It is also the
+    largest unmeasured deviation left between the shipped code and the
+    research: 18,828 trades were resolved against a stop that DOES NOT MOVE,
+    and both live sections enter at a level where price oscillates by
+    construction.
+
+    The arithmetic is not one-sided, which is exactly why it needs measuring
+    rather than arguing. Break-even rescues a loser that ran a little first and
+    scratches a winner that dipped before it ran. At a 68% hit rate it protects
+    a third of the book and damages two thirds, so it pays only if losers are
+    rescued appreciably more often than winners are scratched.
+
+    Both columns come off ONE bar walk over the same entries, so this is a
+    paired comparison and not two runs that might disagree for other reasons.
+    """
+    rule = _break_even_rule(settings)
+    paired = [d for d in trades if d.result_r is not None and d.managed_r is not None]
+    if rule is None or not paired:
+        return
+    trigger, offset = rule
+
+    fixed = sum(d.result_r or 0.0 for d in paired)
+    managed = sum(d.managed_r or 0.0 for d in paired)
+    fixed_money = sum(d.pnl_money or 0.0 for d in paired)
+    managed_money = sum(d.managed_money or 0.0 for d in paired)
+
+    scratched = [d for d in paired if (d.result_r or 0) > 0 >= (d.managed_r or 0)]
+    rescued = [d for d in paired if (d.result_r or 0) <= 0 < (d.managed_r or 0)]
+
+    print("\n  BREAK-EVEN: does protecting the trade pay?")
+    print(
+        f"    arms at {trigger:.3f}R, stop to entry +{offset:.2f}R"
+        f"   ({len(paired)} trades resolved both ways)"
+    )
+    print(
+        f"    stop fixed          {fixed:+8.2f} R   EUR {fixed_money:+8.2f}"
+        "   <- what the research measured"
+    )
+    print(
+        f"    stop protected      {managed:+8.2f} R   EUR {managed_money:+8.2f}   <- what runs now"
+    )
+    print(
+        f"    winners scratched   {len(scratched):>4d}" f"     losers rescued  {len(rescued):>4d}"
+    )
+    verdict = managed - fixed
+    if abs(verdict) < 1e-9:
+        print("    -> no difference on this sample")
+    elif verdict > 0:
+        print(f"    -> protecting the stop GAINED {verdict:+.2f} R here. Keep it on.")
+    else:
+        print(
+            f"    -> protecting the stop COST {verdict:+.2f} R here "
+            f"({verdict / max(len(paired), 1):+.3f} R a trade)."
+        )
+        print("       Turn break_even_at_r off for these families, or accept the cost knowingly.")
 
 
 def _sweep_report(results: dict, equity: float, days: int) -> None:
