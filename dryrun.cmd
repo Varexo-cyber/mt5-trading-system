@@ -7,43 +7,48 @@ echo  ============================================
 echo   What would sections 2 and 3 have done?
 echo  ============================================
 echo.
-echo  The research measured these two on ten years of HistData bid bars. That
-echo  answered "does this entry have an edge". It could not answer the question
-echo  that decides whether the account makes money:
+echo  Runs the live scan universe -- the whole broker catalogue, same asset
+echo  class filter the scanner uses -- through the real modules, the real
+echo  gates and the real position sizer, over real Eightcap history.
 echo.
-echo    on THIS broker, THESE symbols, THIS equity, what came out?
+echo  Every decision is reported, not just the trades, so a quiet week is a
+echo  diagnosis instead of a number. TRADE_SKIPPED_UNDERCAPITALIZED is counted
+echo  for real rather than modelled.
 echo.
-echo  The one number the research had to assume was the real Eightcap spread,
-echo  and that is exactly the number that has killed every previous detector on
-echo  this account. This charges the spread each bar actually carried.
+echo  Each section runs on EVERY clock separately (M5 M15 M30 H1 H4). The
+echo  shipped ones were chosen on HistData, and that data could not price your
+echo  spread. This can.
 echo.
-echo  It also runs the REAL position sizer, so TRADE_SKIPPED_UNDERCAPITALIZED
-echo  is counted rather than modelled -- and every refusal is attributed by
-echo  name. A week with four trades and three hundred refusals is a diagnosis.
-echo  A week with four trades is a number.
-echo.
-echo  WHAT IT CANNOT SEE, so read the result with these in mind:
+echo  WHAT IT CANNOT SEE:
 echo    - slippage beyond the recorded spread, so fills are optimistic
 echo    - the 4-slot cap is not enforced, only the trades are counted
 echo    - the news blackout is not replayed, so this is an UPPER BOUND
 echo.
 echo  MT5 must be running and logged in.
 echo.
+echo  USAGE -- plain numbers only
+echo    dryrun.cmd            7 days, every market
+echo    dryrun.cmd 30         30 days, every market
+echo    dryrun.cmd 7 40       7 days, first 40 markets only (quick look)
+echo.
+
+rem ARGUMENTS ARE PLAIN NUMBERS, and that is deliberate.
+rem
+rem `dryrun.cmd 7 M15,M30 --limit 40` failed because CMD SPLITS ARGUMENTS ON
+rem COMMAS. The shell handed the script "M15" and "M30" as separate words, so
+rem --limit collected "M30" and argparse rejected the remainder. No validation
+rem inside the script could have caught it: the damage is done before it runs.
+rem
+rem So the timeframe list never passes through the shell. It is written out
+rem below and the only things anyone types are two numbers.
 
 set DAYS=%1
 if "%DAYS%"=="" set DAYS=7
-set SWEEP=%2
-if "%SWEEP%"=="" set SWEEP=M5,M15,M30,H1,H4
+set LIMIT=%2
+if "%LIMIT%"=="" set LIMIT=0
 
-echo  Window: last %DAYS% days.   (dryrun.cmd 30  for a month)
-echo  Universe: the whole scan catalogue, same filter the live scanner uses.
-echo            (add  --limit 40  as a 3rd argument for a quick first look)
-echo  Clocks: %SWEEP%
-echo.
-echo  Each section is run on EVERY one of those timeframes, separately. The
-echo  shipped clocks (M15 for section 2, M30 for section 3) were chosen on
-echo  HistData, which could not price your spread. This can, so if another
-echo  clock wins here it wins for a reason that matters.
+echo  Window: last %DAYS% days
+if "%LIMIT%"=="0" (echo  Markets: the whole scan universe) else (echo  Markets: first %LIMIT% only)
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (
@@ -54,11 +59,12 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --sweep %SWEEP% --csv runtime\dryrun.csv %3 %4
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --limit %LIMIT% --sweep M5 M15 M30 H1 H4 --csv runtime\dryrun.csv
+
 if errorlevel 1 (
   echo.
   echo  The run failed. The traceback above says why -- most often MT5 is not
-  echo  logged in, or the symbol has no history that far back.
+  echo  logged in, or the symbols have no history that far back.
 )
 
 echo.

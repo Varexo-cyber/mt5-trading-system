@@ -223,9 +223,14 @@ def main() -> None:
     parser.add_argument("--equity", type=float, default=0.0, help="override account equity")
     parser.add_argument(
         "--sweep",
-        default="",
+        nargs="*",
+        default=[],
+        metavar="TF",
         help=(
-            "comma list of timeframes to try each section on, e.g. M5,M15,M30,H1,H4. "
+            "timeframes to try each section on, space OR comma separated: "
+            "--sweep M5 M15 M30. Both forms are accepted because cmd splits "
+            "arguments on commas and the comma form silently loses the rest of "
+            "the command line. "
             "The shipped timeframes were chosen on HistData; this asks the same "
             "question against THIS broker's spreads, which is the number that decides it."
         ),
@@ -321,7 +326,15 @@ def main() -> None:
         module_config = {"impulse_retest": "impulse_retest", "order_block": "order_block"}
         passes: list[tuple[str, str]] = []
         if args.sweep:
-            wanted = [t.strip().upper() for t in args.sweep.split(",") if t.strip()]
+            # Accept "M5 M15" and "M5,M15" and any mix: cmd turns a comma list
+            # into separate words before the script ever sees it, so both
+            # arrive here and both have to work.
+            wanted = [
+                piece.strip().upper()
+                for chunk in args.sweep
+                for piece in str(chunk).split(",")
+                if piece.strip()
+            ]
             for name in sorted(live & set(module_config)):
                 for tf in wanted:
                     passes.append((name, tf))
