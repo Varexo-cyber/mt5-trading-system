@@ -22,6 +22,7 @@ instead, which is the part that was actually wrong.
 from __future__ import annotations
 
 import inspect
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -148,6 +149,39 @@ class TestTheLauncherSurvivesCmd:
     def test_the_launcher_writes_the_timeframes_itself(self) -> None:
         """So the list never passes through the shell."""
         assert "--sweep M5 M15 M30 H1 H4" in self.LAUNCHER
+
+    def test_the_launchers_own_command_line_parses(self) -> None:
+        """THE TEST THAT SHOULD HAVE EXISTED FIRST. It reads the flags out of
+        `dryrun.cmd` and feeds them to the real parser.
+
+        `--limit` was added by a string edit that silently matched nothing, so
+        the flag was missing from the parser while the launcher was already
+        sending it and the code reading `args.limit` was already there. Two
+        runs died on that, and nothing was checking that the two files agree.
+        """
+        from scripts.dry_run_sections import build_parser
+
+        line = next(ln for ln in self.LAUNCHER.splitlines() if "scripts.dry_run_sections" in ln)
+        flags = line.split("scripts.dry_run_sections", 1)[1].split()
+        # Substitute the batch variables the way cmd would.
+        argv = [{"%DAYS%": "7", "%LIMIT%": "40"}.get(token, token) for token in flags]
+
+        parsed = build_parser().parse_args(argv)
+
+        assert parsed.days == 7
+        assert parsed.limit == 40
+        assert parsed.sweep == ["M5", "M15", "M30", "H1", "H4"]
+
+    def test_every_flag_the_code_reads_is_a_flag_the_parser_defines(self) -> None:
+        """`args.limit` existed in the body before `--limit` existed in the
+        parser. An AttributeError at runtime, on the owner's machine, after
+        the history fetch."""
+        from scripts.dry_run_sections import build_parser
+
+        defined = {action.dest for action in build_parser()._actions if action.dest != "help"}
+        used = set(re.findall(r"args\.([a-z_0-9]+)", SOURCE))
+
+        assert used <= defined, f"read but never defined: {sorted(used - defined)}"
 
     def test_the_parser_accepts_the_split_form(self) -> None:
         assert 'nargs="*"' in SOURCE

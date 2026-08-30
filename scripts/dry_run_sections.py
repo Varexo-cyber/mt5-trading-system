@@ -215,7 +215,15 @@ def _retimed(settings, module_name: str, timeframe: str):
     )
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Separate from `main` so a test can feed it the launcher's own command
+    line without touching MT5.
+
+    `--limit` was added by a string edit that silently matched nothing, so the
+    flag was missing while the code that reads `args.limit` was already there
+    and `dryrun.cmd` was already sending it. Two runs died on that. Nothing was
+    checking that the launcher and the parser agree, and now something is.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--symbols", default="", help="comma list; default = the live universe")
@@ -236,11 +244,21 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="only the first N markets (0 = every market). A quick first look.",
+    )
+    parser.add_argument(
         "--no-m1",
         action="store_true",
         help="skip M1 history (much faster on a large universe; coarser resolution)",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     # THE OVERLAY, or there are no live modules at all. The base config ships
     # `live_enabled_modules` empty on purpose -- permission to trade real money
