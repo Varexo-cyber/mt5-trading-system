@@ -815,6 +815,112 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
         )
 
     _break_even_verdict(trades, settings)
+    _is_this_real(trades, keys)
+
+
+def _is_this_real(trades: list[Decision], keys: list[tuple[str, str]]) -> None:
+    """Is the sample big enough to conclude anything, and does it clear zero?
+
+    THE QUESTION THE OWNER KEPT HAVING TO ASK ME. Every report so far has
+    printed a win rate and a profit and left "does that mean it works" to be
+    argued about afterwards. Seven days gave 82 trades and 59.3%, and the only
+    honest answer to "is that good" was a paragraph. The answer belongs in the
+    output.
+
+    THREE THINGS DECIDE IT, and all three have to hold.
+
+    1. SIZE. A win rate off 10 trades has a 95% interval running from roughly
+       26% to 88%. The Wilson interval below says so rather than leaving it to
+       be felt.
+
+    2. SIGMA, MEASURED ON DAYS AND NOT ON TRADES. Sixteen markets breaking on
+       the same morning are not sixteen independent observations, and treating
+       them as such overstates significance by about the square root of the
+       number that moved together -- roughly 4x here. This was the single
+       largest correction in the original research and leaving it out of the
+       live report would reintroduce the error one layer down. So the standard
+       error comes from the spread of DAILY totals.
+
+    3. STABILITY. The research's own bar was every year positive and every
+       month positive. One good week inside a bad month is not an edge; it is
+       where in the month you happened to look.
+    """
+    closed = [d for d in trades if d.result_r is not None]
+    print("\n  IS THIS REAL? — the sample judging itself")
+    if len(closed) < 30:
+        print(f"    {len(closed)} resolved trades. Not enough to say anything at all.")
+        print("    Run a longer window: history.cmd 180")
+        return
+
+    wins = sum(1 for d in closed if (d.result_r or 0) > 0)
+    n = len(closed)
+    rate = wins / n
+    # Wilson interval, which stays sane at small n where the normal one does not.
+    z = 1.96
+    centre = (rate + z * z / (2 * n)) / (1 + z * z / n)
+    spread = z / (1 + z * z / n) * float(np.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n)))
+
+    by_day: dict[object, float] = {}
+    for d in closed:
+        by_day[d.when.date()] = by_day.get(d.when.date(), 0.0) + (d.result_r or 0.0)
+    daily = np.array(list(by_day.values()), dtype=float)
+    total_r = float(daily.sum())
+    days_traded = len(daily)
+    # Standard error of the TOTAL, from the day-to-day spread.
+    se = float(daily.std(ddof=1)) * float(np.sqrt(days_traded)) if days_traded > 1 else 0.0
+    sigma = total_r / se if se > 0 else 0.0
+
+    print(f"    {n} resolved trades over {days_traded} trading days")
+    print(
+        f"    win rate            {rate:.1%}"
+        f"   95% interval {centre - spread:.1%} to {centre + spread:.1%}"
+    )
+    print(f"    per trade           {total_r / n:+.3f} R")
+    print(f"    total               {total_r:+.2f} R,  {sigma:+.2f} sigma from zero")
+    print("       (sigma measured on daily totals: markets that break together")
+    print("        are one observation, not sixteen)")
+
+    by_month: dict[str, list[float]] = {}
+    for d in closed:
+        by_month.setdefault(f"{d.when:%Y-%m}", []).append(d.result_r or 0.0)
+    if len(by_month) > 1:
+        print("\n    by month")
+        for month in sorted(by_month):
+            rows = by_month[month]
+            won = sum(1 for r in rows if r > 0)
+            print(
+                f"      {month}   {len(rows):>5d} trades   {won / len(rows):>5.1%} win"
+                f"   {sum(rows):+8.2f} R"
+            )
+    green = sum(1 for rows in by_month.values() if sum(rows) > 0)
+
+    print("\n    VERDICT")
+    checks = [
+        (n >= 200, f"{n} trades", "at least 200 resolved trades"),
+        (sigma >= 2.0, f"{sigma:+.2f} sigma", "at least +2.0 sigma from zero"),
+        (
+            len(by_month) >= 3,
+            f"{len(by_month)} month(s) covered",
+            "at least 3 months, so one good stretch cannot carry it",
+        ),
+        (
+            len(by_month) > 1 and green == len(by_month),
+            f"{green}/{len(by_month)} months positive",
+            "every month positive, which is the bar the research itself met",
+        ),
+    ]
+    for passed, actual, wanted in checks:
+        print(f"      [{'x' if passed else ' '}] {wanted:<58} {actual}")
+    if all(passed for passed, _a, _w in checks):
+        print("\n    -> This clears every bar. On this broker's own data, over this")
+        print("       window, these sections made money and it is not noise.")
+    else:
+        print("\n    -> NOT ENOUGH TO CONCLUDE. The boxes above say what is missing.")
+        print("       A positive number here is encouraging and is not evidence.")
+    for name, clock in keys:
+        rows = [d for d in closed if d.pass_key == (name, clock)]
+        if rows and len(rows) < 200:
+            print(f"       {name} has only {len(rows)} trades of its own; it is unjudged.")
 
 
 def _break_even_verdict(trades: list[Decision], settings) -> None:
