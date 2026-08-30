@@ -1205,3 +1205,131 @@ class TestEveryReportBlockJudgesTheLiveExit:
         to say it."""
         assert '"result_r_fixed_stop"' in SOURCE
         assert '"managed_r_LIVE"' in SOURCE
+
+
+class TestASwitchedOffSectionIsStillMeasured:
+    """I switched `impulse_retest` off and told the owner "the weight stays,
+    so it is still measured". True of the engine, FALSE of this script:
+    `passes` was built from `live_enabled_modules`, so switching a section off
+    removed it from the measurement too.
+
+    The 180-day run he then asked for judged one section and produced no rows
+    at all for the other -- the one the earlier 180-day data had actually
+    favoured. His question was "waar is die andere retest ding dan", and the
+    answer was that I had deleted it from the experiment while claiming I had
+    not.
+    """
+
+    def test_the_sweep_covers_every_known_module_not_just_the_live_ones(self) -> None:
+        assert "for name in sorted(measured):" in SOURCE
+        assert "for name in sorted(live & set(module_config)):" not in SOURCE
+
+    def test_the_report_shows_what_a_shadowed_section_would_have_done(self) -> None:
+        assert "def _shadow_report" in SOURCE
+        assert "SHADOWED — measured, not permitted to trade" in SOURCE
+
+    def test_the_shadow_block_uses_the_same_exit_and_cap_as_the_live_one(self) -> None:
+        """Two numbers computed differently are not comparable, and comparing
+        them is the entire purpose of this block."""
+        import inspect
+
+        from scripts import dry_run_sections
+
+        body = inspect.getsource(dry_run_sections._shadow_report).split('"""')[-1]
+
+        assert "_live_exit(d, managed)" in body
+        assert "_under_the_slot_cap(" in body
+
+    def test_only_narrows_the_sweep(self) -> None:
+        from scripts.dry_run_sections import build_parser
+
+        parsed = build_parser().parse_args(["--only", "impulse_retest"])
+
+        assert parsed.only == "impulse_retest"
+
+    def test_only_rejects_a_section_it_does_not_know(self) -> None:
+        """A typo must stop the run rather than silently measure nothing --
+        an empty result reads as "no setups", which is this script's signature
+        failure."""
+        assert "--only names sections this script does not know" in SOURCE
+
+    def test_the_one_section_launcher_parses(self) -> None:
+        from scripts.dry_run_sections import build_parser
+
+        launcher = (ROOT / "history-one.cmd").read_text()
+        parsed = build_parser().parse_args(
+            cmd_argv(
+                launcher,
+                **{
+                    "%DAYS%": "180",
+                    "%SECTION%": "impulse_retest",
+                },
+            )
+        )
+
+        assert parsed.only == "impulse_retest"
+        assert parsed.days == 180 and parsed.core is True and parsed.no_m1 is True
+
+
+class TestOneMonthCannotCarryTheResult:
+    """The four boxes did not ask this and the 180-day run needed it.
+
+        Mar +4.90  Apr +0.40  May -1.90  Jun +3.30  Jul +0.70  Aug +26.20
+
+    August alone is 78% of the six-month total. Strip it and the other 1,077
+    trades make +0.007 R each. A result carried by one month has not repeated,
+    however many trades sit underneath it, and neither the trade count nor the
+    sigma nor months-positive can see that.
+    """
+
+    def _months(self, shape: dict[str, float]):
+        from datetime import datetime
+
+        from scripts.dry_run_sections import Decision
+
+        rows = []
+        for month, (per, count) in shape.items():
+            year, mon = (int(part) for part in month.split("-"))
+            for i in range(count):
+                rows.append(
+                    Decision(
+                        datetime(year, mon, 1 + (i % 27), 9, 0, tzinfo=UTC),
+                        "NDX100",
+                        "order_block",
+                        "TRADE",
+                        result_r=per,
+                        managed_r=per,
+                        pnl_money=per * 8.0,
+                        managed_money=per * 8.0,
+                        pass_key=("order_block", "M30"),
+                    )
+                )
+        return rows
+
+    def test_a_single_month_carrying_the_total_is_called_out(self, capsys) -> None:
+        from scripts.dry_run_sections import _is_this_real
+
+        shape = {
+            "2026-03": (0.02, 210),
+            "2026-04": (0.00, 207),
+            "2026-05": (-0.01, 216),
+            "2026-06": (0.01, 210),
+            "2026-07": (0.00, 234),
+            "2026-08": (0.13, 206),
+        }
+        _is_this_real(self._months(shape), [("order_block", "M30")], managed=True)
+        out = capsys.readouterr().out
+
+        assert "CONCENTRATED" in out
+        assert "of the whole result" in out
+        assert "[ ] no single month carrying more than half the result" in out
+
+    def test_an_evenly_spread_result_passes_that_box(self, capsys) -> None:
+        from scripts.dry_run_sections import _is_this_real
+
+        shape = {f"2026-0{m}": (0.05, 200) for m in range(3, 9)}
+        _is_this_real(self._months(shape), [("order_block", "M30")], managed=True)
+        out = capsys.readouterr().out
+
+        assert "CONCENTRATED" not in out
+        assert "[x] no single month carrying more than half the result" in out

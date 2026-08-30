@@ -565,6 +565,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--only",
+        default="",
+        help=(
+            "measure just these sections, comma or space separated "
+            "(--only impulse_retest). Halves the run when the other one has "
+            "already been measured."
+        ),
+    )
+    parser.add_argument(
         "--live-only",
         action="store_true",
         help=(
@@ -663,7 +672,36 @@ def main() -> None:
         # Each section is swept on its own, never together: two sections on
         # the same clock would merge into one confluence idea and the result
         # would say nothing about either.
+        # EVERY MODULE THIS SCRIPT KNOWS, not just the ones allowed to trade.
+        #
+        # I switched `impulse_retest` off on 30 August and told the owner "the
+        # weight stays, so it is still measured". That is true of the engine
+        # and FALSE of this script: `passes` was built from
+        # `live_enabled_modules`, so switching a section off removed it from
+        # the MEASUREMENT as well. The 180-day run he asked for judged one
+        # section, and the other -- the one the earlier 180-day data had
+        # actually favoured -- produced no rows at all.
+        #
+        # A module that may not trade is exactly the module that most needs
+        # measuring, because that measurement is what decides whether it comes
+        # back. So every known module is swept, and the report separates what
+        # is live from what is shadowed.
         module_config = {"impulse_retest": "impulse_retest", "order_block": "order_block"}
+        measured = set(module_config)
+        if args.only:
+            wanted_sections = {
+                piece.strip()
+                for chunk in str(args.only).replace(",", " ").split()
+                for piece in [chunk]
+                if piece.strip()
+            }
+            unknown = wanted_sections - measured
+            if unknown:
+                raise SystemExit(
+                    f"--only names sections this script does not know: {sorted(unknown)}. "
+                    f"Known: {sorted(measured)}"
+                )
+            measured = wanted_sections
         passes: list[tuple[str, str]] = []
         if args.live_only:
             args.sweep = []
@@ -677,11 +715,11 @@ def main() -> None:
                 for piece in str(chunk).split(",")
                 if piece.strip()
             ]
-            for name in sorted(live & set(module_config)):
+            for name in sorted(measured):
                 for tf in wanted:
                     passes.append((name, tf))
         else:
-            for name in sorted(live & set(module_config)):
+            for name in sorted(measured):
                 passes.append((name, getattr(settings.analysis, name).timeframe))
 
         finest = Timeframe.M5 if args.no_m1 else Timeframe.M1
@@ -896,6 +934,55 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
 
     _break_even_verdict(trades, settings)
     _is_this_real(trades, keys, managed)
+    _shadow_report(results, settings, slots, managed, days)
+
+
+def _shadow_report(results: dict, settings, slots: int, managed: bool, days: int) -> None:
+    """What a section that is NOT allowed to trade would have done.
+
+    THE POINT OF SWITCHING A SECTION OFF RATHER THAN DELETING IT is that it
+    keeps being measured, and that measurement is what decides whether it
+    comes back. This script did not honour that: `passes` was built from
+    `live_enabled_modules`, so switching `impulse_retest` off on 30 August
+    removed it from the 180-day run entirely -- and the earlier 180-day data
+    had actually favoured it over the section that stayed.
+
+    Judged on the same exit as the live block, under the same slot cap, so the
+    two numbers are comparable rather than merely adjacent.
+    """
+    live = set(settings.analysis.confluence.live_enabled_modules)
+    shadow = sorted(
+        {
+            (name, clock)
+            for (name, clock) in results
+            if name not in live
+            and getattr(settings.analysis, name, None) is not None
+            and getattr(getattr(settings.analysis, name), "timeframe", None) == clock
+        }
+    )
+    if not shadow:
+        return
+
+    print("\n" + "-" * 78)
+    print("SHADOWED — measured, not permitted to trade")
+    print("-" * 78)
+    for name, clock in shadow:
+        rows = _under_the_slot_cap(
+            [d for d in results[(name, clock)] if d.outcome == "TRADE"], slots
+        )
+        closed = [d for d in rows if _live_exit(d, managed) is not None]
+        if not closed:
+            print(f"  {name} on {clock}: no resolved trades")
+            continue
+        won = sum(1 for d in closed if (_live_exit(d, managed) or 0) > 0)
+        total_r = sum(_live_exit(d, managed) or 0.0 for d in closed)
+        money = sum((d.managed_money if managed else d.pnl_money) or 0.0 for d in closed)
+        print(
+            f"  {name:<16} {clock:<4} {len(closed):>5} trades  {won / len(closed):>5.1%} win"
+            f"  {total_r:+8.2f} R  EUR {money:+9.2f}   ({len(closed) / max(days, 1):.1f} a day)"
+        )
+    print("  Switched off is not deleted. These are the numbers that decide")
+    print("  whether a section comes back, so they have to be printed.")
 
 
 def _is_this_real(
@@ -980,6 +1067,31 @@ def _is_this_real(
             )
     green = sum(1 for rows in by_month.values() if sum(rows) > 0)
 
+    # HOW MUCH OF THE RESULT IS ONE MONTH, which the four boxes do not ask.
+    #
+    # The 180-day order_block run passed "every month positive" on five of six
+    # and read +1.33 sigma, and the shape underneath was:
+    #
+    #     Mar +4.90  Apr +0.40  May -1.90  Jun +3.30  Jul +0.70  Aug +26.20
+    #
+    # August alone is 78% of the whole six-month total. Strip it and the other
+    # 1,077 trades make +0.007 R each, which is nothing. A result carried by
+    # one month is a result that has not repeated, however many trades sit
+    # underneath it, and neither the trade count nor the sigma nor the
+    # months-positive box can see that.
+    concentration = 0.0
+    if len(by_month) > 1 and abs(total_r) > 1e-9:
+        best = max(by_month.values(), key=lambda rows: sum(rows))
+        concentration = sum(best) / total_r
+        if concentration > 0.5:
+            others = total_r - sum(best)
+            others_n = n - len(best)
+            print(
+                f"\n    CONCENTRATED: one month is {concentration:.0%} of the whole result."
+                f"\n    Without it: {others:+.2f} R over {others_n} trades"
+                f" = {others / max(others_n, 1):+.4f} R a trade."
+            )
+
     print("\n    VERDICT")
     checks = [
         (n >= 200, f"{n} trades", "at least 200 resolved trades"),
@@ -993,6 +1105,11 @@ def _is_this_real(
             len(by_month) > 1 and green == len(by_month),
             f"{green}/{len(by_month)} months positive",
             "every month positive, which is the bar the research itself met",
+        ),
+        (
+            concentration <= 0.5,
+            f"best month is {concentration:.0%} of the total",
+            "no single month carrying more than half the result",
         ),
     ]
     for passed, actual, wanted in checks:
