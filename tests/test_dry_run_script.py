@@ -598,3 +598,80 @@ class TestTheReportRunsEndToEnd:
         # Two winners cut from +1.00R to +0.10R.
         assert "cut short              2" in out or "cut short           2" in out
         assert "-1.80 R" in out
+
+
+class TestNothingIsDefinedAfterTheEntryPoint:
+    """`NameError: name '_silence_report' is not defined`, on the owner's
+    machine, after a full seven-day fetch had already completed.
+
+    A refactor moved a function to the END of the file, and the end of the file
+    was BELOW `if __name__ == "__main__": main()`. Module-level statements run
+    top to bottom, so as a script `main()` was called before that def existed.
+
+    NOTHING IN THE SUITE COULD SEE IT. Tests `import` the module, and an import
+    runs every def and never calls `main()`, so by the time a test looked, the
+    name was there. Ruff was clean. Black was clean. Forty-one tests were green
+    against a script that could not run.
+
+    That is the recurring defect wearing yet another costume: the tests
+    exercise a path the program does not take.
+    """
+
+    SCRIPTS = sorted((ROOT / "scripts").glob("*.py"))
+
+    def test_the_entry_point_is_the_last_thing_in_every_script(self) -> None:
+        import ast
+
+        for path in self.SCRIPTS:
+            tree = ast.parse(path.read_text())
+            guards = [
+                i
+                for i, node in enumerate(tree.body)
+                if isinstance(node, ast.If) and ast.dump(node.test).find("__main__") != -1
+            ]
+            if not guards:
+                continue
+            after = tree.body[guards[-1] + 1 :]
+            stranded = [
+                node.name
+                for node in after
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+            ]
+
+            assert not stranded, (
+                f"{path.name} defines {stranded} BELOW `if __name__ == '__main__'`. "
+                "As a script those names do not exist when main() runs, and an "
+                "import-based test cannot see it."
+            )
+
+    def test_every_name_main_uses_is_defined_before_the_guard(self) -> None:
+        """The property one level stricter, on this script specifically: run
+        the module body up to the guard and check the report functions exist.
+        A structural rule can be satisfied by a file that is still wrong."""
+        import ast
+
+        source = (ROOT / "scripts" / "dry_run_sections.py").read_text()
+        tree = ast.parse(source)
+        guard = next(
+            i
+            for i, node in enumerate(tree.body)
+            if isinstance(node, ast.If) and ast.dump(node.test).find("__main__") != -1
+        )
+        defined = {
+            node.name
+            for node in tree.body[:guard]
+            if isinstance(node, ast.FunctionDef | ast.ClassDef)
+        }
+
+        for name in (
+            "main",
+            "_report",
+            "_silence_report",
+            "_live_config_report",
+            "_break_even_verdict",
+            "_sweep_report",
+            "_break_even_rule",
+            "_under_the_slot_cap",
+            "_core_universe",
+        ):
+            assert name in defined, f"{name} is not defined before main() is called"
