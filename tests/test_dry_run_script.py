@@ -1536,7 +1536,7 @@ class TestTheSweepRanksOnTheExitTheAccountTakes:
         _sweep_report(results, equity=215.0, days=7, managed=True)
         out = capsys.readouterr().out
 
-        assert "too few to judge" in out
+        assert "thin" in out
         assert "NO ROW HAS 200 TRADES" in out
 
     def test_the_sweep_launcher_parses_and_skips_m5(self) -> None:
@@ -1770,3 +1770,137 @@ class TestMarketsThatCannotTradeAreSkipped:
         failure. It has to say which, and why."""
         assert "SKIPPED ON COST" in SOURCE
         assert "of the widest stop" in SOURCE
+
+
+class TestTheSweepAnswersTheQuestionBehindMoreTrades:
+    """The owner: "dus hierna weten we of meerdere klokken meer trades geven
+    en winstgevende trades". Half, and the missing half mattered.
+
+    The sweep measures each clock in ISOLATION. M15 at 60 trades beside M30 at
+    40 reads as a hundred -- but if order_block sees the same move on both,
+    running both is one idea at double the stake, not two independent chances.
+    Doubling the stake on one idea is the thing this account has a rule
+    against.
+    """
+
+    def _results(self, same_move: bool):
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        fast, slow = [], []
+        for i in range(60):
+            when = base + timedelta(days=i)
+            slow.append(
+                Decision(
+                    when,
+                    "US30",
+                    "order_block",
+                    "TRADE",
+                    direction="LONG",
+                    result_r=1.0,
+                    managed_r=1.0,
+                    pass_key=("order_block", "M30"),
+                )
+            )
+            fast.append(
+                Decision(
+                    when + (timedelta(minutes=10) if same_move else timedelta(hours=7)),
+                    "US30",
+                    "order_block",
+                    "TRADE",
+                    direction="LONG",
+                    result_r=1.0,
+                    managed_r=1.0,
+                    pass_key=("order_block", "M15"),
+                )
+            )
+        return {("order_block", "M30"): slow, ("order_block", "M15"): fast}
+
+    def test_it_says_when_two_clocks_see_the_same_move(self, capsys) -> None:
+        from scripts.dry_run_sections import _clock_overlap
+
+        _clock_overlap(self._results(same_move=True), days=180)
+        out = capsys.readouterr().out
+
+        assert "WOULD TWO CLOCKS GIVE TWICE THE TRADES?" in out
+        assert "SAME move" in out
+        assert "doubles the stake, not the chances" in out
+
+    def test_it_says_when_they_are_independent(self, capsys) -> None:
+        from scripts.dry_run_sections import _clock_overlap
+
+        _clock_overlap(self._results(same_move=False), days=180)
+        out = capsys.readouterr().out
+
+        assert "largely independent" in out
+
+    def test_it_matches_only_the_same_symbol_and_direction(self) -> None:
+        """A long on US30 and a short on NDX100 at the same minute are not the
+        same move, and counting them as one would understate the real gain."""
+        import inspect
+
+        from scripts import dry_run_sections
+
+        body = inspect.getsource(dry_run_sections._clock_overlap).split('"""')[-1]
+
+        assert "other.symbol == trade.symbol" in body
+        assert "other.direction == trade.direction" in body
+
+    def test_it_stays_quiet_with_only_one_clock(self, capsys) -> None:
+        from scripts.dry_run_sections import _clock_overlap
+
+        results = self._results(same_move=True)
+        del results[("order_block", "M15")]
+        _clock_overlap(results, days=180)
+
+        assert capsys.readouterr().out == ""
+
+    def test_every_sweep_row_carries_its_own_sigma(self, capsys) -> None:
+        """Without it, "profitable" and "had a good stretch" print
+        identically, and this table exists to choose a clock."""
+        from scripts.dry_run_sections import _sweep_report
+
+        results = self._results(same_move=False)
+        # 60 rows is "thin"; the sigma column must be there regardless, and a
+        # row that reaches 200 trades and +2 sigma must be marked.
+        _sweep_report(results, equity=215.0, days=180, managed=True)
+        thin_table = capsys.readouterr().out
+
+        assert "sigma" in thin_table
+        assert "thin" in thin_table
+
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        strong = {
+            ("order_block", "M30"): [
+                Decision(
+                    base + timedelta(days=i % 120, minutes=i),
+                    "US30",
+                    "order_block",
+                    "TRADE",
+                    direction="LONG",
+                    # Mixed outcomes: with every day identical the daily
+                    # spread is zero and sigma is undefined, which the code
+                    # correctly reports as 0.00 and a first draft of this test
+                    # mistook for a bug.
+                    result_r=1.0 if i % 4 else -1.0,
+                    managed_r=1.0 if i % 4 else -1.0,
+                    pass_key=("order_block", "M30"),
+                )
+                for i in range(240)
+            ]
+        }
+        _sweep_report(strong, equity=215.0, days=180, managed=True)
+
+        assert "clears 2" in capsys.readouterr().out
+
+    def test_the_csv_carries_the_clock(self) -> None:
+        """Nothing downstream can separate clocks without it, so
+        verdict.cmd could not judge a sweep at all."""
+        assert '"clock",' in SOURCE
+        assert "d.pass_key[1]," in SOURCE
