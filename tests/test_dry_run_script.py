@@ -1465,3 +1465,85 @@ class TestAShadowedSectionCanActuallyVote:
         assert set(tuned.analysis.confluence.live_enabled_modules) == set(
             settings.analysis.confluence.live_enabled_modules
         )
+
+
+class TestTheSweepRanksOnTheExitTheAccountTakes:
+    """The seven-day sweep table read the FIXED stop, and I defended that as
+    "comparing clocks is cleaner without the exit rule moving underneath it".
+    That sounds reasonable and is not: it compares clocks under an exit the
+    account does not take. The gap is not small --
+
+        order_block M30, 180 days:  fixed -34.00 R  /  break-even +33.60 R
+
+    -- so the table read as a row of losses for a configuration that was
+    making money. The owner spotted it before I did.
+    """
+
+    def _results(self, fixed: float, managed_value: float):
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 3, 1, 9, 0, tzinfo=UTC)
+        return {
+            ("order_block", "M30"): [
+                Decision(
+                    base + timedelta(days=i % 100, minutes=i),
+                    "US30",
+                    "order_block",
+                    "TRADE",
+                    result_r=fixed,
+                    pnl_money=fixed * 8.0,
+                    managed_r=managed_value,
+                    managed_money=managed_value * 8.0,
+                    pass_key=("order_block", "M30"),
+                )
+                for i in range(250)
+            ]
+        }
+
+    def test_it_ranks_on_the_live_exit(self, capsys) -> None:
+        from scripts.dry_run_sections import _sweep_report
+
+        _sweep_report(self._results(-1.0, 1.0), equity=215.0, days=180, managed=True)
+        out = capsys.readouterr().out
+
+        assert "break-even (LIVE)" in out
+        assert "+250.00" in out, "the LIVE column is still totalling the fixed stop"
+
+    def test_it_keeps_the_fixed_column_beside_it(self, capsys) -> None:
+        """The difference between the two IS what the stop rule is worth on
+        that clock, which is worth seeing per row."""
+        from scripts.dry_run_sections import _sweep_report
+
+        _sweep_report(self._results(-1.0, 1.0), equity=215.0, days=180, managed=True)
+        out = capsys.readouterr().out
+
+        assert "fixed R" in out
+        assert "-250.00" in out
+
+    def test_a_thin_row_is_marked(self, capsys) -> None:
+        """Four trades in a row, ranked, is how a seven-day sweep produced
+        conclusions I had to withdraw."""
+        from scripts.dry_run_sections import _sweep_report
+
+        results = self._results(-1.0, 1.0)
+        results[("order_block", "M30")] = results[("order_block", "M30")][:12]
+        _sweep_report(results, equity=215.0, days=7, managed=True)
+        out = capsys.readouterr().out
+
+        assert "too few to judge" in out
+        assert "NO ROW HAS 200 TRADES" in out
+
+    def test_the_sweep_launcher_parses_and_skips_m5(self) -> None:
+        """An M5 trade needs M1 bars to tell which barrier came first, and M1
+        over 180 days triples the run for the worst-performing clock."""
+        from scripts.dry_run_sections import build_parser
+
+        launcher = (ROOT / "sweep.cmd").read_text()
+        parsed = build_parser().parse_args(cmd_argv(launcher, **{"%DAYS%": "180"}))
+
+        assert parsed.days == 180
+        assert parsed.core is True and parsed.no_m1 is True
+        assert parsed.sweep == ["M15", "M30", "H1", "H4"]
+        assert "M5" not in parsed.sweep
