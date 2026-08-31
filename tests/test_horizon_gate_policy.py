@@ -10,6 +10,7 @@ import pandas as pd
 from analysis.confluence import TradeIdea
 from analysis.target_reach import ReachVerdict
 from config.loader import load_settings
+from core.instrument import AssetClass
 from core.types import Direction, MarketContext, Series, Signal, Timeframe
 from runner.service import JarvisRunner
 
@@ -345,6 +346,47 @@ class TestTheEntryConfirmationExemptionReachesTheRunner:
             allowed, measured = service._entry_is_confirmed(context, self._short(family))
             assert allowed is True, f"{family} is exempt and must pass the same bars"
             assert measured is None
+
+    def test_the_third_adverse_bar_copy_honours_the_same_exemption(self) -> None:
+        service = self._runner_on_the_live_config()
+        context = self._running_away_from_a_short()
+
+        ordinary = service._assess_entry_quality(
+            context, self._short("trend_momentum_swing"), AssetClass.FOREX
+        )
+        assert ordinary.reason_code == "PULLBACK_STILL_ACTIVE"
+
+        for family in (
+            "impulse_retest_m15",
+            "impulse_retest_m30_m30",
+            "order_block_fast_m1",
+            "order_block_m15_m15",
+            "order_block_m30",
+            "order_block_h1_h1",
+        ):
+            assessment = service._assess_entry_quality(
+                context, self._short(family), AssetClass.FOREX
+            )
+            assert assessment.reason_code != "PULLBACK_STILL_ACTIVE", family
+
+    def test_generic_target_reach_is_advisory_for_every_measured_retest_clock(self) -> None:
+        service = self._runner_on_the_live_config()
+        poor = ReachVerdict(200, 1.0, 80.0, 50.0)
+
+        assert not service._reach_failure_is_advisory(
+            self._short("trend_momentum_swing"), poor
+        )
+        for family in (
+            "impulse_retest_m15",
+            "impulse_retest_m30_m30",
+            "order_block_fast_m1",
+            "order_block_m15_m15",
+            "order_block_m30",
+            "order_block_h1_h1",
+        ):
+            measured = self._short(family)
+            assert service._reach_failure_is_advisory(measured, poor), family
+            assert service._direction_failure_is_advisory(measured, poor), family
 
     def test_the_exemption_is_bounded_to_the_named_families(self) -> None:
         """Every other module keeps the check. The gate was added because a
