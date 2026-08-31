@@ -600,6 +600,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {rest:>6}x  everything else")
         _print_score_reach(rows)
 
+    _print_gate_details(rows, counts)
+
     for reason in counts:
         if reason not in _EXPECTED and reason != "OK" and reason in _ADVICE:
             print(f"\n! {reason}: {_ADVICE[reason]}")
@@ -610,6 +612,51 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {row['symbol']:<12} {row['reason']:<28} {_summarise(str(row['detail']))}")
     print()
     return 0
+
+
+#: Gates worth breaking down by what they actually said, not just counting.
+#:
+#: ONE REASON, TWO GATES. `AWAITING_CONFIRMATION` is written by
+#: `_entry_is_confirmed` ("price has run 1.4 ATR against this LONG over the
+#: last 3 M5 bars") AND by `_observe_setup_lifecycle` ("pullback received,
+#: waiting for resumption"). They are different code, they need different
+#: fixes, and the funnel shows one number for both -- so a change aimed at one
+#: of them looks like it did nothing when it moved all of what it could.
+#:
+#: The detail text has always distinguished them. Nothing read it.
+_WORTH_BREAKING_DOWN: frozenset[str] = frozenset(
+    {
+        "AWAITING_CONFIRMATION",
+        "AWAITING_PULLBACK",
+        "ENTRY_OVEREXTENDED",
+        "TARGET_RARELY_REACHED",
+        "SPREAD_EATS_THE_STOP",
+        "MARKET_TOO_QUIET",
+        "SL_TOO_TIGHT_FOR_COSTS",
+    }
+)
+
+
+def _print_gate_details(rows: Sequence[sqlite3.Row], counts: Counter[str]) -> None:
+    """For each gate that is actually spending setups, what it said."""
+    interesting = [
+        (reason, count)
+        for reason, count in counts.most_common()
+        if reason in _WORTH_BREAKING_DOWN and count
+    ]
+    if not interesting:
+        return
+    print("WHAT EACH GATE ACTUALLY SAID")
+    for reason, count in interesting:
+        said = Counter(_group(str(row["detail"])) for row in rows if str(row["reason"]) == reason)
+        print(f"  {reason}  ({count})")
+        shown = 0
+        for detail, seen in said.most_common(3):
+            print(f"      {seen:>5}x  {detail[:88]}")
+            shown += seen
+        if count - shown > 0:
+            print(f"      {count - shown:>5}x  everything else")
+    print()
 
 
 def _print_directional_detection(rows: Sequence[sqlite3.Row]) -> None:

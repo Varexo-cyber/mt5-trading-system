@@ -6484,6 +6484,29 @@ class JarvisRunner:
             return True, None
         if self._idea_has_embedded_confirmation(idea):
             return True, None
+        # THE SECOND COPY OF A GATE THAT WAS ALREADY EXEMPTED ONCE.
+        #
+        # `entry_timing_exempt_families` was added to `ConfluenceEngine` on 31
+        # August because this check refuses a retest for doing the only thing a
+        # retest does. It never reached here, and here is where it actually
+        # fires: 155 of 440 setups in one live day, 35% of everything that
+        # formed, the largest single gate in the funnel.
+        #
+        # The measurement is asymmetric by construction. "Price ran against you
+        # over the last three M5 bars" describes the pullback INTO the level,
+        # which is the entry -- and three M5 bars against a 1.0 ATR limit on an
+        # M15 or M30 setup is roughly 1.7 of the smaller ATR, so a normal
+        # pullback arrives over the limit and the cleaner the retest the
+        # further over it goes.
+        #
+        # WHAT THIS GIVES UP is real and it is why it took three asks. The gate
+        # exists because a live GBPJPY short was sent into a resistance break.
+        # That trade comes back for these two families. It is bounded to them
+        # -- every other module still gets the check -- and both were measured
+        # WITHOUT it, so this moves live toward the configuration the numbers
+        # came from rather than away from it.
+        if any(family in idea.setup_family for family in config.entry_timing_exempt_families):
+            return True, None
         try:
             timeframe = Timeframe.parse(config.confirmation_timeframe)
             frame = context.bars(timeframe).df
