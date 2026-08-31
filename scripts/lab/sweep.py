@@ -92,16 +92,31 @@ def measure(symbol: str, timeframe: str, name: str) -> dict | None:
 
 
 def main() -> None:
+    global RATIOS, SPLIT
     parser = argparse.ArgumentParser()
     parser.add_argument("--timeframes", default=",".join(data.TIMEFRAMES))
     parser.add_argument("--strategies", default=",".join(CATALOGUE))
-    parser.add_argument("--symbols", default=",".join(data.every_symbol()))
+    parser.add_argument("--symbols", default="")
     parser.add_argument("--out", default="sweep.json")
+    parser.add_argument("--database", default="")
+    parser.add_argument("--ratios", default=",".join(str(value) for value in RATIOS))
     args = parser.parse_args()
+
+    RATIOS = tuple(float(value) for value in args.ratios.split(",") if value.strip())
+    if not RATIOS or any(value <= 0 for value in RATIOS):
+        raise SystemExit("--ratios must contain positive numbers")
+
+    if args.database:
+        data.configure_database(args.database)
+        stored = data.database_window()
+        if stored is not None:
+            end = pd.Timestamp(stored[1])
+            start = end - pd.Timedelta(days=stored[0])
+            SPLIT = start + (end - start) * 0.6
 
     timeframes = args.timeframes.split(",")
     strategies = args.strategies.split(",")
-    symbols = args.symbols.split(",")
+    symbols = args.symbols.split(",") if args.symbols else list(data.every_symbol())
 
     cells = len(strategies) * len(timeframes) * len(RATIOS)
     bar = NormalDist().inv_cdf(1 - 0.05 / (2 * max(cells, 1)))
@@ -116,21 +131,25 @@ def main() -> None:
 
     results = []
     started = time.time()
-    for timeframe in timeframes:
-        for name in strategies:
-            for symbol in symbols:
-                if timeframe not in data.available(symbol):
-                    continue
-                try:
-                    row = measure(symbol, timeframe, name)
-                except FileNotFoundError:
-                    continue
-                if row is not None:
-                    results.append(row)
-            print(f"  [{time.time() - started:7.0f}s] {timeframe:>4} {name}", flush=True)
+    try:
+        for timeframe in timeframes:
+            for name in strategies:
+                for symbol in symbols:
+                    if timeframe not in data.available(symbol):
+                        continue
+                    try:
+                        row = measure(symbol, timeframe, name)
+                    except FileNotFoundError:
+                        continue
+                    if row is not None:
+                        results.append(row)
+                print(f"  [{time.time() - started:7.0f}s] {timeframe:>4} {name}", flush=True)
+            Path(args.out).write_text(json.dumps(results))
         Path(args.out).write_text(json.dumps(results))
-    Path(args.out).write_text(json.dumps(results))
-    print(f"\n{len(results)} cells -> {args.out}")
+        print(f"\n{len(results)} cells -> {args.out}")
+    finally:
+        if args.database:
+            data.close_database()
 
 
 if __name__ == "__main__":

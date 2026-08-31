@@ -193,14 +193,11 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     )
     live = set(settings.analysis.confluence.live_enabled_modules)
 
-    assert live == {
-        "impulse_retest",
-        "impulse_retest_m30",
-        "order_block_fast",
-        "order_block_m15",
-        "order_block",
-        "order_block_h1",
-    }
+    # The corrected broker replay on 31 August invalidated the earlier live
+    # table: both sections lost after the stale-M1-price and duplicate-symbol
+    # portfolio bugs were removed. They stay enabled for shadow measurement,
+    # but none may use real money.
+    assert live == set()
     # Every live module keeps a breaker. That was the real content of this
     # test and it survives the change.
     for module in live:
@@ -511,7 +508,7 @@ class TestASecondClockIsASecondModule:
         }
         built = {module.name: module for module in build_analysis_modules(settings)}
 
-        assert set(settings.analysis.confluence.live_enabled_modules) == set(expected)
+        assert not settings.analysis.confluence.live_enabled_modules
         for name, timeframe in expected.items():
             assert built[name].config.enabled is True
             assert built[name].config.timeframe == timeframe

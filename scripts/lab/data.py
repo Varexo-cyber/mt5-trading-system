@@ -38,6 +38,7 @@ equity-index asset class, which is a real substitution and not the same thing
 
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -74,13 +75,50 @@ TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4")
 _RULE = {"M1": "1min", "M5": "5min", "M15": "15min", "M30": "30min", "H1": "1h", "H4": "4h"}
 _NATIVE_FX = {"M15": "m15", "M30": "m30", "H1": "h1", "H4": "h4"}
 
+_DATABASE = None
+
+
+def configure_database(path: str | Path) -> None:
+    """Use the broker SQLite archive instead of the legacy public feeds."""
+
+    global _DATABASE
+    from backtesting.research_dataset import ResearchDataset
+
+    if _DATABASE is not None:
+        _DATABASE.close()
+    _DATABASE = ResearchDataset(path, read_only=True)
+    load.cache_clear()
+
+
+def close_database() -> None:
+    global _DATABASE
+    if _DATABASE is not None:
+        _DATABASE.close()
+        _DATABASE = None
+    load.cache_clear()
+
+
+def database_window() -> tuple[int, str] | None:
+    return _DATABASE.window() if _DATABASE is not None else None
+
 
 def asset_class(symbol: str) -> str:
+    if _DATABASE is not None:
+        value = _DATABASE.spec(symbol).asset_class.value
+        return "fx" if value == "forex" else value
     if symbol in INDICES:
         return "index"
     if symbol in METAL:
         return "metal"
     return "fx"
+
+
+def instrument_spec(symbol: str):  # type: ignore[no-untyped-def]
+    """Return the captured broker contract when the SQLite source is active."""
+
+    if _DATABASE is None:
+        raise RuntimeError("instrument specifications require --database")
+    return _DATABASE.spec(symbol)
 
 
 def _resample(frame: pd.DataFrame, rule: str) -> pd.DataFrame:
@@ -123,17 +161,29 @@ def _load_fx(symbol: str, timeframe: str) -> pd.DataFrame:
 
 def available(symbol: str) -> tuple[str, ...]:
     """Which timeframes this instrument actually has."""
+    if _DATABASE is not None:
+        return tuple(
+            row["timeframe"]
+            for row in _DATABASE.coverage()
+            if row["broker_symbol"] == _DATABASE.spec(symbol).symbol
+        )
     if symbol in INDICES:
         return TIMEFRAMES
     return tuple(_NATIVE_FX)
 
 
+@lru_cache(maxsize=96)
 def load(symbol: str, timeframe: str) -> pd.DataFrame:
     """One instrument at one timeframe, cached as a pickle after the first read.
 
     Parsing 3.3 million lines of semicolon CSV takes about a minute per
     index-year and the sweep reads each frame dozens of times.
     """
+    if _DATABASE is not None:
+        frame = _DATABASE.load_frame(symbol, timeframe)
+        if "volume" not in frame and "tick_volume" in frame:
+            frame = frame.assign(volume=frame["tick_volume"])
+        return frame
     CACHE.mkdir(exist_ok=True)
     cached = CACHE / f"{symbol}.{timeframe}.pkl"
     if cached.exists():
@@ -163,4 +213,6 @@ def atr(frame: pd.DataFrame, period: int = 14) -> np.ndarray:
 
 
 def every_symbol() -> tuple[str, ...]:
+    if _DATABASE is not None:
+        return tuple(_DATABASE.symbols())
     return tuple(INDICES) + FX + METAL

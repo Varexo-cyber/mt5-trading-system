@@ -173,7 +173,13 @@ def _context(
                     slices.clear()
                 slices[(timeframe, cut)] = window
         series[timeframe] = Series(symbol, timeframe, window, upto)
-    price = float(series[Timeframe.M5].df["close"].iloc[-1])
+    # The decision price must come from the finest history being replayed.
+    # Hard-coding M5 made an M1 pass wake every minute while still seeing a
+    # price up to four minutes old.  The detector then missed live M1 zones
+    # that the real runner (which uses a tick) took, so the alleged exact
+    # replay could not reproduce the account's own trades.
+    finest = min(series, key=lambda item: item.duration)
+    price = float(series[finest].df["close"].iloc[-1])
     half = spread / 2.0
     return MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))
 
@@ -722,14 +728,18 @@ def _under_the_slot_cap(trades: list[Decision], slots: int) -> list[Decision]:
     """
     if slots <= 0:
         return list(trades)
-    open_until: list[datetime] = []
+    open_until: dict[str, datetime] = {}
     taken: list[Decision] = []
     for trade in sorted(trades, key=lambda d: d.when):
-        open_until = [stamp for stamp in open_until if stamp > trade.when]
-        if len(open_until) >= slots:
+        open_until = {
+            symbol: stamp for symbol, stamp in open_until.items() if stamp > trade.when
+        }
+        if trade.symbol in open_until or len(open_until) >= slots:
             continue
         taken.append(trade)
-        open_until.append(trade.exit_at or datetime.max.replace(tzinfo=trade.when.tzinfo))
+        open_until[trade.symbol] = trade.exit_at or datetime.max.replace(
+            tzinfo=trade.when.tzinfo
+        )
     return taken
 
 
@@ -814,7 +824,9 @@ class _StoredMarket:
         return SimpleNamespace(equity=self._equity, currency="EUR")
 
     def shutdown(self) -> None:
-        return None
+        close = getattr(self.store, "close", None)
+        if close is not None:
+            close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -858,6 +870,14 @@ def build_parser() -> argparse.ArgumentParser:
             "read bars from a stored history folder instead of MT5 "
             "(--cache data/history). Fill it once with fetch_history.py; after "
             "that a measurement needs no terminal, no login and no re-download."
+        ),
+    )
+    parser.add_argument(
+        "--database",
+        default="",
+        help=(
+            "read the one-file SQLite research archive instead of MT5 "
+            "(--database market-history.sqlite3)"
         ),
     )
     parser.add_argument(
@@ -929,8 +949,19 @@ def main(argv: list[str] | None = None) -> None:
     # With it there is no login, no terminal, and no second download of bars
     # that cannot change: a closed M15 candle from June is the same object in
     # September.
+    if args.cache and args.database:
+        raise SystemExit("choose --cache or --database, not both")
     store = None
-    if args.cache:
+    if args.database:
+        from backtesting.research_dataset import ResearchDataset
+
+        store = ResearchDataset(Path(args.database), read_only=True)
+        if not store.symbols():
+            store.close()
+            raise SystemExit(f"{args.database} holds no stored markets")
+        connector = _StoredMarket(store, args.equity)
+        print(f"reading bars from {store.path} — MT5 is not being contacted")
+    elif args.cache:
         from backtesting.history_store import HistoryStore
 
         store = HistoryStore(Path(args.cache))
@@ -979,7 +1010,12 @@ def main(argv: list[str] | None = None) -> None:
             ]
             if args.limit:
                 symbols = symbols[: args.limit]
-        end = datetime.now(UTC)
+        stored_window = store.window() if store is not None else None
+        end = (
+            datetime.fromisoformat(stored_window[1])
+            if stored_window is not None and stored_window[1]
+            else datetime.now(UTC)
+        )
         start = end - timedelta(days=args.days)
         # `fetch_these` is decided AFTER `passes`, further down: a live section
         # sitting on M1 needs M1 bars whatever --no-m1 says, and the clock came

@@ -249,14 +249,14 @@ class TestTheLiveWiring:
 
         assert "order_block" in {m.name for m in build_analysis_modules(settings)}
 
-    def test_it_is_live_weighted_and_broken_out(self) -> None:
+    def test_it_is_shadow_weighted_and_broken_out(self) -> None:
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
         settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
 
-        assert "order_block" in settings.analysis.confluence.live_enabled_modules
+        assert "order_block" not in settings.analysis.confluence.live_enabled_modules
         assert settings.analysis.confluence.weights.get("order_block", 0.0) > 0.0
         assert "order_block" in settings.risk.section_breakers
 

@@ -75,14 +75,16 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
         """
         confluence = _live_settings().analysis.confluence
 
-        assert set(confluence.live_enabled_modules) == {
+        assert not confluence.live_enabled_modules
+        for name in (
             "impulse_retest",
             "impulse_retest_m30",
             "order_block_m15",
             "order_block",
             "order_block_fast",
             "order_block_h1",
-        }
+        ):
+            assert confluence.weights.get(name, 0.0) > 0.0
 
     def test_the_unmeasured_sections_are_off(self) -> None:
         """Section 1 (market_structure, trend_momentum, m1_micro_breakout),
