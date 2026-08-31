@@ -35,10 +35,22 @@ whose exit price is at or past its own stop, on the losing side. `exit_reason`
 strings vary by close path and a filter built on them would quietly miss whole
 categories.
 
-HOW PIPS ARE DERIVED. From the trade's own row: `sl_distance_pips` is recorded
-next to `entry_price` and `sl`, so one pip is `|entry - sl| / sl_distance_pips`
-for that symbol. No pip table, no broker lookup, and it cannot disagree with
-the sizer's own arithmetic because it comes from what the sizer wrote down.
+A MOVED STOP STILL COUNTS. Break-even management pulls the stop to entry on
+most trades here, and an earlier version discarded every such row -- 222 of
+349, leaving five. That was wrong. The question is how far past the stop the
+fill landed, which is about the broker's execution and not about where the stop
+happened to sit; a break-even stop is an ordinary stop at a different price.
+
+HOW PIPS ARE DERIVED. From the symbol's name and its price: the fourth decimal
+on FX, the second on JPY crosses, 0.1 on gold, 0.001 on silver, whole points on
+indices and crypto. That matches `InstrumentSpec`, where a forex pip is ten
+points and everything else is one, without needing a live terminal.
+
+It deliberately does NOT come from the trade row. `|entry - sl| /
+sl_distance_pips` looks exact -- both are written by the sizer -- and is wrong
+whenever the stop has moved, because `sl` is the current stop and
+`sl_distance_pips` is the one recorded at open. That version reported a forex
+median of 8,563 pips.
 """
 
 from __future__ import annotations
@@ -164,16 +176,6 @@ def pip_size(symbol: str, price: float) -> float:
     return 0.0001
 
 
-#: How far the stop distance implied by the row may differ from what the sizer
-#: recorded before the row is discarded as unreadable.
-#:
-#: `sl_distance_pips` is written at open and never updated; `sl` is updated
-#: whenever the stop moves. When the two disagree by more than this the stop
-#: has been moved and the row cannot answer "how far past the ORIGINAL stop did
-#: this fill" -- so it is dropped and counted, not guessed at.
-_STOP_DISTANCE_TOLERANCE = 3.0
-
-
 def stop_outs(conn: sqlite3.Connection) -> tuple[list[dict], dict[str, int]]:
     """Stop-outs with their slippage, and a count of what was discarded.
 
@@ -216,14 +218,22 @@ def stop_outs(conn: sqlite3.Connection) -> tuple[list[dict], dict[str, int]]:
         )
         pip = pip_size(symbol, entry)
         recorded = float(row["sl_distance_pips"])
-        implied = abs(entry - stop) / pip
+        active = abs(entry - stop) / pip
 
-        # THE STOP HAS MOVED, so "past the stop" is not answerable from this
-        # row. Break-even management does this deliberately and often.
-        if implied <= 0 or not (
-            recorded / _STOP_DISTANCE_TOLERANCE <= implied <= recorded * _STOP_DISTANCE_TOLERANCE
-        ):
-            drop("stop had moved since the trade opened")
+        # A MOVED STOP IS STILL A STOP, and discarding those threw away 222 of
+        # 349 rows on the first real run -- leaving five.
+        #
+        # The discard was inherited from the version that derived one pip from
+        # `|entry - sl| / sl_distance_pips`. THAT needed the two to agree.
+        # Nothing does any more: `pip_size` comes from the symbol. And the
+        # question here is "how far past the stop did the fill land", which is
+        # about the broker's execution, not about where the stop happened to
+        # sit. A break-even stop is an ordinary stop at a different price.
+        #
+        # So only a stop at zero distance is unusable -- there is no order to
+        # slip against.
+        if active <= 0:
+            drop("stop sits exactly at entry; nothing to measure against")
             continue
 
         band = max(0.1 * pip, 0.25 * abs(entry - stop))
@@ -239,11 +249,14 @@ def stop_outs(conn: sqlite3.Connection) -> tuple[list[dict], dict[str, int]]:
             adverse = exit_price - stop
 
         slippage = adverse / pip
-        # A stop-out cannot slip by more than the stop is wide without
-        # something else being wrong -- a spec change, a symbol rename, a bad
-        # row. Better to name it than to average it in.
+        # A fill further from the stop than the ORIGINAL stop was wide is not a
+        # slipped fill, it is a broken row -- a spec change, a rename, a symbol
+        # this script classified wrongly. Measured against `recorded` rather
+        # than against the active stop on purpose: a break-even stop sits a
+        # tenth of an ATR from entry, and bounding slippage by THAT would throw
+        # away every genuinely slipped fill on a managed trade.
         if abs(slippage) > recorded:
-            drop("slippage larger than the whole stop; row not trusted")
+            drop("fill further out than the whole original stop; row not trusted")
             continue
 
         found.append(
@@ -348,10 +361,16 @@ def main(argv: list[str] | None = None) -> int:
     print("  Cost share = (commission + slippage + spread) / stop distance, per lot.")
     print("  Stop widths below are one ATR of each clock on a typical major.\n")
 
-    for name in sorted(by_class):
+    judgeable = [name for name in sorted(by_class) if len(by_class[name]) >= args.min_trades]
+    if not judgeable:
+        print(
+            f"  Nothing has {args.min_trades} stop-outs yet, so there is nothing to\n"
+            f"  conclude and no table below. The counts above are real; they are just\n"
+            f"  too few to move a live limit on. Come back after more trades close,\n"
+            f"  or pass --min-trades to see it anyway."
+        )
+    for name in judgeable:
         pips = by_class[name]
-        if len(pips) < args.min_trades:
-            continue
         measured = max(0.0, statistics.fmean(pips))
         assumed = configured.get(name, 0.0)
         commission = settings.risk.commission_per_lot(name)

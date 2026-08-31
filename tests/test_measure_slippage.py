@@ -194,10 +194,18 @@ class TestTheBugThatProducedEightThousandPips:
     broken for most rows rather than a few.
     """
 
-    def test_a_moved_stop_is_discarded_and_counted(self, tmp_path: Path) -> None:
+    def test_a_moved_stop_is_measured_not_discarded(self, tmp_path: Path) -> None:
         """Entry 1.1000, opened with a 10-pip stop, break-even moved it to
-        1.09995. The old code called one pip 0.0000005 and read the fill as
-        thousands of pips."""
+        1.09995, filled at 1.09990 -- half a pip past the ACTIVE stop.
+
+        The pip-from-the-row version called one pip 0.0000005 here and read
+        this fill as thousands of pips. The fix for that was to derive the pip
+        from the symbol; discarding the row as well was a second, wrong fix,
+        and it threw away 222 of 349 rows on the first real run, leaving five.
+
+        Break-even moves the stop on most trades on this account, so those 222
+        ARE the data. A break-even stop is an ordinary stop at a different
+        price, and how far past it a fill lands is exactly the question."""
         db = journal_with(
             tmp_path,
             [("EURUSD.i", "LONG", 1.1000, 1.09995, 1.09990, 10.0, "t", "SL", -0.1, "t")],
@@ -205,9 +213,22 @@ class TestTheBugThatProducedEightThousandPips:
 
         found, discarded = stop_outs(db)
 
-        assert found == [], "an unreadable row may not reach the average"
-        assert sum(discarded.values()) == 1
-        assert any("moved" in why for why in discarded)
+        assert len(found) == 1
+        assert found[0]["slippage_pips"] == pytest.approx(0.5, abs=0.01)
+        assert discarded == {}
+
+    def test_a_stop_exactly_at_entry_has_nothing_to_measure(self, tmp_path: Path) -> None:
+        """The one case that really is unusable: no distance, so no order to
+        slip against."""
+        db = journal_with(
+            tmp_path,
+            [("EURUSD.i", "LONG", 1.1000, 1.1000, 1.0999, 10.0, "t", "SL", 0.0, "t")],
+        )
+
+        found, discarded = stop_outs(db)
+
+        assert found == []
+        assert any("exactly at entry" in why for why in discarded)
 
     def test_an_untouched_stop_still_measures(self, tmp_path: Path) -> None:
         db = journal_with(
@@ -232,7 +253,7 @@ class TestTheBugThatProducedEightThousandPips:
         found, discarded = stop_outs(db)
 
         assert found == []
-        assert any("larger than the whole stop" in why for why in discarded)
+        assert any("whole original stop" in why for why in discarded)
 
 
 class TestOnePipWithoutABroker:
