@@ -50,7 +50,12 @@ def cmd_argv(launcher: str, **values: str) -> list[str]:
         if token.startswith("%") and token.endswith("%"):
             assert token in values, f"the launcher uses {token} and this test does not set it"
             token = values[token]
-        argv.extend(piece for piece in token.split(",") if piece)
+        # THE SPLIT HAPPENS AFTER EXPANSION, which is the third cmd behaviour
+        # that matters here. `%CLOCKS%` holding "M1 M5" becomes two arguments,
+        # not one argument containing a space -- and a helper that produced
+        # the latter would let a launcher pass "M1 M5" as a single timeframe
+        # name and report it as parsed.
+        argv.extend(piece for word in token.split() for piece in word.split(",") if piece)
     return argv
 
 
@@ -215,10 +220,60 @@ class TestTheLauncherSurvivesCmd:
 
 
 class TestTheSweepIsHonest:
-    def test_it_resolves_on_a_finer_timeframe_than_it_decides_on(self) -> None:
-        """An M30 trade resolved on M30 bars cannot tell which barrier the bar
-        touched first, and assuming the good one is how a backtest lies."""
-        assert "clock.duration <= finest.duration" in SOURCE
+    def test_a_bar_holding_both_barriers_is_a_loss(self) -> None:
+        """THIS IS WHAT MAKES SAME-CLOCK RESOLUTION SAFE TO ALLOW.
+
+        Rewritten 31 August. It used to assert the string
+        `clock.duration <= finest.duration` was somewhere in the source, which
+        is the defect this project keeps producing in its own tests: it can
+        only see that a line exists, never what it does. The guard has since
+        changed to `<` so M1 -- which has nothing finer beneath it -- can be
+        swept at all, and a string test would have failed for the change while
+        proving nothing about the property it was named after.
+
+        The property is that ambiguity resolves AGAINST the trade. One bar,
+        long, low through the stop and high through the target: the order
+        inside it is unknowable and it must book -1R.
+        """
+        from datetime import datetime, timedelta
+
+        import pandas as pd
+
+        from core.types import Direction
+        from scripts.dry_run_sections import _resolve
+
+        base = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        frame = pd.DataFrame(
+            {"high": [1.1030], "low": [1.0970], "open": [1.10], "close": [1.10]},
+            index=pd.DatetimeIndex([base + timedelta(minutes=1)]),
+        )
+
+        class _Idea:
+            direction = Direction.LONG
+            entry = 1.10
+            stop_loss = 1.099
+            take_profit = 1.102
+
+        fixed, exit_at, _managed = _resolve(frame, base, _Idea(), horizon_bars=96)
+
+        assert fixed == -1.0, "the bar touched both, so it may not be scored as a win"
+        assert exit_at is not None
+
+    def test_a_clock_finer_than_its_resolution_frame_is_refused_out_loud(self) -> None:
+        """`--no-m1 --sweep M1` cannot be measured at all: M5 bars cannot walk
+        out an M1 trade. The old code dropped such a clock with a bare
+        `continue`, and an absent row reads exactly like a row of zeros. It is
+        a complaint now, raised before the fetch rather than after it."""
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _unresolvable_clocks
+
+        assert _unresolvable_clocks(("M15", "M30", "H1"), Timeframe.M5) == ""
+        assert _unresolvable_clocks(("M1", "M5"), Timeframe.M1) == ""
+
+        complaint = _unresolvable_clocks(("M1", "M5", "M15"), Timeframe.M5)
+
+        assert complaint.startswith("M1 cannot be resolved on M5 bars")
+        assert "--no-m1" in complaint, "the message has to name the flag that fixes it"
 
     def test_each_section_is_swept_on_its_own(self) -> None:
         """Two sections on one clock merge into a single confluence idea, and
@@ -1548,18 +1603,89 @@ class TestTheSweepRanksOnTheExitTheAccountTakes:
         assert "thin" in out
         assert "NO ROW HAS 200 TRADES" in out
 
-    def test_the_sweep_launcher_parses_and_skips_m5(self) -> None:
-        """An M5 trade needs M1 bars to tell which barrier came first, and M1
-        over 180 days triples the run for the worst-performing clock."""
+    def test_the_sweep_launcher_defaults_to_the_four_wide_clocks(self) -> None:
+        """No clocks named: the same four as before, and M1 history off.
+
+        M1 bars are the expensive fetch and nothing in M15..H4 is resolved on
+        anything finer than M5, so `--no-m1` is right here and only here."""
         from scripts.dry_run_sections import build_parser
 
         launcher = (ROOT / "sweep.cmd").read_text()
-        parsed = build_parser().parse_args(cmd_argv(launcher, **{"%DAYS%": "180"}))
+        parsed = build_parser().parse_args(
+            cmd_argv(
+                launcher, **{"%DAYS%": "180", "%CLOCKS%": "M15 M30 H1 H4", "%FINE%": "--no-m1"}
+            )
+        )
 
         assert parsed.days == 180
         assert parsed.core is True and parsed.no_m1 is True
         assert parsed.sweep == ["M15", "M30", "H1", "H4"]
-        assert "M5" not in parsed.sweep
+
+    def test_the_sweep_launcher_takes_m1_and_m5_and_turns_the_fetch_back_on(self) -> None:
+        """`sweep.cmd 14 M1 M5`.
+
+        THE CLOCKS ARE SEPARATE ARGUMENTS. `--sweep` is nargs="*", so a
+        `%CLOCKS%` that arrived as one argument "M1 M5" would parse without
+        complaint and then be looked up as a timeframe named "M1 M5". The
+        helper expands the way cmd does, so this test can tell.
+
+        And `%FINE%` MUST BE EMPTY HERE. `--no-m1` with an M1 clock asks for a
+        clock finer than the frame it would be resolved on, which is not a
+        slow run or a coarse one -- it is a row that silently does not exist.
+        The launcher's `for` loop clears the flag; the script raises if it
+        somehow arrives anyway.
+        """
+        from scripts.dry_run_sections import build_parser
+
+        launcher = (ROOT / "sweep.cmd").read_text()
+        parsed = build_parser().parse_args(
+            cmd_argv(launcher, **{"%DAYS%": "14", "%CLOCKS%": "M1 M5", "%FINE%": ""})
+        )
+
+        assert parsed.days == 14
+        assert parsed.sweep == ["M1", "M5"]
+        assert parsed.no_m1 is False
+
+    def test_the_launcher_clears_no_m1_for_exactly_the_two_fine_clocks(self) -> None:
+        """The `for` loop in the .cmd is the thing being read here. A launcher
+        that kept `--no-m1` while asking for M5 would produce a sweep with the
+        M5 row missing and no message, which is the failure this file has
+        produced six times under different names."""
+        launcher = (ROOT / "sweep.cmd").read_text().upper()
+
+        assert 'IF /I "%%C"=="M1" SET FINE=' in launcher
+        assert 'IF /I "%%C"=="M5" SET FINE=' in launcher
+
+    def test_m1_and_m5_are_both_sweepable_now(self) -> None:
+        from core.types import Timeframe
+        from scripts.dry_run_sections import NEEDED, SWEEPABLE
+
+        assert Timeframe.M1 in SWEEPABLE
+        assert Timeframe.M5 in SWEEPABLE
+        # Everything sweepable must also be fetched, or the clock is asked for
+        # and then dropped for want of the frame it needs.
+        assert set(SWEEPABLE) <= set(NEEDED)
+
+    def test_the_m1_row_carries_its_own_caveat(self, capsys) -> None:
+        """M1 is the one clock resolved on its own bars, so its number is not
+        comparable to the rest of the table. Printing it beside them without
+        saying so invites exactly the comparison it cannot support."""
+        from scripts.dry_run_sections import _sweep_report
+
+        results = self._results(-1.0, 1.0)
+        results[("order_block", "M1")] = results.pop(("order_block", "M30"))
+        _sweep_report(results, equity=215.0, days=14, managed=True)
+        out = capsys.readouterr().out
+
+        assert "M1 IS RESOLVED ON ITS OWN BARS" in out
+        assert "counted as a LOSS" in out
+
+    def test_no_caveat_when_no_m1_row_was_measured(self, capsys) -> None:
+        from scripts.dry_run_sections import _sweep_report
+
+        _sweep_report(self._results(-1.0, 1.0), equity=215.0, days=14, managed=True)
+
+        assert "M1 IS RESOLVED ON ITS OWN BARS" not in capsys.readouterr().out
 
 
 class TestTheSweepDoesNotBuildEveryContextTwice:
@@ -1636,11 +1762,20 @@ class TestTheSweepDoesNotBuildEveryContextTwice:
 
         assert Timeframe.H1 in read, "swing plans on H1"
 
-    def test_the_launcher_no_longer_promises_ninety_minutes(self) -> None:
+    def test_the_launcher_quotes_a_measured_time_not_a_guessed_one(self) -> None:
+        """Three estimates were given for this run -- ninety minutes, then
+        ten, then six -- and the truth was forty-five. The launcher stopped
+        promising a single number and now quotes the measurement it has (100
+        days, four clocks, 16 markets, 45 minutes) plus the thing that scales:
+        bars. A reader can then work out M1 for themselves and get the right
+        answer instead of a reassuring one."""
         launcher = (ROOT / "sweep.cmd").read_text()
 
         assert "1.5 hours" not in launcher
-        assert "ten to twenty minutes" in launcher
+        assert "ten to twenty minutes" not in launcher
+        assert "45 minutes" in launcher
+        assert "bars per market per day" in launcher
+        assert "six hours" in launcher, "the M1 cost has to be stated before it is paid"
 
 
 class TestMarketsThatCannotTradeAreSkipped:

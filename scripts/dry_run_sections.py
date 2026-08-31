@@ -57,11 +57,28 @@ from core.types import Direction, MarketContext, Series, Tick, Timeframe, Tradin
 from risk.position_sizer import PositionSizer
 from runner.service import build_analysis_modules
 
-#: Every timeframe a sweep may put a section on, plus M1 and M5 so a signal
-#: can be resolved on bars finer than the one that produced it. Resolving an
-#: M30 trade on M30 bars cannot see which barrier a bar touched first.
-SWEEPABLE = (Timeframe.M5, Timeframe.M15, Timeframe.M30, Timeframe.H1, Timeframe.H4)
-NEEDED = (Timeframe.M1, *SWEEPABLE)
+#: Every timeframe a sweep may put a section on.
+#:
+#: M1 IS IN HERE, AND IT IS THE ONE CASE WHERE THE CLOCK AND THE RESOLUTION
+#: FRAME ARE THE SAME. Resolving an M30 trade on M30 bars cannot see which
+#: barrier a bar touched first, which is why every other clock is walked out
+#: on something finer. Beneath M1 there is nothing, so an M1 trade is resolved
+#: on M1 bars and a bar that spans both barriers is unknowable.
+#:
+#: `_resolve` already books that bar as a LOSS -- not as a win, not as a coin
+#: flip. So the bias of an M1 row is PESSIMISTIC: it understates M1. A row
+#: that comes back positive anyway means something; a row that comes back
+#: negative may be the resolution and not the strategy, and `_sweep_report`
+#: says so on the M1 line rather than leaving the reader to know it.
+SWEEPABLE = (
+    Timeframe.M1,
+    Timeframe.M5,
+    Timeframe.M15,
+    Timeframe.M30,
+    Timeframe.H1,
+    Timeframe.H4,
+)
+NEEDED = SWEEPABLE
 #: Bars of history each decision may look back over.
 WARMUP = 260
 
@@ -269,6 +286,32 @@ def _resolve(
     return fixed_r, exit_at, managed_r
 
 
+def _unresolvable_clocks(clocks: tuple[str, ...], finest: Timeframe) -> str:
+    """The complaint to raise before the fetch, or "" if every clock is fine.
+
+    A clock has to be walked out on bars at least as fine as itself. `--no-m1`
+    makes M5 the finest frame, so `--no-m1 --sweep M1` asks for something that
+    cannot be measured at all.
+
+    IT USED TO BE DROPPED WITH A BARE `continue` -- no row, no zero, no line.
+    An absent row in a sweep table reads exactly like "we looked and found
+    nothing there", and this file has now shipped that same confusion under
+    six different names. Refusing loudly, before twenty minutes of fetching,
+    is the whole point.
+    """
+    too_fine = sorted(
+        {tf for tf in clocks if Timeframe.parse(tf).duration < finest.duration},
+        key=lambda tf: Timeframe.parse(tf).duration,
+    )
+    if not too_fine:
+        return ""
+    return (
+        f"{', '.join(too_fine)} cannot be resolved on {finest.value} bars -- a trade has "
+        f"to be walked out on bars at least as fine as the clock that produced it. "
+        f"Drop --no-m1 so M1 history is fetched, or drop {', '.join(too_fine)} from --sweep."
+    )
+
+
 def _frames_read(
     settings, clock: Timeframe, finest: Timeframe, sections: tuple[str, ...]
 ) -> tuple[Timeframe, ...]:
@@ -398,9 +441,13 @@ def _one_clock(
     different error, refusing section three a trade because section two is in
     one, so each keeps its own.
 
-    `resolve_on` must be FINER than the clock. Resolving an M30 trade on M30
-    bars cannot tell which barrier came first, and assuming the good one is how
-    a backtest lies.
+    `resolve_on` must be FINER than the clock, or equal to it on M1 where
+    nothing finer exists. Resolving an M30 trade on M30 bars cannot tell which
+    barrier came first, and assuming the good one is how a backtest lies --
+    which is why the equal case is only allowed where there is no alternative,
+    and why `_resolve` books an ambiguous bar as a LOSS rather than a win. On
+    M1 that makes the row pessimistic, and `_sweep_report` prints that caveat
+    beside the number instead of leaving it to be remembered.
     """
     out: dict = {name: [] for name, _engine, _sizer in sections}
     busy: dict = {name: None for name, _engine, _sizer in sections}
@@ -911,8 +958,12 @@ def main() -> None:
         print(f"{'=' * 78}\n")
 
         finest = Timeframe.M5 if args.no_m1 else Timeframe.M1
+        complaint = _unresolvable_clocks(tuple(tf for _n, tf in passes), finest)
+        if complaint:
+            raise SystemExit(complaint)
         results: dict[tuple[str, str], list[Decision]] = {key: [] for key in passes}
         skipped_symbols = 0
+        unresolvable: dict[str, str] = {}
         manage = _break_even_rule(settings)
 
         # WHERE THE TIME ACTUALLY GOES. I estimated this run's length twice
@@ -976,7 +1027,22 @@ def main() -> None:
 
             for tf_name, names in by_clock.items():
                 clock = Timeframe.parse(tf_name)
-                if clock not in frames or clock.duration <= finest.duration:
+                # `<` NOT `<=`. The old test refused a clock equal to the
+                # resolution frame, which is exactly the M1 case, and it
+                # refused it by `continue` -- no row, no message, no zero. A
+                # sweep asked for M1 came back with M1 simply absent, which is
+                # the failure mode this file has now produced six times: a
+                # silence that reads as "nothing there" when it means "never
+                # ran". The refusal that remains is the one that is genuinely
+                # impossible -- a clock FINER than what it would be walked out
+                # on -- and it says so out loud, once.
+                if clock not in frames or clock.duration < finest.duration:
+                    if tf_name not in unresolvable:
+                        unresolvable[tf_name] = (
+                            f"no {tf_name} history"
+                            if clock not in frames
+                            else f"{tf_name} is finer than the {finest.value} resolution frame"
+                        )
                     continue
                 group = []
                 for name in names:
@@ -1026,6 +1092,14 @@ def main() -> None:
         decisions = [d for v in results.values() for d in v]
     finally:
         connector.shutdown()
+
+    if unresolvable:
+        # A clock that was asked for and never walked. This used to be a bare
+        # `continue`, so the row simply was not in the table and an absent row
+        # reads exactly like a row of zeros.
+        print("\nCLOCKS ASKED FOR AND NOT MEASURED")
+        for tf_name, why in sorted(unresolvable.items()):
+            print(f"    {tf_name:<6} {why}")
 
     if unaffordable:
         print(
@@ -1578,6 +1652,24 @@ def _sweep_report(results: dict, equity: float, days: int, managed: bool = False
             f"{live_r:>+9.2f}{money:>+11.2f}{sigma:>+8.2f}{fixed_r:>+10.2f}{thin}"
         )
         rows.append((money, name, tf, len(closed)))
+    if any(tf == "M1" for _m, _n, tf, _c in rows):
+        # THE ONE ROW WHOSE NUMBER IS NOT COMPARABLE TO THE OTHERS. Every
+        # other clock is walked out on M1 bars, so a bar holding both barriers
+        # is rare. An M1 trade is walked out on the bar it was born on, so
+        # "this bar touched the stop and the target" is common -- and
+        # `_resolve` books that as a full loss, because within one bar the
+        # order is unknowable and guessing in your own favour is how a
+        # backtest lies.
+        #
+        # So M1 is measured with a thumb on the losing side. A positive M1 row
+        # is a real finding. A negative one is not evidence against M1; it is
+        # the honest floor, and tick data is the only thing that would lift it.
+        print(
+            "\n  M1 IS RESOLVED ON ITS OWN BARS — nothing finer exists. A bar that\n"
+            "  holds both the stop and the target is counted as a LOSS, so this row\n"
+            "  is biased AGAINST M1. Positive here means something; negative here\n"
+            "  may be the measurement rather than the strategy."
+        )
     if rows:
         judgeable = [row for row in rows if row[3] >= 200]
         rows.sort(reverse=True)
