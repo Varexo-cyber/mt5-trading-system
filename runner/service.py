@@ -105,6 +105,7 @@ from core.data_quarantine import DataQuarantine
 from core.errors import DataIntegrityError, InsufficientDataError, TradingSystemError
 from core.instrument import InstrumentSpec
 from core.startup import run_startup_guard
+from core.trade_origin import broker_comment
 from core.types import (
     AccountSnapshot,
     Direction,
@@ -3888,14 +3889,10 @@ class JarvisRunner:
             reference_price=sizing.entry,
             deviation_points=self.settings.mt5.deviation_points,
             magic=self.settings.system.magic_number,
-            comment=(
-                "jarvis-scalp"
-                if is_addon
-                else (
-                    "jarvis-exp-live"
-                    if self.operation is OperationMode.EXPERIMENTAL_LIVE
-                    else "jarvis"
-                )
+            comment=broker_comment(
+                idea.setup_family,
+                is_addon=is_addon,
+                experimental_live=self.operation is OperationMode.EXPERIMENTAL_LIVE,
             ),
         )
         # Write the plan down before sending it. Between `order_send` returning
