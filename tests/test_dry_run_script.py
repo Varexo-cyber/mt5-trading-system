@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-SOURCE = (ROOT / "scripts" / "dry_run_sections.py").read_text()
+SOURCE = (ROOT / "scripts" / "dry_run_sections.py").read_text(encoding="utf-8")
 
 
 def cmd_argv(launcher: str, **values: str) -> list[str]:
@@ -113,12 +113,14 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
         run -- on an account that is perfectly well configured."""
         assert 'overlay=ROOT / "config" / "eightcap.yaml"' in SOURCE
 
-    def test_the_overlay_actually_has_live_modules(self) -> None:
+    def test_the_overlay_keeps_quarantined_modules_measurable(self) -> None:
         from config.loader import load_settings
 
         settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
 
-        assert settings.analysis.confluence.live_enabled_modules
+        assert not settings.analysis.confluence.live_enabled_modules
+        assert settings.analysis.confluence.weights.get("impulse_retest", 0.0) > 0.0
+        assert settings.analysis.confluence.weights.get("order_block", 0.0) > 0.0
 
     def test_it_checks_for_live_modules_before_connecting(self) -> None:
         """Failing after `connect()` produced two stacked tracebacks, with the
@@ -387,6 +389,46 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         ]
 
         assert len(_under_the_slot_cap(trades, slots=1)) == 2
+
+    def test_two_sections_cannot_open_the_same_symbol_at_once(self) -> None:
+        """The account permits one position per symbol, not one per module."""
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision, _under_the_slot_cap
+
+        base = datetime(2026, 8, 24, tzinfo=UTC)
+        trades = [
+            Decision(base, "US30", "order_block_fast", "TRADE", exit_at=base + timedelta(hours=1)),
+            Decision(
+                base + timedelta(minutes=5),
+                "US30",
+                "order_block_m15",
+                "TRADE",
+                exit_at=base + timedelta(hours=2),
+            ),
+            Decision(
+                base + timedelta(minutes=10),
+                "NDX100",
+                "order_block_fast",
+                "TRADE",
+                exit_at=base + timedelta(hours=1),
+            ),
+            Decision(
+                base + timedelta(hours=1, minutes=1),
+                "US30",
+                "order_block_m15",
+                "TRADE",
+                exit_at=base + timedelta(hours=2),
+            ),
+        ]
+
+        taken = _under_the_slot_cap(trades, slots=4)
+
+        assert [(row.symbol, row.module) for row in taken] == [
+            ("US30", "order_block_fast"),
+            ("NDX100", "order_block_fast"),
+            ("US30", "order_block_m15"),
+        ]
 
     def test_the_live_pair_gets_its_own_block(self) -> None:
         """The two shipped rows were on the same screen as eight combinations
@@ -1528,17 +1570,16 @@ class TestAShadowedSectionCanActuallyVote:
         tuned = _retimed(self._settings(), "market_structure", "M15")
         allowed = set(tuned.analysis.confluence.live_enabled_modules)
 
-        assert {"market_structure", "impulse_retest", "order_block"} <= allowed
+        assert allowed == {"market_structure"}
 
-    def test_a_live_section_is_unchanged_by_the_grant(self) -> None:
+    def test_a_shadowed_section_is_granted_for_its_measurement_pass(self) -> None:
         from scripts.dry_run_sections import _retimed
 
         settings = self._settings()
         tuned = _retimed(settings, "order_block", "M30")
 
-        assert set(tuned.analysis.confluence.live_enabled_modules) == set(
-            settings.analysis.confluence.live_enabled_modules
-        )
+        assert not settings.analysis.confluence.live_enabled_modules
+        assert set(tuned.analysis.confluence.live_enabled_modules) == {"order_block"}
 
 
 class TestTheSweepRanksOnTheExitTheAccountTakes:
@@ -1748,7 +1789,7 @@ class TestTheSweepDoesNotBuildEveryContextTwice:
         )
 
         assert Timeframe.M15 in read, "the clock itself"
-        assert Timeframe.M5 in read, "_context takes the price from M5"
+        assert Timeframe.M5 in read, "the confluence engine reads M5"
         assert Timeframe.H4 in read, "the intraday higher-timeframe veto"
         assert Timeframe.M30 not in read, "nothing reads M30 on an M15 pass"
 

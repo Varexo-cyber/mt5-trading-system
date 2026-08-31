@@ -300,6 +300,11 @@ class TestTheLauncher:
         assert parsed.days == 365
         assert parsed.clocks == ["M15", "M30"]
 
+    def test_the_parser_accepts_an_offline_database(self) -> None:
+        parsed = build_parser().parse_args(["--database", "market-history.sqlite3"])
+
+        assert parsed.database == "market-history.sqlite3"
+
 
 def _realistic(bars: int = 4000, freq: str = "30min", seed: int = 3) -> pd.DataFrame:
     """Bars with the three properties a naive random walk flattens away.

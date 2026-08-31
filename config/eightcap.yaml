@@ -2563,13 +2563,23 @@ analysis:
     # TWEE SECTIES LIVE VERANDERT DE RISICOREKENING. Bij een plafond van 10%
     # en 20% totaal open vullen twee trades op het plafond het hele boek, en
     # er is geen daglimiet. Met twee secties gebeurt dat vaker.
-    live_enabled_modules:
-      - impulse_retest
-      - impulse_retest_m30
-      - order_block_fast
-      - order_block_m15
-      - order_block
-      - order_block_h1
+    # QUARANTINE, 31 AUGUSTUS 2026. De eerdere positieve tabel was geen
+    # betrouwbare live-replay: M1 beslissingen kregen een oude M5-prijs en de
+    # portefeuille kon hetzelfde symbool via meerdere secties tegelijk
+    # innemen. Met beide fouten hersteld en met de echte brokerhistorie:
+    #
+    #   indices, S2+S3   128 trades   72,7% win   -14,74R   -EUR 54,36
+    #   FX, S2            15 trades   26,7% win    -3,62R   -EUR 12,50
+    #   order_block M1   107 trades   74,8% win    -8,82R   -EUR 32,45
+    #
+    # Een hoge winrate is dus geen winst: de verliezen zijn groter dan de
+    # vele kleine break-evenuitstappen. Meer setups toelaten of kostenpoorten
+    # losser zetten vergroot precies dit negatieve resultaat. Alle instanties
+    # blijven enabled, gewogen en gejournaliseerd voor shadow-metingen, maar
+    # geen ervan mag echt geld gebruiken tot een nieuwe out-of-sample replay
+    # positief is. Een nieuwe sectie wordt om dezelfde reden niet verzonnen en
+    # live gezet zonder bewijs.
+    live_enabled_modules: []
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #

@@ -18,7 +18,7 @@ from typing import Any
 
 import pandas as pd
 
-from core.instrument import InstrumentSpec
+from core.instrument import AssetClass, InstrumentSpec
 from core.types import Timeframe
 
 SCHEMA_VERSION = 1
@@ -229,6 +229,49 @@ class ResearchDataset:
         )
         frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
         return frame.set_index("time")
+
+    def frame(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        start: object | None = None,
+        end: object | None = None,
+    ) -> pd.DataFrame:
+        """HistoryStore-compatible reader used by the offline replay tools."""
+
+        frame = self.load_frame(symbol, timeframe)
+        if start is not None:
+            frame = frame[frame.index >= pd.Timestamp(start)]
+        if end is not None:
+            frame = frame[frame.index <= pd.Timestamp(end)]
+        return frame
+
+    def symbols(self) -> list[str]:
+        return [
+            str(row[0])
+            for row in self.connection.execute(
+                "SELECT broker_symbol FROM instruments ORDER BY canonical_symbol"
+            ).fetchall()
+        ]
+
+    def spec(self, symbol: str) -> InstrumentSpec:
+        row = self.connection.execute(
+            "SELECT spec_json FROM instruments WHERE canonical_symbol=? "
+            "OR broker_symbol=? LIMIT 1",
+            (symbol, symbol),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"no stored instrument specification for {symbol}")
+        values = json.loads(str(row["spec_json"]))
+        values["asset_class"] = AssetClass(values["asset_class"])
+        return InstrumentSpec(**values)
+
+    def window(self) -> tuple[int, str] | None:
+        days = self.metadata("evaluation_days")
+        end = self.metadata("evaluation_end")
+        if days is None or end is None:
+            return None
+        return int(days), str(end)
 
     def coverage(self) -> list[Mapping[str, object]]:
         return [

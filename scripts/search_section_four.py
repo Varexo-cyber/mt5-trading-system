@@ -471,6 +471,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop-atr", type=float, default=1.0)
     parser.add_argument("--ratio", type=float, default=1.0)
     parser.add_argument("--csv", default="", help="write every cell's numbers here")
+    parser.add_argument(
+        "--database",
+        default="",
+        help="read the one-file SQLite research archive instead of contacting MT5",
+    )
     return parser
 
 
@@ -484,22 +489,37 @@ def main() -> None:
     ]
 
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=True)
-    connector = MT5Connector(
-        settings.mt5,
-        load_credentials(required=True),
-        terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
-    )
-    connector.connect()
+    dataset = None
+    connector = None
+    if args.database:
+        from backtesting.research_dataset import ResearchDataset
+
+        dataset = ResearchDataset(Path(args.database), read_only=True)
+    else:
+        connector = MT5Connector(
+            settings.mt5,
+            load_credentials(required=True),
+            terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
+        )
+        connector.connect()
     try:
         from scanner.universe import UniverseScanner
         from scripts.dry_run_sections import _core_universe
 
         if args.symbols:
             symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        elif dataset is not None:
+            symbols = dataset.symbols()
         else:
+            assert connector is not None
             symbols = _core_universe(connector, settings)
 
-        end = datetime.now(UTC)
+        stored_window = dataset.window() if dataset is not None else None
+        end = (
+            datetime.fromisoformat(stored_window[1])
+            if stored_window is not None and stored_window[1]
+            else datetime.now(UTC)
+        )
         start = end - timedelta(days=args.days)
         split = start + (end - start) * 0.6
 
@@ -516,16 +536,23 @@ def main() -> None:
 
         for position, symbol in enumerate(symbols, 1):
             try:
-                spec = connector.spec(symbol)
-                asset_class = UniverseScanner._path_class(spec.path).value
+                spec = dataset.spec(symbol) if dataset is not None else connector.spec(symbol)
+                asset_class = (
+                    spec.asset_class.value
+                    if dataset is not None
+                    else UniverseScanner._path_class(spec.path).value
+                )
             except Exception as exc:  # noqa: BLE001 - one bad symbol must not stop the run
                 print(f"  [{position}/{len(symbols)}] {symbol}: no spec ({exc})")
                 continue
             for clock_name in clocks:
                 clock = Timeframe.parse(clock_name)
                 try:
-                    frame = fetch_mt5_history(
-                        connector, symbol, clock, start - (WARMUP + 40) * clock.duration, end
+                    requested_start = start - (WARMUP + 40) * clock.duration
+                    frame = (
+                        dataset.frame(symbol, clock, requested_start, end)
+                        if dataset is not None
+                        else fetch_mt5_history(connector, symbol, clock, requested_start, end)
                     )
                 except Exception as exc:  # noqa: BLE001
                     print(f"  [{position}/{len(symbols)}] {symbol} {clock_name}: {exc}")
@@ -561,7 +588,10 @@ def main() -> None:
                 _split_into(found, split, control)
             print(f"  [{position}/{len(symbols)}] {symbol} done")
     finally:
-        connector.shutdown()
+        if dataset is not None:
+            dataset.close()
+        elif connector is not None:
+            connector.shutdown()
 
     _report(cells, args, costs)
 

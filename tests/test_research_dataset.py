@@ -71,6 +71,9 @@ def test_one_file_round_trips_bars_specs_metadata_and_coverage(tmp_path: Path) -
         restored = dataset.load_frame("EURUSD", "M1")
         assert dataset.metadata("research_starting_equity") == 203.0
         assert len(dataset.coverage()) == 1
+        assert dataset.symbols() == ["EURUSD.i"]
+        assert dataset.spec("EURUSD").volume_min == 0.01
+        assert dataset.frame("EURUSD", Timeframe.M1, bars.index[1]).index[0] == bars.index[1]
         stored_spec = dataset.connection.execute(
             "SELECT spec_json FROM instruments WHERE canonical_symbol='EURUSD'"
         ).fetchone()[0]

@@ -70,7 +70,8 @@ def _reference(symbol: str, frames: dict, upto, spread: float):
         if len(visible) < WARMUP:
             return None
         series[timeframe] = Series(symbol, timeframe, visible.tail(WARMUP), upto)
-    price = float(series[Timeframe.M5].df["close"].iloc[-1])
+    finest = min(series, key=lambda item: item.duration)
+    price = float(series[finest].df["close"].iloc[-1])
     half = spread / 2.0
     return MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))
 
@@ -123,6 +124,18 @@ class TestTheFastSliceIsTheSameSlice:
 
         for timeframe in frames:
             assert len(ctx.series[timeframe].df) == WARMUP, timeframe
+
+    def test_an_m1_replay_uses_m1_as_its_tick_instead_of_a_stale_m5_close(self) -> None:
+        m1 = _frame(WARMUP + 20, "1min")
+        m1.loc[:, ["open", "high", "low", "close"]] += 1000.0
+        m5 = _frame(WARMUP + 20, "5min")
+        upto = m5.index[-1] + Timeframe.M5.duration
+
+        ctx = _context("X", {Timeframe.M1: m1, Timeframe.M5: m5}, upto, 0.0)
+
+        assert ctx is not None
+        assert ctx.tick.mid == pytest.approx(ctx.series[Timeframe.M1].df["close"].iloc[-1])
+        assert ctx.tick.mid != pytest.approx(ctx.series[Timeframe.M5].df["close"].iloc[-1])
 
 
 class TestItIsNoLongerQuadratic:
