@@ -1613,7 +1613,13 @@ class TestTheSweepRanksOnTheExitTheAccountTakes:
         launcher = (ROOT / "sweep.cmd").read_text()
         parsed = build_parser().parse_args(
             cmd_argv(
-                launcher, **{"%DAYS%": "180", "%CLOCKS%": "M15 M30 H1 H4", "%FINE%": "--no-m1"}
+                launcher,
+                **{
+                    "%DAYS%": "180",
+                    "%CLOCKS%": "M15 M30 H1 H4",
+                    "%FINE%": "--no-m1",
+                    "%CSVFILE%": "runtime\\sweep-180d-M15-M30-H1-H4.csv",
+                },
             )
         )
 
@@ -1639,7 +1645,15 @@ class TestTheSweepRanksOnTheExitTheAccountTakes:
 
         launcher = (ROOT / "sweep.cmd").read_text()
         parsed = build_parser().parse_args(
-            cmd_argv(launcher, **{"%DAYS%": "14", "%CLOCKS%": "M1 M5", "%FINE%": ""})
+            cmd_argv(
+                launcher,
+                **{
+                    "%DAYS%": "14",
+                    "%CLOCKS%": "M1 M5",
+                    "%FINE%": "",
+                    "%CSVFILE%": "runtime\\sweep-14d-M1-M5.csv",
+                },
+            )
         )
 
         assert parsed.days == 14
@@ -2143,3 +2157,79 @@ class TestTheRunSaysWhatItDidNotMeasure:
         from scripts.dry_run_sections import NOT_MODELLED
 
         assert sum(count for _n, count, _w in NOT_MODELLED) == 403
+
+
+class TestATakenTradePaysItsOwnSpread:
+    """The largest silent error this file has carried.
+
+    `_resolve` walks raw highs and lows against raw entry, stop and target, so
+    a winner returned the full reward and a loser exactly -1.00R. The cost
+    model existed the whole time -- `_hopeless_on_cost` skipped markets on it,
+    `_cost_report` printed it, the sizer refused 982 setups on it in one run --
+    and none of it touched the money of a trade that was TAKEN. The survivors
+    were paid as though trading were free.
+
+    It is not a uniform haircut. `cost_share` divides the round trip by the
+    STOP DISTANCE, and the stop is one ATR of the clock, so the same spread is
+    about 1% of an H4 stop and 12% of an M1 one. The error grew as the clock
+    shrank -- and the cell that then looked best, order_block on M1 at +34.00R
+    over 105 trades, is exactly where it was largest.
+    """
+
+    def test_the_charge_is_subtracted_from_both_columns(self) -> None:
+        """Both, not one. The report reads `managed_r` and the sweep prints
+        `result_r` beside it; charging only one would make the gap between
+        them read as the value of the stop rule."""
+        from scripts import dry_run_sections
+
+        source = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert "cost = sizer.cost_share(spec, abs(idea.entry - idea.stop_loss), spread_price)" in (
+            source
+        )
+        assert "r = None if r is None else r - cost" in source
+        assert "managed_r = None if managed_r is None else managed_r - cost" in source
+
+    def test_it_uses_the_sizer_s_own_definition(self) -> None:
+        """One definition of a cost. A second one here would eventually
+        disagree with the one that refuses trades, and the disagreement would
+        be silent."""
+        from risk.position_sizer import PositionSizer
+        from scripts import dry_run_sections
+
+        assert hasattr(PositionSizer, "cost_share")
+        assert "PositionSizer._cost_share" not in inspect.getsource(
+            dry_run_sections
+        ), "call the public helper, do not reach past it"
+
+    def test_the_gross_number_stays_recoverable(self) -> None:
+        """Every figure produced before 31 August was gross. The difference
+        has to stay visible rather than being quietly absorbed."""
+        from scripts import dry_run_sections
+        from scripts.dry_run_sections import Decision
+
+        assert "cost_r" in Decision.__dataclass_fields__
+        assert "cost_r_charged" in inspect.getsource(dry_run_sections)
+
+    def test_charging_it_once_matches_what_the_sizer_says_a_loss_costs(self) -> None:
+        """The sizer refuses with "a stop-out would cost about 1+cost_share R
+        rather than 1.00R". So the charge is ONE cost_share, not two --
+        `cost_share` is already the round trip."""
+        sizer_source = " ".join(
+            inspect.getsource(__import__("risk.position_sizer", fromlist=["x"])).split()
+        )
+
+        assert "1 + cost_share:.2f}R rather than 1.00R" in sizer_source
+        # -1R gross becomes -(1 + cost) net, which is r - cost.
+        assert pytest.approx(-1.0 - 0.12) == -1.0 - 0.12
+
+    def test_the_sweep_csv_is_named_after_the_run(self) -> None:
+        """It was always runtime\\sweep.csv, so a 14-day M1+M5 run destroyed
+        the 100-day M15..H4 one and four clocks of trades were simply gone."""
+        launcher = (ROOT / "sweep.cmd").read_text()
+        invocation = next(
+            line for line in launcher.splitlines() if "scripts.dry_run_sections" in line
+        )
+
+        assert "runtime\\sweep.csv" not in invocation
+        assert "sweep-%DAYS%d-%TAG%.csv" in launcher

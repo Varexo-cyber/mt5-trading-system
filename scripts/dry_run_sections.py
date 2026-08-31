@@ -111,6 +111,12 @@ class Decision:
     #: two exits are compared on identical entries rather than on two runs.
     managed_r: float | None = None
     managed_money: float | None = None
+    #: What the round trip cost this trade, as a fraction of its own stop.
+    #:
+    #: ALREADY SUBTRACTED from `result_r` and `managed_r`. Kept so the gross
+    #: number stays recoverable, because every figure this script produced
+    #: before 31 August was gross and the difference has to stay visible.
+    cost_r: float = 0.0
 
 
 def _context(
@@ -527,6 +533,32 @@ def _one_clock(
             # an open position holds the symbol live.
             busy[name] = exit_at if exit_at is not None else end + clock.duration
             risk_money = sized.actual_risk_money
+
+            # THE TRADE PAYS ITS OWN SPREAD. It did not until 31 August, and
+            # that is the largest silent error this file has carried.
+            #
+            # `_resolve` walks raw highs and lows against raw entry, stop and
+            # target, so a winner returned the full reward and a loser exactly
+            # -1.00R. The cost model existed -- `_hopeless_on_cost` used it to
+            # skip markets, `_cost_report` printed it, the sizer refused 982
+            # setups on it in a single run -- and NONE of it touched the money
+            # of a trade that was taken. The survivors were paid as if trading
+            # were free. Once again: a number that exists, is correct, is
+            # tested, and is not on the path the code takes.
+            #
+            # It is not a uniform haircut either. `cost_share` is the round
+            # trip divided by the STOP DISTANCE, and the stop is one ATR of
+            # the clock -- so the same spread is 1% of an H4 stop and 12% of
+            # an M1 one. The error therefore grew as the clock shrank, and it
+            # was largest in precisely the cell that then looked best:
+            # order_block on M1, +34.00R gross over 105 trades.
+            #
+            # Subtracted ONCE, which is what `cost_share` already is: the
+            # sizer's own refusal says a stop-out costs "about 1+cost_share R
+            # rather than 1.00R". One definition, one subtraction.
+            cost = sizer.cost_share(spec, abs(idea.entry - idea.stop_loss), spread_price)
+            r = None if r is None else r - cost
+            managed_r = None if managed_r is None else managed_r - cost
             out[name].append(
                 Decision(
                     upto,
@@ -546,6 +578,7 @@ def _one_clock(
                     pass_key=(name, clock.value),
                     managed_r=managed_r,
                     managed_money=None if managed_r is None else managed_r * risk_money,
+                    cost_r=cost,
                 )
             )
     return out
@@ -1152,6 +1185,11 @@ def main() -> None:
                     "pnl_money_fixed_stop",
                     "managed_r_LIVE",
                     "managed_money_LIVE",
+                    # Already subtracted from both R columns above. Here so
+                    # the gross number stays recoverable and so the size of
+                    # the haircut is visible per clock -- it is 1% of an H4
+                    # stop and 12% of an M1 one.
+                    "cost_r_charged",
                     "note",
                 ]
             )
@@ -1174,6 +1212,7 @@ def main() -> None:
                         "" if d.pnl_money is None else round(d.pnl_money, 2),
                         "" if d.managed_r is None else round(d.managed_r, 3),
                         "" if d.managed_money is None else round(d.managed_money, 2),
+                        round(d.cost_r, 4),
                         d.note,
                     ]
                 )
