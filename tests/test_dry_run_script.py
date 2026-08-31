@@ -1913,3 +1913,43 @@ class TestTheSweepAnswersTheQuestionBehindMoreTrades:
         verdict.cmd could not judge a sweep at all."""
         assert '"clock",' in SOURCE
         assert "d.pass_key[1]," in SOURCE
+
+
+class TestTheWhyLauncher:
+    """ "68 analysed, 0 opened" invites exactly one question and answers none
+    of it. A night with no trades because nothing set up and a night with no
+    trades because a gate is broken look identical from the outside and need
+    opposite responses.
+
+    `scripts/why_no_trades.py` has answered this from the journal all along
+    and had no launcher, so it was never reached from the machine that has the
+    journal on it."""
+
+    LAUNCHER = (ROOT / "waarom.cmd").read_text()
+
+    def test_its_command_line_parses(self) -> None:
+        import importlib
+
+        module = importlib.import_module("scripts.why_no_trades")
+        parser = module.build_parser() if hasattr(module, "build_parser") else None
+        if parser is None:  # the script builds its parser inside main()
+            import re as _re
+
+            source = (ROOT / "scripts" / "why_no_trades.py").read_text()
+            flags = set(_re.findall(r'add_argument\("(--[a-z-]+)"', source))
+            assert {"--hours", "--symbol"} <= flags
+            return
+        parsed = parser.parse_args(["--hours", "24"])
+        assert parsed.hours == 24
+
+    def test_it_takes_no_comma_arguments(self) -> None:
+        for line in self.LAUNCHER.splitlines():
+            if line.strip().startswith("set "):
+                assert "," not in line, line
+
+    def test_it_states_what_the_measurement_expects(self) -> None:
+        """Without the expected rate on screen, "0 trades" cannot be judged.
+        Seven a day means zero overnight is a finding; 0.1 a day would mean it
+        is nothing."""
+        assert "about 7 trades a day" in self.LAUNCHER
+        assert "ZERO over a full session is not" in self.LAUNCHER
