@@ -155,7 +155,9 @@ def _context(
     return MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))
 
 
-def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, manage=None):
+def _resolve(
+    frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, manage=None, arrays=None
+):
     """First touch of stop or target on the bars after entry.
 
     Same rules as the research: the entry bar itself counts, a bar spanning
@@ -187,8 +189,27 @@ def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, mana
     bigger. Both numbers come off the same bar walk, so the comparison is on
     identical trades rather than on two runs.
     """
-    future = frame[frame.index >= start].head(horizon_bars)
-    if future.empty:
+    # SEARCHSORTED, NOT A MASK, and this is the same defect I already fixed
+    # once in `_context`. `frame[frame.index >= start]` walks the WHOLE
+    # resolution frame -- 52,000 M5 bars over 180 days -- builds a boolean
+    # array of that length, copies every matching row, and then keeps the
+    # first `horizon_bars` of it. Per trade. `.iterrows()` on the result then
+    # costs about 10us a row on top.
+    #
+    # The bars are sorted, so the start is a binary search and the horizon is
+    # a positional slice. The numpy arrays are handed in by the caller because
+    # they are the same for every trade on a symbol; extracting them here
+    # would rebuild them thousands of times.
+    if arrays is None:
+        arrays = (
+            frame.index,
+            frame["high"].to_numpy(),
+            frame["low"].to_numpy(),
+        )
+    index, highs, lows = arrays
+    first = int(index.searchsorted(start, side="left"))
+    last = min(first + horizon_bars, len(index))
+    if first >= last:
         return None, None, None
     long = idea.direction is Direction.LONG
     risk = abs(idea.entry - idea.stop_loss)
@@ -206,9 +227,11 @@ def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, mana
     fixed_r: float | None = None
     exit_at: datetime | None = None
 
-    for stamp, bar in future.iterrows():
-        hit_stop = bar["low"] <= idea.stop_loss if long else bar["high"] >= idea.stop_loss
-        hit_target = bar["high"] >= idea.take_profit if long else bar["low"] <= idea.take_profit
+    for position in range(first, last):
+        bar_high = float(highs[position])
+        bar_low = float(lows[position])
+        hit_stop = bar_low <= idea.stop_loss if long else bar_high >= idea.stop_loss
+        hit_target = bar_high >= idea.take_profit if long else bar_low <= idea.take_profit
 
         if managed_open:
             # ORDER MATTERS AND IT IS NOT THE FLATTERING ONE. Within a bar the
@@ -217,7 +240,7 @@ def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, mana
             # allowed to arm it. Arming on the same bar's high and then
             # surviving that bar's low is the look-ahead this account has
             # already been bitten by twice.
-            managed_hit = bar["low"] <= managed_stop if long else bar["high"] >= managed_stop
+            managed_hit = bar_low <= managed_stop if long else bar_high >= managed_stop
             if managed_hit and hit_target:
                 # Both in one bar: the order is unknowable, so take the stop.
                 managed_r = (managed_stop - idea.entry) / risk * direction_sign
@@ -228,16 +251,16 @@ def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, mana
             if managed_r is not None:
                 managed_open = False
             else:
-                excursion = (bar["high"] - idea.entry) if long else (idea.entry - bar["low"])
+                excursion = (bar_high - idea.entry) if long else (idea.entry - bar_low)
                 if not armed and excursion / risk >= trigger_r:
                     armed = True
                     managed_stop = idea.entry + offset_r * risk * direction_sign
 
         if fixed_r is None:
             if hit_stop:
-                fixed_r, exit_at = -1.0, stamp
+                fixed_r, exit_at = -1.0, index[position]
             elif hit_target:
-                fixed_r, exit_at = reward_r, stamp
+                fixed_r, exit_at = reward_r, index[position]
         if fixed_r is not None and not managed_open:
             break
 
@@ -289,6 +312,57 @@ def _frames_read(
     return tuple(sorted(wanted, key=lambda tf: tf.duration))
 
 
+def _hopeless_on_cost(sizer, spec, frames: dict, clocks: tuple[Timeframe, ...]) -> float | None:
+    """The best cost share this symbol can reach, or None if it can trade.
+
+    ELEVEN OF SIXTEEN CORE MARKETS PRODUCE ZERO TRADES and cost two thirds of
+    the run. Every FX setup on this account dies on
+    `SL_TOO_TIGHT_FOR_COSTS` -- the 180-day run refused 6,877 of them at a
+    median 51% of the stop -- and the sweep walked every bar of all eleven
+    anyway to arrive at that same refusal one bar at a time.
+
+    So the cost is checked ONCE per symbol, on the widest clock available,
+    using the sizer's own `_cost_share` -- the same function that will refuse
+    the trades. If even the widest stop leaves nothing payable, there is
+    nothing to learn from walking 12,000 bars to watch it be refused.
+
+    Returns the share when the symbol is hopeless so the report can name it,
+    and None when at least one clock is affordable. Deliberately generous: it
+    skips only what is over TWICE the account's limit, because a symbol near
+    the boundary is exactly the interesting case and must still be measured.
+    """
+    limit = sizer.settings.risk.max_cost_share_of_risk
+    if limit <= 0:
+        return None
+    best = None
+    for clock in clocks:
+        frame = frames.get(clock)
+        if frame is None or len(frame) < 60:
+            continue
+        atr = float(np.nanmedian(_atr_of(frame)))
+        if not np.isfinite(atr) or atr <= 0:
+            continue
+        commission = sizer.settings.risk.commission_per_lot(spec.asset_class.value)
+        share = sizer._cost_share(spec, atr, commission)
+        best = share if best is None else min(best, share)
+    if best is None:
+        return None
+    return best if best > limit * 2.0 else None
+
+
+def _atr_of(frame: pd.DataFrame, period: int = 14) -> np.ndarray:
+    previous = frame["close"].shift(1)
+    true_range = pd.concat(
+        [
+            frame["high"] - frame["low"],
+            (frame["high"] - previous).abs(),
+            (frame["low"] - previous).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return true_range.rolling(period).mean().to_numpy()
+
+
 def _one_clock(
     *,
     sections: list,
@@ -336,13 +410,31 @@ def _one_clock(
     reading = frames if needed is None else {tf: frames[tf] for tf in needed if tf in frames}
     #: Per clock, so it never outlives the frames it points into.
     slices: dict = {}
+    # ONCE PER CLOCK, not once per bar and not once per trade.
+    #
+    # `window.loc[bar_time].get("spread", 0)` is a label lookup plus a Series
+    # construction on every bar, and `_resolve` was masking the whole 52,000-row
+    # M5 frame on every trade. Both are the same shape of mistake as the one
+    # already fixed in `_context`: work proportional to the history, repeated
+    # per step.
+    spreads = (
+        window["spread"].to_numpy(dtype=float)
+        if "spread" in window.columns
+        else np.zeros(len(window))
+    )
+    resolve_frame = frames[resolve_on]
+    resolve_arrays = (
+        resolve_frame.index,
+        resolve_frame["high"].to_numpy(),
+        resolve_frame["low"].to_numpy(),
+    )
 
-    for bar_time in window.index:
+    for step, bar_time in enumerate(window.index):
         upto = bar_time + clock.duration
         awake = [row for row in sections if busy[row[0]] is None or upto > busy[row[0]]]
         if not awake:
             continue
-        spread_price = float(window.loc[bar_time].get("spread", 0)) * spec.point
+        spread_price = float(spreads[step]) * spec.point
         ctx = _context(symbol, reading, upto, spread_price, slices)
         if ctx is None:
             continue
@@ -377,7 +469,12 @@ def _one_clock(
                 )
                 continue
             r, exit_at, managed_r = _resolve(
-                frames[resolve_on], upto, idea, horizon_bars=horizon, manage=manage
+                resolve_frame,
+                upto,
+                idea,
+                horizon_bars=horizon,
+                manage=manage,
+                arrays=resolve_arrays,
             )
             # Held to the end of the window when it never resolved, exactly as
             # an open position holds the symbol live.
@@ -818,7 +915,19 @@ def main() -> None:
         skipped_symbols = 0
         manage = _break_even_rule(settings)
 
+        # WHERE THE TIME ACTUALLY GOES. I estimated this run's length twice
+        # and was wrong twice -- ninety minutes, then ten. Guessing at it from
+        # a synthetic benchmark cannot see the MT5 fetch, which on this VPS
+        # logs "slow MT5 calls" of its own accord. The run now measures itself
+        # and says so, so the next conversation about speed starts from a
+        # number.
+        fetch_seconds = 0.0
+        compute_seconds = 0.0
+        unaffordable: list[tuple[str, float]] = []
+        import time as _time
+
         for index, symbol in enumerate(symbols, 1):
+            began = _time.perf_counter()
             try:
                 spec = connector.spec(symbol)
                 frames = {
@@ -829,6 +938,27 @@ def main() -> None:
                 skipped_symbols += 1
                 print(f"  [{index}/{len(symbols)}] {symbol}: no history ({exc})")
                 continue
+            fetch_seconds += _time.perf_counter() - began
+            began = _time.perf_counter()
+
+            # SKIP WHAT CANNOT TRADE, before walking twelve thousand bars to
+            # watch every setup be refused one at a time.
+            hopeless = _hopeless_on_cost(
+                PositionSizer(settings),
+                spec,
+                frames,
+                tuple(Timeframe.parse(tf) for _n, tf in passes),
+            )
+            if hopeless is not None:
+                unaffordable.append((symbol, hopeless))
+                compute_seconds += _time.perf_counter() - began
+                print(
+                    f"  [{index}/{len(symbols)}] {symbol}: skipped, a round trip is "
+                    f"{hopeless:.0%} of the widest stop",
+                    flush=True,
+                )
+                continue
+
             # Only the clocks a pass will actually use need to be deep enough.
             # Requiring it of every fetched timeframe threw away symbols over a
             # frame nothing was going to read.
@@ -886,14 +1016,34 @@ def main() -> None:
             # showed nothing at all for eleven markets. Silence and a hang look
             # identical from the outside, and the owner sat on one for ten
             # minutes before asking.
+            compute_seconds += _time.perf_counter() - began
             print(
-                f"  [{index}/{len(symbols)}] {symbol}: {done} trades",
+                f"  [{index}/{len(symbols)}] {symbol}: {done} trades"
+                f"   [fetch {fetch_seconds:.0f}s, compute {compute_seconds:.0f}s]",
                 flush=True,
             )
 
         decisions = [d for v in results.values() for d in v]
     finally:
         connector.shutdown()
+
+    if unaffordable:
+        print(
+            f"\nSKIPPED ON COST — {len(unaffordable)} markets where even the widest"
+            " clock leaves nothing payable"
+        )
+        for name, share in sorted(unaffordable, key=lambda row: -row[1]):
+            print(f"    {name:<12} {share:>6.0%} of the stop")
+        print("  These form setups and the sizer refuses every one. Walking their")
+        print("  bars measures the same refusal twelve thousand times.")
+
+    total = fetch_seconds + compute_seconds
+    if total > 0:
+        print(
+            f"\nTIME  fetch {fetch_seconds / 60:.1f} min ({fetch_seconds / total:.0%})"
+            f"   compute {compute_seconds / 60:.1f} min ({compute_seconds / total:.0%})"
+        )
+        print("  Whichever of those dominates is the one worth attacking next.")
 
     if args.sweep:
         _sweep_report(results, equity, args.days, _break_even_rule(settings) is not None)

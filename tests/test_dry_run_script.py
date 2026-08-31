@@ -1632,3 +1632,141 @@ class TestTheSweepDoesNotBuildEveryContextTwice:
 
         assert "1.5 hours" not in launcher
         assert "ten to twenty minutes" in launcher
+
+
+class TestMarketsThatCannotTradeAreSkipped:
+    """Eleven of sixteen core markets produce zero trades and cost two thirds
+    of the run.
+
+    Every FX setup on this account dies on `SL_TOO_TIGHT_FOR_COSTS` -- the
+    180-day run refused 6,877 of them at a median 51% of the stop -- and the
+    sweep walked all twelve thousand bars of each anyway to reach that same
+    refusal one bar at a time.
+
+    THE DANGER IS SKIPPING SOMETHING THAT WOULD HAVE TRADED, so the filter is
+    deliberately generous: it uses the sizer's own `_cost_share`, checks the
+    WIDEST clock available, and only skips what is over TWICE the account's
+    limit. A symbol near the boundary is exactly the interesting case.
+    """
+
+    def _sizer(self):
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from risk.position_sizer import PositionSizer
+
+        return PositionSizer(
+            load_settings(DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False)
+        )
+
+    def _frames(self, atr: float):
+        import numpy as np
+        import pandas as pd
+
+        from core.types import Timeframe
+
+        out = {}
+        for clock, freq in ((Timeframe.M15, "15min"), (Timeframe.M30, "30min")):
+            index = pd.date_range("2026-01-01", periods=300, freq=freq, tz="UTC")
+            close = pd.Series(np.full(300, 1.1000), index=index)
+            out[clock] = pd.DataFrame(
+                {
+                    "open": close,
+                    "high": close + atr / 2,
+                    "low": close - atr / 2,
+                    "close": close,
+                },
+                index=index,
+            )
+        return out
+
+    def _spec(self, asset: str = "forex"):
+        from core.instrument import AssetClass, InstrumentSpec
+
+        return InstrumentSpec(
+            symbol="EURUSD.i",
+            digits=5,
+            point=0.00001,
+            tick_size=0.00001,
+            tick_value=1.0,
+            contract_size=100_000.0,
+            volume_min=0.01,
+            volume_max=100.0,
+            volume_step=0.01,
+            stops_level=0,
+            freeze_level=0,
+            currency_base="EUR",
+            currency_profit="USD",
+            currency_margin="EUR",
+            filling_mode_mask=1,
+            trade_mode=4,
+            is_forex=True,
+            path="forex\\majors",
+            description="EURUSD",
+            asset_class=AssetClass(asset),
+        )
+
+    def test_a_market_whose_costs_eat_the_stop_is_skipped(self) -> None:
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _hopeless_on_cost
+
+        # A 3-pip ATR against ~2.4 pips of round trip: hopeless.
+        share = _hopeless_on_cost(
+            self._sizer(), self._spec(), self._frames(0.00003), (Timeframe.M15, Timeframe.M30)
+        )
+
+        assert share is not None and share > 0.24
+
+    def test_a_market_with_room_is_kept(self) -> None:
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _hopeless_on_cost
+
+        # A 60-pip ATR: the same costs are a rounding error.
+        assert (
+            _hopeless_on_cost(
+                self._sizer(), self._spec(), self._frames(0.0060), (Timeframe.M15, Timeframe.M30)
+            )
+            is None
+        )
+
+    def test_a_market_near_the_boundary_is_kept(self) -> None:
+        """The generosity is the point. Skipping something at 1.5x the limit
+        would throw away the case worth measuring."""
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _hopeless_on_cost
+
+        sizer = self._sizer()
+        limit = sizer.settings.risk.max_cost_share_of_risk
+        # Tune an ATR that lands between one and two times the limit.
+        # A 10-pip ATR lands at 22.5%, 1.9x the 12% limit -- the interesting
+        # case. The first draft of this loop stopped at 2.2 pips, where the
+        # cost is 112% and nothing is near the boundary at all.
+        for atr in (0.00080, 0.00090, 0.00100, 0.00110, 0.00120):
+            share = sizer._cost_share(
+                self._spec(), atr, sizer.settings.risk.commission_per_lot("forex")
+            )
+            if limit < share <= limit * 2:
+                assert (
+                    _hopeless_on_cost(
+                        sizer, self._spec(), self._frames(atr), (Timeframe.M15, Timeframe.M30)
+                    )
+                    is None
+                ), f"skipped at {share:.0%}, only {share / limit:.1f}x the limit"
+                return
+        raise AssertionError("no ATR landed between one and two times the limit")
+
+    def test_it_uses_the_sizers_own_cost_function(self) -> None:
+        """A second definition of the cost would skip markets the sizer would
+        have accepted, which is the worst possible direction for this to be
+        wrong in."""
+        import inspect
+
+        from scripts import dry_run_sections
+
+        body = inspect.getsource(dry_run_sections._hopeless_on_cost).split('"""')[-1]
+
+        assert "sizer._cost_share(" in body
+
+    def test_the_report_names_what_it_skipped(self) -> None:
+        """A market silently absent from a report is this project's signature
+        failure. It has to say which, and why."""
+        assert "SKIPPED ON COST" in SOURCE
+        assert "of the widest stop" in SOURCE
