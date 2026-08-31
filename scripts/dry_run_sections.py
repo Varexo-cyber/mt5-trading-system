@@ -829,7 +829,7 @@ def main() -> None:
         connector.shutdown()
 
     if args.sweep:
-        _sweep_report(results, equity, args.days)
+        _sweep_report(results, equity, args.days, _break_even_rule(settings) is not None)
     _live_config_report(results, settings, equity, args.days)
     _report(decisions, equity, args.days, skipped_symbols, _break_even_rule(settings) is not None)
     if args.csv:
@@ -1244,41 +1244,56 @@ def _break_even_verdict(trades: list[Decision], settings) -> None:
         print("       Turn break_even_at_r off for these families, or accept the cost knowingly.")
 
 
-def _sweep_report(results: dict, equity: float, days: int) -> None:
-    """One row per (section, timeframe), so the clock can be chosen on THIS feed.
+def _sweep_report(results: dict, equity: float, days: int, managed: bool = False) -> None:
+    """One row per (section, timeframe), on the exit the account actually runs.
 
     The shipped timeframes came from HistData bid bars. The only thing that
     could change the answer here is cost, and cost is exactly what this run
     measures for real -- so if a different clock wins by a margin, it wins
     because of this broker's spreads and not because of a preference.
+
+    THIS TABLE READ THE FIXED STOP AND THAT WAS WRONG. I justified it as
+    "comparing clocks is cleaner without the exit rule moving underneath it",
+    which sounds reasonable and is not: it compares clocks under an exit the
+    account does not take. The gap is not small either --
+
+        order_block M30, 180 days:  fixed -34.00 R  /  break-even +33.60 R
+
+    -- so the whole table read as a row of losses for a configuration that was
+    making money. The owner spotted it: "deze klopt niet want dit was nog voor
+    die break-even shit".
+
+    Both columns are printed now. LIVE is the one to read; FIXED is kept
+    beside it because the difference between them IS the value of the stop
+    rule, per clock, which is worth seeing.
     """
     print(f"\n{'=' * 78}")
     print("TIMEFRAME SWEEP — each section on each clock, this broker, this window")
     print(f"{'=' * 78}")
+    label = "break-even (LIVE)" if managed else "fixed stop"
+    print(f"  ranked on the {label} exit\n")
     print(
-        f"  {'section':<18}{'tf':>5}{'trades':>8}{'closed':>8}{'win':>7}"
-        f"{'R':>9}{'EUR':>10}{'undercap':>10}{'spread':>8}"
+        f"  {'section':<18}{'tf':>5}{'trades':>8}{'win':>7}"
+        f"{'LIVE R':>9}{'LIVE EUR':>11}{'fixed R':>10}{'cost-out':>10}"
     )
     rows = []
     for (name, tf), decisions in sorted(results.items()):
         trades = [d for d in decisions if d.outcome == "TRADE"]
-        closed = [d for d in trades if d.result_r is not None]
-        under = sum(1 for d in decisions if d.outcome == "UNDERCAPITALIZED")
-        spread_out = sum(1 for d in decisions if "SPREAD" in d.outcome or "COST" in d.outcome)
-        r_total = sum(d.result_r or 0.0 for d in closed)
-        money = sum(d.pnl_money or 0.0 for d in closed)
-        # The SWEEP deliberately reads the fixed stop: it compares clocks
-        # against each other, and a comparison is cleaner without the exit
-        # rule moving underneath it. The LIVE block above reads the managed
-        # exit, because that is the one the account trades.
-        wins = sum(1 for d in closed if (d.result_r or 0) > 0)
+        closed = [d for d in trades if _live_exit(d, managed) is not None]
+        cost_out = sum(1 for d in decisions if "SPREAD" in d.outcome or "COST" in d.outcome)
+        live_r = sum(_live_exit(d, managed) or 0.0 for d in closed)
+        fixed_r = sum(d.result_r or 0.0 for d in closed)
+        money = sum((d.managed_money if managed else d.pnl_money) or 0.0 for d in closed)
+        wins = sum(1 for d in closed if (_live_exit(d, managed) or 0) > 0)
         win = f"{wins / len(closed):.0%}" if closed else "-"
+        thin = "  <- too few to judge" if len(closed) < 200 else ""
         print(
-            f"  {name:<18}{tf:>5}{len(trades):>8}{len(closed):>8}{win:>7}"
-            f"{r_total:>+9.2f}{money:>+10.2f}{under:>10}{spread_out:>8}"
+            f"  {name:<18}{tf:>5}{len(trades):>8}{win:>7}"
+            f"{live_r:>+9.2f}{money:>+11.2f}{fixed_r:>+10.2f}{cost_out:>10}{thin}"
         )
-        rows.append((money, name, tf, len(trades)))
+        rows.append((money, name, tf, len(closed)))
     if rows:
+        judgeable = [row for row in rows if row[3] >= 200]
         rows.sort(reverse=True)
         money, name, tf, n = rows[0]
         share = money / equity if equity else 0.0
@@ -1286,10 +1301,17 @@ def _sweep_report(results: dict, equity: float, days: int) -> None:
             f"\n  best on this feed: {name} on {tf} — EUR {money:+.2f} "
             f"({share:+.1%} of equity) over {n} trades, {n / max(days, 1):.1f}/day"
         )
-        print(
-            "  A clock that beats the shipped one here is worth taking seriously:\n"
-            "  the research could not price this broker's spread and this can."
-        )
+        if not judgeable:
+            print(
+                "  BUT NO ROW HAS 200 TRADES. Ranking clocks on samples this small is\n"
+                "  reading noise: a seven-day sweep once put four trades in a row and\n"
+                "  I drew conclusions from it. Lengthen the window before believing it."
+            )
+        else:
+            print(
+                "  A clock that beats the shipped one here is worth taking seriously:\n"
+                "  the research could not price this broker's spread and this can."
+            )
     print(f"{'=' * 78}")
 
 
