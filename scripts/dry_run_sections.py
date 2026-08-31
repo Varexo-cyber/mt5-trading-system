@@ -1047,6 +1047,7 @@ def main() -> None:
 
     if args.sweep:
         _sweep_report(results, equity, args.days, _break_even_rule(settings) is not None)
+        _clock_overlap(results, args.days)
     _live_config_report(results, settings, equity, args.days)
     _report(decisions, equity, args.days, skipped_symbols, _break_even_rule(settings) is not None)
     if args.csv:
@@ -1060,6 +1061,7 @@ def main() -> None:
                     "symbol",
                     "module",
                     "outcome",
+                    "clock",
                     "direction",
                     "entry",
                     "stop",
@@ -1085,6 +1087,7 @@ def main() -> None:
                         d.symbol,
                         d.module,
                         d.outcome,
+                        d.pass_key[1],
                         d.direction,
                         d.entry,
                         d.stop,
@@ -1461,6 +1464,63 @@ def _break_even_verdict(trades: list[Decision], settings) -> None:
         print("       Turn break_even_at_r off for these families, or accept the cost knowingly.")
 
 
+def _clock_overlap(results: dict, days: int) -> None:
+    """Would two clocks give twice the trades, or the same trade twice?
+
+    THE SWEEP CANNOT ANSWER THIS AND IT IS THE QUESTION BEHIND "more trades".
+    Each row is measured in isolation, so M15 at 60 trades beside M30 at 40
+    reads as a hundred. If order_block sees the same move on both clocks
+    within the hour, running both is one idea at double the stake, not two
+    independent chances -- and doubling the stake on one idea is the thing
+    this account has a rule against.
+
+    Counted as: a trade on the slower clock that has a trade on the faster
+    one, same symbol, same direction, inside one bar of the slower clock.
+    Deliberately generous about the window, because the failure mode worth
+    catching is "these are the same move", not "these are the same second".
+    """
+    by_section: dict[str, dict[str, list]] = {}
+    for (name, clock), decisions in results.items():
+        trades = [d for d in decisions if d.outcome == "TRADE"]
+        if trades:
+            by_section.setdefault(name, {})[clock] = sorted(trades, key=lambda d: d.when)
+    pairs = [(name, clocks) for name, clocks in by_section.items() if len(clocks) > 1]
+    if not pairs:
+        return
+
+    print(f"\n{'-' * 78}")
+    print("WOULD TWO CLOCKS GIVE TWICE THE TRADES?")
+    print(f"{'-' * 78}")
+    for name, clocks in sorted(pairs):
+        order = sorted(clocks, key=lambda c: Timeframe.parse(c).duration)
+        for slow_index in range(1, len(order)):
+            slow_name = order[slow_index]
+            slow = clocks[slow_name]
+            window = Timeframe.parse(slow_name).duration
+            for fast_name in order[:slow_index]:
+                fast = clocks[fast_name]
+                seen = 0
+                for trade in slow:
+                    if any(
+                        other.symbol == trade.symbol
+                        and other.direction == trade.direction
+                        and abs((other.when - trade.when).total_seconds()) <= window.total_seconds()
+                        for other in fast
+                    ):
+                        seen += 1
+                share = seen / len(slow) if slow else 0.0
+                verdict = (
+                    "mostly the SAME move -- running both doubles the stake, not the chances"
+                    if share > 0.5
+                    else "largely independent -- running both really does add trades"
+                )
+                print(
+                    f"  {name:<16} {slow_name:>4} vs {fast_name:<4} "
+                    f"{seen:>4}/{len(slow):<5} ({share:>5.0%})  {verdict}"
+                )
+    print(f"  ({days} days. A pair over 50% is one idea wearing two hats.)")
+
+
 def _sweep_report(results: dict, equity: float, days: int, managed: bool = False) -> None:
     """One row per (section, timeframe), on the exit the account actually runs.
 
@@ -1491,22 +1551,31 @@ def _sweep_report(results: dict, equity: float, days: int, managed: bool = False
     print(f"  ranked on the {label} exit\n")
     print(
         f"  {'section':<18}{'tf':>5}{'trades':>8}{'win':>7}"
-        f"{'LIVE R':>9}{'LIVE EUR':>11}{'fixed R':>10}{'cost-out':>10}"
+        f"{'LIVE R':>9}{'LIVE EUR':>11}{'sigma':>8}{'fixed R':>10}"
     )
     rows = []
     for (name, tf), decisions in sorted(results.items()):
         trades = [d for d in decisions if d.outcome == "TRADE"]
         closed = [d for d in trades if _live_exit(d, managed) is not None]
-        cost_out = sum(1 for d in decisions if "SPREAD" in d.outcome or "COST" in d.outcome)
         live_r = sum(_live_exit(d, managed) or 0.0 for d in closed)
         fixed_r = sum(d.result_r or 0.0 for d in closed)
         money = sum((d.managed_money if managed else d.pnl_money) or 0.0 for d in closed)
         wins = sum(1 for d in closed if (_live_exit(d, managed) or 0) > 0)
         win = f"{wins / len(closed):.0%}" if closed else "-"
-        thin = "  <- too few to judge" if len(closed) < 200 else ""
+        # SIGMA PER ROW, day-clustered. Without it "profitable" and "had a good
+        # stretch" print identically, and this table exists to choose a clock.
+        by_day: dict[object, float] = {}
+        for d in closed:
+            by_day[d.when.date()] = by_day.get(d.when.date(), 0.0) + (_live_exit(d, managed) or 0.0)
+        daily = np.array(list(by_day.values()), dtype=float) if by_day else np.zeros(0)
+        if len(daily) > 1 and daily.std(ddof=1) > 0:
+            sigma = live_r / (float(daily.std(ddof=1)) * float(np.sqrt(len(daily))))
+        else:
+            sigma = 0.0
+        thin = "  thin" if len(closed) < 200 else ("  <- clears 2" if sigma >= 2.0 else "")
         print(
             f"  {name:<18}{tf:>5}{len(trades):>8}{win:>7}"
-            f"{live_r:>+9.2f}{money:>+11.2f}{fixed_r:>+10.2f}{cost_out:>10}{thin}"
+            f"{live_r:>+9.2f}{money:>+11.2f}{sigma:>+8.2f}{fixed_r:>+10.2f}{thin}"
         )
         rows.append((money, name, tf, len(closed)))
     if rows:
