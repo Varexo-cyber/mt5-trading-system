@@ -431,22 +431,30 @@ class TestTheBarsCanLeaveTheVps:
     def _gitignore(self) -> str:
         return (Path(__file__).resolve().parent.parent / ".gitignore").read_text()
 
-    def test_the_slow_clocks_are_committed(self) -> None:
-        """M15 and slower are ~25 MB over sixteen markets and 180 days, and
-        they are the clocks every measurement actually uses."""
+    def test_every_clock_is_committed(self) -> None:
+        """ALL SIX, M1 included. M1 and M5 were left out at first because they
+        are three quarters of the bars and ~120 MB; the owner asked for them
+        by name after being told the cost.
+
+        The failure this guards is specific and has already happened once: an
+        ignore rule left elsewhere in the file makes `deel.cmd` report a
+        successful push that contains no bars at all."""
         ignored = self._gitignore()
 
         assert "data/history/\n" not in ignored, "the whole store must not be ignored"
-        for clock in ("M15", "M30", "H1", "H4"):
+        for clock in ("M1", "M5", "M15", "M30", "H1", "H4"):
             assert f"data/history/*/{clock}.npz" not in ignored, clock
 
-    def test_the_fast_clocks_are_not(self) -> None:
-        """M1 and M5 are three quarters of the bars and ~120 MB, on the clocks
-        the cost wall refuses anyway. One command refetches them."""
-        ignored = self._gitignore()
-
-        assert "data/history/*/M1.npz" in ignored
-        assert "data/history/*/M5.npz" in ignored
+    def test_no_rule_anywhere_hides_the_store(self) -> None:
+        """Not just the block that was written for it. The rule that broke
+        this was sitting fifty lines higher under `data_cache/`."""
+        for line in self._gitignore().splitlines():
+            rule = line.split("#")[0].strip()
+            if not rule:
+                continue
+            assert not rule.rstrip("/").endswith(
+                "data/history"
+            ), f"{rule!r} hides the bars the analysis has to read"
 
     def test_the_launcher_refuses_an_empty_store(self) -> None:
         launcher = (Path(__file__).resolve().parent.parent / "deel.cmd").read_text()
@@ -461,8 +469,11 @@ class TestTheBarsCanLeaveTheVps:
 
         assert "git push -u origin claude/mt5-autonomous-trading-system-ujd1sk" in launcher
 
-    def test_all_is_the_way_to_include_the_fast_clocks(self) -> None:
+    def test_it_stages_the_whole_store_without_a_forced_add(self) -> None:
+        """`git add -f` was needed while M1 and M5 were ignored. Now nothing
+        under the folder is, and a forced add would hide a future ignore rule
+        rather than failing on it."""
         launcher = (Path(__file__).resolve().parent.parent / "deel.cmd").read_text()
 
-        assert 'if /I "%1"=="all"' in launcher
-        assert "git add -f -- data/history" in launcher
+        assert "git add -A -- data/history" in launcher
+        assert "git add -f" not in launcher

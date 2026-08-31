@@ -11,13 +11,13 @@ echo  The bars downloaded by ophalen.cmd sit on this VPS only. This puts them
 echo  in the repository, so the analysis can happen on any machine - including
 echo  in a Claude session - without MT5 and without you running anything.
 echo.
-echo  WHAT GOES: M15, M30, H1, H4 over the sixteen core markets. About 25 MB.
-echo  WHAT STAYS: M1 and M5. Three quarters of the bars and roughly 120 MB,
-echo  on the clocks the cost wall refuses anyway. ophalen.cmd refetches them
-echo  in one command, so the repository does not need to carry them forever.
+echo  ALL SIX CLOCKS, M1 through H4, over the sixteen core markets. About
+echo  145 MB, of which M1 alone is three quarters.
 echo.
-echo    deel.cmd        M15 and slower  (about 25 MB)
-echo    deel.cmd all    everything incl. M1 and M5  (about 145 MB, slow push)
+echo  The first push will take a while - minutes, not seconds, and longer on
+echo  a slow VPS line. It happens ONCE. After that only new bars go up.
+echo.
+echo  If the push is interrupted, run this again. Git resumes.
 echo.
 
 if not exist "data\history\manifest.json" (
@@ -28,12 +28,7 @@ if not exist "data\history\manifest.json" (
 
 git add -A -- data/history .gitignore
 
-if /I "%1"=="all" (
-  echo  Including M1 and M5 - this push will take a while.
-  git add -f -- data/history
-)
-
-git commit -m "history: stored bars for the core markets"
+git commit -m "history: stored bars for the core markets, all six clocks"
 if errorlevel 1 (
   echo.
   echo  Nothing new to commit - the bars in the repository are already current.

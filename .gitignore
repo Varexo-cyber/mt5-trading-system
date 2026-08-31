@@ -51,15 +51,14 @@ data/m15/
 # scripts/lab/data.py says how to refetch them.
 data/research/
 
-# Downloaded bars, filled by ophalen.cmd.
+# Downloaded bars, filled by ophalen.cmd, ALL SIX CLOCKS, committed on purpose.
 #
-# M15 and slower ARE committed on purpose -- about 25 MB over sixteen markets
-# and 180 days -- because the point of the store is that the analysis can
-# happen anywhere without a terminal, and bars that live only on one VPS
-# cannot do that. `deel.cmd` pushes them.
+# About 145 MB over sixteen markets and 180 days, of which M1 alone is three
+# quarters. That is a lot for a repository to carry and it was left out at
+# first for exactly that reason -- but bars that live only on one VPS cannot
+# be analysed anywhere else, and the owner asked for M1 and M5 by name after
+# being told the cost. `deel.cmd` pushes them.
 #
-# M1 and M5 are not. They are three quarters of the bars and roughly 120 MB,
-# they are the clocks the cost wall refuses anyway, and a repository should
-# not carry them forever. `ophalen.cmd` refetches them in one command.
-data/history/*/M1.npz
-data/history/*/M5.npz
+# Nothing under data/history is ignored. If that ever changes, `deel.cmd`
+# will report a successful push containing no bars at all, which is the exact
+# failure a test in tests/test_history_store.py exists to prevent.
