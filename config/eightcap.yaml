@@ -2455,7 +2455,33 @@ analysis:
     # Het gewicht blijft staan, dus sectie 2 wordt gewoon doorgemeten.
     # Uitgezet is niet verwijderd. `history.cmd 180` geeft hem ~300 trades;
     # als hij daar positief uitkomt gaat hij terug op deze regel.
-    live_enabled_modules: [order_block]
+    # SECTIE 2 WEER AAN, 31 augustus, op verzoek van de eigenaar en op een
+    # meting die de meting waarop ik hem uitzette zeven keer overtreft.
+    #
+    # Ik haalde hem er 30 augustus af op DERTIG dagen: 48 trades, 39,6% win,
+    # -10,00 R. Dat was -1,44 sigma, wat een neutrale strategie geregeld
+    # produceert, en ik noemde het toen zelf al "niet bewezen slecht".
+    #
+    # Over HONDERDTACHTIG dagen, op de kolom die de rekening werkelijk neemt:
+    #
+    #                    trades   win     R/trade   EUR       dagen groen
+    #     impulse_retest    358  81,3%    +0,058   +126,73   89/116  (77%)
+    #     order_block      1283  76,8%    +0,026   +125,93   83/140  (59%)
+    #
+    # Ruim het dubbele per trade uit een kwart van de trades, en veel vaker
+    # een groene dag. De dertig-daagse waarop ik hem verwierp was de kleinere
+    # steekproef en die had ik niet zwaarder mogen laten wegen.
+    #
+    # WAT IK NIET WEET, en dat hoort hier te staan: zijn sigma over die 180
+    # dagen. Het rapport slaat het oordeelsblok over voor een sectie die niet
+    # op deze lijst staat, dus die is nooit geprint. `verdict.cmd
+    # runtime\history-impulse_retest.csv` haalt hem alsnog uit de CSV.
+    # Order_block bleef op +1,33 sigma steken met 78% uit één maand.
+    #
+    # TWEE SECTIES LIVE VERANDERT DE RISICOREKENING. Bij een plafond van 10%
+    # en 20% totaal open vullen twee trades op het plafond het hele boek, en
+    # er is geen daglimiet. Met twee secties gebeurt dat vaker.
+    live_enabled_modules: [impulse_retest, order_block]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
