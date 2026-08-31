@@ -350,7 +350,31 @@ data:
   # Each timeframe costs one fetch per symbol per cycle. At 184 eligible markets
   # the five-frame cycle measured 240s; watch the `cycle:` line after this and
   # drop M1 first if it becomes uncomfortable.
-  timeframes: [W1, D1, H4, H1, M15, M5, M1]
+  #
+  # M30 STAAT ER SINDS 31 AUGUSTUS BIJ, EN SECTIE 3 KON TOT DAN NIET HANDELEN.
+  #
+  # `order_block.timeframe` is M30. `OrderBlock.analyze` doet
+  # `ctx.series.get(Timeframe.M30)`, vindt niets, en geeft een neutraal signaal
+  # terug met de tekst "M30 needs 117 closed bars". Elke cyclus, elk symbool,
+  # sinds de sectie live ging.
+  #
+  # Wat de journal er 24 uur lang van maakte:
+  #
+  #     impulse_retest   ran 54190x, 574 with a direction
+  #     order_block      ran 54190x, scored 0 every time
+  #
+  # Vierenvijftigduizend keer gedraaid, nul keer een richting. Dat is geen
+  # strategie die niets vindt; dat is een module die de bars niet krijgt. En
+  # offline vond diezelfde module 1283 setups over 180 dagen, omdat de meetbank
+  # de klok van de sectie zelf in de context zet.
+  #
+  # Dezelfde vorm als alles wat hier gevonden is: een module die klopt, getest
+  # is, op de live-lijst staat, en een timeframe leest die niemand ophaalt.
+  #
+  # M30 staat NIET in `required_timeframes`. Een gat in M30 hoort sectie 3 uit
+  # de stemming te halen, niet de hele markt in quarantaine te zetten -- dat is
+  # precies waar die lijst voor gemaakt is.
+  timeframes: [W1, D1, H4, H1, M30, M15, M5, M1]
 
   # NIETS IN DIT SYSTEEM LEEST OOIT MEER DAN 400 BARS.
   #
@@ -400,6 +424,11 @@ data:
     D1: 500
     H4: 1500
     H1: 600
+    # 600, gelijk aan H1 en M15. Sectie 3 heeft er 117 nodig
+    # (atr_period 14 + lookback_bars 96 + block_search_bars 5 + 2) en de
+    # vloer `min_bars_required` is 200, dus dit is ruim. Een M30-bar sluit
+    # elk half uur, dus hij wordt hooguit twee keer per uur opnieuw opgehaald.
+    M30: 600
     M15: 600
     M5: 600
     # 300, niet 1200. M1 is de enige reeks die zijn cache elke cyclus verliest
