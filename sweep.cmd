@@ -21,8 +21,13 @@ echo  first, and M1 over 180 days is a quarter of a million bars per market --
 echo  it triples the run. M5 was also the worst row for both sections in every
 echo  measurement so far.
 echo.
-echo  HOW LONG: roughly 1.5 hours for 180 days on this machine. Measured, not
-echo  guessed: 0.72M evaluations at 2.4ms each. Start it and leave it.
+echo  HOW LONG: ten to twenty minutes for 180 days. The first estimate was
+echo  ninety, and it was ninety because the sweep built every bar's context
+echo  ONCE PER SECTION -- two sections on one clock read an identical context
+echo  and it was constructed twice. Sharing it, and slicing only the frames
+echo  something actually reads, took a bar-pair from 0.76ms to 0.35ms.
+echo.
+echo  So: about 6 minutes of compute, and the MT5 fetch on top of that.
 echo.
 echo  MT5 must be running and logged in.
 echo.
