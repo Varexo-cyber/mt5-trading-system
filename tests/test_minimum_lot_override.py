@@ -100,20 +100,29 @@ class TestTheSwitchIsOnAndBounded:
 
 
 class TestOnlySectionsTwoAndThreeTradeRealMoney:
-    def test_the_live_list_is_exactly_the_one_section_that_earned_it(self) -> None:
-        """Two until 30 August. Thirty days on this broker's own data:
+    def test_the_live_list_is_the_two_measured_sections(self) -> None:
+        """Two, then one on 30 August, and two again on 31 August.
 
-            order_block      204 trades   54.4%   +18.00 R   EUR +85.14
-            impulse_retest    48 trades   39.6%   -10.00 R   EUR -68.05
+        I removed impulse_retest on THIRTY days -- 48 trades, 39.6%, -1.44
+        sigma -- and the 180-day measurement on the exit the account actually
+        takes said the opposite:
 
-        Neither is proven -- order_block is +1.26 sigma and the pair read
-        +0.50, which is noise. What keeps order_block is consistency rather
-        than significance: positive in every window and on all three clocks it
-        was swept over (M15 58%, M30 54-59%, H1 56%). What removed section two
-        is that it has never had a sample worth reading at all."""
+                           trades   win     R/trade   EUR       days green
+            impulse_retest    358  81.3%    +0.058   +126.73   89/116
+            order_block      1283  76.8%    +0.026   +125.93   83/140
+
+        Twice the edge per trade from a quarter of the trades. The sample I
+        removed it on was seven times smaller and I let it weigh more than it
+        should have.
+
+        NEITHER IS PROVEN. order_block reads +1.33 sigma with 78% of six
+        months coming from August alone, and impulse_retest's sigma was never
+        printed at all because the report skips the verdict for a section that
+        is not on this list. Both are live because the owner decided so on the
+        numbers above, not because either cleared a bar."""
         confluence = _live_settings().analysis.confluence
 
-        assert set(confluence.live_enabled_modules) == {"order_block"}
+        assert set(confluence.live_enabled_modules) == {"impulse_retest", "order_block"}
 
     def test_the_unmeasured_sections_are_off(self) -> None:
         """Section 1 (market_structure, trend_momentum, m1_micro_breakout),

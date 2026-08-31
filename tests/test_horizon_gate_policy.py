@@ -163,11 +163,14 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     Section two was eating three quarters of what section three earned; run
     alone, order_block was +39.5% over the window and the pair was +7.9%.
 
-    It is NOT proven bad -- 48 trades at 39.6% is -1.44 sigma, which a neutral
-    strategy produces often enough -- but it has never once had a sample worth
-    reading (7, 9, 10, 48 trades), and "not proven bad" does not earn real
-    money. The weight stays, so it is still measured. Only the permission is
-    gone.
+    It was NOT proven bad -- 48 trades at 39.6% is -1.44 sigma, which a
+    neutral strategy produces often enough.
+
+    AND IT WENT BACK ON, 31 August, on a measurement seven times larger:
+    358 trades over 180 days, 81.3% win, +0.058 R a trade against
+    order_block's +0.026, and 89 of 116 days green against 83 of 140. The
+    thirty-day sample I removed it on was the smaller one and I let it weigh
+    more than it should have.
     """
     from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
@@ -176,7 +179,7 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     )
     live = set(settings.analysis.confluence.live_enabled_modules)
 
-    assert live == {"order_block"}
+    assert live == {"impulse_retest", "order_block"}
     # Every live module keeps a breaker. That was the real content of this
     # test and it survives the change.
     for module in live:

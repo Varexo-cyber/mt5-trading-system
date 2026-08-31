@@ -1420,21 +1420,29 @@ class TestAShadowedSectionCanActuallyVote:
         from config.schema import TradingMode
         from scripts.dry_run_sections import _retimed
 
-        tuned = _retimed(self._settings(), "impulse_retest", "M15")
+        tuned = _retimed(self._settings(), "market_structure", "M15")
         weights = tuned.analysis.confluence.effective_weights(TradingMode.MICRO_LIVE)
 
-        assert weights.get("impulse_retest", 0.0) > 0.0
+        assert weights.get("market_structure", 0.0) > 0.0
 
     def test_without_the_grant_it_would_be_zero(self) -> None:
         """The half that was missing, stated as its own assertion so the fix
-        cannot be quietly undone."""
+        cannot be quietly undone.
+
+        Uses `market_structure` rather than `impulse_retest`: section two went
+        back on the live list on 31 August, so it is no longer an example of a
+        shadowed module. `market_structure` carries a weight of 1.0 and has
+        never been on the allowlist, which is exactly the shape this fix is
+        for."""
         from config.schema import TradingMode
 
         settings = self._settings()
-        weights = settings.analysis.confluence.effective_weights(TradingMode.MICRO_LIVE)
+        confluence = settings.analysis.confluence
+        weights = confluence.effective_weights(TradingMode.MICRO_LIVE)
 
-        assert "impulse_retest" not in settings.analysis.confluence.live_enabled_modules
-        assert weights.get("impulse_retest", 0.0) == 0.0
+        assert "market_structure" not in confluence.live_enabled_modules
+        assert confluence.weights.get("market_structure", 0.0) > 0.0
+        assert weights.get("market_structure", 0.0) == 0.0
 
     def test_measuring_a_section_does_not_make_it_live(self) -> None:
         """THE LINE THAT MUST NOT BE CROSSED. The grant lives on a settings
@@ -1445,20 +1453,21 @@ class TestAShadowedSectionCanActuallyVote:
         settings = self._settings()
         before = tuple(settings.analysis.confluence.live_enabled_modules)
 
-        _retimed(settings, "impulse_retest", "M15")
+        tuned = _retimed(settings, "market_structure", "M15")
 
         assert tuple(settings.analysis.confluence.live_enabled_modules) == before
-        assert "impulse_retest" not in before
+        assert "market_structure" not in before
+        assert "market_structure" in tuned.analysis.confluence.live_enabled_modules
 
     def test_the_grant_is_additive_not_a_replacement(self) -> None:
         """Replacing the list would silence order_block in impulse_retest's
         pass, which changes what the confluence sees."""
         from scripts.dry_run_sections import _retimed
 
-        tuned = _retimed(self._settings(), "impulse_retest", "M15")
+        tuned = _retimed(self._settings(), "market_structure", "M15")
         allowed = set(tuned.analysis.confluence.live_enabled_modules)
 
-        assert {"impulse_retest", "order_block"} <= allowed
+        assert {"market_structure", "impulse_retest", "order_block"} <= allowed
 
     def test_a_live_section_is_unchanged_by_the_grant(self) -> None:
         from scripts.dry_run_sections import _retimed
