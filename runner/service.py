@@ -436,6 +436,7 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # spread and of the harness's own measured bias, positive in all
         # eleven years.
         ImpulseRetest(analysis.impulse_retest),
+        ImpulseRetest(analysis.impulse_retest_m30, name="impulse_retest_m30"),
         LevelRetest(analysis.level_retest),
         # SECTION THREE. The candle absorbed by a 1.5 ATR impulse, offered back
         # as a zone. 31,376 trades with every section-two bar removed, 62% at a
@@ -449,6 +450,8 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # their spread. It is live at the owner's explicit instruction, taken
         # with those three facts on the screen.
         OrderBlock(analysis.order_block_fast, name="order_block_fast"),
+        OrderBlock(analysis.order_block_m15, name="order_block_m15"),
+        OrderBlock(analysis.order_block_h1, name="order_block_h1"),
         # SECTION FIVE, and the first reader that is MEANINGLESS on a single
         # chart. It measures a move between two M1 closes, which has no open
         # question about surviving the coarsening.

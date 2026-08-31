@@ -115,8 +115,13 @@ class ImpulseRetest:
 
     name = "impulse_retest"
 
-    def __init__(self, config: ImpulseRetestConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ImpulseRetestConfig | None = None,
+        name: str | None = None,
+    ) -> None:
         self.config = config or ImpulseRetestConfig()
+        self.name = name or type(self).name
 
     def analyze(self, ctx: MarketContext) -> Signal:
         config = self.config

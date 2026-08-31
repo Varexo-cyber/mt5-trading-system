@@ -137,8 +137,11 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
 
         assert set(confluence.live_enabled_modules) == {
             "impulse_retest",
+            "impulse_retest_m30",
+            "order_block_m15",
             "order_block",
             "order_block_fast",
+            "order_block_h1",
         }
 
     def test_the_unmeasured_sections_are_off(self) -> None:

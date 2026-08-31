@@ -3396,6 +3396,7 @@ class ConfluenceConfig(Base):
         # Both were measured on a fixed exit within a handful of bars of the
         # entry. A 24-bar H1 horizon is a day and a half.
         "impulse_retest",
+        "impulse_retest_m30",
         "order_block",
         # AND A SIXTH TIME, for the M1 copy of section three. `_classify_horizon`
         # matches this list EXACTLY -- unlike `entry_timing_exempt_families`,
@@ -3404,6 +3405,8 @@ class ConfluenceConfig(Base):
         # "swing" and gets H1 planning and a D1/W1 veto on an M1 setup, which
         # is the exact defect the two entries above were added to fix.
         "order_block_fast",
+        "order_block_m15",
+        "order_block_h1",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
@@ -3895,6 +3898,9 @@ class AnalysisConfig(Base):
     seasonality: SeasonalityConfig = SeasonalityConfig()
     drift_burst: DriftBurstConfig = DriftBurstConfig()
     impulse_retest: ImpulseRetestConfig = ImpulseRetestConfig()
+    #: Additional live clock for the same measured detector. Kept disabled in
+    #: the base config because live permission belongs to the account overlay.
+    impulse_retest_m30: ImpulseRetestConfig = ImpulseRetestConfig(enabled=False)
     order_block: OrderBlockConfig = OrderBlockConfig()
     #: THE SAME DETECTOR ON A SECOND CLOCK, as its own module.
     #:
@@ -3910,6 +3916,8 @@ class AnalysisConfig(Base):
     #: THIS account at EUR 216, on a 14-day measurement of 105 trades, taken
     #: knowing it is thin -- "risico's moeten genomen worden om te testen".
     order_block_fast: OrderBlockConfig = OrderBlockConfig(enabled=False)
+    order_block_m15: OrderBlockConfig = OrderBlockConfig(enabled=False)
+    order_block_h1: OrderBlockConfig = OrderBlockConfig(enabled=False)
     level_retest: LevelRetestConfig = LevelRetestConfig()
     vwap_reversion: VwapReversionConfig = VwapReversionConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()

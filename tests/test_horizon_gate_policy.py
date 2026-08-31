@@ -192,7 +192,14 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     )
     live = set(settings.analysis.confluence.live_enabled_modules)
 
-    assert live == {"impulse_retest", "order_block", "order_block_fast"}
+    assert live == {
+        "impulse_retest",
+        "impulse_retest_m30",
+        "order_block_fast",
+        "order_block_m15",
+        "order_block",
+        "order_block_h1",
+    }
     # Every live module keeps a breaker. That was the real content of this
     # test and it survives the change.
     for module in live:
@@ -394,7 +401,14 @@ class TestASecondClockIsASecondModule:
             )
         }
 
-        assert {"order_block", "order_block_fast"} <= built
+        assert {
+            "impulse_retest",
+            "impulse_retest_m30",
+            "order_block_fast",
+            "order_block_m15",
+            "order_block",
+            "order_block_h1",
+        } <= built
 
     def test_the_two_clocks_differ_and_nothing_else_does(self) -> None:
         """Only the clock was measured. A threshold nudged for M1 by feel would
@@ -431,6 +445,28 @@ class TestASecondClockIsASecondModule:
 
         assert "order_block_fast" in confluence.intraday_modules
         assert "order_block_fast" not in confluence.quick_modules
+
+    def test_every_enabled_clock_has_an_independent_identity_and_breaker(self) -> None:
+        from runner.service import build_analysis_modules
+
+        settings = self._settings()
+        expected = {
+            "impulse_retest": "M15",
+            "impulse_retest_m30": "M30",
+            "order_block_fast": "M1",
+            "order_block_m15": "M15",
+            "order_block": "M30",
+            "order_block_h1": "H1",
+        }
+        built = {module.name: module for module in build_analysis_modules(settings)}
+
+        assert set(settings.analysis.confluence.live_enabled_modules) == set(expected)
+        for name, timeframe in expected.items():
+            assert built[name].config.enabled is True
+            assert built[name].config.timeframe == timeframe
+            assert name in settings.risk.section_breakers
+            assert name in settings.analysis.confluence.weights
+            assert name in settings.analysis.confluence.intraday_modules
 
     def test_the_base_config_leaves_it_off(self) -> None:
         """One owner's bet on one account at EUR 216, not a default."""
