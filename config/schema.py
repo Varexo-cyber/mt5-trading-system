@@ -3675,6 +3675,11 @@ class ConfluenceConfig(Base):
     #: Matched on substring against `setup_family`, the same way
     #: `target_r_multiple_by_family` is.
     entry_timing_exempt_families: tuple[str, ...] = ()
+    #: Strategies whose target probability was measured directly on their own
+    #: entries. The generic rolling reach statistic remains visible to the
+    #: reviewer for these families, but may not veto the setup before review.
+    #: Matched on substring because setup families carry their clock suffix.
+    target_reach_advisory_families: tuple[str, ...] = ()
 
     #: Higher timeframes checked for an established trend the trade would be
     #: taken straight into. There was a timing gate below the bias and nothing

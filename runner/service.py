@@ -6397,6 +6397,11 @@ class JarvisRunner:
             self._entry_quality_config_for(idea),
             executable_price=executable_price,
             signals=idea.signals,
+            # A retest enters on a pullback. Two earlier copies of this check
+            # already honour the family exemption; without carrying it here,
+            # the lifecycle writes the same refusal under another name and the
+            # supposedly exempt strategy still never reaches review.
+            adverse_bar_is_setup_mechanism=self._entry_timing_is_exempt(idea),
         )
 
     def _observe_setup_lifecycle(
@@ -6424,23 +6429,42 @@ class JarvisRunner:
         )
 
     def _reach_failure_is_advisory(self, idea: TradeIdea, reach) -> bool:  # type: ignore[no-untyped-def]
-        """A conditional quick event may challenge a base rate, but not fantasy arithmetic."""
+        """Keep a generic base rate advisory where the setup owns better evidence."""
         config = self.settings.analysis.confluence
         floor = reach.required_pct * config.quick_reach_hard_floor_ratio
         return (
-            idea.horizon == "quick"
-            and config.quick_statistical_gates_are_advisory
-            and reach.forward_pct >= floor
+            any(
+                family in idea.setup_family
+                for family in config.target_reach_advisory_families
+            )
+            or (
+                idea.horizon == "quick"
+                and config.quick_statistical_gates_are_advisory
+                and reach.forward_pct >= floor
+            )
         )
 
     def _direction_failure_is_advisory(self, idea: TradeIdea, reach) -> bool:  # type: ignore[no-untyped-def]
-        """Small slow-sample disagreement is context; a large skew stays a blocker."""
+        """Treat slow-sample disagreement as context for directly measured entries."""
         config = self.settings.analysis.confluence
         gap = reach.opposite_pct - reach.forward_pct
         return (
-            idea.horizon == "quick"
-            and config.quick_statistical_gates_are_advisory
-            and gap <= config.quick_direction_disadvantage_hard_gap_pct
+            any(
+                family in idea.setup_family
+                for family in config.target_reach_advisory_families
+            )
+            or (
+                idea.horizon == "quick"
+                and config.quick_statistical_gates_are_advisory
+                and gap <= config.quick_direction_disadvantage_hard_gap_pct
+            )
+        )
+
+    def _entry_timing_is_exempt(self, idea: TradeIdea) -> bool:
+        """Whether this setup's pullback is evidence for it, not against it."""
+        return any(
+            family in idea.setup_family
+            for family in self.settings.analysis.confluence.entry_timing_exempt_families
         )
 
     @staticmethod
@@ -6516,7 +6540,7 @@ class JarvisRunner:
         # -- every other module still gets the check -- and both were measured
         # WITHOUT it, so this moves live toward the configuration the numbers
         # came from rather than away from it.
-        if any(family in idea.setup_family for family in config.entry_timing_exempt_families):
+        if self._entry_timing_is_exempt(idea):
             return True, None
         try:
             timeframe = Timeframe.parse(config.confirmation_timeframe)

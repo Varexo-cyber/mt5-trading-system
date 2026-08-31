@@ -2144,6 +2144,11 @@ analysis:
     # eerste twaalf betaalde reviews precies dit vetoden en gelijk hadden. Het
     # onderscheid zit in de setup, niet in de drempel.
     entry_timing_exempt_families: [impulse_retest, order_block]
+    # De 1R-doelen van deze twee families zijn rechtstreeks gemeten op hun
+    # eigen entries. De generieke rolling reach-test blijft in het reviewpakket
+    # staan, maar mag die gemeten setup niet vóór de reviewer vervangen door
+    # een ander, ongemeten selectiebeleid.
+    target_reach_advisory_families: [impulse_retest, order_block]
     target_reach_margin_pct: 0.0
     # Van 20% naar 25% van de stop. Quick/intraday-plannen hebben kleinere
     # stops en raakten hierdoor eerder de grens, zelfs wanneer de spread binnen

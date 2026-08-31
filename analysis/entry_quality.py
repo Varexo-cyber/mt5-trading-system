@@ -70,6 +70,7 @@ def assess_entry_quality(
     *,
     executable_price: float | None = None,
     signals: tuple[Signal, ...] = (),
+    adverse_bar_is_setup_mechanism: bool = False,
 ) -> EntryTimingAssessment:
     """Refuse both chasing and a pullback that has not finished.
 
@@ -172,7 +173,7 @@ def assess_entry_quality(
     }
     rounded = {key: round(value, 3) for key, value in metrics.items()}
 
-    if last_adverse > config.max_last_bar_adverse_atr:
+    if last_adverse > config.max_last_bar_adverse_atr and not adverse_bar_is_setup_mechanism:
         return EntryTimingAssessment(
             EntryTimingDecision.WAIT_RETEST,
             "PULLBACK_STILL_ACTIVE",
