@@ -118,7 +118,7 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
 
         settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
 
-        assert not settings.analysis.confluence.live_enabled_modules
+        assert set(settings.analysis.confluence.live_enabled_modules) == {"walkforward_index"}
         assert settings.analysis.confluence.weights.get("impulse_retest", 0.0) > 0.0
         assert settings.analysis.confluence.weights.get("order_block", 0.0) > 0.0
 
@@ -1570,7 +1570,7 @@ class TestAShadowedSectionCanActuallyVote:
         tuned = _retimed(self._settings(), "market_structure", "M15")
         allowed = set(tuned.analysis.confluence.live_enabled_modules)
 
-        assert allowed == {"market_structure"}
+        assert allowed == {"market_structure", "walkforward_index"}
 
     def test_a_shadowed_section_is_granted_for_its_measurement_pass(self) -> None:
         from scripts.dry_run_sections import _retimed
@@ -1578,8 +1578,11 @@ class TestAShadowedSectionCanActuallyVote:
         settings = self._settings()
         tuned = _retimed(settings, "order_block", "M30")
 
-        assert not settings.analysis.confluence.live_enabled_modules
-        assert set(tuned.analysis.confluence.live_enabled_modules) == {"order_block"}
+        assert set(settings.analysis.confluence.live_enabled_modules) == {"walkforward_index"}
+        assert set(tuned.analysis.confluence.live_enabled_modules) == {
+            "order_block",
+            "walkforward_index",
+        }
 
 
 class TestTheSweepRanksOnTheExitTheAccountTakes:

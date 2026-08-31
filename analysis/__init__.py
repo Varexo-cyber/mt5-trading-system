@@ -38,6 +38,7 @@ from analysis.session_breakout import SessionBreakout
 from analysis.setup_lifecycle import LifecycleDecision, SetupLifecycleBook, SetupState
 from analysis.volatility_squeeze import VolatilitySqueeze
 from analysis.vwap_reversion import VwapReversion
+from analysis.walkforward_index import WalkforwardIndex
 
 __all__ = [
     "BASKET_META_KEY",
@@ -74,6 +75,7 @@ __all__ = [
     "VolatilityRegime",
     "VolatilitySqueeze",
     "VwapReversion",
+    "WalkforwardIndex",
     "apply_cross_market_context",
     "assess_entry_quality",
     "assess_opportunity",

@@ -66,6 +66,7 @@ from analysis import (
     VolatilityRegime,
     VolatilitySqueeze,
     VwapReversion,
+    WalkforwardIndex,
     apply_cross_market_context,
     assess_entry_quality,
     assess_opportunity,
@@ -467,6 +468,7 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # name of a known loser, in the same config file that documents why the
         # loser is off.
         CandleMomentum(analysis.candle_momentum),
+        WalkforwardIndex(analysis.walkforward_index),
     ]
 
 

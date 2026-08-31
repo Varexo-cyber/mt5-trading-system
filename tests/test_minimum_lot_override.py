@@ -75,7 +75,7 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
         """
         confluence = _live_settings().analysis.confluence
 
-        assert not confluence.live_enabled_modules
+        assert set(confluence.live_enabled_modules) == {"walkforward_index"}
         for name in (
             "impulse_retest",
             "impulse_retest_m30",
