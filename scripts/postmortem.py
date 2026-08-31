@@ -31,6 +31,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from core.trade_origin import origin_for_setup_family
+
 #: What each management action meant, in the operator's terms. Anything absent
 #: gets no gloss at all — see `describe`. An unexplained action beats a wrong
 #: explanation, because the whole value of this report is that it is trusted.
@@ -227,12 +229,23 @@ def report(db: sqlite3.Connection, trade: sqlite3.Row) -> None:
         section_six = str(context.get("section") or "") == "six" or str(
             cycle["detail"] or ""
         ).startswith("section six")
+        origin = origin_for_setup_family(str(context.get("setup_family") or ""))
         score = cycle["total_score"]
         threshold = cycle["score_threshold"]
         if section_six:
             print("  route         section six's own lane - the confluence vote does not apply")
             if score is not None:
                 print(f"  strength      {score:.1f}  (candle_momentum alone)")
+        elif origin is not None:
+            print(
+                f"  route         SECTION {origin.section} / {origin.strategy} / "
+                f"{origin.timeframe}"
+            )
+            print(f"  MT5 label     {origin.comment}")
+            if score is not None and threshold is not None:
+                print(f"  score         {score:.1f} against a {threshold:.1f} threshold")
+            elif score is not None:
+                print(f"  score         {score:.1f}")
         elif score is not None and threshold is not None:
             print(f"  score         {score:.1f} against a {threshold:.1f} threshold")
         elif score is not None:
