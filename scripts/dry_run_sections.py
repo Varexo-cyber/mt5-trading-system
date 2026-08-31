@@ -1124,6 +1124,7 @@ def main() -> None:
         _clock_overlap(results, args.days)
     _live_config_report(results, settings, equity, args.days)
     _report(decisions, equity, args.days, skipped_symbols, _break_even_rule(settings) is not None)
+    _gates_this_run_does_not_apply()
     if args.csv:
         path = Path(args.csv)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1593,6 +1594,57 @@ def _clock_overlap(results: dict, days: int) -> None:
                     f"{seen:>4}/{len(slow):<5} ({share:>5.0%})  {verdict}"
                 )
     print(f"  ({days} days. A pair over 50% is one idea wearing two hats.)")
+
+
+#: Gates the LIVE runner applies and this script does not, with what each one
+#: refused in the 24 hours of 31 August -- 414 setups formed, 0 trades taken.
+#:
+#: THIS IS THE GAP BETWEEN 9 TRADES A DAY AND NONE. Every number this file
+#: produces comes out of `ConfluenceEngine.evaluate` followed by
+#: `PositionSizer.size`, and nothing else. The account runs both of those with
+#: eight more gates around them, all of them in `runner/service.py` or
+#: `filters/`, none of them reachable from here.
+#:
+#: Of the 414 setups that formed live in a day, ELEVEN died at something this
+#: script models. The other 403 died at gates it has never once applied. So
+#: "+36.80 R over 100 days" is not a forecast of the account; it is what the
+#: strategy does with those eight gates removed, and the two were being
+#: compared as though they were the same measurement.
+#:
+#: Printed on every run rather than written in a docstring, because the
+#: docstring is not what gets screenshotted at two in the morning.
+NOT_MODELLED: tuple[tuple[str, int, str], ...] = (
+    ("AWAITING_CONFIRMATION", 140, "price ran against the idea over the last 3 M5 bars"),
+    ("NEWS_BLACKOUT", 78, "a calendar event was near"),
+    ("TARGET_RARELY_REACHED", 62, "the target's historical reach rate was too low"),
+    ("SPREAD_EATS_THE_STOP", 62, "spread against stop width, checked before sizing"),
+    ("MARKET_TOO_QUIET", 44, "the liveliness filter"),
+    ("AWAITING_PULLBACK", 9, "setup lifecycle: alive, not yet entered"),
+    ("VOLUME_SPIKE", 7, "volume spike filter"),
+    ("ENTRY_OVEREXTENDED", 1, "entry quality"),
+)
+
+
+def _gates_this_run_does_not_apply() -> None:
+    """What stands between this number and the account's behaviour."""
+    blocked = sum(count for _name, count, _why in NOT_MODELLED)
+    print(f"\n{'=' * 78}")
+    print("WHAT THIS RUN DID NOT MODEL")
+    print(f"{'=' * 78}")
+    print("  This script is ConfluenceEngine.evaluate + PositionSizer.size. The live")
+    print("  runner wraps those in eight more gates. None of them are applied here:\n")
+    for name, count, why in NOT_MODELLED:
+        print(f"    {name:<24}{count:>5}   {why}")
+    print(
+        f"\n  Those counts are one real day on the live account, 31 August: 414 setups\n"
+        f"  formed, {blocked} died at the gates above, 11 at gates this script does have\n"
+        f"  (SL_TOO_TIGHT_FOR_COSTS, RISK_EXCEEDS_CAP), and 0 trades were taken.\n"
+        f"\n  So read every R and EUR above as WHAT THE STRATEGY DOES WITH THOSE EIGHT\n"
+        f"  GATES OFF. It is the right number for choosing a clock or an exit rule,\n"
+        f"  and it is not a forecast of the account. `waarom.cmd 24` says which gate\n"
+        f"  is actually spending the setups on any given day."
+    )
+    print(f"{'=' * 78}")
 
 
 def _sweep_report(results: dict, equity: float, days: int, managed: bool = False) -> None:

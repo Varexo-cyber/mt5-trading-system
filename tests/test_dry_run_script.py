@@ -2088,3 +2088,58 @@ class TestTheWhyLauncher:
         is nothing."""
         assert "about 7 trades a day" in self.LAUNCHER
         assert "ZERO over a full session is not" in self.LAUNCHER
+
+
+class TestTheRunSaysWhatItDidNotMeasure:
+    """414 setups formed live in 24 hours and 0 trades were taken.
+
+    Eleven of those died at something this script models. The other 403 died
+    at eight gates it has never applied -- they live in `runner/service.py`
+    and `filters/`, and nothing here reaches them.
+
+    So "+36.80 R over 100 days" and "0 trades overnight" were never in
+    conflict. They are two different systems, and the report gave no way to
+    know that from the screen it printed.
+    """
+
+    def test_every_gate_named_is_one_the_sizer_cannot_raise(self) -> None:
+        """A gate this script DOES apply must not be listed as missing --
+        that would be the same lie in the other direction."""
+        from risk.reasons import Reason
+        from scripts.dry_run_sections import NOT_MODELLED
+
+        source = inspect.getsource(__import__("risk.position_sizer", fromlist=["x"]))
+        for name, _count, _why in NOT_MODELLED:
+            assert hasattr(Reason, name), f"{name} is not a real refusal reason"
+            assert f"Reason.{name}" not in source, f"the sizer can raise {name}; it IS modelled"
+
+    def test_every_gate_named_is_one_the_runner_really_raises(self) -> None:
+        """The list is only worth printing if it is true. Each reason has to
+        appear in the live path this script skips."""
+        from pathlib import Path
+
+        from scripts.dry_run_sections import NOT_MODELLED
+
+        live_path = (Path(ROOT) / "runner" / "service.py").read_text()
+        filters = "\n".join(path.read_text() for path in (Path(ROOT) / "filters").glob("*.py"))
+        for name, _count, _why in NOT_MODELLED:
+            assert f"Reason.{name}" in live_path + filters, f"nothing raises {name}"
+
+    def test_it_prints_the_warning_with_the_arithmetic(self, capsys) -> None:
+        from scripts.dry_run_sections import _gates_this_run_does_not_apply
+
+        _gates_this_run_does_not_apply()
+        out = capsys.readouterr().out
+
+        assert "WHAT THIS RUN DID NOT MODEL" in out
+        assert "AWAITING_CONFIRMATION" in out
+        assert "414 setups" in out
+        assert "403 died at the gates above" in out
+        assert "not a forecast of the account" in out
+
+    def test_the_counts_add_up_to_the_number_quoted(self) -> None:
+        """403 + 11 = 414. A funnel that does not close is a funnel with a
+        stage missing, and this file has shipped one of those before."""
+        from scripts.dry_run_sections import NOT_MODELLED
+
+        assert sum(count for _n, count, _w in NOT_MODELLED) == 403

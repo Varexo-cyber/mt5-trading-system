@@ -394,3 +394,97 @@ class TestATimeframeIsNotAMeasurement:
 
         assert "6x  M15 price is moving against the long" in out
         assert "4x  M5 price is moving against the short" in out
+
+
+class TestSilenceAndAbsenceAreDifferentFindings:
+    """A live section that produced nothing, and no way to say which nothing.
+
+    24 hours on the account: 414 setups formed, 444 module firings, and every
+    one of them `impulse_retest`. `order_block` -- the other section trading
+    real money -- did not appear in the detection table at all.
+
+    That table has `HAVING longs > 0 OR shorts > 0`, so it cannot distinguish
+    a section that ran on every cycle and scored zero from a section that
+    never ran. Those need opposite responses and they print identically: as
+    nothing.
+    """
+
+    def _with_modules(self, journal: Path, rows: list[tuple[str, float, float]]) -> None:
+        db = sqlite3.connect(journal)
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS module_scores (id INTEGER PRIMARY KEY, cycle_pk INTEGER, "
+            "module TEXT, score REAL, confidence REAL, weight REAL, reasoning TEXT, "
+            "details_json TEXT)"
+        )
+        cycle = db.execute("SELECT MIN(id) FROM analysis_cycles").fetchone()[0] or 1
+        for module, score, weight in rows:
+            db.execute(
+                "INSERT INTO module_scores (cycle_pk, module, score, confidence, weight) "
+                "VALUES (?,?,?,?,?)",
+                (cycle, module, score, 0.7, weight),
+            )
+        db.commit()
+        db.close()
+
+    def test_it_separates_never_ran_from_found_nothing_from_weighted_away(self) -> None:
+        from scripts.why_no_trades import _print_live_section_rollcall
+
+        presence = {
+            "impulse_retest": (444, 444, 444),
+            "order_block": (2100, 0, 2100),
+            "shadowed": (50, 50, 0),
+        }
+
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            _print_live_section_rollcall(
+                presence, ("impulse_retest", "order_block", "shadowed", "absent")
+            )
+        out = buffer.getvalue()
+
+        assert "impulse_retest" in out and "444 with a direction" in out
+        assert "scored 0 every time" in out, "it ran and found nothing"
+        assert "WEIGHT 0" in out, "recorded and then multiplied away"
+        assert "NO ROWS AT ALL" in out, "never ran"
+        assert "absent produced NOTHING" in out
+
+    def test_the_rollcall_prints_even_when_every_section_is_healthy(self) -> None:
+        """The hole one level up: a warning that only appears when something is
+        wrong cannot be told apart from a check that did not run."""
+        import contextlib
+        import io
+
+        from scripts.why_no_trades import _print_live_section_rollcall
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            _print_live_section_rollcall({"a": (10, 10, 10)}, ("a",))
+        out = buffer.getvalue()
+
+        assert "LIVE SECTIONS" in out
+        assert "!" not in out, "nothing is wrong, so nothing may be flagged"
+
+    def test_the_query_keeps_the_zeros(self, journal: Path) -> None:
+        """`_directional_modules` drops them, which is the whole defect."""
+        add(journal, "NO_SIGNAL", BEFORE, count=1)
+        self._with_modules(journal, [("impulse_retest", 60.0, 1.2), ("order_block", 0.0, 1.0)])
+        db = sqlite3.connect(journal)
+        db.row_factory = sqlite3.Row
+
+        from scripts.why_no_trades import _directional_modules, _module_presence
+
+        seen = _module_presence(db, "1=1", [])
+        directional = {str(row["module"]) for row in _directional_modules(db, "1=1", [])}
+        db.close()
+
+        assert "order_block" not in directional, "the old query cannot see it"
+        assert seen["order_block"] == (1, 0, 1), "the new one says it ran and scored nothing"
+        assert seen["impulse_retest"] == (1, 1, 1)
+
+    def test_the_live_list_is_read_from_config_not_restated(self) -> None:
+        from scripts.why_no_trades import _live_modules
+
+        assert set(_live_modules()) == {"impulse_retest", "order_block"}
