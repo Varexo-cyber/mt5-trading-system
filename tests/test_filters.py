@@ -565,6 +565,16 @@ class TestFilterChain:
         assert verdict.filter_name == "a"
         assert second.calls == 0
 
+    def test_console_names_the_actual_reason_detail(self, spec: InstrumentSpec, caplog) -> None:
+        chain = FilterChain([_Stub("news", False)])
+
+        with caplog.at_level("INFO"):
+            chain.check(context(spec))
+
+        assert "news blocked entry" in caplog.text
+        assert "NEWS_BLACKOUT" in caplog.text
+        assert ": no" in caplog.text
+
     def test_data_from_passing_filters_survives_a_later_block(self, spec: InstrumentSpec) -> None:
         """A blocked cycle still records what the earlier filters measured."""
         chain = FilterChain([_Stub("a", True, session="london"), _Stub("b", False, spread=9.9)])

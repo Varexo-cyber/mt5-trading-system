@@ -1,21 +1,4 @@
-"""Taking the trade at the broker minimum instead of skipping it.
-
-THE OWNER'S INSTRUCTION, 30 August: "wnr die melding komt moet het gwn door
-door door tot het wel capitalized is dus dan doe je maar lotsize verminderen".
-
-REDUCING THE LOT IS NOT POSSIBLE, and that is the entire reason the refusal
-existed. `volume_min` IS the floor -- one ounce on gold -- and nothing smaller
-can be sent to the broker. So the only direction available is UP, and this
-switch rounds up and accepts MORE risk than the target, never less.
-
-It stops at `max_risk_per_trade_pct`, the account's own 8% conviction ceiling,
-which in micro_live is enforced by the sizer's existing final check. That check
-was written with the comment "should never fire" because rounding could only
-ever reduce risk. It can fire now, and it is doing real work.
-
-This reverses a rule the owner himself wrote as KRITIEK. These tests exist so
-the reversal is deliberate and bounded rather than something that happened.
-"""
+"""The broker minimum never grants permission to round risk upward."""
 
 from __future__ import annotations
 
@@ -39,64 +22,21 @@ def _live_settings(**risk_changes):
     return settings
 
 
-class TestTheSwitchIsOnAndBounded:
-    def test_it_is_enabled_on_the_live_account(self) -> None:
-        assert _live_settings().risk.allow_minimum_lot_above_target is True
+class TestMinimumLotCannotOverrideTheStake:
+    def test_it_is_disabled_on_the_live_account(self) -> None:
+        assert _live_settings().risk.allow_minimum_lot_above_target is False
 
     def test_the_base_config_leaves_it_off(self) -> None:
-        """The instruction is this account's, at this equity. Defaulting it on
-        for everyone would generalise one owner's decision about EUR 212."""
+        """The hard rule is identical in the base and account overlay."""
         assert load_settings(env_overrides=False).risk.allow_minimum_lot_above_target is False
 
-    def test_the_ceiling_is_the_accounts_own_conviction_cap(self) -> None:
-        """BOUNDED, which is the property. "Reduce the lot size" cannot have
-        meant one trade putting a third of the account on a single stop.
+    def test_yaml_cannot_turn_the_unsafe_override_back_on(self) -> None:
+        from pydantic import ValidationError
 
-        The number was 8% and is 10% since 30 August at the owner's request.
-        Asserted as a bound rather than a literal, because what this test is
-        for is that a ceiling EXISTS and the ordinary stake stays at 2% --
-        `TestTheCeilingIsTenAndAllThreeKnobsAgree` owns the exact value and the
-        three knobs that have to agree on it."""
-        settings = _live_settings()
+        from config.schema import RiskConfig
 
-        assert 0.0 < settings.effective_max_risk_pct() <= 10.0
-        assert settings.effective_risk_pct() == pytest.approx(2.0)
-
-    def test_the_final_ceiling_check_is_what_bounds_it(self) -> None:
-        """The sizer's step 6 was written as a "should never fire" guard --
-        rounding down could only reduce risk. Rounding UP is now possible, so
-        that check is the live bound and must still be there."""
-        import inspect
-
-        from risk import position_sizer
-
-        source = " ".join(inspect.getsource(position_sizer).split())
-
-        assert "Reason.RISK_EXCEEDS_CAP" in source
-        assert "actual_pct > ceiling" in source
-
-    def test_the_override_reaches_the_sizer(self) -> None:
-        """A config nothing reads is the defect this account keeps producing.
-        The switch has to be consulted where the refusal is raised."""
-        import inspect
-
-        from risk import position_sizer
-
-        source = " ".join(inspect.getsource(position_sizer).split())
-
-        assert "self.settings.risk.allow_minimum_lot_above_target" in source
-        assert "volume = spec.volume_min" in source
-
-    def test_an_overshooting_trade_is_labelled_in_the_journal(self) -> None:
-        """These trades carry up to four times the intended risk. The multiple
-        is the number worth reading back, so it goes in the detail line."""
-        import inspect
-
-        from risk import position_sizer
-
-        source = " ".join(inspect.getsource(position_sizer).split())
-
-        assert "TOOK MINIMUM LOT" in source
+        with pytest.raises(ValidationError):
+            RiskConfig(allow_minimum_lot_above_target=True)
 
 
 class TestOnlySectionsTwoAndThreeTradeRealMoney:

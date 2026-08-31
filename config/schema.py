@@ -517,28 +517,11 @@ class RiskConfig(Base):
     risk_per_trade_pct: Pct = 1.0
     #: Ceiling the sizer will never exceed regardless of setup quality.
     max_risk_per_trade_pct: Pct = 1.0
-    #: TAKE THE TRADE AT THE BROKER MINIMUM EVEN WHEN IT OVERSHOOTS THE TARGET
-    #: RISK, on the owner's explicit instruction of 30 August.
-    #:
-    #: The instruction was "reduce the lot size", and THAT IS NOT POSSIBLE --
-    #: which is the whole reason this refusal exists. `volume_min` is the
-    #: broker's floor; on XAUUSD it is 0.01 lot, one ounce, and nothing smaller
-    #: can be sent. So the only way to take a trade the target risk cannot
-    #: afford is to round UP and accept more risk than the cap, never less.
-    #:
-    #: This switch does exactly that, and stops at the account's own stated
-    #: conviction ceiling (`max_risk_per_trade_pct`, 8%). A minimum lot that
-    #: would risk more than that is still refused, because "reduce the lot"
-    #: cannot have meant a single trade putting a third of the account on one
-    #: stop -- an instrument whose minimum position is that large is one this
-    #: account genuinely cannot trade, and no setting changes it.
-    #:
-    #: What the owner is buying with this: trades on instruments where the
-    #: minimum lot lands between the 2% target and the 8% ceiling. What he is
-    #: paying: those trades carry up to four times the intended risk, so a
-    #: losing streak on them costs four times as much. `TRADE_TOOK_MINIMUM_LOT`
-    #: goes in the journal with the real percentage on every one of them.
-    allow_minimum_lot_above_target: bool = False
+    #: A retained, typed tombstone for an unsafe historical override. The
+    #: broker minimum is not permission to exceed the stake behind a decision.
+    #: `Literal[False]` makes a future YAML edit fail at startup instead of
+    #: quietly reintroducing upward lot rounding.
+    allow_minimum_lot_above_target: Literal[False] = False
     #: Stake by conviction. See `ConvictionRiskConfig`.
     conviction_risk: ConvictionRiskConfig = ConvictionRiskConfig()
     #: Total risk allowed across every open position at once, as a percentage

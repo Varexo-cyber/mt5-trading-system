@@ -104,7 +104,7 @@ class NewsFilter(Filter):
                 f"{'extreme' if active.extreme else 'high'}-impact "
                 f"{active.event.currency} event in the blackout window: "
                 f"{active.event.title} at {active.event.when:%H:%M} UTC; "
-                f"clear in {minutes:.0f} min",
+                f"source {self.calendar.source}; clear in {minutes:.0f} min",
                 calendar_source=self.calendar.source,
                 news_event=active.event.title,
                 news_currency=active.event.currency,
