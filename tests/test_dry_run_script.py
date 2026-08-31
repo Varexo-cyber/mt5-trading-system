@@ -2233,3 +2233,54 @@ class TestATakenTradePaysItsOwnSpread:
 
         assert "runtime\\sweep.csv" not in invocation
         assert "sweep-%DAYS%d-%TAG%.csv" in launcher
+
+
+class TestALiveSectionOnM1DoesNotVanishFromItsOwnReport:
+    """`--no-m1` and a live section configured on M1 are not a contradiction.
+
+    `--no-m1 --sweep M1` is: the user asked for two incompatible things on one
+    command line, and the run stops and says so.
+
+    `--no-m1 --live-only` when a LIVE section sits on M1 is different. That
+    clock came out of config/eightcap.yaml, not off the command line. Dying on
+    it breaks the launcher that answers "what would the account have done" the
+    moment a section moves to M1, and dropping the row silently is the missing
+    row this file has shipped six times. The flag loses, loudly.
+    """
+
+    def test_an_explicit_sweep_still_refuses(self) -> None:
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _unresolvable_clocks
+
+        assert _unresolvable_clocks(("M1",), Timeframe.M5).startswith("M1 cannot be resolved")
+
+    def test_the_script_prefers_fetching_over_dropping(self) -> None:
+        from scripts import dry_run_sections
+
+        source = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert "if needs_m1 and args.sweep: raise SystemExit(needs_m1)" in source
+        assert "args.no_m1 = False" in source
+        assert "--no-m1 ignored" in source
+
+    def test_fetch_these_is_decided_after_that(self) -> None:
+        """Order matters and it is the whole fix: `fetch_these` used to be
+        built from `args.no_m1` a hundred lines before `passes` existed, so
+        flipping the flag afterwards would have changed nothing."""
+        from scripts import dry_run_sections
+
+        source = inspect.getsource(dry_run_sections)
+
+        assert source.index("args.no_m1 = False") < source.index(
+            "fetch_these = tuple(tf for tf in NEEDED"
+        )
+
+    def test_the_m1_section_is_measurable_at_all(self) -> None:
+        """`module_config` is the list of sections this script knows. A live
+        section absent from it cannot appear in the live-configuration report,
+        which is the same silence in a new place."""
+        from scripts import dry_run_sections
+
+        source = inspect.getsource(dry_run_sections)
+
+        assert '"order_block_fast": "order_block_fast"' in source

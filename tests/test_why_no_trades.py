@@ -487,4 +487,8 @@ class TestSilenceAndAbsenceAreDifferentFindings:
     def test_the_live_list_is_read_from_config_not_restated(self) -> None:
         from scripts.why_no_trades import _live_modules
 
-        assert set(_live_modules()) == {"impulse_retest", "order_block"}
+        assert set(_live_modules()) == {
+            "impulse_retest",
+            "order_block",
+            "order_block_fast",
+        }

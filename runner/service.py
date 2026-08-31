@@ -441,6 +441,14 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # as a zone. 31,376 trades with every section-two bar removed, 62% at a
         # 1:1 target, +0.164R net, every year and every month positive.
         OrderBlock(analysis.order_block),
+        # SECTION THREE AGAIN, ON M1. Its own instance, its own name, its own
+        # weight and its own breaker -- see `OrderBlock.__init__`. The 14-day
+        # measurement put it at +34.00 R and EUR +121.97 over 105 trades where
+        # the same section on M5 was -15.20 R over 308. That is thin, it is
+        # five markets, and the run that produced it did not charge the trades
+        # their spread. It is live at the owner's explicit instruction, taken
+        # with those three facts on the screen.
+        OrderBlock(analysis.order_block_fast, name="order_block_fast"),
         # SECTION FIVE, and the first reader that is MEANINGLESS on a single
         # chart. It measures a move between two M1 closes, which has no open
         # question about surviving the coarsening.

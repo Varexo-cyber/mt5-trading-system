@@ -171,6 +171,19 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     order_block's +0.026, and 89 of 116 days green against 83 of 140. The
     thirty-day sample I removed it on was the smaller one and I let it weigh
     more than it should have.
+
+
+        THIRD SECTION ADDED 31 AUGUST: `order_block_fast`, the same detector
+        as `order_block` on M1 instead of M30, as its own instance with its own
+        name, weight and breaker.
+
+        It is the weakest evidence on the account and
+        `docs/hypotheses/order_block_fast.md` says so in full: 105 trades over
+        14 days, five markets, the adjacent M5 clock negative over 308 trades,
+        and the run that produced the number did not charge the trades their
+        spread. Live at the owner's explicit instruction with those four facts
+        on the screen -- "risico's moeten genomen worden om te testen" -- under
+        the strictest breaker here (30 trades, 50% loss share, 7-streak).
     """
     from config.loader import DEFAULT_CONFIG_PATH, load_settings
 
@@ -179,7 +192,7 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     )
     live = set(settings.analysis.confluence.live_enabled_modules)
 
-    assert live == {"impulse_retest", "order_block"}
+    assert live == {"impulse_retest", "order_block", "order_block_fast"}
     # Every live module keeps a breaker. That was the real content of this
     # test and it survives the change.
     for module in live:
@@ -328,3 +341,102 @@ class TestTheEntryConfirmationExemptionReachesTheRunner:
 
         assert exempt == {"impulse_retest", "order_block"}
         assert settings.analysis.confluence.require_entry_confirmation is True
+
+
+class TestASecondClockIsASecondModule:
+    """`order_block_fast` is `order_block` on M1, and it has to be separable.
+
+    Every registry that decides what a module may do is keyed by its NAME:
+    weights, live_enabled_modules, section_breakers, and the module_scores
+    rows the breaker and the scorecard read back. Two instances sharing one
+    name would share a weight, share a breaker and write into each other's
+    history -- so M1 could not be switched off without switching off M30, and
+    a losing streak on one clock would trip the other.
+    """
+
+    def _settings(self):
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+    def test_the_instance_carries_its_own_name(self) -> None:
+        from analysis.order_block import OrderBlock
+        from config.schema import OrderBlockConfig
+
+        assert OrderBlock(OrderBlockConfig()).name == "order_block"
+        assert OrderBlock(OrderBlockConfig(), name="order_block_fast").name == "order_block_fast"
+
+    def test_the_signal_is_written_under_that_name(self) -> None:
+        """The journal row, the weight lookup and the breaker all key off the
+        `module` field of the Signal. A class attribute here would file every
+        M1 decision under the M30 section."""
+        import inspect
+
+        from analysis import order_block
+
+        source = " ".join(inspect.getsource(order_block.OrderBlock).split())
+
+        assert "module=self.name" in source
+        assert "Signal.neutral(self.name" in source
+
+    def test_the_runner_builds_both_instances(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from runner.service import build_analysis_modules
+
+        built = {
+            module.name
+            for module in build_analysis_modules(
+                load_settings(
+                    DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+                )
+            )
+        }
+
+        assert {"order_block", "order_block_fast"} <= built
+
+    def test_the_two_clocks_differ_and_nothing_else_does(self) -> None:
+        """Only the clock was measured. A threshold nudged for M1 by feel would
+        be measuring something other than what produced the number."""
+        settings = self._settings()
+        slow = settings.analysis.order_block
+        fast = settings.analysis.order_block_fast
+
+        assert (slow.timeframe, fast.timeframe) == ("M30", "M1")
+        differ = {
+            field
+            for field in type(slow).model_fields
+            if getattr(slow, field) != getattr(fast, field)
+        }
+        assert differ == {"timeframe"}, f"only the clock may differ, these also do: {differ}"
+
+    def test_it_has_its_own_breaker_and_it_is_the_strictest(self) -> None:
+        """The evidence is the thinnest on the account, so the automatic
+        switch-off has to be the quickest."""
+        breakers = self._settings().risk.section_breakers
+        fast, slow = breakers["order_block_fast"], breakers["order_block"]
+
+        assert fast.window < slow.window
+        assert fast.minimum_trades < slow.minimum_trades
+        assert fast.maximum_loss_share < slow.maximum_loss_share
+        assert fast.losing_streak < slow.losing_streak
+
+    def test_it_is_classified_intraday_by_exact_name(self) -> None:
+        """`_classify_horizon` matches the list EXACTLY, unlike
+        `entry_timing_exempt_families` which is a substring test and would have
+        covered this by accident. Falling through to "swing" would give an M1
+        setup H1 planning and a D1/W1 veto."""
+        confluence = self._settings().analysis.confluence
+
+        assert "order_block_fast" in confluence.intraday_modules
+        assert "order_block_fast" not in confluence.quick_modules
+
+    def test_the_base_config_leaves_it_off(self) -> None:
+        """One owner's bet on one account at EUR 216, not a default."""
+        from config.loader import load_settings
+
+        base = load_settings(env_overrides=False)
+
+        assert base.analysis.order_block_fast.enabled is False
+        assert "order_block_fast" not in base.analysis.confluence.live_enabled_modules
