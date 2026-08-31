@@ -85,8 +85,22 @@ class OrderBlock:
 
     name = "order_block"
 
-    def __init__(self, config: OrderBlockConfig | None = None) -> None:
+    def __init__(self, config: OrderBlockConfig | None = None, name: str | None = None) -> None:
+        """`name` gives a second instance on a second clock its own identity.
+
+        Every registry that decides what a module may do is keyed by its name:
+        `weights`, `live_enabled_modules`, `section_breakers`, and the
+        `module_scores` rows the breaker and the scorecard read back. Two
+        instances sharing one name would share a weight, share a breaker, and
+        write into each other's history -- so the M1 copy could not be
+        switched off without switching off M30, and a losing streak on one
+        clock would trip the other.
+
+        Defaults to the class attribute, so single-clock construction is
+        unchanged.
+        """
         self.config = config or OrderBlockConfig()
+        self.name = name or type(self).name
 
     def analyze(self, ctx: MarketContext) -> Signal:
         config = self.config

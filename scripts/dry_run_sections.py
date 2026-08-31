@@ -905,7 +905,9 @@ def main() -> None:
                 symbols = symbols[: args.limit]
         end = datetime.now(UTC)
         start = end - timedelta(days=args.days)
-        fetch_these = tuple(tf for tf in NEEDED if not (args.no_m1 and tf is Timeframe.M1))
+        # `fetch_these` is decided AFTER `passes`, further down: a live section
+        # sitting on M1 needs M1 bars whatever --no-m1 says, and the clock came
+        # from the config rather than from this command line.
 
         # WARMUP IS MEASURED IN BARS, SO THE WINDOW IS PER TIMEFRAME.
         #
@@ -938,7 +940,15 @@ def main() -> None:
         # measuring, because that measurement is what decides whether it comes
         # back. So every known module is swept, and the report separates what
         # is live from what is shadowed.
-        module_config = {"impulse_retest": "impulse_retest", "order_block": "order_block"}
+        # EVERY SECTION THIS SCRIPT CAN MEASURE, and `order_block_fast` is on
+        # it because it trades real money. A live section missing from here is
+        # a live section the "what would the account have done" report cannot
+        # see, which is the same silence in a new place.
+        module_config = {
+            "impulse_retest": "impulse_retest",
+            "order_block": "order_block",
+            "order_block_fast": "order_block_fast",
+        }
         measured = set(module_config)
         if args.only:
             wanted_sections = {
@@ -990,10 +1000,31 @@ def main() -> None:
         print(f"{len(symbols)} symbols, {settings.effective_risk_pct():.1f}% risk per trade")
         print(f"{'=' * 78}\n")
 
+        # TWO DIFFERENT SITUATIONS, TWO DIFFERENT ANSWERS.
+        #
+        # `--no-m1 --sweep M1` is a user asking for two contradictory things,
+        # and the right response is to say so and stop.
+        #
+        # `--no-m1 --live-only` when a LIVE section is configured on M1 is not
+        # that. The clock came out of `config/eightcap.yaml`, not off this
+        # command line, and dying on it would break the launcher that answers
+        # "what would the account have done" the moment a section moves to M1.
+        # Dropping the row silently would be worse still -- that is the missing
+        # row this file has now shipped six times. So the flag loses and the
+        # run says out loud that it did.
         finest = Timeframe.M5 if args.no_m1 else Timeframe.M1
-        complaint = _unresolvable_clocks(tuple(tf for _n, tf in passes), finest)
-        if complaint:
-            raise SystemExit(complaint)
+        needs_m1 = _unresolvable_clocks(tuple(tf for _n, tf in passes), finest)
+        if needs_m1 and args.sweep:
+            raise SystemExit(needs_m1)
+        if needs_m1:
+            print(
+                f"  NOTE: --no-m1 ignored. {needs_m1.split(' cannot')[0]} is a LIVE section's\n"
+                f"        own clock and cannot be resolved on M5 bars, so M1 history is\n"
+                f"        being fetched after all. This run will be slower than asked."
+            )
+            args.no_m1 = False
+            finest = Timeframe.M1
+        fetch_these = tuple(tf for tf in NEEDED if not (args.no_m1 and tf is Timeframe.M1))
         results: dict[tuple[str, str], list[Decision]] = {key: [] for key in passes}
         skipped_symbols = 0
         unresolvable: dict[str, str] = {}

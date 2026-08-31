@@ -119,10 +119,27 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
         months coming from August alone, and impulse_retest's sigma was never
         printed at all because the report skips the verdict for a section that
         is not on this list. Both are live because the owner decided so on the
-        numbers above, not because either cleared a bar."""
+        numbers above, not because either cleared a bar.
+
+        THIRD SECTION ADDED 31 AUGUST: `order_block_fast`, the same detector
+        as `order_block` on M1 instead of M30, as its own instance with its own
+        name, weight and breaker.
+
+        It is the weakest evidence on the account and
+        `docs/hypotheses/order_block_fast.md` says so in full: 105 trades over
+        14 days, five markets, the adjacent M5 clock negative over 308 trades,
+        and the run that produced the number did not charge the trades their
+        spread. Live at the owner's explicit instruction with those four facts
+        on the screen -- "risico's moeten genomen worden om te testen" -- under
+        the strictest breaker here (30 trades, 50% loss share, 7-streak).
+        """
         confluence = _live_settings().analysis.confluence
 
-        assert set(confluence.live_enabled_modules) == {"impulse_retest", "order_block"}
+        assert set(confluence.live_enabled_modules) == {
+            "impulse_retest",
+            "order_block",
+            "order_block_fast",
+        }
 
     def test_the_unmeasured_sections_are_off(self) -> None:
         """Section 1 (market_structure, trend_momentum, m1_micro_breakout),

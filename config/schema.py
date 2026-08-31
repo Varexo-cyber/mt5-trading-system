@@ -3397,6 +3397,13 @@ class ConfluenceConfig(Base):
         # entry. A 24-bar H1 horizon is a day and a half.
         "impulse_retest",
         "order_block",
+        # AND A SIXTH TIME, for the M1 copy of section three. `_classify_horizon`
+        # matches this list EXACTLY -- unlike `entry_timing_exempt_families`,
+        # which is a substring test and would have covered it by accident. A
+        # new instance therefore has to be named here or it falls through to
+        # "swing" and gets H1 planning and a D1/W1 veto on an M1 setup, which
+        # is the exact defect the two entries above were added to fix.
+        "order_block_fast",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
@@ -3889,6 +3896,20 @@ class AnalysisConfig(Base):
     drift_burst: DriftBurstConfig = DriftBurstConfig()
     impulse_retest: ImpulseRetestConfig = ImpulseRetestConfig()
     order_block: OrderBlockConfig = OrderBlockConfig()
+    #: THE SAME DETECTOR ON A SECOND CLOCK, as its own module.
+    #:
+    #: A module is one instance reading one timeframe, and every registry that
+    #: matters -- `weights`, `live_enabled_modules`, `section_breakers`,
+    #: `module_scores` -- is keyed by its name. So a section cannot run on two
+    #: clocks by widening a field; it needs a second instance with a second
+    #: name, and then the breaker, the weight and the journal all follow it
+    #: separately. Which is the point: M30 and M1 are two strategies with two
+    #: cost structures and they must be able to be switched off apart.
+    #:
+    #: Left disabled in the base config. This is the owner's decision about
+    #: THIS account at EUR 216, on a 14-day measurement of 105 trades, taken
+    #: knowing it is thin -- "risico's moeten genomen worden om te testen".
+    order_block_fast: OrderBlockConfig = OrderBlockConfig(enabled=False)
     level_retest: LevelRetestConfig = LevelRetestConfig()
     vwap_reversion: VwapReversionConfig = VwapReversionConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()

@@ -1347,6 +1347,32 @@ analysis:
     # terugtrekken voordat ze doorlopen, en dan komt dit getal daarvandaan.
     scalp_giveback_share: 0.40
 
+  # SECTIE DRIE OP M1, als eigen module naast de M30-versie.
+  #
+  # Een module is EEN instantie die EEN timeframe leest, en elk register dat
+  # telt -- `weights`, `live_enabled_modules`, `section_breakers`,
+  # `module_scores` -- staat op naam. Een sectie op twee klokken kan dus niet
+  # door een veld te verbreden; het is een tweede instantie met een tweede
+  # naam, en dan volgen de noodstop, het gewicht en de journal apart. Dat is
+  # precies de bedoeling: M30 en M1 zijn twee strategieen met twee
+  # kostenstructuren en ze moeten los uitgezet kunnen worden.
+  #
+  # WAAROM HIJ AAN STAAT, en wat er tegenover staat, staat voluit bij
+  # `risk.section_breakers.order_block_fast`. Kort: 105 trades, 88% raak,
+  # EUR +121,97 over 14 dagen -- dun, vijf markten, en de spread was in die
+  # run niet in rekening gebracht. Live op uitdrukkelijke instructie van de
+  # eigenaar met die drie feiten op het scherm, onder de strakste noodstop op
+  # de rekening.
+  #
+  # ALLEEN DE KLOK VERSCHILT. Geen enkel ander getal is aangepast, want geen
+  # enkel ander getal is op M1 gemeten -- de sweep verzette de klok en liet de
+  # rest van de configuratie staan, en dat is dus ook wat hier live gaat. Een
+  # drempel die op gevoel voor M1 wordt bijgesteld meet iets anders dan wat
+  # die +121,97 opleverde.
+  order_block_fast:
+    enabled: true
+    timeframe: M1
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2073,6 +2099,12 @@ analysis:
       # +0,172R, 1,5R geeft +0,099R. Allebei leunen ze op een lokale voorraad
       # orders, en die is snel op.
       order_block: 1.0
+      # De M1-kopie van sectie drie. `_reachable_target` matcht met een
+      # substring, dus `order_block` had hem toch al gevangen -- en dat is
+      # precies waarom hij hier expliciet staat. Een sleutel die per ongeluk
+      # klopt is een sleutel die stilletjes verkeerd gaat zodra iemand de
+      # naam verandert.
+      order_block_fast: 1.0
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2510,7 +2542,7 @@ analysis:
     # TWEE SECTIES LIVE VERANDERT DE RISICOREKENING. Bij een plafond van 10%
     # en 20% totaal open vullen twee trades op het plafond het hele boek, en
     # er is geen daglimiet. Met twee secties gebeurt dat vaker.
-    live_enabled_modules: [impulse_retest, order_block]
+    live_enabled_modules: [impulse_retest, order_block, order_block_fast]
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2758,6 +2790,13 @@ analysis:
       # 1,0 en niet 1,2: hij is echt en hij is kleiner dan sectie twee
       # (+0,164R tegen +0,279R), en het gewicht hoort dat te zeggen.
       order_block: 1.0
+
+      # DEZELFDE DETECTOR OP M1, als eigen module met een eigen naam.
+      #
+      # 1,0 en niet lager: het gewicht zegt hoe zwaar de stem van een lezer
+      # weegt, niet hoe zeker ik van de klok ben. Dat laatste hoort in de
+      # noodstop eronder, en die staat hier strakker dan die van M30.
+      order_block_fast: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3666,6 +3705,30 @@ risk:
       minimum_trades: 40
       maximum_loss_share: 0.55
       losing_streak: 9
+
+    # ORDER_BLOCK_FAST -- dezelfde detector op M1, en de STRAKSTE noodstop op
+    # de rekening. Dat is met opzet en het is waar de risico-afweging zit.
+    #
+    # Waarop hij live staat: 105 trades over 14 dagen, 88% raak, +34,00 R en
+    # EUR +121,97. Wat daar tegenover staat en niet weggeschreven mag worden:
+    #
+    #   - het is DUN. Onder de 200-grens die het rapport zelf hanteert.
+    #   - dezelfde sectie op M5, dezelfde 14 dagen, dezelfde vijf markten,
+    #     staat op -15,20 R over 308 trades. Aangrenzende klokken met
+    #     tegengesteld teken, en de goede heeft een derde van de trades.
+    #   - die run bracht de spread niet in rekening. Op M1 is dat tot 12% van
+    #     de stop per trade, dus grofweg 10 R van die 34 is meetfout.
+    #   - er handelden maar vijf markten; de elf FX-paren vielen weg op kosten.
+    #
+    # Vandaar 30 in plaats van 40: op 7,5 trades per dag is dat vier dagen
+    # bewijs in plaats van zes, en de verlieslimiet ligt op 50% tegen de 55%
+    # van M30. Als M1 niet is wat die 14 dagen suggereerden, gaat hij eerder
+    # uit dan welke andere sectie ook.
+    order_block_fast:
+      window: 30
+      minimum_trades: 30
+      maximum_loss_share: 0.50
+      losing_streak: 7
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde
