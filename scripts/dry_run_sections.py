@@ -946,8 +946,11 @@ def main() -> None:
         # see, which is the same silence in a new place.
         module_config = {
             "impulse_retest": "impulse_retest",
+            "impulse_retest_m30": "impulse_retest_m30",
             "order_block": "order_block",
             "order_block_fast": "order_block_fast",
+            "order_block_m15": "order_block_m15",
+            "order_block_h1": "order_block_h1",
         }
         measured = set(module_config)
         if args.only:

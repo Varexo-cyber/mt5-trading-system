@@ -1373,6 +1373,19 @@ analysis:
     enabled: true
     timeframe: M1
 
+  # EXTRA LIVE CLOCKS, 31 augustus, op uitdrukkelijke instructie van de
+  # eigenaar. Iedere klok is een eigen module zodat gewicht, journal en
+  # automatische uitschakelaar niet met een andere klok worden gedeeld.
+  impulse_retest_m30:
+    enabled: true
+    timeframe: M30
+  order_block_m15:
+    enabled: true
+    timeframe: M15
+  order_block_h1:
+    enabled: true
+    timeframe: H1
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2094,6 +2107,7 @@ analysis:
     # op de hele curve.
     target_r_multiple_by_family:
       impulse_retest: 1.0
+      impulse_retest_m30: 1.0
       # Sectie drie landt op dezelfde verhouding, en dat is hier apart gemeten
       # en niet van sectie twee overgenomen: 0,75R geeft +0,147R, 1,0R geeft
       # +0,172R, 1,5R geeft +0,099R. Allebei leunen ze op een lokale voorraad
@@ -2105,6 +2119,8 @@ analysis:
       # klopt is een sleutel die stilletjes verkeerd gaat zodra iemand de
       # naam verandert.
       order_block_fast: 1.0
+      order_block_m15: 1.0
+      order_block_h1: 1.0
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2542,7 +2558,13 @@ analysis:
     # TWEE SECTIES LIVE VERANDERT DE RISICOREKENING. Bij een plafond van 10%
     # en 20% totaal open vullen twee trades op het plafond het hele boek, en
     # er is geen daglimiet. Met twee secties gebeurt dat vaker.
-    live_enabled_modules: [impulse_retest, order_block, order_block_fast]
+    live_enabled_modules:
+      - impulse_retest
+      - impulse_retest_m30
+      - order_block_fast
+      - order_block_m15
+      - order_block
+      - order_block_h1
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2773,6 +2795,7 @@ analysis:
       # verhaal hier met een out-of-sample cijfer, en hij hoort zwaarder te
       # wegen dan negen lezers die dezelfde prijsvorm bekijken.
       impulse_retest: 1.2
+      impulse_retest_m30: 1.2
 
       # SECTIE DRIE. Gevonden door de tweede zoektocht, nadat de eerste alleen
       # varianten van sectie twee opleverde -- `retest_slow` deelde 47,5% van
@@ -2797,6 +2820,8 @@ analysis:
       # weegt, niet hoe zeker ik van de klok ben. Dat laatste hoort in de
       # noodstop eronder, en die staat hier strakker dan die van M30.
       order_block_fast: 1.0
+      order_block_m15: 1.0
+      order_block_h1: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3694,6 +3719,11 @@ risk:
       minimum_trades: 40
       maximum_loss_share: 0.45
       losing_streak: 8
+    impulse_retest_m30:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.45
+      losing_streak: 8
 
     # ORDER_BLOCK. Verwacht 62% raak op 1:1, dus 38% verliezers.
     #
@@ -3729,6 +3759,16 @@ risk:
       minimum_trades: 30
       maximum_loss_share: 0.50
       losing_streak: 7
+    order_block_m15:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.55
+      losing_streak: 9
+    order_block_h1:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.55
+      losing_streak: 9
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde

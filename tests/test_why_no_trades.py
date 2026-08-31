@@ -489,6 +489,9 @@ class TestSilenceAndAbsenceAreDifferentFindings:
 
         assert set(_live_modules()) == {
             "impulse_retest",
+            "impulse_retest_m30",
+            "order_block_m15",
             "order_block",
             "order_block_fast",
+            "order_block_h1",
         }
