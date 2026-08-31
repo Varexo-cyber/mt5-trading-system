@@ -14,7 +14,6 @@ logs/
 *.sqlite
 *.sqlite3
 data_cache/
-data/history/
 # The live calendar cache is rewritten every thirty minutes by the running
 # system. Tracked, it left the working tree permanently dirty -- which is
 # cosmetic until `auto_update.py` refuses to touch a dirty tree, and then it
@@ -52,6 +51,15 @@ data/m15/
 # scripts/lab/data.py says how to refetch them.
 data/research/
 
-# Downloaded bars, filled by ophalen.cmd. Tens to hundreds of megabytes and
-# reproducible in one command, so not something the repository should carry.
-data/history/
+# Downloaded bars, filled by ophalen.cmd.
+#
+# M15 and slower ARE committed on purpose -- about 25 MB over sixteen markets
+# and 180 days -- because the point of the store is that the analysis can
+# happen anywhere without a terminal, and bars that live only on one VPS
+# cannot do that. `deel.cmd` pushes them.
+#
+# M1 and M5 are not. They are three quarters of the bars and roughly 120 MB,
+# they are the clocks the cost wall refuses anyway, and a repository should
+# not carry them forever. `ophalen.cmd` refetches them in one command.
+data/history/*/M1.npz
+data/history/*/M5.npz

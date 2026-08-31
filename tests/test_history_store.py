@@ -418,3 +418,51 @@ class TestTheRunEstimatesItsOwnLength:
 
         assert "%EXTRA%" in launcher
         assert "set EXTRA=%ONLY%" in launcher
+
+
+class TestTheBarsCanLeaveTheVps:
+    """Bars that live on one machine cannot be analysed anywhere else.
+
+    The network in a Claude session blocks every public market-data host --
+    Yahoo and Dukascopy both answer 403 through the egress proxy -- so the
+    only route for THIS broker's recent history is the repository itself.
+    """
+
+    def _gitignore(self) -> str:
+        return (Path(__file__).resolve().parent.parent / ".gitignore").read_text()
+
+    def test_the_slow_clocks_are_committed(self) -> None:
+        """M15 and slower are ~25 MB over sixteen markets and 180 days, and
+        they are the clocks every measurement actually uses."""
+        ignored = self._gitignore()
+
+        assert "data/history/\n" not in ignored, "the whole store must not be ignored"
+        for clock in ("M15", "M30", "H1", "H4"):
+            assert f"data/history/*/{clock}.npz" not in ignored, clock
+
+    def test_the_fast_clocks_are_not(self) -> None:
+        """M1 and M5 are three quarters of the bars and ~120 MB, on the clocks
+        the cost wall refuses anyway. One command refetches them."""
+        ignored = self._gitignore()
+
+        assert "data/history/*/M1.npz" in ignored
+        assert "data/history/*/M5.npz" in ignored
+
+    def test_the_launcher_refuses_an_empty_store(self) -> None:
+        launcher = (Path(__file__).resolve().parent.parent / "deel.cmd").read_text()
+
+        assert "data\\history\\manifest.json" in launcher
+        assert "Run ophalen.cmd first" in launcher
+
+    def test_the_launcher_pushes_the_working_branch(self) -> None:
+        """Pushing bars to the wrong branch would put 25 MB somewhere nobody
+        reads and leave the analysis still stuck on the VPS."""
+        launcher = (Path(__file__).resolve().parent.parent / "deel.cmd").read_text()
+
+        assert "git push -u origin claude/mt5-autonomous-trading-system-ujd1sk" in launcher
+
+    def test_all_is_the_way_to_include_the_fast_clocks(self) -> None:
+        launcher = (Path(__file__).resolve().parent.parent / "deel.cmd").read_text()
+
+        assert 'if /I "%1"=="all"' in launcher
+        assert "git add -f -- data/history" in launcher
