@@ -259,9 +259,18 @@ def show_risk(
         ccy = state.currency
         print(f"\n  RISK STATE — {settings.mode.value}")
         print(f"    equity        {state.equity:.2f} {ccy}   (peak {state.equity_peak:.2f})")
+        # BOTH DAILY LIMITS ON ONE LINE. The percentage one is 0 on this
+        # account, so a banner printing only that reads "limit -0.0%" and
+        # looks like no daily limit exists at all — while a 20 EUR one is
+        # armed and will stop the day. A limit the operator cannot see on the
+        # startup screen is a limit he finds out about from a refusal.
+        money_limit = settings.risk.daily_loss_limit_money
+        day_limits = f"limit -{settings.effective_daily_loss_limit_pct():.1f}%"
+        if money_limit > 0:
+            day_limits += f" / -{money_limit:.2f} {ccy}"
         print(
-            f"    day           {state.day_pnl_pct:+.2f}%  "
-            f"limit -{settings.effective_daily_loss_limit_pct():.1f}%   "
+            f"    day           {state.day_pnl_pct:+.2f}%  ({state.day_pnl:+.2f} {ccy})  "
+            f"{day_limits}   "
             f"since {state.day_start:%Y-%m-%d %H:%M} UTC"
         )
         print(

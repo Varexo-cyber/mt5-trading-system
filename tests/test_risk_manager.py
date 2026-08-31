@@ -1450,3 +1450,170 @@ class TestScalpFloorClearsTheBankingRule:
         assert pyramiding.min_existing_r > settings.trade_management.bank_at_r
         assert pyramiding.require_stop_beyond_entry is True
         assert pyramiding.risk_multiplier <= 0.5, "an add-on may never be the bigger bet"
+
+
+class TestTheDailyLimitStatedInMoney:
+    """"Wnr daily verlies 20 EUR bereikt, die gehele dag geen verdere trades
+    meer, volgende dag verder."
+
+    A percentage cannot express that. 20 EUR is 9.26% of 216 today and would be
+    37 EUR if the account reached 400, and the owner named a fixed figure. So
+    the limit is absolute, in the account currency, and it does not move.
+
+    `daily_loss_limit_pct` is 0 on this account -- switched off in August when
+    3% of EUR 88 was under two losing trades wide -- which is exactly why a
+    second, differently-shaped limit was needed rather than a different number
+    in the old one.
+    """
+
+    def _manager(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock,
+        money: float = 20.0, pct: float = 0.0,
+    ) -> RiskManager:
+        settings = settings_for(
+            tmp_path,
+            raw,
+            **{
+                "system.mode": "scaling",
+                "risk.daily_loss_limit_money": money,
+                # BOTH, and that is not belt-and-braces. The percentage limit
+                # the manager enforces comes from `active_limits`, i.e. the
+                # MODE's value -- setting `risk.daily_loss_limit_pct` alone
+                # leaves the mode's 3% in force and every case below fails on
+                # a limit the test thought it had switched off.
+                "risk.daily_loss_limit_pct": pct,
+                "modes.scaling.daily_loss_limit_pct": pct,
+                "risk.weekly_loss_limit_pct": 0.0,
+                # Off, so the 15% peak-to-current breaker cannot answer first
+                # on the small equities these cases use.
+                "risk.max_drawdown_circuit_breaker_pct": 0.0,
+            },
+        )
+        return RiskManager(settings=settings, journal=journal, clock=clock)
+
+    def test_nineteen_euros_down_still_trades(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        manager = self._manager(tmp_path, raw, journal, clock)
+        manager.build_state(account(216.0))
+        clock.advance(timedelta(hours=1))
+
+        assert manager.check_can_trade(manager.build_state(account(197.0))).approved
+
+    def test_twenty_euros_down_stops_the_day(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        manager = self._manager(tmp_path, raw, journal, clock)
+        manager.build_state(account(216.0))
+        clock.advance(timedelta(hours=1))
+
+        decision = manager.check_can_trade(manager.build_state(account(196.0)))
+
+        assert not decision.approved
+        assert decision.reason is Reason.DAILY_LOSS_LIMIT
+        assert "20.00 EUR limit" in decision.detail
+
+    def test_it_does_not_move_when_the_account_grows(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """THE WHOLE REASON IT IS IN MONEY. At EUR 800 a 9.26% limit would be
+        EUR 74 before it bit. This one is still 20."""
+        manager = self._manager(tmp_path, raw, journal, clock)
+        manager.build_state(account(800.0))
+        clock.advance(timedelta(hours=1))
+
+        assert manager.check_can_trade(manager.build_state(account(781.0))).approved
+        assert (
+            manager.check_can_trade(manager.build_state(account(779.0))).reason
+            is Reason.DAILY_LOSS_LIMIT
+        )
+
+    def test_an_open_loser_counts_before_it_is_closed(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """Stricter than realised-only, and deliberately: otherwise the account
+        can sit 20 EUR underwater at "nothing lost today" and keep opening."""
+        manager = self._manager(tmp_path, raw, journal, clock)
+        manager.build_state(account(216.0))
+        clock.advance(timedelta(hours=1))
+        # Balance untouched -- nothing has closed. Equity is down on an open
+        # position.
+        state = manager.build_state(account(195.0, balance=216.0))
+
+        assert manager.check_can_trade(state).reason is Reason.DAILY_LOSS_LIMIT
+
+    def test_the_next_day_starts_clean(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """"Volgende dag verder." The day anchor moves with the calendar, so
+        the pause expires on its own without anyone restarting anything."""
+        manager = self._manager(tmp_path, raw, journal, clock)
+        manager.build_state(account(216.0))
+        clock.advance(timedelta(hours=1))
+        assert manager.check_can_trade(manager.build_state(account(196.0))).reason is (
+            Reason.DAILY_LOSS_LIMIT
+        )
+
+        clock.advance(timedelta(days=1))
+
+        assert manager.check_can_trade(manager.build_state(account(196.0))).approved
+
+    def test_zero_disables_it(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        manager = self._manager(tmp_path, raw, journal, clock, money=0.0)
+        manager.build_state(account(216.0))
+        clock.advance(timedelta(hours=1))
+
+        assert manager.check_can_trade(manager.build_state(account(100.0))).approved
+
+    def test_both_limits_run_and_the_first_to_bite_wins(
+        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
+    ) -> None:
+        """Setting the money limit may not quietly switch the percentage off."""
+        manager = self._manager(tmp_path, raw, journal, clock, money=100.0, pct=3.0)
+        manager.build_state(account(1000.0))
+        clock.advance(timedelta(hours=1))
+
+        # -3.5%: under the 100 EUR limit, over the 3% one.
+        assert (
+            manager.check_can_trade(manager.build_state(account(965.0))).reason
+            is Reason.DAILY_LOSS_LIMIT
+        )
+
+    def test_it_halts_new_trades_rather_than_closing_open_ones(self) -> None:
+        """A pacing limit stops opening. Force-closing at a limit turns a paper
+        loss into a real one, which is the thing it exists to avoid."""
+        import inspect
+
+        from risk import risk_manager
+
+        source = inspect.getsource(risk_manager.RiskManager.check_can_trade)
+
+        assert "daily_loss_limit_money" in source
+        assert "close" not in source.lower().split("daily_loss_limit_money")[1][:400]
+
+
+class TestTheLiveAccountCarriesTheTwentyEuroLimit:
+    def test_the_overlay_sets_it(self) -> None:
+        live = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert live.risk.daily_loss_limit_money == pytest.approx(20.0)
+
+    def test_the_base_config_leaves_it_off(self) -> None:
+        """One owner's number for one account, not a default for everyone."""
+        assert load_settings(env_overrides=False).risk.daily_loss_limit_money == 0.0
+
+    def test_it_gates_every_section(self) -> None:
+        """"Stop sectie 2 en 3." The limit sits in the risk manager, which
+        every trade proposal passes through, so it stops all of them together
+        rather than needing a per-section switch."""
+        import inspect
+
+        from risk import risk_manager
+
+        assert "daily_loss_limit_money" in inspect.getsource(
+            risk_manager.RiskManager.check_can_trade
+        )

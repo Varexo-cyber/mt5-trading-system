@@ -3982,6 +3982,32 @@ risk:
   # only a reviewer confidence of 0.90 reaches, a 12% cap on total open risk,
   # four position slots, every filter and Claude's veto.
   daily_loss_limit_pct: 0
+
+  # EN DIT IS DE DAGLIMIET DIE WEL AAN STAAT, 31 augustus, op instructie van
+  # de eigenaar: "wnr daily verlies 20 EUR bereikt die gehele dag geen verdere
+  # trades meer, volgende dag verder".
+  #
+  # In euro's en niet in procenten, en dat is het hele punt. 20 EUR is nu 9,26%
+  # van 216. Loopt de rekening naar 400, dan is diezelfde 9,26% ineens 37 EUR,
+  # en dat is niet wat er gevraagd is. Een vast bedrag blijft een vast bedrag.
+  #
+  # De procentuele limiet hierboven blijft 0. Beide worden gecontroleerd en de
+  # eerste die bijt wint; deze aanzetten zet de andere niet uit.
+  #
+  # WAT ER PRECIES GEBEURT. Geen nieuwe trades meer die dag, voor ALLE secties
+  # -- de limiet zit in `RiskManager.evaluate`, waar elk handelsvoorstel
+  # langskomt, dus sectie 2 en 3 en al hun klokken liggen er samen stil. Wat al
+  # openstaat blijft openstaan: een positie sluiten omdat een limiet raakt
+  # maakt van een papieren verlies een echt verlies. `day_start_equity` loopt
+  # met de kalenderdag mee, dus de volgende dag begint hij vanzelf op nul.
+  #
+  # LET OP: hij meet op EQUITY, niet alleen op gesloten trades. Een positie die
+  # 15 EUR onder water staat telt dus al mee voordat hij dicht is. Dat is
+  # strenger dan alleen afgeronde trades tellen, en met opzet -- anders kan de
+  # rekening 20 EUR in het rood staan met "0 EUR verlies vandaag" en gewoon
+  # doorgaan met openen.
+  daily_loss_limit_money: 20.0
+
   weekly_loss_limit_pct: 0
 
 modes:
