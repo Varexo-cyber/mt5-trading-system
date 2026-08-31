@@ -373,9 +373,7 @@ class TestTheEntryConfirmationExemptionReachesTheRunner:
         service = self._runner_on_the_live_config()
         poor = ReachVerdict(200, 1.0, 80.0, 50.0)
 
-        assert not service._reach_failure_is_advisory(
-            self._short("trend_momentum_swing"), poor
-        )
+        assert not service._reach_failure_is_advisory(self._short("trend_momentum_swing"), poor)
         for family in (
             "impulse_retest_m15",
             "impulse_retest_m30_m30",

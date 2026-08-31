@@ -69,7 +69,10 @@ class TestItCallsTheRealApi:
 
         assert parameters[1] == "config"
         assert parameters[2] == "credentials"
-        assert "MT5Connector(\n        settings.mt5,\n        credentials," in SOURCE
+        # WHITESPACE-INSENSITIVE. This matched an exact indentation and broke
+        # the moment the construction moved inside an `else:` for the offline
+        # cache -- failing for a reformat rather than for the defect it names.
+        assert "MT5Connector( settings.mt5, credentials," in " ".join(SOURCE.split())
 
     def test_it_tears_the_connection_down_by_its_real_name(self) -> None:
         from core.mt5_connector import MT5Connector

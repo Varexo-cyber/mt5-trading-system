@@ -125,21 +125,73 @@ def asset_class(symbol: str) -> str:
     return "unclassified"
 
 
-def stop_outs(conn: sqlite3.Connection) -> list[dict]:
-    """Every closed trade that finished at or through its own stop.
+def pip_size(symbol: str, price: float) -> float:
+    """One pip for this symbol, from its name and its price magnitude.
 
-    THE BAND ON THE FAVOURABLE SIDE IS THE SUBTLE PART. A stop can fill BETTER
-    than its price -- price gaps, the broker fills at the next available quote,
-    and on a quiet pair that sometimes lands in your favour. Those are real
-    stop-outs and they belong in the average. Requiring `exit <= sl` exactly
-    would drop every one of them, and dropping only the favourable tail biases
-    the mean UPWARD -- which is the direction that keeps FX refused, i.e. it
-    would quietly confirm the very number this script exists to check.
+    THE FIRST VERSION DERIVED THIS FROM THE TRADE ROW and it produced medians
+    of eight thousand pips. `pip = |entry - sl| / sl_distance_pips` looks exact
+    -- both numbers come from the sizer, so they cannot disagree -- and it is
+    wrong for one reason: `trades.sl` is the CURRENT stop, not the one the
+    trade opened with. Break-even management moves it to entry. `|entry - sl|`
+    then collapses toward zero, the derived pip with it, and every slippage
+    divided by that pip explodes.
 
-    So the band is a quarter of the stop distance on the favourable side, and
-    unbounded on the adverse side. A fill half a pip inside a ten-pip stop is a
-    stop-out; a manual close five pips inside it is not, and counting that as
-    "-5 pips of slippage" would be far worse than dropping it.
+    A moved stop is the normal case on this account, so the derivation was
+    broken for most rows rather than a few.
+
+    The convention below is the broker's own: FX quotes a pip at the fourth
+    decimal, JPY crosses at the second, gold at 0.1, silver at 0.001, and
+    indices and crypto quote whole points. It matches `InstrumentSpec`, where
+    a forex pip is ten points and everything else is one -- but it needs no
+    live terminal, which is the point of reading a journal.
+    """
+    name = symbol.upper()
+    family = asset_class(symbol)
+    if family == "metal":
+        if "XAG" in name or "SILVER" in name:
+            return 0.001
+        return 0.1
+    if family in ("index", "crypto"):
+        return 1.0
+    if family == "forex":
+        return 0.01 if "JPY" in name else 0.0001
+    # Unclassified: fall back on the magnitude of the price itself. A quote
+    # near 1 is priced to four decimals; one in the thousands to whole points.
+    if price >= 500:
+        return 1.0
+    if price >= 20:
+        return 0.01
+    return 0.0001
+
+
+#: How far the stop distance implied by the row may differ from what the sizer
+#: recorded before the row is discarded as unreadable.
+#:
+#: `sl_distance_pips` is written at open and never updated; `sl` is updated
+#: whenever the stop moves. When the two disagree by more than this the stop
+#: has been moved and the row cannot answer "how far past the ORIGINAL stop did
+#: this fill" -- so it is dropped and counted, not guessed at.
+_STOP_DISTANCE_TOLERANCE = 3.0
+
+
+def stop_outs(conn: sqlite3.Connection) -> tuple[list[dict], dict[str, int]]:
+    """Stop-outs with their slippage, and a count of what was discarded.
+
+    Returns `(rows, discarded)`. The second value is not decoration: the first
+    version of this script silently kept rows it could not read and reported a
+    median of eight thousand pips as though it were a measurement.
+
+    THE BAND ON THE FAVOURABLE SIDE. A stop can fill BETTER than its price --
+    price gaps, the broker fills at the next available quote, and on a quiet
+    pair that sometimes lands in your favour. Those are real stop-outs and they
+    belong in the average. Requiring `exit <= sl` exactly would drop every one
+    of them, and dropping only the favourable tail biases the mean UPWARD --
+    the direction that keeps FX refused, i.e. it would quietly confirm the very
+    number this script exists to check.
+
+    So the band is a quarter of the stop distance on the favourable side and
+    unbounded on the adverse one. A fill half a pip inside a ten-pip stop is a
+    stop-out; a manual close five pips inside it is not.
     """
     rows = conn.execute(
         "SELECT symbol, direction, entry_price, sl, exit_price, sl_distance_pips, "
@@ -150,30 +202,60 @@ def stop_outs(conn: sqlite3.Connection) -> list[dict]:
     ).fetchall()
 
     found: list[dict] = []
+    discarded: dict[str, int] = {}
+
+    def drop(why: str) -> None:
+        discarded[why] = discarded.get(why, 0) + 1
+
     for row in rows:
-        pip = abs(float(row["entry_price"]) - float(row["sl"])) / float(row["sl_distance_pips"])
-        if pip <= 0:
+        symbol = str(row["symbol"])
+        entry, stop, exit_price = (
+            float(row["entry_price"]),
+            float(row["sl"]),
+            float(row["exit_price"]),
+        )
+        pip = pip_size(symbol, entry)
+        recorded = float(row["sl_distance_pips"])
+        implied = abs(entry - stop) / pip
+
+        # THE STOP HAS MOVED, so "past the stop" is not answerable from this
+        # row. Break-even management does this deliberately and often.
+        if implied <= 0 or not (
+            recorded / _STOP_DISTANCE_TOLERANCE <= implied <= recorded * _STOP_DISTANCE_TOLERANCE
+        ):
+            drop("stop had moved since the trade opened")
             continue
-        stop, exit_price = float(row["sl"]), float(row["exit_price"])
-        band = max(0.1 * pip, 0.25 * abs(float(row["entry_price"]) - stop))
+
+        band = max(0.1 * pip, 0.25 * abs(entry - stop))
         if str(row["direction"]).upper().startswith("L"):
             if exit_price > stop + band:
+                drop("closed before reaching its stop")
                 continue
             adverse = stop - exit_price
         else:
             if exit_price < stop - band:
+                drop("closed before reaching its stop")
                 continue
             adverse = exit_price - stop
+
+        slippage = adverse / pip
+        # A stop-out cannot slip by more than the stop is wide without
+        # something else being wrong -- a spec change, a symbol rename, a bad
+        # row. Better to name it than to average it in.
+        if abs(slippage) > recorded:
+            drop("slippage larger than the whole stop; row not trusted")
+            continue
+
         found.append(
             {
-                "symbol": str(row["symbol"]),
-                "asset_class": asset_class(str(row["symbol"])),
-                "slippage_pips": adverse / pip,
-                "sl_distance_pips": float(row["sl_distance_pips"]),
+                "symbol": symbol,
+                "asset_class": asset_class(symbol),
+                "slippage_pips": slippage,
+                "sl_distance_pips": recorded,
                 "opened_at": str(row["opened_at"]),
             }
         )
-    return found
+    return found, discarded
 
 
 def _percentile(values: list[float], share: float) -> float:
@@ -202,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
         conn.row_factory = sqlite3.Row
         try:
-            found = stop_outs(conn)
+            found, discarded = stop_outs(conn)
         except sqlite3.OperationalError as exc:
             raise SystemExit(f"cannot read {path}: {exc}") from exc
 
@@ -215,11 +297,24 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n{'=' * 78}")
     print("WHAT A STOP-OUT ACTUALLY COST — measured from this account's fills")
     print(f"{'=' * 78}")
+    # WHAT WAS THROWN AWAY, ALWAYS, BEFORE THE ANSWER. The first version of
+    # this script kept rows it could not read and reported a median of eight
+    # thousand pips as though it were a measurement. A discard count that only
+    # shows on failure is the same defect one level up.
+    if discarded:
+        print("\n  rows read but not usable:")
+        for why, count in sorted(discarded.items(), key=lambda row: -row[1]):
+            print(f"    {count:>5}  {why}")
+
     if not found:
-        print("\n  No stop-outs in the journal yet.")
-        print("  Until there are, `stop_slippage_pips` stays an assumption and every")
-        print("  FX refusal on cost rests on it. Nothing to conclude — come back after")
-        print("  the account has taken some losses.")
+        print("\n  No usable stop-outs in the journal.")
+        if discarded:
+            print("  Everything found was discarded for the reasons above — the most")
+            print("  likely one is that break-even moved the stop before it was hit,")
+            print("  which makes 'how far past the original stop' unanswerable.")
+        else:
+            print("  Until there are, `stop_slippage_pips` stays an assumption and every")
+            print("  FX refusal on cost rests on it.")
         return 1
 
     by_class: dict[str, list[float]] = {}
