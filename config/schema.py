@@ -3411,6 +3411,7 @@ class ConfluenceConfig(Base):
         "order_block_fast",
         "order_block_m15",
         "order_block_h1",
+        "walkforward_index",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
@@ -3889,6 +3890,18 @@ class ConfluenceConfig(Base):
         }
 
 
+class WalkforwardIndexConfig(Base):
+    """SECTION FOUR: frozen cost-aware H1 index reversal model."""
+
+    enabled: bool = False
+    timeframe: str = "H1"
+    allowed_symbols: tuple[str, ...] = ("SPX500",)
+    threshold: float = Field(default=0.075, gt=0.0, le=3.0)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    base_score: float = Field(default=62.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.72, ge=0.0, le=1.0)
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -3931,6 +3944,7 @@ class AnalysisConfig(Base):
     vwap_reversion: VwapReversionConfig = VwapReversionConfig()
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()
     candle_momentum: CandleMomentumConfig = CandleMomentumConfig()
+    walkforward_index: WalkforwardIndexConfig = WalkforwardIndexConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

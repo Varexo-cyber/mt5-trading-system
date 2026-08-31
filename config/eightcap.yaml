@@ -1386,6 +1386,16 @@ analysis:
     enabled: true
     timeframe: H1
 
+  # SECTIE VIER. Vast model, niet live hertrainend. Gekozen op het middelste
+  # kwart van 180 dagen Eightcap-data en daarna eenmalig getoetst op het
+  # nieuwste kwart: 92 SPX500-trades, 44,6% raak bij 1,5R, +0,074R per trade,
+  # EUR +12,02 op EUR 203. Alleen SPX500/H1 is bewezen; niets anders erft dit.
+  walkforward_index:
+    enabled: true
+    timeframe: H1
+    allowed_symbols: [SPX500]
+    threshold: 0.075
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2121,6 +2131,7 @@ analysis:
       order_block_fast: 1.0
       order_block_m15: 1.0
       order_block_h1: 1.0
+      walkforward_index: 1.5
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2579,7 +2590,8 @@ analysis:
     # geen ervan mag echt geld gebruiken tot een nieuwe out-of-sample replay
     # positief is. Een nieuwe sectie wordt om dezelfde reden niet verzonnen en
     # live gezet zonder bewijs.
-    live_enabled_modules: []
+    live_enabled_modules:
+      - walkforward_index
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2837,6 +2849,7 @@ analysis:
       order_block_fast: 1.0
       order_block_m15: 1.0
       order_block_h1: 1.0
+      walkforward_index: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3784,6 +3797,14 @@ risk:
       minimum_trades: 40
       maximum_loss_share: 0.55
       losing_streak: 9
+    walkforward_index:
+      # Holdout verwacht 55,4% verliezers bij een 1,5R-doel. Stop sneller dan
+      # de 92-trade meting als dat omslaat: 20 trades, >70% verlies of acht op
+      # rij betekent dat de nieuwste markt niet meer op de holdout lijkt.
+      window: 30
+      minimum_trades: 20
+      maximum_loss_share: 0.70
+      losing_streak: 8
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde

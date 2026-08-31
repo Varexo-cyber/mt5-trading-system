@@ -21,6 +21,7 @@ class TradeOrigin:
 # Specific aliases must precede their parent family.  Setup-family names carry
 # the module alias plus the clock (for example ``order_block_fast_m1``).
 _ORIGINS: tuple[tuple[str, TradeOrigin], ...] = (
+    ("walkforward_index", TradeOrigin(4, "walkforward_index", "H1", "JARVIS-S4-WF-H1")),
     ("impulse_retest_m30", TradeOrigin(2, "impulse_retest", "M30", "JARVIS-S2-IR-M30")),
     ("impulse_retest", TradeOrigin(2, "impulse_retest", "M15", "JARVIS-S2-IR-M15")),
     ("order_block_fast", TradeOrigin(3, "order_block", "M1", "JARVIS-S3-OB-M1")),
