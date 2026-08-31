@@ -246,10 +246,52 @@ def _resolve(frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, mana
     return fixed_r, exit_at, managed_r
 
 
-def _one_pass(
+def _frames_read(
+    settings, clock: Timeframe, finest: Timeframe, sections: tuple[str, ...]
+) -> tuple[Timeframe, ...]:
+    """Only the clocks something actually reads, so `_context` stops slicing
+    frames nobody looks at.
+
+    An M15 pass on this account reads M5 (the price `_context` itself takes),
+    M15 (the intraday planning timeframe and the clock) and H4 (the higher
+    timeframe veto). M30 and H1 were being sliced, wrapped in a Series and
+    handed over on every bar for nothing.
+
+    RESOLVED PER SECTION, not by unioning every horizon profile. A first draft
+    took the union and got M5, M15, H1, H4, D1 and W1 -- everything, because
+    the swing profile plans on H1 and vetoes on W1. It saved nothing. Both live
+    families classify as intraday, so only that profile's frames are needed,
+    and `_classify_horizon`'s own membership lists decide which profile applies
+    rather than an assumption about it.
+
+    The entry-timing frames used to belong here too. They do not any more:
+    `entry_timing_exempt_families` covers both live families, so that gate no
+    longer runs for them -- a saving that fell out of a correctness fix rather
+    than being chased.
+    """
+    confluence = settings.analysis.confluence
+    wanted: set[Timeframe] = {clock, finest, Timeframe.M5}
+    for name in sections:
+        if name in confluence.quick_modules:
+            horizon = "quick"
+        elif name in confluence.intraday_modules:
+            horizon = "intraday"
+        else:
+            horizon = "swing"
+        profile = confluence.horizon_profiles[horizon]
+        for timeframe in (profile.planning_timeframe, *profile.htf_trend_timeframes):
+            try:
+                wanted.add(Timeframe.parse(timeframe))
+            except (KeyError, ValueError):
+                # D1 and W1 are named by the swing profile and never fetched
+                # here; a frame that is absent is simply skipped downstream.
+                continue
+    return tuple(sorted(wanted, key=lambda tf: tf.duration))
+
+
+def _one_clock(
     *,
-    engine,
-    sizer,
+    sections: list,
     symbol: str,
     spec,
     frames: dict,
@@ -258,100 +300,111 @@ def _one_pass(
     equity: float,
     clock: Timeframe,
     resolve_on: Timeframe,
-    pass_key: tuple[str, str] = ("", ""),
     manage: tuple[float, float] | None = None,
-) -> list[Decision]:
-    """Every decision one configuration reaches on one symbol.
+    needed: tuple[Timeframe, ...] | None = None,
+) -> dict:
+    """Every section that reads one clock, walked ONCE.
 
-    `clock` is the timeframe the section reads, so it is also the timeframe a
-    decision may be taken on -- sampling an M30 section on M15 bars would offer
-    it the same setup twice.
+    `sections` is a list of `(name, engine, sizer)`. Returns `name -> decisions`.
+
+    WHY ONE WALK INSTEAD OF ONE PER SECTION. A `MarketContext` depends on the
+    symbol, the instant and the bars -- not on which module is about to read
+    it. Building it per section meant the sweep constructed every context
+    TWICE, once for impulse_retest and once for order_block, and context
+    building is the single largest cost in the loop. A 180-day sweep was
+    ninety minutes on the owner's VPS and half of that was rebuilding
+    identical objects.
+
+    ONE POSITION PER SYMBOL AT A TIME, tracked PER SECTION. That is
+    `Reason.POSITION_ALREADY_OPEN`, and without it this loop takes a fresh
+    trade on every bar a setup stays valid -- which is not merely an
+    over-count, it is biased. A retest that works leaves the level in a bar and
+    yields one entry; one that fails sits on it and yields five. Duplicates are
+    drawn from the losers. Sharing one `busy_until` across sections would be a
+    different error, refusing section three a trade because section two is in
+    one, so each keeps its own.
 
     `resolve_on` must be FINER than the clock. Resolving an M30 trade on M30
-    bars cannot tell which barrier a bar touched first, and assuming the good
-    one is how a backtest lies.
-
-    ONE POSITION PER SYMBOL AT A TIME, which is `Reason.POSITION_ALREADY_OPEN`
-    live and was missing here entirely. Without it this loop takes a fresh
-    trade on EVERY bar the setup stays valid, and that is not a small
-    over-count -- it is biased. A retest that works leaves the level in a bar
-    or two and yields one entry; a retest that fails sits on the level and
-    grinds, yielding five. Duplicates are drawn from the losers, so the
-    measured hit rate falls for a reason that has nothing to do with the
-    strategy. The 30 August run read 33% where the research reads 62-68%.
+    bars cannot tell which barrier came first, and assuming the good one is how
+    a backtest lies.
     """
-    decisions: list[Decision] = []
+    out: dict = {name: [] for name, _engine, _sizer in sections}
+    busy: dict = {name: None for name, _engine, _sizer in sections}
     bars = frames[clock]
     window = bars[(bars.index >= start) & (bars.index <= end)]
     horizon = int(96 * clock.duration / resolve_on.duration)
-    busy_until: datetime | None = None
-    #: Per pass, so it never outlives the frames it points into.
+    reading = frames if needed is None else {tf: frames[tf] for tf in needed if tf in frames}
+    #: Per clock, so it never outlives the frames it points into.
     slices: dict = {}
+
     for bar_time in window.index:
         upto = bar_time + clock.duration
-        if busy_until is not None and upto <= busy_until:
-            continue  # a position is open on this symbol; live would refuse
+        awake = [row for row in sections if busy[row[0]] is None or upto > busy[row[0]]]
+        if not awake:
+            continue
         spread_price = float(window.loc[bar_time].get("spread", 0)) * spec.point
-        ctx = _context(symbol, frames, upto, spread_price, slices)
+        ctx = _context(symbol, reading, upto, spread_price, slices)
         if ctx is None:
             continue
-        idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
-        module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
-        if not idea.approved:
-            decisions.append(
-                Decision(upto, symbol, module, "REFUSED_CONFLUENCE", note=idea.reason[:90])
+
+        for name, engine, sizer in awake:
+            idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
+            module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
+            if not idea.approved:
+                out[name].append(
+                    Decision(upto, symbol, module, "REFUSED_CONFLUENCE", note=idea.reason[:90])
+                )
+                continue
+            sized = sizer.size(
+                spec=spec,
+                equity=equity,
+                direction=idea.direction,
+                entry=idea.entry,
+                sl=idea.stop_loss,
+                tp=idea.take_profit,
+                spread_price=spread_price,
             )
-            continue
-        sized = sizer.size(
-            spec=spec,
-            equity=equity,
-            direction=idea.direction,
-            entry=idea.entry,
-            sl=idea.stop_loss,
-            tp=idea.take_profit,
-            spread_price=spread_price,
-        )
-        if not sized.decision.approved:
-            decisions.append(
+            if not sized.decision.approved:
+                out[name].append(
+                    Decision(
+                        upto,
+                        symbol,
+                        module,
+                        sized.decision.reason.name,
+                        direction=idea.direction.name,
+                        note=sized.decision.detail[:90],
+                    )
+                )
+                continue
+            r, exit_at, managed_r = _resolve(
+                frames[resolve_on], upto, idea, horizon_bars=horizon, manage=manage
+            )
+            # Held to the end of the window when it never resolved, exactly as
+            # an open position holds the symbol live.
+            busy[name] = exit_at if exit_at is not None else end + clock.duration
+            risk_money = sized.actual_risk_money
+            out[name].append(
                 Decision(
                     upto,
                     symbol,
                     module,
-                    sized.decision.reason.name,
+                    "TRADE",
                     direction=idea.direction.name,
-                    note=sized.decision.detail[:90],
+                    entry=idea.entry,
+                    stop=idea.stop_loss,
+                    target=idea.take_profit,
+                    lots=sized.volume,
+                    risk_money=risk_money,
+                    risk_pct=sized.actual_risk_pct,
+                    result_r=r,
+                    pnl_money=None if r is None else r * risk_money,
+                    exit_at=exit_at,
+                    pass_key=(name, clock.value),
+                    managed_r=managed_r,
+                    managed_money=None if managed_r is None else managed_r * risk_money,
                 )
             )
-            continue
-        r, exit_at, managed_r = _resolve(
-            frames[resolve_on], upto, idea, horizon_bars=horizon, manage=manage
-        )
-        # Held to the end of the window when it never resolved, exactly as an
-        # open position holds the symbol live.
-        busy_until = exit_at if exit_at is not None else end + clock.duration
-        risk_money = sized.actual_risk_money
-        decisions.append(
-            Decision(
-                upto,
-                symbol,
-                module,
-                "TRADE",
-                direction=idea.direction.name,
-                entry=idea.entry,
-                stop=idea.stop_loss,
-                target=idea.take_profit,
-                lots=sized.volume,
-                risk_money=risk_money,
-                risk_pct=sized.actual_risk_pct,
-                result_r=r,
-                pnl_money=None if r is None else r * risk_money,
-                exit_at=exit_at,
-                pass_key=pass_key,
-                managed_r=managed_r,
-                managed_money=None if managed_r is None else managed_r * risk_money,
-            )
-        )
-    return decisions
+    return out
 
 
 #: The markets worth measuring first, and the reason is not "the big ones".
@@ -784,29 +837,43 @@ def main() -> None:
                 skipped_symbols += 1
                 continue
 
+            # GROUPED BY CLOCK so the context is built once instead of once
+            # per section. Two sections on one clock read an identical
+            # MarketContext, and building it is the largest cost in the loop.
+            by_clock: dict[str, list[str]] = {}
             for name, tf_name in passes:
+                by_clock.setdefault(tf_name, []).append(name)
+
+            for tf_name, names in by_clock.items():
                 clock = Timeframe.parse(tf_name)
                 if clock not in frames or clock.duration <= finest.duration:
                     continue
-                tuned = _retimed(settings, name, tf_name)
-                only = [m for m in build_analysis_modules(tuned) if m.name == name]
-                pass_engine = ConfluenceEngine(only, tuned.analysis.confluence)
-                results[(name, tf_name)].extend(
-                    _one_pass(
-                        engine=pass_engine,
-                        sizer=PositionSizer(tuned),
-                        symbol=symbol,
-                        spec=spec,
-                        frames=frames,
-                        start=start,
-                        end=end,
-                        equity=equity,
-                        clock=clock,
-                        resolve_on=finest,
-                        pass_key=(name, tf_name),
-                        manage=manage,
+                group = []
+                for name in names:
+                    tuned = _retimed(settings, name, tf_name)
+                    only = [m for m in build_analysis_modules(tuned) if m.name == name]
+                    group.append(
+                        (
+                            name,
+                            ConfluenceEngine(only, tuned.analysis.confluence),
+                            PositionSizer(tuned),
+                        )
                     )
+                produced = _one_clock(
+                    sections=group,
+                    symbol=symbol,
+                    spec=spec,
+                    frames=frames,
+                    start=start,
+                    end=end,
+                    equity=equity,
+                    clock=clock,
+                    resolve_on=finest,
+                    manage=manage,
+                    needed=_frames_read(settings, clock, finest, tuple(names)),
                 )
+                for name, rows in produced.items():
+                    results[(name, tf_name)].extend(rows)
             done = sum(
                 1
                 for v in results.values()

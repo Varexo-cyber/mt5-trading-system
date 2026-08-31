@@ -237,13 +237,16 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         the over-count is BIASED: a retest that works leaves the level in a bar
         and yields one entry, a retest that fails sits on it and yields five.
         Duplicates are drawn from the losers."""
-        assert "busy_until" in SOURCE
-        assert "a position is open on this symbol; live would refuse" in SOURCE
+        assert "busy: dict = {name: None for name, _engine, _sizer in sections}" in SOURCE
+        assert (
+            "awake = [row for row in sections if busy[row[0]] is None or upto > busy[row[0]]]"
+            in SOURCE
+        )
 
     def test_an_unresolved_trade_keeps_holding_the_symbol(self) -> None:
         """Freeing the symbol on a trade that never resolved would let the same
         signal re-enter while the position is still open."""
-        assert "busy_until = exit_at if exit_at is not None else end + clock.duration" in SOURCE
+        assert "busy[name] = exit_at if exit_at is not None else end + clock.duration" in SOURCE
 
     def test_the_resolver_reports_when_the_trade_left(self) -> None:
         """The slot cap is a rule about how many trades are open AT ONCE, which
@@ -997,6 +1000,7 @@ class TestTheScanUniverseIsTheLiveOne:
                 "quick.cmd",
                 "history.cmd",
                 "history-one.cmd",
+                "sweep.cmd",
             }, f"{path} is not a measurement file and must not know about --core"
 
     def test_the_scanner_covers_every_class_except_stocks(self) -> None:
@@ -1547,3 +1551,84 @@ class TestTheSweepRanksOnTheExitTheAccountTakes:
         assert parsed.core is True and parsed.no_m1 is True
         assert parsed.sweep == ["M15", "M30", "H1", "H4"]
         assert "M5" not in parsed.sweep
+
+
+class TestTheSweepDoesNotBuildEveryContextTwice:
+    """A 180-day sweep was estimated at ninety minutes, and it was ninety
+    because of waste rather than work.
+
+    A `MarketContext` depends on the symbol, the instant and the bars -- not
+    on which module is about to read it. The sweep built one per SECTION, so
+    two sections on one clock constructed an identical object twice, and
+    context building is the largest single cost in the loop.
+
+    Measured on the real pipeline, 1000 bars, both sections on M30:
+
+        separate walks              0.76 ms per bar-pair
+        shared context              0.43
+        shared + trimmed frames     0.35
+    """
+
+    def test_sections_sharing_a_clock_are_walked_together(self) -> None:
+        assert "def _one_clock(" in SOURCE
+        assert "by_clock.setdefault(tf_name, []).append(name)" in SOURCE
+        assert "def _one_pass(" not in SOURCE
+
+    def test_each_section_keeps_its_own_open_position(self) -> None:
+        """Sharing one `busy_until` across sections would be a different bug:
+        refusing section three a trade because section two is in one."""
+        assert "busy: dict = {name: None for name, _engine, _sizer in sections}" in SOURCE
+        assert "busy[name] = exit_at" in SOURCE
+
+    def test_only_the_frames_something_reads_are_sliced(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _frames_read
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        read = _frames_read(
+            settings, Timeframe.M15, Timeframe.M5, ("impulse_retest", "order_block")
+        )
+
+        assert Timeframe.M15 in read, "the clock itself"
+        assert Timeframe.M5 in read, "_context takes the price from M5"
+        assert Timeframe.H4 in read, "the intraday higher-timeframe veto"
+        assert Timeframe.M30 not in read, "nothing reads M30 on an M15 pass"
+
+    def test_it_resolves_per_section_rather_than_over_every_profile(self) -> None:
+        """A first draft unioned all three horizon profiles and got M5, M15,
+        H1, H4, D1 and W1 -- everything, because the swing profile plans on H1
+        and vetoes on W1. It saved nothing."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _frames_read
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        read = _frames_read(settings, Timeframe.M15, Timeframe.M5, ("impulse_retest",))
+
+        assert Timeframe.H1 not in read
+        assert Timeframe.W1 not in read
+
+    def test_a_swing_section_still_gets_its_slower_frames(self) -> None:
+        """The trim must follow the config, not an assumption about which
+        modules are live today."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _frames_read
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        read = _frames_read(settings, Timeframe.M15, Timeframe.M5, ("market_structure",))
+
+        assert Timeframe.H1 in read, "swing plans on H1"
+
+    def test_the_launcher_no_longer_promises_ninety_minutes(self) -> None:
+        launcher = (ROOT / "sweep.cmd").read_text()
+
+        assert "1.5 hours" not in launcher
+        assert "ten to twenty minutes" in launcher
