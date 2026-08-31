@@ -1453,7 +1453,7 @@ class TestScalpFloorClearsTheBankingRule:
 
 
 class TestTheDailyLimitStatedInMoney:
-    """"Wnr daily verlies 20 EUR bereikt, die gehele dag geen verdere trades
+    """ "Wnr daily verlies 20 EUR bereikt, die gehele dag geen verdere trades
     meer, volgende dag verder."
 
     A percentage cannot express that. 20 EUR is 9.26% of 216 today and would be
@@ -1467,8 +1467,13 @@ class TestTheDailyLimitStatedInMoney:
     """
 
     def _manager(
-        self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock,
-        money: float = 20.0, pct: float = 0.0,
+        self,
+        tmp_path: Path,
+        raw: dict[str, Any],
+        journal: Journal,
+        clock: SimulatedClock,
+        money: float = 20.0,
+        pct: float = 0.0,
     ) -> RiskManager:
         settings = settings_for(
             tmp_path,
@@ -1545,7 +1550,7 @@ class TestTheDailyLimitStatedInMoney:
     def test_the_next_day_starts_clean(
         self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock: SimulatedClock
     ) -> None:
-        """"Volgende dag verder." The day anchor moves with the calendar, so
+        """ "Volgende dag verder." The day anchor moves with the calendar, so
         the pause expires on its own without anyone restarting anything."""
         manager = self._manager(tmp_path, raw, journal, clock)
         manager.build_state(account(216.0))
@@ -1607,7 +1612,7 @@ class TestTheLiveAccountCarriesTheTwentyEuroLimit:
         assert load_settings(env_overrides=False).risk.daily_loss_limit_money == 0.0
 
     def test_it_gates_every_section(self) -> None:
-        """"Stop sectie 2 en 3." The limit sits in the risk manager, which
+        """ "Stop sectie 2 en 3." The limit sits in the risk manager, which
         every trade proposal passes through, so it stops all of them together
         rather than needing a per-section switch."""
         import inspect

@@ -51,3 +51,7 @@ data/m15/
 # Research bars for scripts/lab (about 750 MB of public HistData).
 # scripts/lab/data.py says how to refetch them.
 data/research/
+
+# Downloaded bars, filled by ophalen.cmd. Tens to hundreds of megabytes and
+# reproducible in one command, so not something the repository should carry.
+data/history/

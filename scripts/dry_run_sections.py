@@ -774,6 +774,49 @@ def _retimed(settings, module_name: str, timeframe: str):
     )
 
 
+class _StoredMarket:
+    """A broker-shaped object backed by a folder of stored bars.
+
+    Three methods is the whole surface this script uses: `spec` for sizing,
+    `account` for the starting equity, and `symbols` for the universe. The
+    history itself is read directly from the store rather than through here,
+    because `fetch_mt5_history` chunks a range the terminal cannot serve in
+    one call and a folder has no such limit.
+
+    `shutdown` exists so the `finally` in main needs no special case. A store
+    has nothing to close.
+    """
+
+    def __init__(self, store, equity: float) -> None:
+        self.store = store
+        self._equity = equity or 0.0
+
+    def spec(self, symbol: str):
+        return self.store.spec(symbol)
+
+    def symbols(self):
+        from types import SimpleNamespace
+
+        specs = [self.store.spec(name) for name in self.store.symbols()]
+        return [SimpleNamespace(name=spec.symbol, path=spec.path) for spec in specs]
+
+    def account(self):
+        from types import SimpleNamespace
+
+        # EQUITY MUST BE GIVEN when there is no terminal to ask. Defaulting to
+        # a number would silently size every trade in the measurement against
+        # a balance the account does not have.
+        if self._equity <= 0:
+            raise SystemExit(
+                "--cache has no account to read, so --equity is required:\n"
+                "    dryrun.cmd --cache data/history --equity 216"
+            )
+        return SimpleNamespace(equity=self._equity, currency="EUR")
+
+    def shutdown(self) -> None:
+        return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Separate from `main` so a test can feed it the launcher's own command
     line without touching MT5.
@@ -807,6 +850,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="only the first N markets (0 = every market). A quick first look.",
+    )
+    parser.add_argument(
+        "--cache",
+        default="",
+        help=(
+            "read bars from a stored history folder instead of MT5 "
+            "(--cache data/history). Fill it once with fetch_history.py; after "
+            "that a measurement needs no terminal, no login and no re-download."
+        ),
     )
     parser.add_argument(
         "--no-m1",
@@ -843,8 +895,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    # `argv` so a test can drive the entry point. Without it the only way to
+    # check that a misconfigured run refuses loudly is to run the real thing
+    # against a real terminal, which is why several of those refusals were
+    # never tested and two of them did not work.
+    args = build_parser().parse_args(argv)
 
     # THE OVERLAY, or there are no live modules at all. The base config ships
     # `live_enabled_modules` empty on purpose -- permission to trade real money
@@ -866,13 +922,33 @@ def main() -> None:
             "Check `analysis.confluence.live_enabled_modules` in config/eightcap.yaml."
         )
 
-    credentials = load_credentials(required=True)
-    connector = MT5Connector(
-        settings.mt5,
-        credentials,
-        terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
-    )
-    connector.connect()
+    # BARS FROM DISK OR FROM THE TERMINAL, decided once, here.
+    #
+    # `_StoredMarket` answers the three things this run asks of a broker --
+    # `spec`, `account` and the history fetch -- and answers them from a folder.
+    # With it there is no login, no terminal, and no second download of bars
+    # that cannot change: a closed M15 candle from June is the same object in
+    # September.
+    store = None
+    if args.cache:
+        from backtesting.history_store import HistoryStore
+
+        store = HistoryStore(Path(args.cache))
+        if not store.symbols():
+            raise SystemExit(
+                f"{args.cache} holds no stored markets. Fill it first:\n"
+                f"    python scripts/fetch_history.py --days {max(args.days, 180)}"
+            )
+        connector = _StoredMarket(store, args.equity)
+        print(f"reading bars from {store.root} — MT5 is not being contacted")
+    else:
+        credentials = load_credentials(required=True)
+        connector = MT5Connector(
+            settings.mt5,
+            credentials,
+            terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
+        )
+        connector.connect()
     try:
         account = connector.account()
         equity = args.equity or account.equity
@@ -1049,7 +1125,11 @@ def main() -> None:
             try:
                 spec = connector.spec(symbol)
                 frames = {
-                    tf: fetch_mt5_history(connector, symbol, tf, _fetch_from(tf), end)
+                    tf: (
+                        store.frame(symbol, tf, _fetch_from(tf), end)
+                        if store is not None
+                        else fetch_mt5_history(connector, symbol, tf, _fetch_from(tf), end)
+                    )
                     for tf in fetch_these
                 }
             except Exception as exc:  # noqa: BLE001 - one bad symbol must not stop the run

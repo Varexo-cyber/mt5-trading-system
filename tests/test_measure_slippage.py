@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.measure_slippage import asset_class, stop_outs
+from scripts.measure_slippage import asset_class, pip_size, stop_outs
 
 
 def journal_with(tmp_path: Path, rows: list[tuple]) -> sqlite3.Connection:
@@ -80,7 +80,7 @@ class TestFindingTheStopOuts:
             tmp_path,
             [("EURUSD.i", "LONG", 1.1000, 1.0990, 1.09883, 10.0, "t", "SL", -1.0, "t")],
         )
-        found = stop_outs(db)
+        found, _ = stop_outs(db)
 
         assert len(found) == 1
         assert found[0]["slippage_pips"] == pytest.approx(1.7, abs=0.01)
@@ -91,7 +91,7 @@ class TestFindingTheStopOuts:
             tmp_path,
             [("EURUSD.i", "SHORT", 1.1000, 1.1010, 1.10117, 10.0, "t", "SL", -1.0, "t")],
         )
-        assert stop_outs(db)[0]["slippage_pips"] == pytest.approx(1.7, abs=0.01)
+        assert stop_outs(db)[0][0]["slippage_pips"] == pytest.approx(1.7, abs=0.01)
 
     def test_a_better_than_asked_fill_reads_negative(self, tmp_path: Path) -> None:
         """A gap can fill a stop IN YOUR FAVOUR, and pretending otherwise would
@@ -101,14 +101,14 @@ class TestFindingTheStopOuts:
             tmp_path,
             [("EURUSD.i", "LONG", 1.1000, 1.0990, 1.09905, 10.0, "t", "SL", -1.0, "t")],
         )
-        assert stop_outs(db)[0]["slippage_pips"] == pytest.approx(-0.5, abs=0.01)
+        assert stop_outs(db)[0][0]["slippage_pips"] == pytest.approx(-0.5, abs=0.01)
 
     def test_a_trade_that_closed_at_target_is_not_a_stop_out(self, tmp_path: Path) -> None:
         db = journal_with(
             tmp_path,
             [("EURUSD.i", "LONG", 1.1000, 1.0990, 1.1010, 10.0, "t", "TP", 1.0, "t")],
         )
-        assert stop_outs(db) == []
+        assert stop_outs(db)[0] == []
 
     def test_a_manual_close_between_entry_and_stop_is_not_one_either(self, tmp_path: Path) -> None:
         """Half way to the stop is not a stop-out, and counting it would put a
@@ -117,7 +117,7 @@ class TestFindingTheStopOuts:
             tmp_path,
             [("EURUSD.i", "LONG", 1.1000, 1.0990, 1.0995, 10.0, "t", "MANUAL", -0.5, "t")],
         )
-        assert stop_outs(db) == []
+        assert stop_outs(db)[0] == []
 
     def test_an_exact_fill_at_the_stop_still_counts(self, tmp_path: Path) -> None:
         """Zero slippage is the observation that most needs to be in the
@@ -126,7 +126,7 @@ class TestFindingTheStopOuts:
             tmp_path,
             [("EURUSD.i", "LONG", 1.1000, 1.0990, 1.0990, 10.0, "t", "SL", -1.0, "t")],
         )
-        found = stop_outs(db)
+        found, _ = stop_outs(db)
 
         assert len(found) == 1
         assert found[0]["slippage_pips"] == pytest.approx(0.0, abs=0.01)
@@ -145,7 +145,7 @@ class TestFindingTheStopOuts:
                 ("XAUUSD", "LONG", 4400.0, 4397.0, 4396.7, 30.0, "t", "SL", -1.0, "t"),
             ],
         )
-        found = {row["symbol"]: row for row in stop_outs(db)}
+        found = {row["symbol"]: row for row in stop_outs(db)[0]}
 
         assert found["USDJPY.i"]["slippage_pips"] == pytest.approx(2.0, abs=0.01)
         assert found["XAUUSD"]["slippage_pips"] == pytest.approx(3.0, abs=0.01)
@@ -159,7 +159,7 @@ class TestFindingTheStopOuts:
         )
         db.commit()
 
-        assert stop_outs(db) == []
+        assert stop_outs(db)[0] == []
 
 
 class TestTheConfiguredNumberIsStillAnAssumption:
@@ -178,3 +178,85 @@ class TestTheConfiguredNumberIsStillAnAssumption:
         # Commission is 5.50 round trip = 0.55 pip on a major. Slippage is
         # three times that, and it is the number nobody has checked.
         assert settings.risk.commission_per_lot("forex") / 10.0 < slippage["forex"]
+
+
+class TestTheBugThatProducedEightThousandPips:
+    """The first version reported a forex median of 8563 pips.
+
+    It derived one pip from the trade row: `|entry - sl| / sl_distance_pips`.
+    That looks exact -- both numbers are written by the sizer, so they cannot
+    disagree -- and it is wrong for one reason. `trades.sl` is the CURRENT
+    stop, not the one the trade opened with, and break-even management moves
+    it to entry. `|entry - sl|` collapses toward zero, the derived pip with it,
+    and every slippage divided by that pip explodes.
+
+    On this account a moved stop is the normal case, so the derivation was
+    broken for most rows rather than a few.
+    """
+
+    def test_a_moved_stop_is_discarded_and_counted(self, tmp_path: Path) -> None:
+        """Entry 1.1000, opened with a 10-pip stop, break-even moved it to
+        1.09995. The old code called one pip 0.0000005 and read the fill as
+        thousands of pips."""
+        db = journal_with(
+            tmp_path,
+            [("EURUSD.i", "LONG", 1.1000, 1.09995, 1.09990, 10.0, "t", "SL", -0.1, "t")],
+        )
+
+        found, discarded = stop_outs(db)
+
+        assert found == [], "an unreadable row may not reach the average"
+        assert sum(discarded.values()) == 1
+        assert any("moved" in why for why in discarded)
+
+    def test_an_untouched_stop_still_measures(self, tmp_path: Path) -> None:
+        db = journal_with(
+            tmp_path,
+            [("EURUSD.i", "LONG", 1.1000, 1.0990, 1.09883, 10.0, "t", "SL", -1.0, "t")],
+        )
+
+        found, discarded = stop_outs(db)
+
+        assert len(found) == 1
+        assert found[0]["slippage_pips"] == pytest.approx(1.7, abs=0.01)
+        assert discarded == {}
+
+    def test_slippage_wider_than_the_stop_is_refused(self, tmp_path: Path) -> None:
+        """Not a fill, a broken row -- a spec change or a rename. Averaging it
+        in is how one bad record moves a number that decides live trading."""
+        db = journal_with(
+            tmp_path,
+            [("EURUSD.i", "LONG", 1.1000, 1.0990, 1.0960, 10.0, "t", "SL", -4.0, "t")],
+        )
+
+        found, discarded = stop_outs(db)
+
+        assert found == []
+        assert any("larger than the whole stop" in why for why in discarded)
+
+
+class TestOnePipWithoutABroker:
+    """The journal has no `InstrumentSpec`, so the pip comes from the symbol's
+    name and its price. It has to match what the terminal would say."""
+
+    def test_the_conventions(self) -> None:
+        assert pip_size("EURUSD.i", 1.10) == pytest.approx(0.0001)
+        assert pip_size("USDJPY.i", 150.0) == pytest.approx(0.01)
+        assert pip_size("GBPJPY", 195.0) == pytest.approx(0.01)
+        assert pip_size("XAUUSD", 4400.0) == pytest.approx(0.1)
+        assert pip_size("XAGUSD", 30.0) == pytest.approx(0.001)
+        assert pip_size("GER40", 8300.0) == pytest.approx(1.0)
+        assert pip_size("BTCUSD", 60000.0) == pytest.approx(1.0)
+
+    def test_it_cannot_depend_on_the_moved_stop(self) -> None:
+        """The whole point, asserted structurally rather than by grepping the
+        source for the letters "sl" -- which matched its own docstring. The
+        function takes a symbol and a price. There is no parameter through
+        which a stop could reach it, moved or otherwise."""
+        import inspect
+
+        from scripts import measure_slippage
+
+        parameters = list(inspect.signature(measure_slippage.pip_size).parameters)
+
+        assert parameters == ["symbol", "price"]

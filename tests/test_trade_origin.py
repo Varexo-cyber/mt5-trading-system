@@ -21,19 +21,19 @@ def test_every_live_setup_family_has_an_unambiguous_mt5_label() -> None:
             timeframe,
             comment,
         )
-        assert broker_comment(
-            family, is_addon=False, experimental_live=True
-        ) == comment
+        assert broker_comment(family, is_addon=False, experimental_live=True) == comment
         assert len(comment) <= 31
 
 
 def test_unrelated_and_addon_comments_keep_their_existing_identity() -> None:
-    assert broker_comment(
-        "trend_momentum_swing", is_addon=False, experimental_live=True
-    ) == "jarvis-exp-live"
-    assert broker_comment(
-        "trend_momentum_swing", is_addon=False, experimental_live=False
-    ) == "jarvis"
-    assert broker_comment(
-        "order_block_fast_m1", is_addon=True, experimental_live=True
-    ) == "jarvis-scalp"
+    assert (
+        broker_comment("trend_momentum_swing", is_addon=False, experimental_live=True)
+        == "jarvis-exp-live"
+    )
+    assert (
+        broker_comment("trend_momentum_swing", is_addon=False, experimental_live=False) == "jarvis"
+    )
+    assert (
+        broker_comment("order_block_fast_m1", is_addon=True, experimental_live=True)
+        == "jarvis-scalp"
+    )
