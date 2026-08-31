@@ -330,7 +330,18 @@ class TestTheEntryConfirmationExemptionReachesTheRunner:
         assert refused is False, "price ran 10 ATR against this short; the gate must hold"
         assert adverse is not None and adverse > 1.0
 
-        for family in ("impulse_retest_intraday", "order_block_intraday"):
+        # Use the setup-family strings the six shipped module/timeframe
+        # instances actually produce. The exemption is a substring match; a
+        # renamed clock alias that no longer contains its parent family would
+        # otherwise silently bring the 35%-of-setups blocker back.
+        for family in (
+            "impulse_retest_m15",
+            "impulse_retest_m30_m30",
+            "order_block_fast_m1",
+            "order_block_m15_m15",
+            "order_block_m30",
+            "order_block_h1_h1",
+        ):
             allowed, measured = service._entry_is_confirmed(context, self._short(family))
             assert allowed is True, f"{family} is exempt and must pass the same bars"
             assert measured is None
