@@ -131,7 +131,8 @@ class FilterChain:
                 # The structured fields stay for the JSON log and the
                 # dashboard. The message now carries enough to read the screen.
                 log.info(
-                    f"{ctx.symbol}: {verdict.filter_name} blocked entry — {verdict.reason}",
+                    f"{ctx.symbol}: {verdict.filter_name} blocked entry — "
+                    f"{verdict.reason}: {verdict.detail}",
                     extra={
                         "event": "filter_block",
                         "filter": verdict.filter_name,

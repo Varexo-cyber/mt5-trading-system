@@ -112,6 +112,8 @@ class TestBlackoutWindows:
         verdict = f.check(context())
         assert not verdict.passed
         assert verdict.reason is Reason.NEWS_BLACKOUT
+        assert "Retail Sales at 12:45 UTC" in verdict.detail
+        assert "source primary" in verdict.detail
 
     def test_exactly_at_the_window_edge_is_blocked(
         self, clock: SimulatedClock, tmp_path: Path

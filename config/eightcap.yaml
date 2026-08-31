@@ -3896,34 +3896,11 @@ risk:
   #   bezet blijven gaven er vier. De doorstroom zit in de houdtijd, niet hier.
   max_concurrent_positions: 4
 
-  # DOORPAKKEN OP UNDERCAPITALIZED, 30 augustus, op uitdrukkelijke instructie
-  # van de eigenaar: "wnr die melding komt moet het gwn door door door".
-  #
-  # WAT ER GEVRAAGD WERD EN WAT ER MOGELIJK IS. De instructie was "dan doe je
-  # maar lotsize verminderen". Dat kan niet, en dat is precies waarom deze
-  # weigering bestaat: `volume_min` IS de bodem. Op XAUUSD is dat 0,01 lot =
-  # één ounce, en kleiner bestaat niet bij de broker. De enige richting die
-  # er is, is OMHOOG.
-  #
-  # Dus dit doet het omgekeerde van wat er letterlijk stond en het enige wat
-  # er kan: het rondt naar boven af en accepteert MEER risico dan het doel.
-  #
-  # WAAR HET STOPT: bij `max_risk_per_trade_pct` (8%), de eigen
-  # conviction-plafond van deze rekening. Een minimum lot dat daar overheen
-  # gaat wordt nog steeds geweigerd -- niet uit voorzichtigheid maar omdat
-  # "verminder de lotsize" onmogelijk kan hebben betekend dat één trade een
-  # derde van de rekening op één stop zet. Zo'n instrument is te groot voor
-  # deze equity en daar is geen instelling voor.
-  #
-  # WAT HET KOST. Trades tussen de 2% en 8% dragen tot vier keer het bedoelde
-  # risico. Een verliesreeks daarop kost vier keer zoveel. Elke zo'n trade
-  # gaat met `TOOK MINIMUM LOT` en het echte percentage het journaal in.
-  #
-  # DIT IS DE REGEL DIE DE EIGENAAR ZELF ALS KRITIEK HAD OPGESCHREVEN
-  # ("het systeem mag NIET afronden naar de minimum lot"). Hij heeft hem
-  # 30 augustus zelf teruggedraaid, met "idgaf" erbij. Dat staat hier zodat
-  # niemand later denkt dat het per ongeluk is gebeurd.
-  allow_minimum_lot_above_target: true
+  # De broker-minimumlot mag het bedoelde risico nooit overschrijden. XAU/XPT
+  # kunnen op deze equity soms niet binnen 2% worden uitgedrukt; die kandidaat
+  # wordt dan normaal als UNDERCAPITALIZED overgeslagen, zonder stacktrace en
+  # zonder de rest van de batch te raken.
+  allow_minimum_lot_above_target: false
 
   # De anti-martingale-halvering staat uit op DIT account, en alleen omdat hij
   # hier niet doet waar hij voor bedoeld is.
