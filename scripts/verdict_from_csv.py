@@ -57,7 +57,7 @@ def rows_from(path: Path) -> tuple[list[Decision], bool]:
                     pnl_money=_number(row.get("pnl_money_fixed_stop")),
                     managed_r=_number(row.get("managed_r_LIVE")),
                     managed_money=_number(row.get("managed_money_LIVE")),
-                    pass_key=(row["module"], ""),
+                    pass_key=(row["module"], row.get("clock") or ""),
                 )
             )
     return trades, managed
@@ -76,6 +76,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", help="a CSV written by dry_run_sections")
     parser.add_argument(
+        "--only",
+        default="",
+        help="judge one combination, e.g. --only order_block:H1",
+    )
+    parser.add_argument(
         "--fixed",
         action="store_true",
         help="judge the fixed stop instead of the break-even exit the account runs",
@@ -89,6 +94,13 @@ def main() -> None:
     trades, has_managed = rows_from(path)
     if not trades:
         raise SystemExit(f"{path} has no TRADE rows")
+    if args.only:
+        name, _, clock = args.only.partition(":")
+        wanted = [d for d in trades if d.module == name and (not clock or d.pass_key[1] == clock)]
+        if not wanted:
+            available = sorted({f"{d.module}:{d.pass_key[1]}" for d in trades})
+            raise SystemExit(f"--only {args.only} matched nothing. In this file: {available}")
+        trades = wanted
     managed = has_managed and not args.fixed
 
     print(f"\n{'=' * 78}")
@@ -98,18 +110,27 @@ def main() -> None:
     if not has_managed:
         print("  this file has no managed column, so the FIXED stop is judged")
 
-    sections = sorted({d.module for d in trades})
-    keys = [(name, "") for name in sections]
-    for name in sections:
-        rows = [d for d in trades if d.module == name]
+    # GROUPED BY (SECTION, CLOCK), not by section.
+    #
+    # A sweep CSV holds eight combinations. Pooling them by module merges
+    # impulse_retest on M15, M30, H1 and H4 into one number, and those are
+    # four different strategies with four different cost structures -- the
+    # sweep exists precisely to tell them apart. Doing it by module here would
+    # undo that in the last step.
+    keys = sorted({d.pass_key for d in trades})
+    if len(keys) > 1:
+        print(f"  {len(keys)} section/clock combinations in this file")
+    for name, clock in keys:
+        rows = [d for d in trades if d.pass_key == (name, clock)]
         closed = [d for d in rows if (d.managed_r if managed else d.result_r) is not None]
         if not closed:
             continue
         total = sum((d.managed_r if managed else d.result_r) or 0.0 for d in closed)
         money = sum((d.managed_money if managed else d.pnl_money) or 0.0 for d in closed)
         won = sum(1 for d in closed if ((d.managed_r if managed else d.result_r) or 0) > 0)
+        label = f"{name} {clock}".strip()
         print(
-            f"  {name:<18} {len(closed):>5} trades  {won / len(closed):>5.1%} win"
+            f"  {label:<22} {len(closed):>5} trades  {won / len(closed):>5.1%} win"
             f"  {total:+8.2f} R  EUR {money:+9.2f}"
         )
 
