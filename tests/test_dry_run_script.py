@@ -1059,6 +1059,9 @@ class TestTheScanUniverseIsTheLiveOne:
                 "history.cmd",
                 "history-one.cmd",
                 "sweep.cmd",
+                # Offline measurement, same universe, no terminal.
+                "snel.cmd",
+                "ophalen.cmd",
             }, f"{path} is not a measurement file and must not know about --core"
 
     def test_the_scanner_covers_every_class_except_stocks(self) -> None:

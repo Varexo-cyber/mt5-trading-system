@@ -360,6 +360,7 @@ class TestTheLaunchers:
                     "%CLOCKS%": "M15 M30 H1 H4",
                     "%FINE%": "--no-m1",
                     "%CSVFILE%": "runtime\\sweep-180d-M15-M30-H1-H4.csv",
+                    "%EXTRA%": "",
                 },
             )
         )
@@ -381,3 +382,39 @@ class TestTheLaunchers:
 
         assert "data\\history\\manifest.json" in launcher
         assert "Run ophalen.cmd first" in launcher
+
+
+class TestTheRunEstimatesItsOwnLength:
+    """Four estimates from me, four wrong -- ninety minutes, ten, six, then
+    forty-five. The VPS is slower than the machine I benchmark on and the
+    section count keeps changing, so the only honest source is the clock on
+    the machine doing the work."""
+
+    def test_it_extrapolates_from_its_own_pace(self) -> None:
+        import inspect
+
+        from scripts import dry_run_sections
+
+        source = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert "min left" in source
+        assert "elapsed / index * (len(symbols) - index)" in source
+
+    def test_the_header_says_how_many_passes_it_will_walk(self) -> None:
+        """ "Six sections" and "six sections on four clocks" print the same
+        header and differ four-fold in runtime."""
+        import inspect
+
+        from scripts import dry_run_sections
+
+        source = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert "section/clock passes" in source
+
+    def test_the_offline_launcher_forwards_extra_flags(self) -> None:
+        """--only and --limit are how a two-hour run becomes a ten-minute one,
+        and a launcher that cannot pass them makes them unreachable."""
+        launcher = (Path(__file__).resolve().parent.parent / "snel.cmd").read_text()
+
+        assert "%EXTRA%" in launcher
+        assert "set EXTRA=%ONLY%" in launcher

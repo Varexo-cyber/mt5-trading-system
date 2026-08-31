@@ -14,10 +14,19 @@ echo  The fetch is gone, so this is pure compute. It also runs with MT5
 echo  closed, while the account is trading, or on any machine holding the
 echo  folder.
 echo.
+echo  HOW LONG. Six live sections now, not two, so every bar is judged six
+echo  times. The run prints a "~N min left" from its OWN pace after the
+echo  second market - do not take an estimate from anywhere else.
+echo.
+echo  Faster, when you want an answer tonight:
+echo    - fewer days      snel.cmd 60 M15 M30
+echo    - fewer sections  set ONLY=--only order_block  then snel.cmd
+echo    - fewer markets   set ONLY=--limit 5           then snel.cmd
+echo.
 echo  USAGE
 echo    snel.cmd                       180 days, M15 M30 H1 H4
 echo    snel.cmd 180 M1 M5             180 days on the fast clocks
-echo    snel.cmd 90 M5 M15 M30 H1 H4   90 days, five clocks
+echo    snel.cmd 60 M15 M30            a quick look
 echo.
 
 set DAYS=%1
@@ -45,6 +54,10 @@ if not exist "data\history\manifest.json" (
   exit /b 1
 )
 
+REM Anything in ONLY is passed straight through: --only order_block,
+REM --limit 5, --live-only. Set it in the same window before running.
+set EXTRA=%ONLY%
+
 if not exist "runtime" mkdir runtime
 
 set TAG=%CLOCKS: =-%
@@ -54,7 +67,7 @@ set CSVFILE=runtime\sweep-%DAYS%d-%TAG%.csv
 echo  Window: last %DAYS% days, core markets, clocks %CLOCKS%
 echo.
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --core %FINE% --sweep %CLOCKS% --cache data\history --equity 216 --csv %CSVFILE%
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --core %FINE% --sweep %CLOCKS% --cache data\history --equity 216 --csv %CSVFILE% %EXTRA%
 
 if errorlevel 1 (
   echo.
