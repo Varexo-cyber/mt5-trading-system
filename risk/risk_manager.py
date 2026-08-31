@@ -423,6 +423,26 @@ class RiskManager:
                 f"paused until the next trading day",
             )
 
+        # THE SAME LIMIT IN MONEY, and on this account it is the only one set.
+        #
+        # The percentage above is 0 here -- switched off in August, when 3% of
+        # EUR 88 was less than two losing trades wide. A fixed figure does not
+        # have that problem: it does not shrink with the account, and the owner
+        # named it in euros because euros are what he is actually watching.
+        # Both are checked, the first to bite wins, neither disables the other.
+        #
+        # `day_pnl` is equity minus the day's starting equity, so a position
+        # that is underwater counts before it is closed. Stricter than
+        # realised-only, for the reason at the top of this module.
+        daily_money = self.settings.risk.daily_loss_limit_money
+        if daily_money > 0.0 and state.day_pnl <= -daily_money:
+            return RiskDecision.block(
+                Reason.DAILY_LOSS_LIMIT,
+                f"day is {state.day_pnl:.2f} {state.currency} down against a "
+                f"{daily_money:.2f} {state.currency} limit; no further trades today, "
+                f"resumes on the next trading day",
+            )
+
         # Zero means no cap. The counter was always the crude proxy here: the
         # loss limits above halt a bad day long before it could bite, so the
         # only day a count cap ever stops is one that is going well. See

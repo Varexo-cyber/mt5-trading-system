@@ -660,6 +660,27 @@ class RiskConfig(Base):
     #: All stated as POSITIVE percentages of equity; the manager applies sign.
     #: 0 disables the limit — see NO_LOSS_LIMIT for what remains in force.
     daily_loss_limit_pct: NonNegPct = 3.0
+    #: The same limit stated in MONEY rather than percent. 0 disables it.
+    #:
+    #: A percentage moves with the account and the owner asked for a fixed
+    #: number: "wnr daily verlies 20 EUR bereikt die gehele dag geen verdere
+    #: trades meer, volgende dag verder". At EUR 216 that is 9.26%, and if the
+    #: account doubled, the same 9.26% would be EUR 40 -- which is not what was
+    #: asked for. So this is absolute, in the account currency, and it stays
+    #: put whatever the equity does.
+    #:
+    #: Both limits are live at once and the FIRST to bite wins. Setting one
+    #: does not switch the other off.
+    #:
+    #: Measured the way every other limit in `risk_manager` is measured: on
+    #: EQUITY, so an open position 15 EUR underwater already counts toward it.
+    #: That is stricter than counting only closed trades, and deliberately so
+    #: -- the module docstring gives the reason, which is that realised-only
+    #: lets an account sit deeply underwater at "0 EUR lost today" and keep
+    #: opening risk. It stops NEW trades; it does not force-close what is
+    #: already open, because closing at a limit turns a paper loss into a real
+    #: one.
+    daily_loss_limit_money: float = Field(default=0.0, ge=0.0)
     weekly_loss_limit_pct: NonNegPct = 6.0
     #: Drawdown from the equity peak that flattens everything and halts until a
     #: human restarts the system. Zero switches it off.
