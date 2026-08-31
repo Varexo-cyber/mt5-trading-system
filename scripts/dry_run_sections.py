@@ -1075,6 +1075,12 @@ def main(argv: list[str] | None = None) -> None:
         if shadowed:
             print(f"  shadowed (measured, NOT permitted real money): {', '.join(shadowed)}")
         print(f"  clocks: {', '.join(sorted({tf for _n, tf in passes}))}")
+        # THE PASS COUNT, because "six sections" and "six sections on four
+        # clocks" are the same header and a four-fold difference in runtime.
+        # A run whose length surprises its owner is one he kills halfway.
+        print(f"  {len(passes)} section/clock passes -- every bar is judged {len(passes)} times")
+        if not args.sweep:
+            print("  (each section on ITS OWN configured clock; --sweep tries them all)")
         print(f"{args.days} days to {end:%Y-%m-%d %H:%M} UTC, equity EUR {equity:.2f}")
         print(f"{len(symbols)} symbols, {settings.effective_risk_pct():.1f}% risk per trade")
         print(f"{'=' * 78}\n")
@@ -1230,9 +1236,24 @@ def main(argv: list[str] | None = None) -> None:
             # identical from the outside, and the owner sat on one for ten
             # minutes before asking.
             compute_seconds += _time.perf_counter() - began
+            # AN ETA FROM THE RUN'S OWN PACE, not from me. I have estimated the
+            # length of this run four times -- ninety minutes, then ten, then
+            # six, then forty-five -- and been wrong every time, twice by a
+            # factor of four, because the VPS is slower than the machine I
+            # benchmark on and the section count keeps changing. Six live
+            # sections evaluate every bar six times where two used to evaluate
+            # it twice.
+            #
+            # After two markets there is enough to extrapolate from, and the
+            # only honest source for it is the clock on this machine.
+            elapsed = fetch_seconds + compute_seconds
+            eta = ""
+            if index >= 2 and index < len(symbols):
+                remaining = elapsed / index * (len(symbols) - index)
+                eta = f"   ~{remaining / 60:.0f} min left"
             print(
                 f"  [{index}/{len(symbols)}] {symbol}: {done} trades"
-                f"   [fetch {fetch_seconds:.0f}s, compute {compute_seconds:.0f}s]",
+                f"   [fetch {fetch_seconds:.0f}s, compute {compute_seconds:.0f}s]{eta}",
                 flush=True,
             )
 
