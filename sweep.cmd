@@ -93,7 +93,15 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --core %FINE% --sweep %CLOCKS% --csv runtime\sweep.csv
+REM THE FILENAME CARRIES THE RUN. It was always runtime\sweep.csv, so the
+REM 14-day M1+M5 run silently destroyed the 100-day M15..H4 one and the only
+REM copy of four clocks' worth of trades was gone. Naming it after the window
+REM and the clocks costs nothing and keeps every sweep.
+set TAG=%CLOCKS: =-%
+if "%TAG:~0,1%"=="-" set TAG=%TAG:~1%
+set CSVFILE=runtime\sweep-%DAYS%d-%TAG%.csv
+
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% --core %FINE% --sweep %CLOCKS% --csv %CSVFILE%
 
 if errorlevel 1 (
   echo.
@@ -101,8 +109,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo  Every decision is in runtime\sweep.csv
-echo    verdict.cmd runtime\sweep.csv                        every combination
-echo    verdict.cmd runtime\sweep.csv --only order_block:M5  just one
+echo  Every decision is in %CSVFILE%
+echo    verdict.cmd %CSVFILE%
+echo    verdict.cmd %CSVFILE% --only order_block:M5
 echo.
 pause
