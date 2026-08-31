@@ -354,6 +354,97 @@ def _directional_modules(
         return conn.execute(body.format(index=""), params).fetchall()
 
 
+def _module_presence(
+    conn: sqlite3.Connection, where: str, params: list[object]
+) -> dict[str, tuple[int, int, int]]:
+    """Per module: rows written, rows with a score, rows carrying weight.
+
+    `_directional_modules` has `HAVING longs > 0 OR shorts > 0`, so a module
+    that ran on every cycle and scored zero every time is INDISTINGUISHABLE
+    from one that never ran at all: neither appears. Both leave the same blank
+    space in the table, and they need opposite responses -- the first is a
+    strategy finding nothing, the second is a section that is not wired in.
+
+    A whole night went on exactly that ambiguity. `order_block` was simply
+    absent from the detection table after 24 hours and there was no way to say
+    which of the two it was. This query drops the HAVING and keeps the zeros.
+
+    The weight column is here for the third case, which this account has
+    already produced once: a module that scores, is recorded, and is then
+    multiplied by a weight of zero because it was not on the live allowlist.
+    """
+    body = f"""
+        SELECT m.module,
+               COUNT(*) AS seen,
+               SUM(CASE WHEN m.score <> 0 THEN 1 ELSE 0 END) AS scored,
+               SUM(CASE WHEN m.weight > 0 THEN 1 ELSE 0 END) AS weighted
+        FROM module_scores m {{index}}
+        WHERE {where}
+        GROUP BY m.module
+        """
+    try:
+        found = conn.execute(
+            body.format(index="INDEXED BY idx_module_scores_cycle"), params
+        ).fetchall()
+    except sqlite3.OperationalError:
+        found = conn.execute(body.format(index=""), params).fetchall()
+    return {
+        str(row["module"]): (int(row["seen"]), int(row["scored"] or 0), int(row["weighted"] or 0))
+        for row in found
+    }
+
+
+def _live_modules() -> tuple[str, ...]:
+    """The sections allowed to trade real money, or () if config is unreadable.
+
+    Read rather than restated: a second copy of that list is a copy that will
+    one day disagree with the runner's, and this report exists to be trusted
+    on the night nothing else can be.
+    """
+    try:
+        from config.loader import load_settings
+
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        return tuple(settings.analysis.confluence.live_enabled_modules)
+    except Exception:  # noqa: BLE001 - a diagnostic may not die on config
+        return ()
+
+
+def _print_live_section_rollcall(
+    presence: dict[str, tuple[int, int, int]], live: tuple[str, ...]
+) -> None:
+    """One line per section that may trade real money. ALWAYS printed.
+
+    Including when everything is fine. The failure this whole report exists to
+    stop is that silence and absence look the same, and a roll-call that
+    appears only when something is wrong has that same hole one level up: the
+    reader cannot tell "no warning" from "the check never ran".
+    """
+    if not live:
+        return
+    print("LIVE SECTIONS — did each one actually run?")
+    for name in live:
+        seen, scored, weighted = presence.get(name, (0, 0, 0))
+        if seen == 0:
+            verdict = "NO ROWS AT ALL — it did not run, or wrote no signal"
+        elif weighted == 0:
+            verdict = f"ran {seen}x but WEIGHT 0 — recorded, then multiplied away"
+        elif scored == 0:
+            verdict = f"ran {seen}x, scored 0 every time — it looked and found nothing"
+        else:
+            verdict = f"ran {seen}x, {scored} with a direction"
+        print(f"  {name:<20} {verdict}")
+    missing = [name for name in live if presence.get(name, (0, 0, 0))[0] == 0]
+    if missing:
+        print(
+            f"\n  ! {', '.join(missing)} produced NOTHING in this window. That is not the\n"
+            "    same as finding no setups: a section that is running writes a row per\n"
+            "    decision even when it scores zero. Check that its timeframe is one the\n"
+            "    live scan fetches and that the runner is building it at all."
+        )
+    print()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hours", type=float, default=6.0, help="how far back to look")
@@ -417,6 +508,7 @@ def main(argv: list[str] | None = None) -> int:
             str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         directional_modules: list[sqlite3.Row] = []
+        presence: dict[str, tuple[int, int, int]] = {}
         if "module_scores" in tables and floor is not None:
             module_where = "m.cycle_pk >= ?"
             module_params: list[object] = [floor]
@@ -429,6 +521,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 module_params.extend([floor, args.symbol])
             directional_modules = _directional_modules(conn, module_where, module_params)
+            presence = _module_presence(conn, module_where, module_params)
 
     if not rows:
         print(f"No decisions recorded in the last {args.hours:g}h.")
@@ -451,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     _print_funnel(counts, len(rows), traded, remembered, hours=args.hours)
     _print_directional_detection(directional_modules)
+    _print_live_section_rollcall(presence, _live_modules())
 
     # Refused before the review, or after paying for it?
     #
