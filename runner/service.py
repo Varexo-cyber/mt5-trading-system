@@ -61,6 +61,8 @@ from analysis import (
     PeerMove,
     Seasonality,
     SectionFiveM5,
+    SectionSixGoldM5,
+    SectionSixSpxH1,
     SessionBreakout,
     SetupLifecycleBook,
     SetupState,
@@ -473,6 +475,8 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         WalkforwardIndex(analysis.walkforward_index),
         FailedSessionBreakout(analysis.failed_session_breakout),
         SectionFiveM5(analysis.section_five_m5),
+        SectionSixGoldM5(analysis.section_six_gold_m5),
+        SectionSixSpxH1(analysis.section_six_spx_h1),
     ]
 
 

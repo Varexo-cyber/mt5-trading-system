@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import numpy as np
+import pandas as pd
+
+from analysis.section_six_adaptive import SectionSixGoldM5, SectionSixSpxH1
+from config.loader import load_settings
+from config.schema import SectionSixModelConfig
+from core.types import MarketContext, Series, Tick, Timeframe
+
+NOW = datetime(2026, 8, 31, 20, 0, tzinfo=UTC)
+
+
+def _context(symbol: str, timeframe: Timeframe) -> MarketContext:
+    index = pd.date_range(end=NOW, periods=120, freq=timeframe.duration)
+    drift = np.linspace(0.0, 8.0, len(index))
+    wave = np.sin(np.arange(len(index)) / 3.0)
+    close = 1000.0 + drift + wave
+    frame = pd.DataFrame(
+        {
+            "open": close - 0.2,
+            "high": close + 0.8,
+            "low": close - 0.8,
+            "close": close,
+            "tick_volume": np.linspace(100.0, 200.0, len(index)),
+            "spread": 10,
+        },
+        index=index,
+    )
+    return MarketContext(
+        symbol,
+        NOW,
+        {timeframe: Series(symbol, timeframe, frame, NOW)},
+        Tick(symbol, NOW, bid=float(close[-1] - 0.1), ask=float(close[-1] + 0.1)),
+    )
+
+
+def test_gold_model_only_reads_xauusd_m5() -> None:
+    config = SectionSixModelConfig(
+        enabled=True, timeframe="M5", polarity=-1, threshold=0.0001, stop_atr=1.0
+    )
+    module = SectionSixGoldM5(config)
+
+    signal = module.analyze(_context("XAUUSD", Timeframe.M5))
+    wrong_market = module.analyze(_context("SPX500", Timeframe.M5))
+
+    assert signal.score != 0.0
+    assert signal.invalidation_price is not None
+    assert wrong_market.score == 0.0
+
+
+def test_failed_spx_variant_stays_disabled_by_default() -> None:
+    module = SectionSixSpxH1(SectionSixModelConfig(timeframe="H1"))
+
+    assert module.analyze(_context("SPX500", Timeframe.H1)).score == 0.0
+
+
+def test_live_overlay_keeps_the_measured_gold_exit_and_rejects_spx() -> None:
+    settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
+
+    assert settings.analysis.section_six_gold_m5.enabled is True
+    assert settings.analysis.section_six_spx_h1.enabled is False
+    assert settings.analysis.confluence.target_r_multiple_by_family["section_six_gold_m5"] == 1.5
+    assert "JARVIS-S6-AU-M5" in settings.trade_management.fixed_exit_comments

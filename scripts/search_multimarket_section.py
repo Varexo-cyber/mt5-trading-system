@@ -68,7 +68,16 @@ def main() -> None:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--symbols", default="")
     parser.add_argument("--per-symbol", action="store_true")
-    parser.add_argument("--timeframe", default="M5", choices=("M1", "M5"))
+    parser.add_argument(
+        "--fit-per-symbol",
+        action="store_true",
+        help="fit a separate frozen model per market instead of pooling the universe",
+    )
+    parser.add_argument(
+        "--timeframe",
+        default="M5",
+        choices=("M1", "M5", "M15", "M30", "H1"),
+    )
     args = parser.parse_args()
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
     sizer = PositionSizer(settings)
@@ -96,9 +105,21 @@ def main() -> None:
                 locations = locations[np.linspace(0, len(locations) - 1, 12_000).astype(int)]
             train_parts.append((x[locations], y[locations]))
         model = _fit(train_parts)
-        predictions = {symbol: _predict(stored[symbol][1], model) for symbol in symbols}
+        models = dict.fromkeys(symbols, model)
+        if args.fit_per_symbol:
+            for symbol in traded:
+                frame, x, _atr_values = stored[symbol]
+                _features_x, y, _features_atr = _features(frame, 12 if timeframe == "M1" else 6)
+                mask = _phase(frame.index, start, train_end) & np.isfinite(y)
+                good = mask & np.isfinite(x).all(axis=1)
+                locations = np.flatnonzero(good)
+                if len(locations) > 12_000:
+                    locations = locations[np.linspace(0, len(locations) - 1, 12_000).astype(int)]
+                models[symbol] = _fit([(x[locations], y[locations])])
+        predictions = {symbol: _predict(stored[symbol][1], models[symbol]) for symbol in symbols}
         if args.per_symbol:
             survivors = []
+            survivor_symbols: list[str] = []
             for symbol in traded:
                 frame, _x, atr = stored[symbol]
                 cells = []
@@ -155,6 +176,7 @@ def main() -> None:
                 )
                 if holdout[0] >= 30 and holdout[2] > 0.03:
                     survivors.extend(holdout_rows)
+                    survivor_symbols.append(symbol)
             total = _summary(survivors)
             represented = _portfolio(survivors)["symbol"].nunique() if survivors else 0
             print(
@@ -162,9 +184,11 @@ def main() -> None:
                 f"net={total[2]:+.3f}R money={total[3]:+.2f}"
             )
             if represented:
-                print("MODEL_BETA", model.beta.tolist())
-                print("MODEL_CENTRE", model.centre.tolist())
-                print("MODEL_SCALE", model.scale.tolist())
+                for survivor in survivor_symbols:
+                    chosen_model = models[survivor]
+                    print(survivor, "MODEL_BETA", chosen_model.beta.tolist())
+                    print(survivor, "MODEL_CENTRE", chosen_model.centre.tolist())
+                    print(survivor, "MODEL_SCALE", chosen_model.scale.tolist())
             return
         candidates = []
         for polarity in (1, -1):

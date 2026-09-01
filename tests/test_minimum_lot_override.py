@@ -79,6 +79,7 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
             "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
+            "section_six_gold_m5",
         }
         for name in (
             "impulse_retest",

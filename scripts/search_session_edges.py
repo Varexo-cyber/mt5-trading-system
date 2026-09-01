@@ -40,8 +40,7 @@ def _signals(frame: pd.DataFrame, choice: SessionChoice) -> list[tuple[int, int,
     out: list[tuple[int, int, float]] = []
     for _day, daily in frame.groupby(dates):
         window = daily[
-            (daily.index.hour >= choice.range_start)
-            & (daily.index.hour < choice.range_end)
+            (daily.index.hour >= choice.range_start) & (daily.index.hour < choice.range_end)
         ]
         after = daily[
             (daily.index.hour >= choice.range_end)
@@ -126,6 +125,7 @@ def _trades(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument("--symbols", nargs="*", default=[])
     args = parser.parse_args()
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
     sizer = PositionSizer(settings)
@@ -136,10 +136,15 @@ def main() -> None:
         start = end - pd.Timedelta(days=days)
         train_end = start + (end - start) * 0.50
         validation_end = start + (end - start) * 0.75
+        requested = set(args.symbols)
         for symbol in data.every_symbol():
-            if data.asset_class(symbol) not in {"fx", "index"} or "M5" not in data.available(
-                symbol
-            ):
+            if requested and symbol not in requested:
+                continue
+            if data.asset_class(symbol) not in {
+                "fx",
+                "index",
+                "metal",
+            } or "M5" not in data.available(symbol):
                 continue
             frame = data.load(symbol, "M5")
             candidates = []

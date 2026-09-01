@@ -197,7 +197,12 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     # table: both sections lost after the stale-M1-price and duplicate-symbol
     # portfolio bugs were removed. They stay enabled for shadow measurement,
     # but none may use real money.
-    assert live == {"walkforward_index", "failed_session_breakout", "section_five_m5"}
+    assert live == {
+        "walkforward_index",
+        "failed_session_breakout",
+        "section_five_m5",
+        "section_six_gold_m5",
+    }
     # Every live module keeps a breaker. That was the real content of this
     # test and it survives the change.
     for module in live:
@@ -399,6 +404,7 @@ class TestTheEntryConfirmationExemptionReachesTheRunner:
             "order_block",
             "failed_session_breakout",
             "section_five_m5",
+            "section_six_gold_m5",
         }
         assert settings.analysis.confluence.require_entry_confirmation is True
 
@@ -517,6 +523,7 @@ class TestASecondClockIsASecondModule:
             "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
+            "section_six_gold_m5",
         }
         for name, timeframe in expected.items():
             assert built[name].config.enabled is True

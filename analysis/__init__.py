@@ -36,6 +36,7 @@ from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, Volat
 from analysis.order_block import OrderBlock
 from analysis.seasonality import Seasonality
 from analysis.section_five_m5 import SectionFiveM5
+from analysis.section_six_adaptive import SectionSixGoldM5, SectionSixSpxH1
 from analysis.session_breakout import SessionBreakout
 from analysis.setup_lifecycle import LifecycleDecision, SetupLifecycleBook, SetupState
 from analysis.volatility_squeeze import VolatilitySqueeze
@@ -71,6 +72,8 @@ __all__ = [
     "ReviewDriftAssessment",
     "Seasonality",
     "SectionFiveM5",
+    "SectionSixGoldM5",
+    "SectionSixSpxH1",
     "SessionBreakout",
     "SetupLifecycleBook",
     "SetupState",

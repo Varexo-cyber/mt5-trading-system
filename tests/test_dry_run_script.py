@@ -122,6 +122,7 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
             "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
+            "section_six_gold_m5",
         }
         assert settings.analysis.confluence.weights.get("impulse_retest", 0.0) > 0.0
         assert settings.analysis.confluence.weights.get("order_block", 0.0) > 0.0
@@ -1582,6 +1583,7 @@ class TestAShadowedSectionCanActuallyVote:
             "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
+            "section_six_gold_m5",
         }
 
     def test_a_shadowed_section_is_granted_for_its_measurement_pass(self) -> None:
@@ -1594,12 +1596,14 @@ class TestAShadowedSectionCanActuallyVote:
             "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
+            "section_six_gold_m5",
         }
         assert set(tuned.analysis.confluence.live_enabled_modules) == {
             "order_block",
             "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
+            "section_six_gold_m5",
         }
 
 
