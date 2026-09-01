@@ -3928,6 +3928,18 @@ class SectionFiveM5Config(Base):
     confidence: float = Field(default=0.78, ge=0.0, le=1.0)
 
 
+class SectionSixModelConfig(Base):
+    """One frozen monthly walk-forward model inside section six."""
+
+    enabled: bool = False
+    timeframe: str = "M5"
+    polarity: int = Field(default=1, ge=-1, le=1)
+    threshold: float = Field(default=0.075, gt=0.0, le=3.0)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -3973,6 +3985,8 @@ class AnalysisConfig(Base):
     walkforward_index: WalkforwardIndexConfig = WalkforwardIndexConfig()
     failed_session_breakout: FailedSessionBreakoutConfig = FailedSessionBreakoutConfig()
     section_five_m5: SectionFiveM5Config = SectionFiveM5Config()
+    section_six_gold_m5: SectionSixModelConfig = SectionSixModelConfig()
+    section_six_spx_h1: SectionSixModelConfig = SectionSixModelConfig(timeframe="H1")
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

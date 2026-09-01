@@ -1070,6 +1070,8 @@ def main(argv: list[str] | None = None) -> None:
             "walkforward_index": "walkforward_index",
             "failed_session_breakout": "failed_session_breakout",
             "section_five_m5": "section_five_m5",
+            "section_six_gold_m5": "section_six_gold_m5",
+            "section_six_spx_h1": "section_six_spx_h1",
         }
         measured = set(module_config)
         if args.only:
