@@ -1396,6 +1396,19 @@ analysis:
     allowed_symbols: [SPX500]
     threshold: 0.075
 
+  # SECTIE ZEVEN. Tweede chronologische kandidaat op dezelfde brokerhistorie.
+  # Gekozen op dagen 91-135 en pas daarna bekeken op dagen 136-180:
+  # 20 holdout-trades, 50% raak bij 1,5R, +0,185R/trade, EUR +7,45.
+  # Dit is dun bewijs en daarom alleen SPX500, met een eigen snelle noodrem.
+  failed_session_breakout:
+    enabled: true
+    timeframe: M5
+    allowed_symbols: [SPX500]
+    range_start_hour: 7
+    range_end_hour: 9
+    trade_window_hours: 3.0
+    stop_range_share: 0.5
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2132,6 +2145,7 @@ analysis:
       order_block_m15: 1.0
       order_block_h1: 1.0
       walkforward_index: 1.5
+      failed_session_breakout: 1.5
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2154,7 +2168,7 @@ analysis:
     # voor de trend-entries waar hij voor geschreven is, en waar elf van de
     # eerste twaalf betaalde reviews precies dit vetoden en gelijk hadden. Het
     # onderscheid zit in de setup, niet in de drempel.
-    entry_timing_exempt_families: [impulse_retest, order_block]
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout]
     # De 1R-doelen van deze twee families zijn rechtstreeks gemeten op hun
     # eigen entries. De generieke rolling reach-test blijft in het reviewpakket
     # staan, maar mag die gemeten setup niet vóór de reviewer vervangen door
@@ -2592,6 +2606,7 @@ analysis:
     # live gezet zonder bewijs.
     live_enabled_modules:
       - walkforward_index
+      - failed_session_breakout
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2850,6 +2865,7 @@ analysis:
       order_block_m15: 1.0
       order_block_h1: 1.0
       walkforward_index: 1.0
+      failed_session_breakout: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -2882,8 +2898,8 @@ analysis:
       # Dat is een redenering, geen meting.
       candle_momentum: 0.6
 
-    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
-    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout]
+    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout]
+    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #
@@ -3805,6 +3821,11 @@ risk:
       minimum_trades: 20
       maximum_loss_share: 0.70
       losing_streak: 8
+    failed_session_breakout:
+      window: 20
+      minimum_trades: 12
+      maximum_loss_share: 0.75
+      losing_streak: 6
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde

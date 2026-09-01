@@ -43,6 +43,7 @@ from analysis import (
     DriftContinuation,
     EmaPullbackResume,
     EntryTimingDecision,
+    FailedSessionBreakout,
     FastEmaCross,
     ImpulseBreak,
     ImpulseRetest,
@@ -469,6 +470,7 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # loser is off.
         CandleMomentum(analysis.candle_momentum),
         WalkforwardIndex(analysis.walkforward_index),
+        FailedSessionBreakout(analysis.failed_session_breakout),
     ]
 
 
