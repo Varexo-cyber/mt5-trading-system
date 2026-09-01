@@ -5,6 +5,8 @@ from core.trade_origin import broker_comment, origin_for_setup_family
 
 def test_every_live_setup_family_has_an_unambiguous_mt5_label() -> None:
     expected = {
+        "section_five_m5": (5, "M5", "JARVIS-S5-NL-M5"),
+        "failed_session_breakout_m5": (7, "M5", "JARVIS-S7-FSB-M5"),
         "impulse_retest_m15": (2, "M15", "JARVIS-S2-IR-M15"),
         "impulse_retest_m30_m30": (2, "M30", "JARVIS-S2-IR-M30"),
         "order_block_fast_m1": (3, "M1", "JARVIS-S3-OB-M1"),

@@ -246,6 +246,30 @@ def test_the_trough_is_recorded_too() -> None:
     assert journal.trough_r == pytest.approx(-0.4)
 
 
+def test_a_measured_fixed_exit_family_keeps_its_broker_stop_and_target() -> None:
+    """Section 5 was profitable with fixed exits and losing after break-even.
+
+    The live comment is therefore an explicit contract: observations are still
+    journalled, but none of the generic discretionary rules may alter its exit.
+    """
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(
+        broker,
+        journal,
+        fixed_exit_comments=("JARVIS-S5-NL-M5",),
+        break_even_at_r=0.25,
+    )
+    held = replace(position(), comment="JARVIS-S5-NL-M5")
+
+    at(broker, 0.8)
+    events = manager.manage([held], NOW)
+
+    assert events == []
+    assert broker.modified == []
+    assert broker.closed == []
+    assert manager.last_observation[held.ticket]["r_now"] == pytest.approx(0.8)
+
+
 def test_the_peak_only_ratchets_upward() -> None:
     """A late retrace must not erase the fact that the trade was once ahead —
     that memory is the entire input to the give-back rule."""

@@ -78,6 +78,7 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
         assert set(confluence.live_enabled_modules) == {
             "walkforward_index",
             "failed_session_breakout",
+            "section_five_m5",
         }
         for name in (
             "impulse_retest",

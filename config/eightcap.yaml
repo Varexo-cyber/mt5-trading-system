@@ -1409,6 +1409,16 @@ analysis:
     trade_window_hours: 3.0
     stop_range_share: 0.5
 
+  # SECTIE VIJF. NDX100 M5, nonlinear state model. Middelste kwart:
+  # 62 trades, +0,218R/trade. Onaangeraakt nieuwste kwart: 87 trades,
+  # 59,8% raak, +0,114R/trade, EUR +15,65 op EUR 203. Andere markten faalden.
+  section_five_m5:
+    enabled: true
+    timeframe: M5
+    allowed_symbols: [NDX100]
+    threshold: 0.15
+    stop_atr: 1.0
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2146,6 +2156,7 @@ analysis:
       order_block_h1: 1.0
       walkforward_index: 1.5
       failed_session_breakout: 1.5
+      section_five_m5: 1.0
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2168,7 +2179,7 @@ analysis:
     # voor de trend-entries waar hij voor geschreven is, en waar elf van de
     # eerste twaalf betaalde reviews precies dit vetoden en gelijk hadden. Het
     # onderscheid zit in de setup, niet in de drempel.
-    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout]
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5]
     # De 1R-doelen van deze twee families zijn rechtstreeks gemeten op hun
     # eigen entries. De generieke rolling reach-test blijft in het reviewpakket
     # staan, maar mag die gemeten setup niet vóór de reviewer vervangen door
@@ -2607,6 +2618,7 @@ analysis:
     live_enabled_modules:
       - walkforward_index
       - failed_session_breakout
+      - section_five_m5
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2866,6 +2878,7 @@ analysis:
       order_block_h1: 1.0
       walkforward_index: 1.0
       failed_session_breakout: 1.0
+      section_five_m5: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -2898,8 +2911,8 @@ analysis:
       # Dat is een redenering, geen meting.
       candle_momentum: 0.6
 
-    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout]
-    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout]
+    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5]
+    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #
@@ -3826,6 +3839,11 @@ risk:
       minimum_trades: 12
       maximum_loss_share: 0.75
       losing_streak: 6
+    section_five_m5:
+      window: 40
+      minimum_trades: 25
+      maximum_loss_share: 0.60
+      losing_streak: 7
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde
@@ -4171,6 +4189,10 @@ modes:
     max_equity: 500
 
 trade_management:
+  # Sectie 5 is geselecteerd op de vaste 1ATR-stop en 1R-target. De algemene
+  # break-evenmanager maakte de exacte 45-daagse replay +11,39R -> -16,31R.
+  # Alleen dit herkenbare MT5-label houdt daarom zijn oorspronkelijke SL/TP.
+  fixed_exit_comments: [JARVIS-S5-NL-M5]
   # Still needs the position path plus an independent chart family. Alleen het
   # moment schuift op: bevestigd falen mag nu ingrijpen op -0,15R in plaats van
   # -0,25R. De broker-SL blijft de onvoorwaardelijke achtervang.
