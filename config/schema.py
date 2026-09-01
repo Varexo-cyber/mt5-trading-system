@@ -3902,6 +3902,20 @@ class WalkforwardIndexConfig(Base):
     confidence: float = Field(default=0.72, ge=0.0, le=1.0)
 
 
+class FailedSessionBreakoutConfig(Base):
+    """SECTION SEVEN: cost-aware M5 SPX500 failed session break."""
+
+    enabled: bool = False
+    timeframe: str = "M5"
+    allowed_symbols: tuple[str, ...] = ("SPX500",)
+    range_start_hour: int = Field(default=7, ge=0, le=23)
+    range_end_hour: int = Field(default=9, ge=1, le=23)
+    trade_window_hours: float = Field(default=3.0, ge=0.5, le=12.0)
+    stop_range_share: float = Field(default=0.5, gt=0.0, le=3.0)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -3945,6 +3959,7 @@ class AnalysisConfig(Base):
     basket_divergence: BasketDivergenceConfig = BasketDivergenceConfig()
     candle_momentum: CandleMomentumConfig = CandleMomentumConfig()
     walkforward_index: WalkforwardIndexConfig = WalkforwardIndexConfig()
+    failed_session_breakout: FailedSessionBreakoutConfig = FailedSessionBreakoutConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

@@ -1064,6 +1064,7 @@ def main(argv: list[str] | None = None) -> None:
             "order_block_m15": "order_block_m15",
             "order_block_h1": "order_block_h1",
             "walkforward_index": "walkforward_index",
+            "failed_session_breakout": "failed_session_breakout",
         }
         measured = set(module_config)
         if args.only:

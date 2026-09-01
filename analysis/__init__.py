@@ -14,6 +14,7 @@ from analysis.entry_quality import (
     assess_review_drift,
 )
 from analysis.evidence_families import family_for, supporting_families
+from analysis.failed_session_breakout import FailedSessionBreakout
 from analysis.fast_ema_cross import FastEmaCross
 from analysis.impulse_break import ImpulseBreak
 from analysis.impulse_retest import ImpulseRetest
@@ -50,6 +51,7 @@ __all__ = [
     "EmaPullbackResume",
     "EntryTimingAssessment",
     "EntryTimingDecision",
+    "FailedSessionBreakout",
     "FastEmaCross",
     "ImpulseBreak",
     "ImpulseRetest",

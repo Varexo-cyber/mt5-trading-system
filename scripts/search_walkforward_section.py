@@ -107,6 +107,7 @@ def _trades(
     symbol: str,
     timeframe: str,
     sizer: PositionSizer,
+    stop_atr: float = 1.0,
 ) -> list[dict[str, object]]:
     spec = data.instrument_spec(symbol)
     close = frame["close"].to_numpy(dtype=float)
@@ -125,7 +126,7 @@ def _trades(
             continue
         direction = 1 if prediction[at] > 0.0 else -1
         entry = float(close[at])
-        unit = float(atr[at])
+        unit = float(atr[at]) * stop_atr
         resolved = _resolve_one(
             frame,
             index=int(at),
@@ -197,7 +198,13 @@ def _summary(rows: list[dict[str, object]]) -> tuple[int, float, float, float, i
     )
 
 
-def search(database: Path) -> int:
+def search(
+    database: Path,
+    *,
+    exclude_h1_indices: bool = False,
+    only_asset: str | None = None,
+    only_timeframe: str | None = None,
+) -> int:
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
     sizer = PositionSizer(settings)
     data.configure_database(database)
@@ -213,8 +220,10 @@ def search(database: Path) -> int:
         symbols = data.every_symbol()
         candidates: list[tuple[Choice, tuple[int, float, float, float, int], object]] = []
         cached: dict[tuple[str, str, int], tuple[pd.DataFrame, np.ndarray, np.ndarray]] = {}
-        for timeframe in ("M5", "M15", "M30", "H1"):
-            for asset in ("fx", "index", "metal"):
+        for timeframe in (
+            (only_timeframe,) if only_timeframe else ("M5", "M15", "M30", "H1")
+        ):
+            for asset in ((only_asset,) if only_asset else ("fx", "index", "metal")):
                 members = [
                     symbol
                     for symbol in symbols
@@ -269,6 +278,12 @@ def search(database: Path) -> int:
                                 )
                                 candidates.append((choice, stats, (members, predictions, model)))
         eligible = [item for item in candidates if item[1][0] >= 75 and item[1][2] > 0.03]
+        if exclude_h1_indices:
+            eligible = [
+                item
+                for item in eligible
+                if not (item[0].timeframe == "H1" and item[0].asset == "index")
+            ]
         eligible.sort(key=lambda item: (item[1][2], item[1][0]), reverse=True)
         print(
             f"searched {len(candidates)} validation cells; {len(eligible)} cleared n>=75 and +0.03R"
@@ -350,8 +365,22 @@ def search(database: Path) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
+    parser.add_argument(
+        "--exclude-h1-indices",
+        action="store_true",
+        help="search for a second family, excluding the shipped H1 index model",
+    )
+    parser.add_argument("--only-asset", choices=("fx", "index", "metal"))
+    parser.add_argument("--only-timeframe", choices=("M5", "M15", "M30", "H1"))
     args = parser.parse_args()
-    raise SystemExit(search(args.database))
+    raise SystemExit(
+        search(
+            args.database,
+            exclude_h1_indices=args.exclude_h1_indices,
+            only_asset=args.only_asset,
+            only_timeframe=args.only_timeframe,
+        )
+    )
 
 
 if __name__ == "__main__":

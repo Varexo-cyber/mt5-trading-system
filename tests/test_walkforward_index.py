@@ -37,12 +37,16 @@ def test_live_reader_is_identical_to_the_frozen_research_model() -> None:
     assert actual[0] == pytest.approx(expected)
 
 
-def test_only_the_measured_new_section_may_trade_real_money() -> None:
+def test_only_the_measured_new_sections_may_trade_real_money() -> None:
     settings = load_settings(
         DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
     )
 
-    assert settings.analysis.confluence.live_enabled_modules == ("walkforward_index",)
+    assert settings.analysis.confluence.live_enabled_modules == (
+        "walkforward_index",
+        "failed_session_breakout",
+    )
     assert settings.analysis.walkforward_index.allowed_symbols == ("SPX500",)
     assert settings.analysis.confluence.target_r_multiple_by_family["walkforward_index"] == 1.5
     assert "walkforward_index" in settings.risk.section_breakers
+    assert "failed_session_breakout" in settings.risk.section_breakers
