@@ -557,6 +557,12 @@ class PositionManager:
             "peak_r": float(peak_r),
             "health_observed": False,
         }
+        if str(position.comment).casefold() in {
+            item.casefold() for item in config.fixed_exit_comments
+        }:
+            # This family was selected and holdout-tested with unchanged SL/TP.
+            # Every discretionary manager below changes that measured exit.
+            return events
         # Before anything else, because everything else assumes we intend to
         # still be in the trade. Nothing that happens after 20:15 UTC is
         # worth the spread it costs to be there.

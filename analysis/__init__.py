@@ -35,6 +35,7 @@ from analysis.mean_reversion import MeanReversion
 from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, VolatilityRegime
 from analysis.order_block import OrderBlock
 from analysis.seasonality import Seasonality
+from analysis.section_five_m5 import SectionFiveM5
 from analysis.session_breakout import SessionBreakout
 from analysis.setup_lifecycle import LifecycleDecision, SetupLifecycleBook, SetupState
 from analysis.volatility_squeeze import VolatilitySqueeze
@@ -69,6 +70,7 @@ __all__ = [
     "PeerMove",
     "ReviewDriftAssessment",
     "Seasonality",
+    "SectionFiveM5",
     "SessionBreakout",
     "SetupLifecycleBook",
     "SetupState",

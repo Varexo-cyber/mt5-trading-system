@@ -60,6 +60,7 @@ from analysis import (
     OrderBlock,
     PeerMove,
     Seasonality,
+    SectionFiveM5,
     SessionBreakout,
     SetupLifecycleBook,
     SetupState,
@@ -471,6 +472,7 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         CandleMomentum(analysis.candle_momentum),
         WalkforwardIndex(analysis.walkforward_index),
         FailedSessionBreakout(analysis.failed_session_breakout),
+        SectionFiveM5(analysis.section_five_m5),
     ]
 
 

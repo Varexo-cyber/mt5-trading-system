@@ -3916,6 +3916,18 @@ class FailedSessionBreakoutConfig(Base):
     confidence: float = Field(default=0.80, ge=0.0, le=1.0)
 
 
+class SectionFiveM5Config(Base):
+    """SECTION FIVE: frozen nonlinear M5 NDX100 model."""
+
+    enabled: bool = False
+    timeframe: str = "M5"
+    allowed_symbols: tuple[str, ...] = ("NDX100",)
+    threshold: float = Field(default=0.15, gt=0.0, le=3.0)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    score: float = Field(default=68.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.78, ge=0.0, le=1.0)
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -3960,6 +3972,7 @@ class AnalysisConfig(Base):
     candle_momentum: CandleMomentumConfig = CandleMomentumConfig()
     walkforward_index: WalkforwardIndexConfig = WalkforwardIndexConfig()
     failed_session_breakout: FailedSessionBreakoutConfig = FailedSessionBreakoutConfig()
+    section_five_m5: SectionFiveM5Config = SectionFiveM5Config()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
@@ -4105,6 +4118,9 @@ class TradeManagementConfig(Base):
     #: Offset past entry when moving to break even, in ATR multiples, to cover
     #: spread and commission. Break even at exactly entry is a small loss.
     break_even_offset_atr: float = Field(default=0.1, ge=0.0)
+    #: Strategies whose measured edge uses the original broker SL/TP unchanged.
+    #: Exact MT5 comments prevent unrelated positions from inheriting this.
+    fixed_exit_comments: tuple[str, ...] = ()
 
     #: Minutes the peak may stand still before a profitable trade is banked.
     #: 0 switches the rule off.

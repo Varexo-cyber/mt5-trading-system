@@ -121,6 +121,7 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "walkforward_index",
             "failed_session_breakout",
+            "section_five_m5",
         }
         assert settings.analysis.confluence.weights.get("impulse_retest", 0.0) > 0.0
         assert settings.analysis.confluence.weights.get("order_block", 0.0) > 0.0
@@ -300,7 +301,10 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         the over-count is BIASED: a retest that works leaves the level in a bar
         and yields one entry, a retest that fails sits on it and yields five.
         Duplicates are drawn from the losers."""
-        assert "busy: dict = {name: None for name, _engine, _sizer in sections}" in SOURCE
+        assert (
+            "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}"
+            in SOURCE
+        )
         assert (
             "awake = [row for row in sections if busy[row[0]] is None or upto > busy[row[0]]]"
             in SOURCE
@@ -1577,6 +1581,7 @@ class TestAShadowedSectionCanActuallyVote:
             "market_structure",
             "walkforward_index",
             "failed_session_breakout",
+            "section_five_m5",
         }
 
     def test_a_shadowed_section_is_granted_for_its_measurement_pass(self) -> None:
@@ -1588,11 +1593,13 @@ class TestAShadowedSectionCanActuallyVote:
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "walkforward_index",
             "failed_session_breakout",
+            "section_five_m5",
         }
         assert set(tuned.analysis.confluence.live_enabled_modules) == {
             "order_block",
             "walkforward_index",
             "failed_session_breakout",
+            "section_five_m5",
         }
 
 
@@ -1787,7 +1794,10 @@ class TestTheSweepDoesNotBuildEveryContextTwice:
     def test_each_section_keeps_its_own_open_position(self) -> None:
         """Sharing one `busy_until` across sections would be a different bug:
         refusing section three a trade because section two is in one."""
-        assert "busy: dict = {name: None for name, _engine, _sizer in sections}" in SOURCE
+        assert (
+            "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}"
+            in SOURCE
+        )
         assert "busy[name] = exit_at" in SOURCE
 
     def test_only_the_frames_something_reads_are_sliced(self) -> None:

@@ -53,6 +53,7 @@ from analysis import ConfluenceEngine
 from backtesting.replay import fetch_mt5_history
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
+from core.trade_origin import broker_comment
 from core.types import Direction, MarketContext, Series, Tick, Timeframe, TradingMode
 from risk.position_sizer import PositionSizer
 from runner.service import build_analysis_modules
@@ -429,7 +430,6 @@ def _one_clock(
     equity: float,
     clock: Timeframe,
     resolve_on: Timeframe,
-    manage: tuple[float, float] | None = None,
     needed: tuple[Timeframe, ...] | None = None,
 ) -> dict:
     """Every section that reads one clock, walked ONCE.
@@ -461,8 +461,8 @@ def _one_clock(
     M1 that makes the row pessimistic, and `_sweep_report` prints that caveat
     beside the number instead of leaving it to be remembered.
     """
-    out: dict = {name: [] for name, _engine, _sizer in sections}
-    busy: dict = {name: None for name, _engine, _sizer in sections}
+    out: dict = {name: [] for name, _engine, _sizer, _manage in sections}
+    busy: dict = {name: None for name, _engine, _sizer, _manage in sections}
     bars = frames[clock]
     window = bars[(bars.index >= start) & (bars.index <= end)]
     horizon = int(96 * clock.duration / resolve_on.duration)
@@ -498,7 +498,7 @@ def _one_clock(
         if ctx is None:
             continue
 
-        for name, engine, sizer in awake:
+        for name, engine, sizer, section_manage in awake:
             idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
             module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
             if not idea.approved:
@@ -532,7 +532,7 @@ def _one_clock(
                 upto,
                 idea,
                 horizon_bars=horizon,
-                manage=manage,
+                manage=section_manage,
                 arrays=resolve_arrays,
             )
             # Held to the end of the window when it never resolved, exactly as
@@ -565,6 +565,10 @@ def _one_clock(
             cost = sizer.cost_share(spec, abs(idea.entry - idea.stop_loss), spread_price)
             r = None if r is None else r - cost
             managed_r = None if managed_r is None else managed_r - cost
+            if section_manage is None:
+                # Fixed-exit families intentionally use the original broker
+                # stop and target, so their live result is the fixed result.
+                managed_r = r
             out[name].append(
                 Decision(
                     upto,
@@ -1065,6 +1069,7 @@ def main(argv: list[str] | None = None) -> None:
             "order_block_h1": "order_block_h1",
             "walkforward_index": "walkforward_index",
             "failed_session_breakout": "failed_session_breakout",
+            "section_five_m5": "section_five_m5",
         }
         measured = set(module_config)
         if args.only:
@@ -1239,11 +1244,16 @@ def main(argv: list[str] | None = None) -> None:
                 for name in names:
                     tuned = _retimed(settings, name, tf_name)
                     only = [m for m in build_analysis_modules(tuned) if m.name == name]
+                    comment = broker_comment(name, is_addon=False, experimental_live=True)
+                    fixed = {
+                        item.casefold() for item in settings.trade_management.fixed_exit_comments
+                    }
                     group.append(
                         (
                             name,
                             ConfluenceEngine(only, tuned.analysis.confluence),
                             PositionSizer(tuned),
+                            None if comment.casefold() in fixed else manage,
                         )
                     )
                 produced = _one_clock(
@@ -1256,7 +1266,6 @@ def main(argv: list[str] | None = None) -> None:
                     equity=equity,
                     clock=clock,
                     resolve_on=finest,
-                    manage=manage,
                     needed=_frames_read(settings, clock, finest, tuple(names)),
                 )
                 for name, rows in produced.items():
