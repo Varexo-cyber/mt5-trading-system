@@ -155,6 +155,9 @@ class SectionTenGoldM1:
             return Signal.neutral(self.name, f"section ten needs {needed} closed M1 bars")
 
         frame = series.df
+        entry_hour = int(frame.index[-1].hour)
+        if not cfg.entry_start_hour_utc <= entry_hour < cfg.entry_end_hour_utc:
+            return Signal.neutral(self.name, "outside the measured 03:00-19:00 UTC window")
         high = frame["high"].astype(float)
         low = frame["low"].astype(float)
         close = frame["close"].astype(float)

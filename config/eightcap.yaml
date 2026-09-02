@@ -1470,9 +1470,11 @@ analysis:
   # groot zijn; pas de eerste terugtest wordt op de GESLOTEN M1-bar gekocht
   # of verkocht. Dit is uitvoerbaar als market order, niet de fraaie maar
   # onuitvoerbare intrabar limit-fill uit de brede zoekrun. Exacte audit met
-  # historische broker-spread, EUR 203 sizing en maximaal een positie tegelijk:
-  # 516 trades, 45,0% raak, +14,22R; vroege +7,50R en late +6,72R. De marge is
-  # slechts +0,028R/trade en max drawdown -19,35R, daarom SHADOW en niet live.
+  # historische broker-spread, EUR 203 sizing en maximaal een positie tegelijk.
+  # Het aaneengesloten liquide venster 03:00-19:00 UTC verbeterde beide helften:
+  # vast 357 trades en +41,18R; met de LIVE break-evenregel +56,90R / EUR 90,99,
+  # vroege +27,15R en late +29,75R. Na spread sloot 62,5% boven nul; bruto was
+  # 79,6% positief/scratch. Max drawdown -9,08R. Nog steeds SHADOW, niet live.
   section_ten_gold_m1:
     enabled: true
     timeframe: M1
@@ -1482,6 +1484,8 @@ analysis:
     retest_tolerance_atr: 0.15
     stop_beyond_atr: 0.75
     maximum_wait_bars: 96
+    entry_start_hour_utc: 3
+    entry_end_hour_utc: 19
 
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
@@ -3949,8 +3953,8 @@ risk:
     section_ten_gold_m1:
       window: 60
       minimum_trades: 40
-      maximum_loss_share: 0.68
-      losing_streak: 10
+      maximum_loss_share: 0.55
+      losing_streak: 8
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde

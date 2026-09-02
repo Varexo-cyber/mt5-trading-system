@@ -111,9 +111,7 @@ def _closed_bar_order_block(frame: pd.DataFrame, atr: np.ndarray) -> Batch:
         edge = block[1] if direction > 0 else block[0]
         for j in range(i + 1, min(i + HORIZON_BARS, end)):
             touched = (
-                low[j] <= edge + 0.5 * unit0
-                if direction > 0
-                else high[j] >= edge - 0.5 * unit0
+                low[j] <= edge + 0.5 * unit0 if direction > 0 else high[j] >= edge - 0.5 * unit0
             )
             if touched:
                 entry = float(close[j])
@@ -140,6 +138,7 @@ def _market_big_impulse_retest(
     *,
     stop_beyond: float,
     confirmation: bool,
+    entry_hours: tuple[int, int] | None = None,
 ) -> Batch:
     """Large channel break, then an executable close/confirmation entry."""
 
@@ -170,9 +169,7 @@ def _market_big_impulse_retest(
                 else close[j] > level + stop_beyond * unit0
             )
             touched = (
-                low[j] <= level + 0.15 * unit0
-                if direction > 0
-                else high[j] >= level - 0.15 * unit0
+                low[j] <= level + 0.15 * unit0 if direction > 0 else high[j] >= level - 0.15 * unit0
             )
             if failed:
                 break
@@ -203,7 +200,9 @@ def _market_big_impulse_retest(
             stop = level - direction * stop_beyond * unit0
             risk = direction * (entry - stop)
             if risk > 0.0:
-                rows.append((entry_at, direction, entry, risk))
+                hour = int(frame.index[entry_at].hour)
+                if entry_hours is None or entry_hours[0] <= hour < entry_hours[1]:
+                    rows.append((entry_at, direction, entry, risk))
             i = entry_at
             break
         i += 1
@@ -222,6 +221,17 @@ for _stop in (0.35, 0.75, 1.0):
         _market_big_impulse_retest(frame, atr, stop_beyond=stop, confirmation=True)
     )
 
+for _start, _end in ((3, 19), (6, 19), (13, 19)):
+    CATALOGUE[f"market_big_retest_s0.75_h{_start}_{_end}"] = (
+        lambda frame, atr, start=_start, end=_end: _market_big_impulse_retest(
+            frame,
+            atr,
+            stop_beyond=0.75,
+            confirmation=False,
+            entry_hours=(start, end),
+        )
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
@@ -235,7 +245,7 @@ class Candidate:
 CANDIDATES = (
     Candidate(8, "trend_day_continuation", "SPX500", "H1", 1.0),
     Candidate(9, "session_vwap_reversion", "USDJPY.i", "M30", 1.5),
-    Candidate(10, "closed_bar_swing_retest", "SPX500", "M5", 0.75),
+    Candidate(10, "market_big_retest_s0.75_h3_19", "XAUUSD", "M1", 1.5),
     Candidate(0, "swing_break_retest", "EURCHF.i", "M5", 0.75),
     Candidate(0, "trend_day_continuation", "GBPJPY.i", "M5", 1.5),
     Candidate(0, "rsi_divergence", "AUDUSD.i", "M5", 1.5),
@@ -335,6 +345,104 @@ def _audit(candidate: Candidate, sizer: PositionSizer) -> pd.DataFrame:
                 "stamp": frame.index[at],
                 "exit_stamp": frame.index[exit_at],
                 "won": bool(won),
+                "net_r": net_r,
+                "money": net_r * sized.actual_risk_money,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _resolve_managed(
+    frame: pd.DataFrame,
+    *,
+    index: int,
+    direction: int,
+    entry: float,
+    unit: float,
+    ratio: float,
+    trigger_r: float,
+    offset_price: float,
+) -> tuple[float, int] | None:
+    """Conservative break-even walk: an excursion only arms for the next bar."""
+
+    stop = entry - direction * unit
+    target = entry + direction * unit * ratio
+    high = frame["high"].to_numpy(float)
+    low = frame["low"].to_numpy(float)
+    end = min(index + HORIZON_BARS, len(frame) - 1)
+    armed = False
+    for at in range(index + 1, end + 1):
+        hit_stop = low[at] <= stop if direction > 0 else high[at] >= stop
+        hit_target = high[at] >= target if direction > 0 else low[at] <= target
+        if hit_stop:
+            return direction * (stop - entry) / unit, at
+        if hit_target:
+            return ratio, at
+        excursion = high[at] - entry if direction > 0 else entry - low[at]
+        if not armed and excursion / unit >= trigger_r:
+            armed = True
+            stop = entry + direction * offset_price
+    return None
+
+
+def audit_management(
+    candidate: Candidate,
+    sizer: PositionSizer,
+    *,
+    trigger_r: float,
+    offset_atr: float,
+) -> pd.DataFrame:
+    """Audit one moving-stop rule with its own chronological position occupancy."""
+
+    frame = data.load(candidate.symbol, candidate.timeframe)
+    spec = data.instrument_spec(candidate.symbol)
+    atr_values = data.atr(frame)
+    batch = CATALOGUE[candidate.strategy](frame, atr_values)
+    rows: list[dict[str, object]] = []
+    last_exit = -1
+    for at, direction, entry, unit in zip(
+        batch.index, batch.direction, batch.entry, batch.unit, strict=True
+    ):
+        at = int(at)
+        direction = int(direction)
+        entry = float(entry)
+        unit = float(unit)
+        if at <= last_exit:
+            continue
+        spread_price = float(frame["spread"].iloc[at]) * spec.point
+        sized = sizer.size(
+            spec=spec,
+            equity=203.0,
+            direction=Direction(direction),
+            entry=entry,
+            sl=entry - direction * unit,
+            tp=entry + direction * unit * candidate.target_r,
+            spread_price=spread_price,
+            risk_pct=2.0,
+            enforce_minimum_rr=False,
+        )
+        if not sized.approved:
+            continue
+        result = _resolve_managed(
+            frame,
+            index=at,
+            direction=direction,
+            entry=entry,
+            unit=unit,
+            ratio=candidate.target_r,
+            trigger_r=trigger_r,
+            offset_price=offset_atr * float(atr_values[at]),
+        )
+        if result is None:
+            continue
+        gross_r, last_exit = result
+        cost = sizer.cost_share(spec, unit, spread_price)
+        net_r = gross_r - cost
+        rows.append(
+            {
+                "stamp": frame.index[at],
+                "exit_stamp": frame.index[last_exit],
+                "won": gross_r > 0.0,
                 "net_r": net_r,
                 "money": net_r * sized.actual_risk_money,
             }
