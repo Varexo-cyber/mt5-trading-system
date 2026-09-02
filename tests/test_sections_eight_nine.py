@@ -78,16 +78,16 @@ def test_section_nine_fades_a_two_atr_vwap_displacement() -> None:
     assert signal.invalidation_price is not None
 
 
-def test_new_sections_are_measured_but_not_live_promoted() -> None:
+def test_new_sections_are_live_promoted_with_measured_targets() -> None:
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
 
     assert settings.analysis.section_eight_trend_day_h1.enabled is True
     assert settings.analysis.section_nine_vwap_m30.enabled is True
     assert settings.analysis.section_ten_gold_m1.enabled is True
     assert settings.analysis.section_ten_gold_m1.minimum_break_atr == 0.75
-    assert "section_eight_trend_day_h1" not in settings.analysis.confluence.live_enabled_modules
-    assert "section_nine_vwap_m30" not in settings.analysis.confluence.live_enabled_modules
-    assert "section_ten_gold_m1" not in settings.analysis.confluence.live_enabled_modules
+    assert "section_eight_trend_day_h1" in settings.analysis.confluence.live_enabled_modules
+    assert "section_nine_vwap_m30" in settings.analysis.confluence.live_enabled_modules
+    assert "section_ten_gold_m1" in settings.analysis.confluence.live_enabled_modules
     assert (
         settings.analysis.confluence.target_r_multiple_by_family["section_eight_trend_day_h1"]
         == 1.0

@@ -122,6 +122,9 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_nine_vwap_m30",
+            "section_ten_gold_m1",
         }
         assert settings.analysis.confluence.weights.get("impulse_retest", 0.0) > 0.0
         assert settings.analysis.confluence.weights.get("order_block", 0.0) > 0.0
@@ -301,10 +304,7 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         the over-count is BIASED: a retest that works leaves the level in a bar
         and yields one entry, a retest that fails sits on it and yields five.
         Duplicates are drawn from the losers."""
-        assert (
-            "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}"
-            in SOURCE
-        )
+        assert "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}" in SOURCE
         assert (
             "awake = [row for row in sections if busy[row[0]] is None or upto > busy[row[0]]]"
             in SOURCE
@@ -455,9 +455,12 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         assert "_under_the_slot_cap(everything, slots)" in SOURCE
 
 
-class TestTheLiveOnlyLauncher:
-    """A month over the whole catalogue is five times cheaper without the
-    sweep, and the sweep answers a question the owner is no longer asking."""
+class TestTheSectionsFiveToTenLauncher:
+    """The operator's short run measures only S5-S10 on their own clocks.
+
+    S8-S10 remain shadowed; including them in a read-only replay must never be
+    confused with adding them to the account's real-money allowlist.
+    """
 
     LAUNCHER = (ROOT / "dryrun-live.cmd").read_text()
 
@@ -471,6 +474,7 @@ class TestTheLiveOnlyLauncher:
         )
 
         assert core.days == 30
+        assert core.sections_five_to_ten is True
         assert core.live_only is True
         assert core.core is True
         assert core.sweep == []
@@ -480,8 +484,23 @@ class TestTheLiveOnlyLauncher:
         )
 
         assert every.days == 7
+        assert every.sections_five_to_ten is True
         assert every.live_only is True
         assert every.core is False
+
+    def test_the_preset_names_exactly_the_six_requested_sections(self) -> None:
+        wanted = {
+            "failed_session_breakout",
+            "section_five_m5",
+            "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_nine_vwap_m30",
+            "section_ten_gold_m1",
+        }
+
+        for name in wanted:
+            assert f'"{name}"' in SOURCE
+        assert "if args.sections_five_to_ten:" in SOURCE
 
     def test_it_takes_no_comma_arguments(self) -> None:
         for line in self.LAUNCHER.splitlines():
@@ -1592,6 +1611,9 @@ class TestAShadowedSectionCanActuallyVote:
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_nine_vwap_m30",
+            "section_ten_gold_m1",
         }
 
     def test_a_shadowed_section_is_granted_for_its_measurement_pass(self) -> None:
@@ -1604,12 +1626,18 @@ class TestAShadowedSectionCanActuallyVote:
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_nine_vwap_m30",
+            "section_ten_gold_m1",
         }
         assert set(tuned.analysis.confluence.live_enabled_modules) == {
             "order_block",
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_nine_vwap_m30",
+            "section_ten_gold_m1",
         }
 
 
@@ -1804,10 +1832,7 @@ class TestTheSweepDoesNotBuildEveryContextTwice:
     def test_each_section_keeps_its_own_open_position(self) -> None:
         """Sharing one `busy_until` across sections would be a different bug:
         refusing section three a trade because section two is in one."""
-        assert (
-            "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}"
-            in SOURCE
-        )
+        assert "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}" in SOURCE
         assert "busy[name] = exit_at" in SOURCE
 
     def test_only_the_frames_something_reads_are_sliced(self) -> None:
@@ -2279,9 +2304,9 @@ class TestATakenTradePaysItsOwnSpread:
         from scripts import dry_run_sections
 
         assert hasattr(PositionSizer, "cost_share")
-        assert "PositionSizer._cost_share" not in inspect.getsource(
-            dry_run_sections
-        ), "call the public helper, do not reach past it"
+        assert "PositionSizer._cost_share" not in inspect.getsource(dry_run_sections), (
+            "call the public helper, do not reach past it"
+        )
 
     def test_the_gross_number_stays_recoverable(self) -> None:
         """Every figure produced before 31 August was gross. The difference

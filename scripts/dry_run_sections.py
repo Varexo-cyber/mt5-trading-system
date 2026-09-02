@@ -911,6 +911,14 @@ def build_parser() -> argparse.ArgumentParser:
             "own configured clock. Overrides --sweep."
         ),
     )
+    parser.add_argument(
+        "--sections-five-to-ten",
+        action="store_true",
+        help=(
+            "measure exactly sections 5 through 10 on their configured clocks; "
+            "shadow sections are measured without granting real-money permission"
+        ),
+    )
     return parser
 
 
@@ -1072,6 +1080,21 @@ def main(argv: list[str] | None = None) -> None:
             "section_ten_gold_m1": "section_ten_gold_m1",
         }
         measured = set(module_config)
+        if args.sections_five_to_ten:
+            selected = {
+                "failed_session_breakout",
+                "section_five_m5",
+                "section_six_gold_m5",
+                "section_eight_trend_day_h1",
+                "section_nine_vwap_m30",
+                "section_ten_gold_m1",
+            }
+            missing = selected - measured
+            if missing:
+                raise SystemExit(
+                    f"sections 5-10 are missing from the dry-run implementation: {sorted(missing)}"
+                )
+            measured = measured & selected
         if args.live_only:
             # `dryrun-live.cmd` means exactly what its name says. Previously
             # this flag only disabled the timeframe sweep, while `measured`
@@ -1160,7 +1183,7 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit(needs_m1)
         if needs_m1:
             print(
-                f"  NOTE: --no-m1 ignored. {needs_m1.split(' cannot')[0]} is a LIVE section's\n"
+                f"  NOTE: --no-m1 ignored. {needs_m1.split(' cannot')[0]} is a selected section's\n"
                 f"        own clock and cannot be resolved on M5 bars, so M1 history is\n"
                 f"        being fetched after all. This run will be slower than asked."
             )

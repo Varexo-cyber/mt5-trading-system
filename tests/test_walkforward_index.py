@@ -46,6 +46,9 @@ def test_only_the_measured_new_sections_may_trade_real_money() -> None:
         "failed_session_breakout",
         "section_five_m5",
         "section_six_gold_m5",
+        "section_eight_trend_day_h1",
+        "section_nine_vwap_m30",
+        "section_ten_gold_m1",
     )
     assert settings.analysis.walkforward_index.enabled is False
     assert settings.analysis.walkforward_index.allowed_symbols == ("SPX500",)
@@ -54,3 +57,6 @@ def test_only_the_measured_new_sections_may_trade_real_money() -> None:
     assert "failed_session_breakout" in settings.risk.section_breakers
     assert "section_five_m5" in settings.risk.section_breakers
     assert "section_six_gold_m5" in settings.risk.section_breakers
+    assert "section_eight_trend_day_h1" in settings.risk.section_breakers
+    assert "section_nine_vwap_m30" in settings.risk.section_breakers
+    assert "section_ten_gold_m1" in settings.risk.section_breakers

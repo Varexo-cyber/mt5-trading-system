@@ -155,6 +155,9 @@ class TestTheShippedAccountAgrees:
             "failed_session_breakout": 1.5,
             "section_five_m5": 1.0,
             "section_six_gold_m5": 3.0,
+            "section_eight_trend_day_h1": 1.0,
+            "section_nine_vwap_m30": 1.5,
+            "section_ten_gold_m1": 1.5,
         }
 
         assert set(confluence.live_enabled_modules) == set(expected)
@@ -167,9 +170,9 @@ class TestTheShippedAccountAgrees:
 
         for module in confluence.live_enabled_modules:
             expected = confluence.target_r_multiple_by_family[module]
-            assert _distance(engine, module, risk=0.0020) == pytest.approx(
-                expected, abs=1e-6
-            ), module
+            assert _distance(engine, module, risk=0.0020) == pytest.approx(expected, abs=1e-6), (
+                module
+            )
 
     def test_the_account_default_is_still_three(self) -> None:
         """The override is per family. Nothing here loosens or tightens what
@@ -269,9 +272,9 @@ class TestTheTimingGateDoesNotRefuseTheRetestItself:
         confluence = self._confluence()
 
         for module in confluence.live_enabled_modules:
-            assert any(
-                family in module for family in confluence.entry_timing_exempt_families
-            ), f"{module} is still judged by the timing gate that refuses its own mechanism"
+            assert any(family in module for family in confluence.entry_timing_exempt_families), (
+                f"{module} is still judged by the timing gate that refuses its own mechanism"
+            )
 
     def test_the_base_config_exempts_nobody(self) -> None:
         """The gate stays fully armed for every other account and every other

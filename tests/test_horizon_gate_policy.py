@@ -90,8 +90,9 @@ def test_quick_relaxation_does_not_relax_adverse_reversal_limit() -> None:
     quick_config = service._entry_quality_config_for(quick)
     swing_config = service._entry_quality_config_for(swing)
 
-    assert quick_config.max_favourable_extension_atr["forex"] > (
-        swing_config.max_favourable_extension_atr["forex"]
+    assert (
+        quick_config.max_favourable_extension_atr["forex"]
+        > (swing_config.max_favourable_extension_atr["forex"])
     )
     assert quick_config.max_last_bar_adverse_atr == swing_config.max_last_bar_adverse_atr
 
@@ -201,6 +202,9 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
         "failed_session_breakout",
         "section_five_m5",
         "section_six_gold_m5",
+        "section_eight_trend_day_h1",
+        "section_nine_vwap_m30",
+        "section_ten_gold_m1",
     }
     # Every live module keeps a breaker. That was the real content of this
     # test and it survives the change.
@@ -404,6 +408,9 @@ class TestTheEntryConfirmationExemptionReachesTheRunner:
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_nine_vwap_m30",
+            "section_ten_gold_m1",
         }
         assert settings.analysis.confluence.require_entry_confirmation is True
 
@@ -522,6 +529,9 @@ class TestASecondClockIsASecondModule:
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_nine_vwap_m30",
+            "section_ten_gold_m1",
         }
         for name, timeframe in expected.items():
             assert built[name].config.enabled is True
