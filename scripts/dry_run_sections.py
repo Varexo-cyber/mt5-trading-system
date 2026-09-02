@@ -516,7 +516,18 @@ def _one_clock(
             module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
             if not idea.approved:
                 out[name].append(
-                    Decision(upto, symbol, module, "REFUSED_CONFLUENCE", note=idea.reason[:90])
+                    Decision(
+                        upto,
+                        symbol,
+                        module,
+                        "REFUSED_CONFLUENCE",
+                        note=idea.reason[:90],
+                        # THE SECTION THAT WAS REFUSED, not just the detector
+                        # that voted. Without it a section which took no trades
+                        # has no rows anywhere carrying its name, and BY SECTION
+                        # cannot tell "took nothing" from "never ran".
+                        pass_key=(name, clock.value),
+                    )
                 )
                 continue
             sized = sizer.size(
@@ -537,6 +548,7 @@ def _one_clock(
                         sized.decision.reason.name,
                         direction=idea.direction.name,
                         note=sized.decision.detail[:90],
+                        pass_key=(name, clock.value),
                     )
                 )
                 continue
@@ -1418,7 +1430,14 @@ def main(argv: list[str] | None = None) -> None:
         _sweep_report(results, equity, args.days, _break_even_rule(settings) is not None)
         _clock_overlap(results, args.days)
     _live_config_report(results, settings, equity, args.days)
-    _report(decisions, equity, args.days, skipped_symbols, _break_even_rule(settings) is not None)
+    _report(
+        decisions,
+        equity,
+        args.days,
+        skipped_symbols,
+        _break_even_rule(settings) is not None,
+        sections=tuple(sorted({name for name, _tf in passes})),
+    )
     _gates_this_run_does_not_apply()
     if args.csv:
         path = Path(args.csv)
@@ -2047,7 +2066,12 @@ def _sweep_report(results: dict, equity: float, days: int, managed: bool = False
 
 
 def _report(
-    decisions: list[Decision], equity: float, days: int, skipped: int, managed: bool = False
+    decisions: list[Decision],
+    equity: float,
+    days: int,
+    skipped: int,
+    managed: bool = False,
+    sections: tuple[str, ...] = (),
 ) -> None:
     """Every decision in the run, and BY SECTION at the bottom.
 
@@ -2161,13 +2185,35 @@ def _report(
         ]
     )
     print("\nBY SECTION")
-    for module, row in (
-        by_module.groupby("module")
-        .agg(trades=("r", "size"), R=("r", "sum"), EUR=("eur", "sum"))
-        .iterrows()
-    ):
+    totals = (
+        by_module.groupby("module").agg(trades=("r", "size"), R=("r", "sum"), EUR=("eur", "sum"))
+        if not by_module.empty
+        else pd.DataFrame(columns=["trades", "R", "EUR"])
+    )
+    for module, row in totals.iterrows():
         print(
             f"   {module:<34} {int(row.trades):>4} trades  {row.R:>+7.2f} R  EUR {row.EUR:>+7.2f}"
+        )
+
+    # EVERY SECTION THAT WAS MEASURED, INCLUDING THE ONES THAT TOOK NOTHING.
+    #
+    # "Waar is sectie 10" -- section ten was on the live list, ran, took no
+    # trades, and therefore had no rows to group, so it vanished from the only
+    # table anyone reads. An absent row and a zero row look identical and mean
+    # opposite things: one is a section that found nothing, the other is a
+    # section that is not wired in. This project has now shipped that same
+    # confusion under seven different names.
+    silent = sorted(set(sections) - set(totals.index))
+    for name in silent:
+        rows = [d for d in decisions if d.pass_key[0] == name]
+        if not rows:
+            print(f"   {name:<34}    NO DECISIONS AT ALL -- it did not run")
+            continue
+        why = Counter(d.outcome for d in rows if d.outcome != "TRADE").most_common(1)
+        reason = why[0] if why else ("nothing recorded", 0)
+        print(
+            f"   {name:<34}    0 trades   {len(rows)} decisions, "
+            f"mostly {reason[0]} ({reason[1]})"
         )
     print(f"{'-' * 78}\n")
 
