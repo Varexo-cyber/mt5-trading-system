@@ -3998,6 +3998,8 @@ class SectionTenGoldM1Config(Base):
     retest_tolerance_atr: float = Field(default=0.15, ge=0.0, le=2.0)
     stop_beyond_atr: float = Field(default=0.75, gt=0.0, le=5.0)
     maximum_wait_bars: int = Field(default=96, ge=2, le=500)
+    entry_start_hour_utc: int = Field(default=3, ge=0, le=23)
+    entry_end_hour_utc: int = Field(default=19, ge=1, le=24)
     score: float = Field(default=70.0, ge=0.0, le=100.0)
     confidence: float = Field(default=0.58, ge=0.0, le=1.0)
 
