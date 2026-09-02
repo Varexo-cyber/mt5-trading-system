@@ -4,12 +4,11 @@ cd /d "%~dp0"
 
 echo.
 echo  ============================================
-echo   Sections 2 and 3, EXACTLY AS CONFIGURED
+echo   CURRENT LIVE SECTIONS, EXACTLY AS CONFIGURED
 echo  ============================================
 echo.
-echo  impulse_retest on M15 and order_block on M30 -- their own clocks, nothing
-echo  else. One position per symbol. The account's own concurrent-position cap.
-echo  Plus: what the break-even rule costs or earns, on the same trades.
+echo  Every module currently allowed to use real money, on its own configured
+echo  clock. One position per symbol and the account's real position cap.
 echo.
 echo  SIXTEEN MARKETS, NOT 232. The eleven FX majors the research was done on,
 echo  gold, and four index CFDs. Every other market in the catalogue is an

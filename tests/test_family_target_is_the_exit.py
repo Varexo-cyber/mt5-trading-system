@@ -149,18 +149,27 @@ class TestTheShippedAccountAgrees:
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
 
-    def test_both_live_sections_name_one_to_one(self) -> None:
+    def test_every_live_section_names_its_measured_target(self) -> None:
         confluence = self._live().analysis.confluence
+        expected = {
+            "failed_session_breakout": 1.5,
+            "section_five_m5": 1.0,
+            "section_six_gold_m5": 3.0,
+        }
 
-        for module in confluence.live_enabled_modules:
-            assert confluence.target_r_multiple_by_family.get(module) == pytest.approx(1.0), module
+        assert set(confluence.live_enabled_modules) == set(expected)
+        for module, ratio in expected.items():
+            assert confluence.target_r_multiple_by_family.get(module) == pytest.approx(ratio)
 
     def test_the_live_config_ships_the_distance_it_names(self) -> None:
         confluence = self._live().analysis.confluence
         engine = ConfluenceEngine([], confluence)
 
         for module in confluence.live_enabled_modules:
-            assert _distance(engine, module, risk=0.0020) == pytest.approx(1.0, abs=1e-6), module
+            expected = confluence.target_r_multiple_by_family[module]
+            assert _distance(engine, module, risk=0.0020) == pytest.approx(
+                expected, abs=1e-6
+            ), module
 
     def test_the_account_default_is_still_three(self) -> None:
         """The override is per family. Nothing here loosens or tightens what
@@ -195,7 +204,7 @@ class TestBothLiveSectionsArePlannedOnAFastClock:
         for module in confluence.live_enabled_modules:
             assert module in fast, f"{module} falls through to a swing plan"
 
-    def test_the_classifier_actually_says_intraday(self) -> None:
+    def test_the_classifier_actually_says_fast(self) -> None:
         """Membership is the mechanism; this is the outcome. `_classify_horizon`
         needs the WHOLE agreeing set inside the list, so a module added to the
         config but read from a stale copy would still come back swing."""
@@ -214,7 +223,8 @@ class TestBothLiveSectionsArePlannedOnAFastClock:
             )
             horizon, family = engine._classify_horizon([(signal, 1.0)])
 
-            assert horizon == "intraday", (module, horizon)
+            expected = "quick" if module in confluence.quick_modules else "intraday"
+            assert horizon == expected, (module, horizon)
             assert module in family, (module, family)
 
     def test_the_intraday_veto_needs_two_conflicts(self) -> None:

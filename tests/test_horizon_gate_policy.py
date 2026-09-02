@@ -198,7 +198,6 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     # portfolio bugs were removed. They stay enabled for shadow measurement,
     # but none may use real money.
     assert live == {
-        "walkforward_index",
         "failed_session_breakout",
         "section_five_m5",
         "section_six_gold_m5",
@@ -520,7 +519,6 @@ class TestASecondClockIsASecondModule:
         built = {module.name: module for module in build_analysis_modules(settings)}
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
-            "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",

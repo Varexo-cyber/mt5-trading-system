@@ -119,7 +119,6 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
         settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
-            "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
@@ -1580,7 +1579,6 @@ class TestAShadowedSectionCanActuallyVote:
 
         assert allowed == {
             "market_structure",
-            "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
@@ -1593,14 +1591,12 @@ class TestAShadowedSectionCanActuallyVote:
         tuned = _retimed(settings, "order_block", "M30")
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
-            "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
         }
         assert set(tuned.analysis.confluence.live_enabled_modules) == {
             "order_block",
-            "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",

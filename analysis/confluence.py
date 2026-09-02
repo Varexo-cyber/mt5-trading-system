@@ -386,12 +386,21 @@ class ConfluenceEngine:
         horizon, setup_family = self._classify_horizon(agreeing)
         profile = self.config.horizon_profiles[horizon]
 
-        against_the_tide = self.higher_timeframe_conflict(
-            ctx,
-            direction,
-            timeframes=profile.htf_trend_timeframes,
-            threshold=profile.htf_trend_veto,
-            minimum_conflicts=profile.minimum_htf_conflicts,
+        strategy_owned = any(
+            family in setup_family
+            for family in self.config.strategy_owned_entry_families
+        )
+
+        against_the_tide = (
+            None
+            if strategy_owned
+            else self.higher_timeframe_conflict(
+                ctx,
+                direction,
+                timeframes=profile.htf_trend_timeframes,
+                threshold=profile.htf_trend_veto,
+                minimum_conflicts=profile.minimum_htf_conflicts,
+            )
         )
         if against_the_tide is not None:
             return self._reject(ctx, signals, against_the_tide, score, confidence)
@@ -420,7 +429,9 @@ class ConfluenceEngine:
         # exactly this reason and that finding stands. It is wrong for an entry
         # whose whole thesis is the pullback, and nothing distinguished the
         # two.
-        exempt = any(family in setup_family for family in self.config.entry_timing_exempt_families)
+        exempt = strategy_owned or any(
+            family in setup_family for family in self.config.entry_timing_exempt_families
+        )
         adverse = (
             None
             if exempt
@@ -453,7 +464,12 @@ class ConfluenceEngine:
                 or (direction is Direction.SHORT and signal.invalidation_price > entry)
             )
         ]
-        if candidates:
+        if candidates and strategy_owned:
+            # The module's invalidation is the tested stop.  The usual 0.25
+            # ATR structural padding and account-wide minimum would silently
+            # turn it into a different strategy.
+            stop = min(candidates) if direction is Direction.LONG else max(candidates)
+        elif candidates:
             structural = min(candidates) if direction is Direction.LONG else max(candidates)
             stop = (
                 structural - atr * 0.25 if direction is Direction.LONG else structural + atr * 0.25

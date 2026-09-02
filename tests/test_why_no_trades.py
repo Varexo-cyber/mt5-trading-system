@@ -488,10 +488,7 @@ class TestSilenceAndAbsenceAreDifferentFindings:
         from scripts.why_no_trades import _live_modules
 
         assert set(_live_modules()) == {
-            "impulse_retest",
-            "impulse_retest_m30",
-            "order_block_m15",
-            "order_block",
-            "order_block_fast",
-            "order_block_h1",
+            "failed_session_breakout",
+            "section_five_m5",
+            "section_six_gold_m5",
         }

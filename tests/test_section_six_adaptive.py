@@ -57,10 +57,36 @@ def test_failed_spx_variant_stays_disabled_by_default() -> None:
     assert module.analyze(_context("SPX500", Timeframe.H1)).score == 0.0
 
 
+def test_gold_route_does_not_emit_outside_its_measured_session() -> None:
+    config = SectionSixModelConfig(
+        enabled=True,
+        timeframe="M5",
+        polarity=-1,
+        threshold=0.0001,
+        stop_atr=0.8,
+        session_start_hour_utc=0,
+        session_end_hour_utc=1,
+    )
+
+    signal = SectionSixGoldM5(config).analyze(_context("XAUUSD", Timeframe.M5))
+
+    assert signal.score == 0.0
+    assert "outside measured" in signal.reasoning
+
+
 def test_live_overlay_keeps_the_measured_gold_exit_and_rejects_spx() -> None:
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
 
     assert settings.analysis.section_six_gold_m5.enabled is True
     assert settings.analysis.section_six_spx_h1.enabled is False
-    assert settings.analysis.confluence.target_r_multiple_by_family["section_six_gold_m5"] == 1.5
+    assert settings.analysis.section_six_gold_m5.threshold == 0.15
+    assert settings.analysis.section_six_gold_m5.stop_atr == 0.8
+    assert settings.analysis.section_six_gold_m5.long_only is True
+    assert settings.analysis.section_six_gold_m5.session_start_hour_utc == 20
+    assert settings.analysis.section_six_gold_m5.session_end_hour_utc == 2
+    assert settings.analysis.confluence.target_r_multiple_by_family["section_six_gold_m5"] == 3.0
+    assert settings.analysis.confluence.strategy_owned_entry_families == (
+        "section_six_gold_m5",
+    )
+    assert "section_six_gold_m5" in settings.analysis.confluence.target_reach_advisory_families
     assert "JARVIS-S6-AU-M5" in settings.trade_management.fixed_exit_comments
