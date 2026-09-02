@@ -911,9 +911,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--live-only",
         action="store_true",
         help=(
-            "each section on ITS OWN configured clock and nothing else. Overrides "
-            "--sweep. One fifth of the work, which is what makes a month over the "
-            "whole catalogue finishable."
+            "measure ONLY sections on the live real-money allowlist, each on its "
+            "own configured clock. Overrides --sweep."
         ),
     )
     return parser
@@ -1074,6 +1073,21 @@ def main(argv: list[str] | None = None) -> None:
             "section_six_spx_h1": "section_six_spx_h1",
         }
         measured = set(module_config)
+        if args.live_only:
+            # `dryrun-live.cmd` means exactly what its name says. Previously
+            # this flag only disabled the timeframe sweep, while `measured`
+            # still contained every known (including quarantined) module. The
+            # report therefore spent most of its time replaying impulse/retest
+            # and order-block rows which were not allowed to trade, then mixed
+            # them into the all-decisions totals. Keep research/history runs
+            # unchanged; only the explicit live-only path gets this filter.
+            missing = live - measured
+            if missing:
+                raise SystemExit(
+                    "live modules are missing from the dry-run implementation: "
+                    f"{sorted(missing)}"
+                )
+            measured = measured & live
         if args.only:
             wanted_sections = {
                 piece.strip()

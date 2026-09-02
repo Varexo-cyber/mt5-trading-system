@@ -492,6 +492,16 @@ class TestTheLiveOnlyLauncher:
         """Otherwise the flag is advisory and the run costs what it always did."""
         assert "if args.live_only:\n            args.sweep = []" in SOURCE
 
+    def test_live_only_replays_only_the_real_money_allowlist(self) -> None:
+        """The old flag disabled the clock sweep but still replayed every
+        shadow module. That made `dryrun-live.cmd` slow and printed impulse and
+        order-block totals even though neither was active."""
+        live_filter = SOURCE.index("measured = measured & live")
+        passes = SOURCE.index("passes: list[tuple[str, str]]")
+
+        assert live_filter < passes
+        assert "missing = live - measured" in SOURCE
+
 
 class TestTheCoreUniverse:
     """232 symbols x 5 clocks x M1 history is a run that does not get run.
