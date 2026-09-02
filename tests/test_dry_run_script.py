@@ -2595,3 +2595,49 @@ class TestASectionThatTookNothingStillHasARow:
         source = " ".join(inspect.getsource(dry_run_sections).split())
 
         assert "sections=tuple(sorted({name for name, _tf in passes}))" in source
+
+
+class TestTheExitsAreNotModelledEither:
+    """The eight entry gates were only half the gap.
+
+    `_resolve` simulates exactly one exit rule -- the break-even move -- and
+    `TradeManagementConfig` carries a dozen more that fire on every open
+    position. A dry-run +1.00R is a trade that ran to target untouched; live,
+    half of it came off at 1.5R and the rest trailed out somewhere else.
+    """
+
+    def test_every_named_rule_is_real_and_switched_on(self) -> None:
+        """A list of rules that do not exist would be worse than no list."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from scripts.dry_run_sections import EXITS_NOT_MODELLED
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        management = settings.trade_management
+
+        for name, _what in EXITS_NOT_MODELLED:
+            field = name.split()[0].rstrip("*")
+            if field.endswith("_"):
+                assert any(f.startswith(field) for f in type(management).model_fields), name
+            else:
+                assert hasattr(management, field), f"{field} is not a real setting"
+
+    def test_break_even_is_the_one_that_IS_modelled_and_is_not_in_the_list(self) -> None:
+        from scripts.dry_run_sections import EXITS_NOT_MODELLED
+
+        named = " ".join(name for name, _ in EXITS_NOT_MODELLED)
+
+        assert "break_even_at_r" not in named
+        assert "partial_close_at_r" in named
+
+    def test_the_report_prints_them(self, capsys) -> None:
+        from scripts.dry_run_sections import _gates_this_run_does_not_apply
+
+        _gates_this_run_does_not_apply()
+        out = capsys.readouterr().out
+
+        assert "AND THE EXITS" in out
+        assert "partial_close_at_r" in out
+        assert "trailing_mode" in out
+        assert "ran to target untouched" in out

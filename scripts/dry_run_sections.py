@@ -1945,6 +1945,28 @@ NOT_MODELLED: tuple[tuple[str, int, str], ...] = (
 )
 
 
+#: Position management the LIVE account runs and this script does not.
+#:
+#: THE ENTRY GATES WERE ONLY HALF THE GAP. `_resolve` models exactly one exit
+#: rule -- the break-even move -- and `TradeManagementConfig` carries a dozen
+#: more that fire on every open position. Reading a dry-run R as the account's
+#: result assumes those do nothing, and they are the difference between
+#: "+1.00R" and "half off at 1.5R, the rest trailed out at 0.6R".
+#:
+#: Not necessarily worse. Different, and unmeasured here.
+EXITS_NOT_MODELLED: tuple[tuple[str, str], ...] = (
+    ("partial_close_at_r 1.5", "half the position comes off at 1.5R"),
+    ("trailing_mode atr / 2.0", "the rest trails two ATR behind"),
+    ("profit_lock_from_r 0.2", "60% of the peak profit is locked in"),
+    ("giveback_arm_r 0.5", "out if it hands back half of what it made"),
+    ("peak_stall_minutes 4.0", "out if it stalls near its peak"),
+    ("time_exit_hours 24", "out after a day, or 1.5x the plan horizon"),
+    ("health_tighten_at_r 0.2", "the health monitor tightens the stop"),
+    ("thesis_invalidation_at_r 0.15", "out when the reason for the trade breaks"),
+    ("spread_squeeze_share", "out when the spread goes abnormal"),
+)
+
+
 def _gates_this_run_does_not_apply() -> None:
     """What stands between this number and the account's behaviour."""
     blocked = sum(count for _name, count, _why in NOT_MODELLED)
@@ -1963,6 +1985,16 @@ def _gates_this_run_does_not_apply() -> None:
         f"  GATES OFF. It is the right number for choosing a clock or an exit rule,\n"
         f"  and it is not a forecast of the account. `waarom.cmd 24` says which gate\n"
         f"  is actually spending the setups on any given day."
+    )
+
+    print("\n  AND THE EXITS. Only ONE position-management rule is simulated here,")
+    print("  the break-even move. The account runs these on top of it:\n")
+    for name, what in EXITS_NOT_MODELLED:
+        print(f"    {name:<30}{what}")
+    print(
+        "\n  So a +1.00R here is a trade that ran to target untouched. Live, half"
+        "\n  of it came off at 1.5R and the rest trailed out somewhere else. Not"
+        "\n  necessarily worse -- different, and not measured by this script."
     )
     print(f"{'=' * 78}")
 
