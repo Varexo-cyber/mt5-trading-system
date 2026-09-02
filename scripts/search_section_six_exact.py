@@ -62,8 +62,7 @@ def _simulate(candidate, m5, m1, score, atr, spec, sizer, start, end) -> list[Tr
     spread = m5["spread"].to_numpy(float) if "spread" in m5 else np.zeros(len(m5))
     close = m5["close"].astype(float)
     regime_values = (
-        close.ewm(span=288, adjust=False).mean()
-        - close.ewm(span=1152, adjust=False).mean()
+        close.ewm(span=288, adjust=False).mean() - close.ewm(span=1152, adjust=False).mean()
     ).to_numpy(float)
     closes = m5.index + pd.Timedelta(minutes=5)
     chosen = np.flatnonzero(
@@ -123,9 +122,7 @@ def _simulate(candidate, m5, m1, score, atr, spec, sizer, start, end) -> list[Tr
             continue
         busy_until = exit_at
         regime = 1 if regime_values[at] >= 0.0 else -1
-        out.append(
-            Trade(opened, result - sizer.cost_share(spec, risk, spread_price), sign, regime)
-        )
+        out.append(Trade(opened, result - sizer.cost_share(spec, risk, spread_price), sign, regime))
     return out
 
 
@@ -187,9 +184,7 @@ def main() -> None:
         for candidate in candidates:
             rows = _simulate(candidate, m5, m1, score, atr, spec, sizer, start, end)
             selection = [row for row in rows if row.opened < validation_start]
-            validation = [
-                row for row in rows if validation_start <= row.opened < holdout_start
-            ]
+            validation = [row for row in rows if validation_start <= row.opened < holdout_start]
             holdout = [row for row in rows if row.opened >= holdout_start]
             sn, sm, st, sw = _stats(selection)
             vn, vm, vt, vw = _stats(validation)
@@ -197,13 +192,45 @@ def main() -> None:
             green = _positive_blocks(selection, start, 30, 4)
             if sn >= 300 and sm > 0.02 and green >= 3 and vn >= 60 and vm > 0.02:
                 ranked.append(
-                    (min(sm, vm), green, sn, candidate,
-                     sn, sm, st, sw, vn, vm, vt, vw, hn, hm, ht, hw)
+                    (
+                        min(sm, vm),
+                        green,
+                        sn,
+                        candidate,
+                        sn,
+                        sm,
+                        st,
+                        sw,
+                        vn,
+                        vm,
+                        vt,
+                        vw,
+                        hn,
+                        hm,
+                        ht,
+                        hw,
+                    )
                 )
         ranked.sort(reverse=True, key=lambda row: row[:3])
         print("RANKED ON OLD TRAIN + VALIDATION; NEWEST BLOCK IS UNTOUCHED HOLDOUT")
-        for (_rank, green, _count, candidate, sn, sm, st, sw,
-             vn, vm, vt, vw, hn, hm, ht, hw) in ranked[: args.top]:
+        for (
+            _rank,
+            green,
+            _count,
+            candidate,
+            sn,
+            sm,
+            st,
+            sw,
+            vn,
+            vm,
+            vt,
+            vw,
+            hn,
+            hm,
+            ht,
+            hw,
+        ) in ranked[: args.top]:
             print(
                 f"{candidate} | SELECT n={sn:4d} win={sw:.1%} mean={sm:+.3f} "
                 f"total={st:+.2f}R green_months={green}/4 | "
@@ -269,13 +296,49 @@ def main() -> None:
                         green = _positive_blocks(selected, start, 30, 4)
                         if sn >= 200 and sm >= 0.05 and green >= 3 and vn >= 40 and vm >= 0.05:
                             routed.append(
-                                (min(sm, vm), sn, candidate, first_hour, hours, direction,
-                                 sn, sm, st, sw, vn, vm, vt, vw, hn, hm, ht, hw)
+                                (
+                                    min(sm, vm),
+                                    sn,
+                                    candidate,
+                                    first_hour,
+                                    hours,
+                                    direction,
+                                    sn,
+                                    sm,
+                                    st,
+                                    sw,
+                                    vn,
+                                    vm,
+                                    vt,
+                                    vw,
+                                    hn,
+                                    hm,
+                                    ht,
+                                    hw,
+                                )
                             )
         routed.sort(reverse=True, key=lambda row: row[:2])
         print("\nSESSION ROUTES RANKED ON TRAIN + VALIDATION; NEWEST BLOCK UNTOUCHED")
-        for (_rank, _count, candidate, first, hours, direction,
-             sn, sm, st, sw, vn, vm, vt, vw, hn, hm, ht, hw) in routed[: args.top]:
+        for (
+            _rank,
+            _count,
+            candidate,
+            first,
+            hours,
+            direction,
+            sn,
+            sm,
+            st,
+            sw,
+            vn,
+            vm,
+            vt,
+            vw,
+            hn,
+            hm,
+            ht,
+            hw,
+        ) in routed[: args.top]:
             route = {
                 -1: "SHORT",
                 0: "BOTH",

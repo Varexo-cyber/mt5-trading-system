@@ -120,10 +120,8 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "failed_session_breakout",
-            "section_five_m5",
             "section_six_gold_m5",
             "section_eight_trend_day_h1",
-            "section_nine_vwap_m30",
             "section_ten_gold_m1",
         }
         assert settings.analysis.confluence.weights.get("impulse_retest", 0.0) > 0.0
@@ -266,7 +264,7 @@ class TestTheSweepIsHonest:
             stop_loss = 1.099
             take_profit = 1.102
 
-        fixed, exit_at, _managed = _resolve(frame, base, _Idea(), horizon_bars=96)
+        fixed, exit_at, _managed, _managed_at = _resolve(frame, base, _Idea(), horizon_bars=96)
 
         assert fixed == -1.0, "the bar touched both, so it may not be scored as a win"
         assert exit_at is not None
@@ -313,7 +311,63 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
     def test_an_unresolved_trade_keeps_holding_the_symbol(self) -> None:
         """Freeing the symbol on a trade that never resolved would let the same
         signal re-enter while the position is still open."""
-        assert "busy[name] = exit_at if exit_at is not None else end + clock.duration" in SOURCE
+        source = " ".join(SOURCE.split())
+
+        assert "busy[name] = freed if freed is not None else end + clock.duration" in source
+
+    def test_the_symbol_is_freed_at_the_exit_the_account_takes(self) -> None:
+        """THE BUG THIS REPLACED. `busy` was set from `exit_at`, the FIXED
+        stop, on every run -- including runs judged on the break-even column.
+        A trade that scratched after four minutes kept its symbol occupied
+        until the fixed stop resolved hours later, and every setup in between
+        was dropped without a trace.
+
+        On an M1 section that is most of the trades, so the harness reported
+        far fewer than the strategy would have taken.
+        """
+        source = " ".join(SOURCE.split())
+
+        assert "freed = managed_at if section_manage is not None else exit_at" in source
+
+    def test_the_resolver_reports_both_exit_times(self) -> None:
+        """Measured, not grepped. Break-even scratches this trade on the first
+        bar; the fixed stop only resolves on the last. Those are different
+        instants and the resolver has to hand back both."""
+        from datetime import datetime, timedelta
+
+        import pandas as pd
+
+        from core.types import Direction
+        from scripts.dry_run_sections import _resolve
+
+        base = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        # Bar 1 runs up 1R (arms break-even) then back through entry.
+        # Bars 2-3 drift, bar 4 takes out the original stop.
+        index = pd.DatetimeIndex([base + timedelta(minutes=i) for i in range(1, 5)])
+        frame = pd.DataFrame(
+            {
+                "high": [1.1020, 1.1005, 1.1005, 1.1005],
+                "low": [1.0999, 1.0995, 1.0992, 1.0985],
+                "open": [1.10] * 4,
+                "close": [1.10] * 4,
+            },
+            index=index,
+        )
+
+        class _Idea:
+            direction = Direction.LONG
+            entry = 1.1000
+            stop_loss = 1.0990
+            take_profit = 1.1030
+
+        fixed, exit_at, managed, managed_at = _resolve(
+            frame, base, _Idea(), horizon_bars=96, manage=(0.25, 0.10)
+        )
+
+        assert fixed == -1.0, "the original stop was taken on the last bar"
+        assert managed is not None and managed > 0, "break-even saved it above entry"
+        assert managed_at is not None and exit_at is not None
+        assert managed_at < exit_at, "the managed exit came first and frees the symbol first"
 
     def test_the_resolver_reports_when_the_trade_left(self) -> None:
         """The slot cap is a rule about how many trades are open AT ONCE, which
@@ -352,7 +406,7 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
             index=index,
         )
 
-        r, exit_at, _managed = _resolve(
+        r, exit_at, _managed, _managed_at = _resolve(
             frame, start, Idea(Direction.LONG, 100.0, 99.0, 101.0), horizon_bars=2
         )
 
@@ -491,10 +545,8 @@ class TestTheSectionsFiveToTenLauncher:
     def test_the_preset_names_exactly_the_six_requested_sections(self) -> None:
         wanted = {
             "failed_session_breakout",
-            "section_five_m5",
             "section_six_gold_m5",
             "section_eight_trend_day_h1",
-            "section_nine_vwap_m30",
             "section_ten_gold_m1",
         }
 
@@ -1609,10 +1661,8 @@ class TestAShadowedSectionCanActuallyVote:
         assert allowed == {
             "market_structure",
             "failed_session_breakout",
-            "section_five_m5",
             "section_six_gold_m5",
             "section_eight_trend_day_h1",
-            "section_nine_vwap_m30",
             "section_ten_gold_m1",
         }
 
@@ -1624,19 +1674,15 @@ class TestAShadowedSectionCanActuallyVote:
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "failed_session_breakout",
-            "section_five_m5",
             "section_six_gold_m5",
             "section_eight_trend_day_h1",
-            "section_nine_vwap_m30",
             "section_ten_gold_m1",
         }
         assert set(tuned.analysis.confluence.live_enabled_modules) == {
             "order_block",
             "failed_session_breakout",
-            "section_five_m5",
             "section_six_gold_m5",
             "section_eight_trend_day_h1",
-            "section_nine_vwap_m30",
             "section_ten_gold_m1",
         }
 
@@ -1833,7 +1879,7 @@ class TestTheSweepDoesNotBuildEveryContextTwice:
         """Sharing one `busy_until` across sections would be a different bug:
         refusing section three a trade because section two is in one."""
         assert "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}" in SOURCE
-        assert "busy[name] = exit_at" in SOURCE
+        assert "busy[name] = freed" in " ".join(SOURCE.split())
 
     def test_only_the_frames_something_reads_are_sliced(self) -> None:
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
@@ -2304,9 +2350,9 @@ class TestATakenTradePaysItsOwnSpread:
         from scripts import dry_run_sections
 
         assert hasattr(PositionSizer, "cost_share")
-        assert "PositionSizer._cost_share" not in inspect.getsource(dry_run_sections), (
-            "call the public helper, do not reach past it"
-        )
+        assert "PositionSizer._cost_share" not in inspect.getsource(
+            dry_run_sections
+        ), "call the public helper, do not reach past it"
 
     def test_the_gross_number_stays_recoverable(self) -> None:
         """Every figure produced before 31 August was gross. The difference
@@ -2390,3 +2436,64 @@ class TestALiveSectionOnM1DoesNotVanishFromItsOwnReport:
         source = inspect.getsource(dry_run_sections)
 
         assert '"order_block_fast": "order_block_fast"' in source
+
+
+class TestTheLiveDryRunMeasuresOnlyWhatRuns:
+    """ "Ik wilde alleen degene die runned meten, niet die shadow."
+
+    `--live-only` already intersected with `live_enabled_modules`.
+    `--sections-five-to-ten` did not: it carried its own hardcoded set, written
+    when the book had six entries. Section five and section nine came off the
+    allowlist on 2 September (-1.09 R over 170 trades, -0.02 R over 6) and the
+    hardcoded copy still named them, so `dryrun-live.cmd` -- which passes both
+    flags -- would have gone on replaying two sections that cannot trade.
+
+    Two lists that must agree are two lists that will disagree. This one is
+    derived now.
+    """
+
+    def _settings(self):
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+    def test_the_book_is_intersected_with_the_live_allowlist(self) -> None:
+        from scripts import dry_run_sections
+
+        source = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert "measured = measured & book & live" in source
+        assert "off the live allowlist" in source, "a benched section is named, not dropped"
+
+    def test_the_two_benched_sections_are_not_live(self) -> None:
+        live = set(self._settings().analysis.confluence.live_enabled_modules)
+
+        assert "section_five_m5" not in live
+        assert "section_nine_vwap_m30" not in live
+
+    def test_what_remains_live_is_the_four_that_earned_it(self) -> None:
+        """S6 +43.90 R, S7 +4.08 R, S8 +3.18 R on the owner's dry-run, and S10
+        which that run did not cover but which measured 153 trades and
+        +10.33 R on its own."""
+        live = set(self._settings().analysis.confluence.live_enabled_modules)
+
+        assert live == {
+            "failed_session_breakout",
+            "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_ten_gold_m1",
+        }
+
+    def test_every_live_section_still_has_a_breaker(self) -> None:
+        settings = self._settings()
+
+        for module in settings.analysis.confluence.live_enabled_modules:
+            assert module in settings.risk.section_breakers, module
+
+    def test_the_launcher_passes_both_flags(self) -> None:
+        launcher = (ROOT / "dryrun-live.cmd").read_text()
+
+        assert "--live-only" in launcher
+        assert "--sections-five-to-ten" in launcher

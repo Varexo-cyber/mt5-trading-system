@@ -2695,15 +2695,30 @@ analysis:
     # live gezet zonder bewijs.
     live_enabled_modules:
       - failed_session_breakout
-      - section_five_m5
       - section_six_gold_m5
       # Explicitly promoted 2 September 2026 after the owner's instruction to
-      # dry-run the complete S5-S10 book before launching Jarvis. S8/S9 have
-      # positive early/late halves but only 26/22 historical trades; their
-      # section breakers are therefore essential, not optional.
+      # dry-run the complete S5-S10 book before launching Jarvis. S8 has
+      # positive early and late halves but only 26 historical trades; its
+      # section breaker is therefore essential, not optional.
       - section_eight_trend_day_h1
-      - section_nine_vwap_m30
       - section_ten_gold_m1
+
+    # SECTIE 5 EN SECTIE 9 ZIJN ER 2 SEPTEMBER AFGEHAALD, op instructie van de
+    # eigenaar, op de dry-run die hij voor zich had:
+    #
+    #     section_five_m5        170 trades   -1,09 R   EUR  -1,11
+    #     section_nine_vwap_m30    6 trades   -0,02 R   EUR  -0,08
+    #
+    # Sectie 5 is de duidelijke van de twee: 170 trades is geen ruis meer en
+    # het getal staat onder nul. Sectie 9 is op zes trades niet bewezen slecht
+    # -- dat is niets, en op zes waarnemingen is elk teken toeval -- maar hij
+    # is ook niet bewezen goed, en hij handelt met echt geld terwijl hij dat
+    # bewijs niet heeft. Uit tot een replay hem positief neerzet.
+    #
+    # Allebei blijven enabled, gewogen en gejournaliseerd, dus ze worden nog
+    # steeds in de schaduw gemeten. Uitgezet is niet verwijderd -- een module
+    # zonder gewicht kan niet gemeten worden, en zo bleven drie M1-detectors
+    # maandenlang ongetoetst.
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #

@@ -220,9 +220,7 @@ def search(
         symbols = data.every_symbol()
         candidates: list[tuple[Choice, tuple[int, float, float, float, int], object]] = []
         cached: dict[tuple[str, str, int], tuple[pd.DataFrame, np.ndarray, np.ndarray]] = {}
-        for timeframe in (
-            (only_timeframe,) if only_timeframe else ("M5", "M15", "M30", "H1")
-        ):
+        for timeframe in ((only_timeframe,) if only_timeframe else ("M5", "M15", "M30", "H1")):
             for asset in ((only_asset,) if only_asset else ("fx", "index", "metal")):
                 members = [
                     symbol

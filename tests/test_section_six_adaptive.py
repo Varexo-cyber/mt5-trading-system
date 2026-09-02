@@ -85,8 +85,6 @@ def test_live_overlay_keeps_the_measured_gold_exit_and_rejects_spx() -> None:
     assert settings.analysis.section_six_gold_m5.session_start_hour_utc == 20
     assert settings.analysis.section_six_gold_m5.session_end_hour_utc == 2
     assert settings.analysis.confluence.target_r_multiple_by_family["section_six_gold_m5"] == 3.0
-    assert settings.analysis.confluence.strategy_owned_entry_families == (
-        "section_six_gold_m5",
-    )
+    assert settings.analysis.confluence.strategy_owned_entry_families == ("section_six_gold_m5",)
     assert "section_six_gold_m5" in settings.analysis.confluence.target_reach_advisory_families
     assert "JARVIS-S6-AU-M5" in settings.trade_management.fixed_exit_comments

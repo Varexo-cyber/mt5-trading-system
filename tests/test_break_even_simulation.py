@@ -68,7 +68,10 @@ RULE = (0.25, 0.10)
 
 
 def _run(idea: _Idea, frame: pd.DataFrame, manage=RULE):
-    return _resolve(frame, frame.index[0], idea, horizon_bars=len(frame), manage=manage)
+    fixed, exit_at, managed, _managed_at = _resolve(
+        frame, frame.index[0], idea, horizon_bars=len(frame), manage=manage
+    )
+    return fixed, exit_at, managed
 
 
 class TestTheFixedColumnIsUnchanged:
