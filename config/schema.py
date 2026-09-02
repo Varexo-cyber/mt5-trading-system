@@ -3412,6 +3412,8 @@ class ConfluenceConfig(Base):
         "order_block_m15",
         "order_block_h1",
         "walkforward_index",
+        "section_eight_trend_day_h1",
+        "section_nine_vwap_m30",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.

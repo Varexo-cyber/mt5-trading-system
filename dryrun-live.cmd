@@ -4,11 +4,12 @@ cd /d "%~dp0"
 
 echo.
 echo  ============================================
-echo   CURRENT LIVE SECTIONS, EXACTLY AS CONFIGURED
+echo   SECTIONS 5 THROUGH 10, EXACTLY AS CONFIGURED
 echo  ============================================
 echo.
-echo  Every module currently allowed to use real money, on its own configured
-echo  clock. One position per symbol and the account's real position cap.
+echo  Sections 5, 6, 7, 8, 9 and 10 are the current real-money allowlist.
+echo  Every section runs on its own configured clock, with the account's
+echo  real position cap. No impulse or old order-block module is measured.
 echo.
 echo  SIXTEEN MARKETS, NOT 232. The eleven FX majors the research was done on,
 echo  gold, and four index CFDs. Every other market in the catalogue is an
@@ -49,7 +50,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% %SCOPE% %FINE% --live-only --csv runtime\dryrun-live.csv
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAYS% %SCOPE% %FINE% --live-only --sections-five-to-ten --csv runtime\dryrun-live.csv
 
 if errorlevel 1 (
   echo.

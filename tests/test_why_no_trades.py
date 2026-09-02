@@ -491,4 +491,7 @@ class TestSilenceAndAbsenceAreDifferentFindings:
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",
+            "section_eight_trend_day_h1",
+            "section_nine_vwap_m30",
+            "section_ten_gold_m1",
         }

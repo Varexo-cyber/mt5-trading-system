@@ -2252,7 +2252,7 @@ analysis:
     # voor de trend-entries waar hij voor geschreven is, en waar elf van de
     # eerste twaalf betaalde reviews precies dit vetoden en gelijk hadden. Het
     # onderscheid zit in de setup, niet in de drempel.
-    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5]
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1]
     # Sectie 6 is als complete closed-barstrategie gemeten. Een geldig
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
@@ -2697,6 +2697,13 @@ analysis:
       - failed_session_breakout
       - section_five_m5
       - section_six_gold_m5
+      # Explicitly promoted 2 September 2026 after the owner's instruction to
+      # dry-run the complete S5-S10 book before launching Jarvis. S8/S9 have
+      # positive early/late halves but only 26/22 historical trades; their
+      # section breakers are therefore essential, not optional.
+      - section_eight_trend_day_h1
+      - section_nine_vwap_m30
+      - section_ten_gold_m1
     # SECTIE 2, 5 EN 6 STAAN VANAF 24 AUGUSTUS LIVE, op uitdrukkelijke
     # toestemming van de eigenaar, en met nul gemeten trades tussen zich.
     #
@@ -2994,8 +3001,8 @@ analysis:
       # Dat is een redenering, geen meting.
       candle_momentum: 0.6
 
-    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5]
-    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5]
+    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1]
+    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #
