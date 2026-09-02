@@ -10,7 +10,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from config.schema import SectionEightTrendDayConfig, SectionNineSessionVwapConfig
+from config.schema import (
+    SectionEightTrendDayConfig,
+    SectionNineSessionVwapConfig,
+    SectionTenGoldM1Config,
+)
 from core.types import MarketContext, Signal, Timeframe
 
 
@@ -106,9 +110,7 @@ class SectionNineSessionVwapM30:
         if not np.isfinite(total) or total <= 0.0:
             return Signal.neutral(self.name, "session VWAP has no broker volume")
         typical = (
-            day["high"].astype(float)
-            + day["low"].astype(float)
-            + day["close"].astype(float)
+            day["high"].astype(float) + day["low"].astype(float) + day["close"].astype(float)
         ) / 3.0
         vwap = float((typical * volume).sum() / total)
         close = float(frame["close"].iloc[-1])
@@ -133,3 +135,97 @@ class SectionNineSessionVwapM30:
                 "vwap_displacement_atr": round(displacement, 6),
             },
         )
+
+
+class SectionTenGoldM1:
+    """Enter XAUUSD only when a large M1 channel break gets its first retest."""
+
+    name = "section_ten_gold_m1"
+
+    def __init__(self, config: SectionTenGoldM1Config | None = None) -> None:
+        self.config = config or SectionTenGoldM1Config()
+
+    def analyze(self, ctx: MarketContext) -> Signal:
+        cfg = self.config
+        if not cfg.enabled or ctx.symbol not in cfg.allowed_symbols:
+            return Signal.neutral(self.name, "section ten disabled for this market")
+        series = ctx.series.get(Timeframe.parse(cfg.timeframe))
+        needed = max(240, cfg.channel_period + cfg.maximum_wait_bars + 20)
+        if series is None or len(series.df) < needed:
+            return Signal.neutral(self.name, f"section ten needs {needed} closed M1 bars")
+
+        frame = series.df
+        high = frame["high"].astype(float)
+        low = frame["low"].astype(float)
+        close = frame["close"].astype(float)
+        atr = _atr(frame)
+        upper = high.shift(1).rolling(cfg.channel_period).max()
+        lower = low.shift(1).rolling(cfg.channel_period).min()
+        at = len(frame) - 1
+
+        start = max(220, at - cfg.maximum_wait_bars)
+        for broken_at in range(at - 1, start - 1, -1):
+            unit = float(atr.iloc[broken_at])
+            if not np.isfinite(unit) or unit <= 0.0:
+                continue
+            broken_close = float(close.iloc[broken_at])
+            if broken_close > float(upper.iloc[broken_at]):
+                direction, level = 1, float(upper.iloc[broken_at])
+            elif broken_close < float(lower.iloc[broken_at]):
+                direction, level = -1, float(lower.iloc[broken_at])
+            else:
+                continue
+            if direction * (broken_close - level) < cfg.minimum_break_atr * unit:
+                continue
+
+            already_resolved = False
+            for check_at in range(broken_at + 1, at):
+                check_close = float(close.iloc[check_at])
+                failed = (
+                    check_close < level - cfg.stop_beyond_atr * unit
+                    if direction > 0
+                    else check_close > level + cfg.stop_beyond_atr * unit
+                )
+                touched = (
+                    float(low.iloc[check_at]) <= level + cfg.retest_tolerance_atr * unit
+                    if direction > 0
+                    else float(high.iloc[check_at]) >= level - cfg.retest_tolerance_atr * unit
+                )
+                if failed or touched:
+                    already_resolved = True
+                    break
+            if already_resolved:
+                continue
+
+            current_close = float(close.iloc[at])
+            failed_now = (
+                current_close < level - cfg.stop_beyond_atr * unit
+                if direction > 0
+                else current_close > level + cfg.stop_beyond_atr * unit
+            )
+            touched_now = (
+                float(low.iloc[at]) <= level + cfg.retest_tolerance_atr * unit
+                if direction > 0
+                else float(high.iloc[at]) >= level - cfg.retest_tolerance_atr * unit
+            )
+            if failed_now or not touched_now:
+                continue
+            entry = ctx.tick.mid if ctx.tick is not None else current_close
+            stop = level - direction * cfg.stop_beyond_atr * unit
+            if direction * (entry - stop) <= 0.0:
+                continue
+            return Signal(
+                module=self.name,
+                score=cfg.score * direction,
+                confidence=cfg.confidence,
+                reasoning="large XAUUSD M1 channel break returned to its level for the first time",
+                invalidation_price=stop,
+                key_levels=(level,),
+                details={
+                    "timeframe": cfg.timeframe,
+                    "break_level": level,
+                    "break_atr": round(direction * (broken_close - level) / unit, 6),
+                    "wait_bars": at - broken_at,
+                },
+            )
+        return Signal.neutral(self.name, "no first retest after a one-ATR M1 channel break")

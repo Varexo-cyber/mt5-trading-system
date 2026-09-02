@@ -5,9 +5,17 @@ from datetime import UTC
 import numpy as np
 import pandas as pd
 
-from analysis.sections_eight_nine import SectionEightTrendDayH1, SectionNineSessionVwapM30
+from analysis.sections_eight_nine import (
+    SectionEightTrendDayH1,
+    SectionNineSessionVwapM30,
+    SectionTenGoldM1,
+)
 from config.loader import load_settings
-from config.schema import SectionEightTrendDayConfig, SectionNineSessionVwapConfig
+from config.schema import (
+    SectionEightTrendDayConfig,
+    SectionNineSessionVwapConfig,
+    SectionTenGoldM1Config,
+)
 from core.types import MarketContext, Series, Timeframe
 
 
@@ -64,9 +72,7 @@ def test_section_nine_fades_a_two_atr_vwap_displacement() -> None:
         index=index,
     )
     config = SectionNineSessionVwapConfig(enabled=True, minimum_displacement_atr=1.0)
-    signal = SectionNineSessionVwapM30(config).analyze(
-        _context("USDJPY.i", Timeframe.M30, frame)
-    )
+    signal = SectionNineSessionVwapM30(config).analyze(_context("USDJPY.i", Timeframe.M30, frame))
 
     assert signal.score < 0.0
     assert signal.invalidation_price is not None
@@ -77,11 +83,40 @@ def test_new_sections_are_measured_but_not_live_promoted() -> None:
 
     assert settings.analysis.section_eight_trend_day_h1.enabled is True
     assert settings.analysis.section_nine_vwap_m30.enabled is True
+    assert settings.analysis.section_ten_gold_m1.enabled is True
     assert "section_eight_trend_day_h1" not in settings.analysis.confluence.live_enabled_modules
     assert "section_nine_vwap_m30" not in settings.analysis.confluence.live_enabled_modules
-    assert settings.analysis.confluence.target_r_multiple_by_family[
-        "section_eight_trend_day_h1"
-    ] == 1.0
-    assert settings.analysis.confluence.target_r_multiple_by_family[
-        "section_nine_vwap_m30"
-    ] == 1.5
+    assert "section_ten_gold_m1" not in settings.analysis.confluence.live_enabled_modules
+    assert (
+        settings.analysis.confluence.target_r_multiple_by_family["section_eight_trend_day_h1"]
+        == 1.0
+    )
+    assert settings.analysis.confluence.target_r_multiple_by_family["section_nine_vwap_m30"] == 1.5
+    assert settings.analysis.confluence.target_r_multiple_by_family["section_ten_gold_m1"] == 1.5
+
+
+def test_section_ten_enters_first_closed_bar_retest_after_large_gold_break() -> None:
+    index = pd.date_range("2026-08-01", periods=250, freq="1min", tz=UTC)
+    close = np.full(len(index), 100.0)
+    high = np.full(len(index), 101.0)
+    low = np.full(len(index), 99.0)
+    close[-2], high[-2], low[-2] = 104.0, 104.5, 100.0
+    close[-1], high[-1], low[-1] = 102.0, 103.0, 101.0
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 100.0,
+            "spread": 1.0,
+        },
+        index=index,
+    )
+    signal = SectionTenGoldM1(SectionTenGoldM1Config(enabled=True)).analyze(
+        _context("XAUUSD", Timeframe.M1, frame)
+    )
+
+    assert signal.score > 0.0
+    assert signal.invalidation_price is not None
+    assert signal.details["wait_bars"] == 1

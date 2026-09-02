@@ -1466,6 +1466,23 @@ analysis:
     minimum_displacement_atr: 2.0
     stop_atr: 1.0
 
+  # SECTIE TIEN. Alleen XAUUSD/M1. Een kanaaluitbraak moet minstens 1 ATR
+  # groot zijn; pas de eerste terugtest wordt op de GESLOTEN M1-bar gekocht
+  # of verkocht. Dit is uitvoerbaar als market order, niet de fraaie maar
+  # onuitvoerbare intrabar limit-fill uit de brede zoekrun. Exacte audit met
+  # historische broker-spread, EUR 203 sizing en maximaal een positie tegelijk:
+  # 516 trades, 45,0% raak, +14,22R; vroege +7,50R en late +6,72R. De marge is
+  # slechts +0,028R/trade en max drawdown -19,35R, daarom SHADOW en niet live.
+  section_ten_gold_m1:
+    enabled: true
+    timeframe: M1
+    allowed_symbols: [XAUUSD]
+    channel_period: 20
+    minimum_break_atr: 1.0
+    retest_tolerance_atr: 0.15
+    stop_beyond_atr: 0.75
+    maximum_wait_bars: 96
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2208,6 +2225,7 @@ analysis:
       section_six_spx_h1: 1.0
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.5
+      section_ten_gold_m1: 1.5
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2939,6 +2957,7 @@ analysis:
       section_six_spx_h1: 1.0
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.0
+      section_ten_gold_m1: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3927,6 +3946,11 @@ risk:
       minimum_trades: 15
       maximum_loss_share: 0.60
       losing_streak: 6
+    section_ten_gold_m1:
+      window: 60
+      minimum_trades: 40
+      maximum_loss_share: 0.68
+      losing_streak: 10
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde

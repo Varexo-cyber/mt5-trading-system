@@ -26,6 +26,7 @@ _FAMILIES = {
     "section_six_spx_h1": "adaptive_nonlinear_state",
     "section_eight_trend_day_h1": "prior_session_state",
     "section_nine_vwap_m30": "session_mean_reversion",
+    "section_ten_gold_m1": "break_retest",
     # Its own family, and that is the entire point of the module. Every
     # other reader here belongs to trend, momentum, structure or liquidity
     # — four ways of reading one price series. This one runs a hypothesis

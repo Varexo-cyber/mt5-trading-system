@@ -2443,7 +2443,7 @@ class VwapReversionConfig(Base):
             )
         if self.maximum_confidence < self.base_confidence:
             raise ValueError(
-                "analysis.vwap_reversion.maximum_confidence may not be below " "base_confidence"
+                "analysis.vwap_reversion.maximum_confidence may not be below base_confidence"
             )
         return self
 
@@ -2512,7 +2512,7 @@ class BasketDivergenceConfig(Base):
             )
         if self.maximum_confidence < self.base_confidence:
             raise ValueError(
-                "analysis.basket_divergence.maximum_confidence may not be below " "base_confidence"
+                "analysis.basket_divergence.maximum_confidence may not be below base_confidence"
             )
         return self
 
@@ -3987,6 +3987,21 @@ class SectionNineSessionVwapConfig(Base):
     confidence: float = Field(default=0.76, ge=0.0, le=1.0)
 
 
+class SectionTenGoldM1Config(Base):
+    """SECTION TEN: executable large-break retest on XAUUSD M1."""
+
+    enabled: bool = False
+    timeframe: str = "M1"
+    allowed_symbols: tuple[str, ...] = ("XAUUSD",)
+    channel_period: int = Field(default=20, ge=10, le=200)
+    minimum_break_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    retest_tolerance_atr: float = Field(default=0.15, ge=0.0, le=2.0)
+    stop_beyond_atr: float = Field(default=0.75, gt=0.0, le=5.0)
+    maximum_wait_bars: int = Field(default=96, ge=2, le=500)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.58, ge=0.0, le=1.0)
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -4036,6 +4051,7 @@ class AnalysisConfig(Base):
     section_six_spx_h1: SectionSixModelConfig = SectionSixModelConfig(timeframe="H1")
     section_eight_trend_day_h1: SectionEightTrendDayConfig = SectionEightTrendDayConfig()
     section_nine_vwap_m30: SectionNineSessionVwapConfig = SectionNineSessionVwapConfig()
+    section_ten_gold_m1: SectionTenGoldM1Config = SectionTenGoldM1Config()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
