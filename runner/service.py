@@ -66,6 +66,7 @@ from analysis import (
     SectionNineSessionVwapM30,
     SectionSixGoldM5,
     SectionSixSpxH1,
+    SectionTenGoldM1,
     SessionBreakout,
     SetupLifecycleBook,
     SetupState,
@@ -482,6 +483,7 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         SectionSixSpxH1(analysis.section_six_spx_h1),
         SectionEightTrendDayH1(analysis.section_eight_trend_day_h1),
         SectionNineSessionVwapM30(analysis.section_nine_vwap_m30),
+        SectionTenGoldM1(analysis.section_ten_gold_m1),
     ]
 
 
@@ -3558,7 +3560,8 @@ class JarvisRunner:
         # already run, and an approval on this pair wipes the pattern outright.
         pattern = (
             self.veto_patterns.established(symbol, idea.direction.name, self.clock.now())
-            if self.operation is not OperationMode.MONITOR and self._broad_veto_memory_applies(idea)
+            if self.operation is not OperationMode.MONITOR
+            and self._broad_veto_memory_applies(idea)
             # "Only ever suppresses a paid call" — so only when there is one.
             and self._reviews_cost_money()
             else None
@@ -6451,32 +6454,24 @@ class JarvisRunner:
         """Keep a generic base rate advisory where the setup owns better evidence."""
         config = self.settings.analysis.confluence
         floor = reach.required_pct * config.quick_reach_hard_floor_ratio
-        return (
-            any(
-                family in idea.setup_family
-                for family in config.target_reach_advisory_families
-            )
-            or (
-                idea.horizon == "quick"
-                and config.quick_statistical_gates_are_advisory
-                and reach.forward_pct >= floor
-            )
+        return any(
+            family in idea.setup_family for family in config.target_reach_advisory_families
+        ) or (
+            idea.horizon == "quick"
+            and config.quick_statistical_gates_are_advisory
+            and reach.forward_pct >= floor
         )
 
     def _direction_failure_is_advisory(self, idea: TradeIdea, reach) -> bool:  # type: ignore[no-untyped-def]
         """Treat slow-sample disagreement as context for directly measured entries."""
         config = self.settings.analysis.confluence
         gap = reach.opposite_pct - reach.forward_pct
-        return (
-            any(
-                family in idea.setup_family
-                for family in config.target_reach_advisory_families
-            )
-            or (
-                idea.horizon == "quick"
-                and config.quick_statistical_gates_are_advisory
-                and gap <= config.quick_direction_disadvantage_hard_gap_pct
-            )
+        return any(
+            family in idea.setup_family for family in config.target_reach_advisory_families
+        ) or (
+            idea.horizon == "quick"
+            and config.quick_statistical_gates_are_advisory
+            and gap <= config.quick_direction_disadvantage_hard_gap_pct
         )
 
     def _entry_timing_is_exempt(self, idea: TradeIdea) -> bool:

@@ -735,15 +735,11 @@ def _under_the_slot_cap(trades: list[Decision], slots: int) -> list[Decision]:
     open_until: dict[str, datetime] = {}
     taken: list[Decision] = []
     for trade in sorted(trades, key=lambda d: d.when):
-        open_until = {
-            symbol: stamp for symbol, stamp in open_until.items() if stamp > trade.when
-        }
+        open_until = {symbol: stamp for symbol, stamp in open_until.items() if stamp > trade.when}
         if trade.symbol in open_until or len(open_until) >= slots:
             continue
         taken.append(trade)
-        open_until[trade.symbol] = trade.exit_at or datetime.max.replace(
-            tzinfo=trade.when.tzinfo
-        )
+        open_until[trade.symbol] = trade.exit_at or datetime.max.replace(tzinfo=trade.when.tzinfo)
     return taken
 
 
@@ -1073,6 +1069,7 @@ def main(argv: list[str] | None = None) -> None:
             "section_six_spx_h1": "section_six_spx_h1",
             "section_eight_trend_day_h1": "section_eight_trend_day_h1",
             "section_nine_vwap_m30": "section_nine_vwap_m30",
+            "section_ten_gold_m1": "section_ten_gold_m1",
         }
         measured = set(module_config)
         if args.live_only:
@@ -1086,8 +1083,7 @@ def main(argv: list[str] | None = None) -> None:
             missing = live - measured
             if missing:
                 raise SystemExit(
-                    "live modules are missing from the dry-run implementation: "
-                    f"{sorted(missing)}"
+                    f"live modules are missing from the dry-run implementation: {sorted(missing)}"
                 )
             measured = measured & live
         if args.only:
@@ -2084,8 +2080,7 @@ def _report(
     for day, row in per_day.iterrows():
         bar = "+" * int(max(row.R, 0) * 3) + "-" * int(max(-row.R, 0) * 3)
         print(
-            f"   {day}  {int(row.trades):>3} trades  {row.R:>+7.2f} R  "
-            f"EUR {row.EUR:>+7.2f}  {bar}"
+            f"   {day}  {int(row.trades):>3} trades  {row.R:>+7.2f} R  EUR {row.EUR:>+7.2f}  {bar}"
         )
     print(f"\n   days green {int((per_day.R > 0).sum())} / {len(per_day)}")
 
@@ -2106,8 +2101,7 @@ def _report(
         .iterrows()
     ):
         print(
-            f"   {module:<34} {int(row.trades):>4} trades  {row.R:>+7.2f} R  "
-            f"EUR {row.EUR:>+7.2f}"
+            f"   {module:<34} {int(row.trades):>4} trades  {row.R:>+7.2f} R  EUR {row.EUR:>+7.2f}"
         )
     print(f"{'-' * 78}\n")
 
