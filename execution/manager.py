@@ -557,11 +557,30 @@ class PositionManager:
             "peak_r": float(peak_r),
             "health_observed": False,
         }
-        if str(position.comment).casefold() in {
-            item.casefold() for item in config.fixed_exit_comments
-        }:
+        comment = str(position.comment).casefold()
+        if comment in {item.casefold() for item in config.fixed_exit_comments}:
             # This family was selected and holdout-tested with unchanged SL/TP.
             # Every discretionary manager below changes that measured exit.
+            #
+            # ONE EXCEPTION, AND ONLY FOR FAMILIES NAMED FOR IT. Keeping the
+            # measured exit also removed the time exit, so a trade that reaches
+            # neither its stop nor its target simply sits -- through the gold
+            # break, through the weekend, and out through a spread several
+            # times its normal width. That is not the measured exit either; it
+            # is the absence of one.
+            #
+            # The flatten is unconditional on P&L on purpose. "Let it run, it
+            # is nearly at target" is the reasoning that produces the loss: the
+            # widening spread moves the market away from the target and toward
+            # the stop at the same time.
+            #
+            # Named rather than applied to the whole list, because section six
+            # was measured carrying its positions through the evening and its
+            # number is the one this account rests on.
+            if comment in {item.casefold() for item in config.pre_close_flatten_comments}:
+                wind_down = self._evening_flatten(position, now, r_now)
+                if wind_down is not None:
+                    events.append(wind_down)
             return events
         # Before anything else, because everything else assumes we intend to
         # still be in the trade. Nothing that happens after 20:15 UTC is

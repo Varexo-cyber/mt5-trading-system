@@ -3433,10 +3433,29 @@ filters:
     #
     # Dit dekt ook de instap: `INSUFFICIENT_RUNWAY` leest hetzelfde venster, dus
     # een aandeel dat de tijd niet meer heeft wordt niet meer geopend.
-    evening_flat_asset_classes: [forex, stock]
+    # METAAL STAAT ER SINDS 2 SEPTEMBER BIJ, en tot dan was goud het enige dat
+    # dwars door zijn eigen dagelijkse pauze heen ging.
+    #
+    # XAUUSD sluit rond 21:00 UTC en opent weer om 22:00. Het rollover-blok
+    # (20:45-21:15) hield ons tegen met OPENEN in dat halfuur en zei niets over
+    # wat er al op stond, en metaal kwam in geen van deze twee lijsten voor.
+    # Indices worden om 20:00 platgelegd, FX om 20:15, aandelen om 15:30 --
+    # goud nooit.
+    #
+    # 20:50, tien minuten voor de sluiting: genoeg marge om eruit te zijn
+    # voordat de spread oploopt, en zo laat mogelijk zodat er zo min mogelijk
+    # handelstijd verdwijnt.
+    #
+    # LET OP WIE DIT RAAKT. Alleen posities die de manager bereiken. Sectie 5,
+    # 6 en 10 staan op `trade_management.fixed_exit_comments` en keren daar
+    # vroeg terug; van die drie is alleen sectie 10 via
+    # `pre_close_flatten_comments` uitgezonderd. Sectie 6 draagt zijn goud dus
+    # nog steeds door de avond, precies zoals het gemeten is.
+    evening_flat_asset_classes: [forex, stock, metal]
     evening_flat_by_class:
       index: "20:00"
       stock: "15:30"
+      metal: "20:50"
 
     # De Aziatische sessie erbij, op verzoek van de eigenaar: de VPS is er om
     # 24/7 te draaien en de rekening stond 's nachts stil.
@@ -4347,6 +4366,25 @@ trade_management:
   # WAT HET NIET DOET: het maakt S10 niet bewezen. 153 trades over twee
   # maanden en +0,85 sigma blijft +0,85 sigma; alleen het bedrag verandert.
   fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S6-AU-M5, JARVIS-S10-AU-M1]
+
+  # ALLEEN SECTIE 10 WORDT WEL PLATGELEGD VOOR DE SLUITING, op instructie van
+  # de eigenaar: "als een trade voor sluitingstijd winst is gwn sluiten, want
+  # die spread gaat hem sws sluiten als een gek en dan draai ik verlies".
+  #
+  # Hij heeft gelijk, en het gat is door de regel hierboven ontstaan: met een
+  # vaste exit heeft S10 ook geen tijd-exit meer, dus een trade die noch zijn
+  # stop noch zijn target haalt blijft staan. Zijn instapvenster sluit om
+  # 19:00 UTC, maar de POSITIE kan daarna nog uren open zijn en gaat dan door
+  # de goudpauze van 21:00-22:00 UTC heen.
+  #
+  # Onvoorwaardelijk op winst of verlies. "Even laten lopen, hij staat bijna op
+  # target" is precies de redenering die het verlies maakt: de oplopende spread
+  # duwt de markt tegelijk weg van het target en naar de stop toe.
+  #
+  # SECTIE 6 STAAT HIER MET OPZET NIET BIJ. Zijn +43,90 R is gemeten terwijl
+  # hij zijn posities dwars door de avond droeg, en dat cijfer draagt deze
+  # rekening. Ongemoeid, zoals gevraagd.
+  pre_close_flatten_comments: [JARVIS-S10-AU-M1]
   # Still needs the position path plus an independent chart family. Alleen het
   # moment schuift op: bevestigd falen mag nu ingrijpen op -0,15R in plaats van
   # -0,25R. De broker-SL blijft de onvoorwaardelijke achtervang.

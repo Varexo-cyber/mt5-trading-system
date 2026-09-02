@@ -190,3 +190,91 @@ def test_the_fixed_exit_list_is_matched_against_real_broker_comments() -> None:
 
     for item in settings.trade_management.fixed_exit_comments:
         assert item.casefold() in known, f"{item} is not a comment any section sends"
+
+
+class TestSectionTenGoesFlatBeforeGoldShuts:
+    """Keeping the measured exit also removed the time exit.
+
+    `fixed_exit_comments` returns early from the manager, so a section ten
+    trade reaching neither its stop nor its target simply sits -- through the
+    21:00-22:00 UTC gold break and through the weekend -- and leaves through a
+    spread several times its normal width. Its entry window closes at 19:00
+    UTC; the POSITION has no such limit.
+
+    Section six is deliberately NOT given this. Its +43.90 R was measured
+    carrying positions through the evening.
+    """
+
+    def _settings(self):
+        return load_settings(overlay="config/eightcap.yaml", env_overrides=False)
+
+    def test_only_section_ten_is_flattened_of_the_fixed_exit_families(self) -> None:
+        from core.trade_origin import broker_comment
+
+        settings = self._settings()
+        flattened = {i.casefold() for i in settings.trade_management.pre_close_flatten_comments}
+
+        def label(name: str) -> str:
+            return broker_comment(name, is_addon=False, experimental_live=True).casefold()
+
+        assert label("section_ten_gold_m1") in flattened
+        assert label("section_six_gold_m5") not in flattened, "S6 stays exactly as measured"
+        assert label("section_five_m5") not in flattened
+
+    def test_the_flatten_list_is_a_subset_of_the_fixed_exit_list(self) -> None:
+        """Naming a family here that is NOT on the fixed list does nothing --
+        it already reaches the flatten by the ordinary path. A no-op entry
+        reads like a protection and is not one."""
+        management = self._settings().trade_management
+        fixed = {i.casefold() for i in management.fixed_exit_comments}
+
+        for item in management.pre_close_flatten_comments:
+            assert item.casefold() in fixed, f"{item} is not a fixed-exit family"
+
+    def test_metal_finally_has_a_wind_down(self) -> None:
+        """Indices flatten at 20:00, forex at 20:15, stocks at 15:30. Metal was
+        in neither list, so gold was the one class carried straight through its
+        own daily break."""
+        session = self._settings().filters.session
+
+        assert "metal" in session.evening_flat_asset_classes
+        assert session.evening_flat_by_class["metal"] == "20:50"
+
+    def test_the_wind_down_lands_before_the_rollover_ends(self) -> None:
+        """The invariant the old validator was really protecting. It expressed
+        it as "earlier than the forex time", which is false for metals -- gold
+        trades on past the FX wind-down -- and that is why metal could not be
+        given a wind-down at all."""
+        session = self._settings().filters.session
+        end = tuple(int(p) for p in session.rollover_block[1].split(":"))
+
+        for name, when in session.evening_flat_by_class.items():
+            assert tuple(int(p) for p in when.split(":")) < end, name
+
+    def test_a_late_override_is_still_refused(self) -> None:
+        """The 21:30 edit the original rule was written for must still fail."""
+        import pytest
+
+        from config.schema import SessionFilterConfig
+
+        with pytest.raises(ValueError, match="before the rollover ends"):
+            SessionFilterConfig(
+                evening_flat_from="20:15",
+                rollover_block=("20:45", "21:15"),
+                evening_flat_by_class={"metal": "21:30"},
+            )
+
+    def test_the_manager_flattens_before_it_returns_early(self) -> None:
+        """Order matters: the fixed-exit check returns, so the flatten has to
+        happen inside that branch or it never runs at all."""
+        import inspect
+
+        from execution import manager
+
+        source = " ".join(inspect.getsource(manager).split())
+        branch = source.split("in config.fixed_exit_comments}:")[1][:1400]
+
+        assert "pre_close_flatten_comments" in branch
+        assert "self._evening_flatten(position, now, r_now)" in branch
+        # And the flatten has to come before the return, not after it.
+        assert branch.index("_evening_flatten") < branch.index("return events")
