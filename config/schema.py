@@ -963,26 +963,35 @@ class SessionFilterConfig(Base):
     evening_flat_asset_classes: tuple[str, ...] = ("forex",)
 
     @model_validator(mode="after")
-    def _class_overrides_only_tighten(self) -> SessionFilterConfig:
-        """A per-class wind-down may be earlier than the FX one, never later.
+    def _class_overrides_stay_ahead_of_the_rollover(self) -> SessionFilterConfig:
+        """A per-class wind-down must leave the class flat before the rollover.
 
-        Enforced rather than documented. An override reading 21:30 looks like a
-        harmless edit and silently *extends* exposure into the rollover for a
-        whole asset class — the opposite of what the setting exists for, and
-        invisible until something is held through it.
+        THIS USED TO SAY "never later than the FX time", and that rule was
+        wrong for one asset class in a way nobody noticed until gold needed it.
+        The reasoning behind it was sound -- an override reading 21:30 silently
+        EXTENDS exposure into the rollover and is invisible until something is
+        held through it -- but the bound it chose assumed every market closes
+        before FX does. Indices do, at 20:00. Metals do not: XAUUSD trades on
+        past the FX wind-down and shuts at about 21:00 UTC.
+
+        So metal could not be given a wind-down at all, and it was the only
+        class carried straight through its own daily break.
+
+        The real invariant is not "earlier than FX" but "flat before the
+        maintenance window ends", which is what the original comment was
+        actually protecting. That is checked here, and it still refuses the
+        21:30 edit the old rule was written for.
         """
-        if not self.evening_flat_from:
-            return self
-        limit = tuple(int(part) for part in self.evening_flat_from.split(":"))
+        end = tuple(int(part) for part in self.rollover_block[1].split(":"))
         late = {
             name: when
             for name, when in self.evening_flat_by_class.items()
-            if tuple(int(part) for part in when.split(":")) > limit
+            if tuple(int(part) for part in when.split(":")) >= end
         }
         if late:
             raise ValueError(
-                "evening_flat_by_class may only be earlier than evening_flat_from "
-                f"({self.evening_flat_from}); these are later: {late}"
+                "evening_flat_by_class must leave a class flat before the rollover ends "
+                f"({self.rollover_block[1]}); these do not: {late}"
             )
         return self
 
@@ -4204,6 +4213,18 @@ class TradeManagementConfig(Base):
     #: Strategies whose measured edge uses the original broker SL/TP unchanged.
     #: Exact MT5 comments prevent unrelated positions from inheriting this.
     fixed_exit_comments: tuple[str, ...] = ()
+    #: Fixed-exit families that are STILL flattened before the session closes.
+    #:
+    #: `fixed_exit_comments` returns early from the manager, which also removes
+    #: the time exit -- so a trade reaching neither stop nor target just sits,
+    #: through the gold break and the weekend, and leaves through a spread
+    #: several times its normal width. That is not the measured exit; it is the
+    #: absence of one.
+    #:
+    #: Named per family rather than applied to the whole list: section six was
+    #: measured carrying its positions through the evening, and its number is
+    #: the one this account rests on.
+    pre_close_flatten_comments: tuple[str, ...] = ()
 
     #: Minutes the peak may stand still before a profitable trade is banked.
     #: 0 switches the rule off.

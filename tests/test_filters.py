@@ -622,12 +622,30 @@ class TestPerClassWindDown:
         for which in (spec, self.index_spec(spec)):
             assert filter_.check(context(which, now=moment)).passed
 
-    def test_an_override_later_than_forex_is_refused_at_load(self) -> None:
+    def test_an_override_past_the_rollover_is_refused_at_load(self) -> None:
         """It looks like a harmless edit and silently *extends* exposure into
         the rollover for a whole asset class — the opposite of the setting's
-        purpose, and invisible until something is held through it."""
-        with pytest.raises(ValidationError, match="only be earlier"):
+        purpose, and invisible until something is held through it.
+
+        The BOUND changed on 2 September and the protection did not. It used to
+        be "earlier than the forex wind-down", which assumed every market
+        closes before FX. Metals do not -- XAUUSD trades past 20:15 and shuts
+        around 21:00 -- so gold could not be given a wind-down at all and was
+        the one class carried through its own daily break. The real invariant
+        is "flat before the maintenance window ends", and 21:30 still fails
+        it."""
+        with pytest.raises(ValidationError, match="before the rollover ends"):
             SessionFilterConfig(evening_flat_by_class={"index": "21:30"})
+
+    def test_a_metal_wind_down_after_the_forex_one_is_now_allowed(self) -> None:
+        """The case the old bound made unexpressible."""
+        config = SessionFilterConfig(
+            evening_flat_from="20:15",
+            rollover_block=("20:45", "21:15"),
+            evening_flat_by_class={"metal": "20:50"},
+        )
+
+        assert config.evening_flat_by_class["metal"] == "20:50"
 
     def test_an_earlier_override_is_accepted(self) -> None:
         config = SessionFilterConfig(evening_flat_by_class={"index": "19:00"})
