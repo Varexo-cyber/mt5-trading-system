@@ -2497,3 +2497,101 @@ class TestTheLiveDryRunMeasuresOnlyWhatRuns:
 
         assert "--live-only" in launcher
         assert "--sections-five-to-ten" in launcher
+
+
+class TestASectionThatTookNothingStillHasARow:
+    """ "Waar is sectie 10?"
+
+    Section ten was on the live allowlist, ran, took no trades, and therefore
+    had no rows to group -- so it vanished from BY SECTION, the one table the
+    owner actually reads. An absent row and a zero row look identical and mean
+    opposite things: one is a section that found nothing, the other is a
+    section that is not wired in.
+
+    That is the seventh time this project has shipped that same confusion.
+    """
+
+    def _decisions(self):
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        rows = [
+            Decision(
+                base + timedelta(minutes=i),
+                "XAUUSD",
+                "section_six_gold_m5",
+                "TRADE",
+                result_r=1.0,
+                pnl_money=8.0,
+                managed_r=1.0,
+                managed_money=8.0,
+                pass_key=("section_six_gold_m5", "M5"),
+            )
+            for i in range(5)
+        ]
+        # Section ten formed setups and the sizer refused every one.
+        rows += [
+            Decision(
+                base + timedelta(minutes=i),
+                "XAUUSD",
+                "section_ten_gold_m1",
+                "SL_TOO_TIGHT_FOR_COSTS",
+                pass_key=("section_ten_gold_m1", "M1"),
+            )
+            for i in range(40)
+        ]
+        return rows
+
+    def test_a_section_with_no_trades_is_named_with_its_reason(self, capsys) -> None:
+        from scripts.dry_run_sections import _report
+
+        _report(
+            self._decisions(),
+            equity=216.0,
+            days=30,
+            skipped=0,
+            managed=True,
+            sections=("section_six_gold_m5", "section_ten_gold_m1"),
+        )
+        out = capsys.readouterr().out
+
+        assert "section_ten_gold_m1" in out, "a live section may not vanish from BY SECTION"
+        assert "0 trades" in out
+        assert "SL_TOO_TIGHT_FOR_COSTS" in out, "say WHERE it died, not just that it did"
+
+    def test_a_section_with_no_decisions_at_all_reads_differently(self, capsys) -> None:
+        """Took nothing and never ran need opposite responses."""
+        from scripts.dry_run_sections import _report
+
+        _report(
+            self._decisions(),
+            equity=216.0,
+            days=30,
+            skipped=0,
+            managed=True,
+            sections=("section_six_gold_m5", "section_ten_gold_m1", "never_built"),
+        )
+        out = capsys.readouterr().out
+
+        assert "NO DECISIONS AT ALL" in out
+        assert "never_built" in out
+
+    def test_refusals_carry_the_section_that_was_refused(self) -> None:
+        """Without this there are no rows anywhere bearing a silent section's
+        name, and the table above cannot be written at all."""
+        from scripts import dry_run_sections
+
+        source = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert (
+            source.count("pass_key=(name, clock.value)") >= 3
+        ), "trade rows, confluence refusals and sizer refusals all need it"
+
+    def test_the_run_passes_its_measured_sections_in(self) -> None:
+        from scripts import dry_run_sections
+
+        source = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert "sections=tuple(sorted({name for name, _tf in passes}))" in source
