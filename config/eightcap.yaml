@@ -4325,7 +4325,28 @@ trade_management:
   # Sectie 5 is geselecteerd op de vaste 1ATR-stop en 1R-target. De algemene
   # break-evenmanager maakte de exacte 45-daagse replay +11,39R -> -16,31R.
   # Alleen dit herkenbare MT5-label houdt daarom zijn oorspronkelijke SL/TP.
-  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S6-AU-M5]
+  #
+  # SECTIE 10 KOMT ER 2 SEPTEMBER BIJ, en het getal stond in zijn eigen
+  # dry-run-rapport te wachten:
+  #
+  #     stop vast        +25,29 R   EUR  +93,08
+  #     stop beschermd   +10,29 R   EUR  +34,09
+  #     te vroeg gekapt   50 (-70,00 R)   gered   50 (+55,00 R)
+  #
+  # Vijftig trades werden door break-even afgekapt voor 70 R, vijftig werden
+  # ermee gered voor 55 R. Netto kost de bescherming 15 R, oftewel -0,099 R
+  # per trade. Dat is gemeten op IDENTIEKE entries -- dezelfde bar-walk, twee
+  # exits -- dus het is geen vergelijking tussen twee runs met eigen ruis.
+  #
+  # WAT DIT VERDER UITZET, en dat hoort erbij: deze lijst keert vroeg terug uit
+  # de manager, dus S10 verliest ook de trailing stop, de deelafname op 1,5R,
+  # de tijd-exit en de avondafbouw. Dat is precies wat er gemeten is (+25,29 R
+  # is de vaste SL/TP) en voor S10 is de avondafbouw sowieso zonder betekenis:
+  # zijn instapvenster sluit om 19:00 UTC.
+  #
+  # WAT HET NIET DOET: het maakt S10 niet bewezen. 153 trades over twee
+  # maanden en +0,85 sigma blijft +0,85 sigma; alleen het bedrag verandert.
+  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S6-AU-M5, JARVIS-S10-AU-M1]
   # Still needs the position path plus an independent chart family. Alleen het
   # moment schuift op: bevestigd falen mag nu ingrijpen op -0,15R in plaats van
   # -0,25R. De broker-SL blijft de onvoorwaardelijke achtervang.
