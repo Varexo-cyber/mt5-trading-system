@@ -90,9 +90,8 @@ def test_quick_relaxation_does_not_relax_adverse_reversal_limit() -> None:
     quick_config = service._entry_quality_config_for(quick)
     swing_config = service._entry_quality_config_for(swing)
 
-    assert (
-        quick_config.max_favourable_extension_atr["forex"]
-        > (swing_config.max_favourable_extension_atr["forex"])
+    assert quick_config.max_favourable_extension_atr["forex"] > (
+        swing_config.max_favourable_extension_atr["forex"]
     )
     assert quick_config.max_last_bar_adverse_atr == swing_config.max_last_bar_adverse_atr
 
@@ -200,10 +199,8 @@ def test_the_live_allowlist_follows_the_measured_record() -> None:
     # but none may use real money.
     assert live == {
         "failed_session_breakout",
-        "section_five_m5",
         "section_six_gold_m5",
         "section_eight_trend_day_h1",
-        "section_nine_vwap_m30",
         "section_ten_gold_m1",
     }
     # Every live module keeps a breaker. That was the real content of this
@@ -402,6 +399,12 @@ class TestTheEntryConfirmationExemptionReachesTheRunner:
         )
         exempt = set(settings.analysis.confluence.entry_timing_exempt_families)
 
+        # SECTION FIVE AND NINE ARE STILL HERE and that is not an oversight.
+        # This is not the live allowlist -- they came off that on 2 September.
+        # It is the list of families whose own pullback is their mechanism, and
+        # that stays true of a module being measured in the shadow. Dropping
+        # them here would make the shadow measurement judge a different
+        # strategy from the one that would go live if it earned its way back.
         assert exempt == {
             "impulse_retest",
             "order_block",
@@ -527,10 +530,8 @@ class TestASecondClockIsASecondModule:
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "failed_session_breakout",
-            "section_five_m5",
             "section_six_gold_m5",
             "section_eight_trend_day_h1",
-            "section_nine_vwap_m30",
             "section_ten_gold_m1",
         }
         for name, timeframe in expected.items():

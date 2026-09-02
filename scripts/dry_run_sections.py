@@ -194,10 +194,20 @@ def _resolve(
     both barriers is a LOSS because the order is unknowable, and a trade that
     reaches neither is reported as open rather than closed at the clock.
 
-    Returns `(r, exit_time, managed_r)`. The exit time is what frees the symbol
-    for the next trade -- see `_one_pass`. A trade that resolves neither way
-    returns `(None, None, None)` and holds the symbol to the end of the window,
-    which is what a real open position does.
+    Returns `(r, exit_time, managed_r, managed_exit_time)`. A trade that
+    resolves neither way returns Nones and holds the symbol to the end of the
+    window, which is what a real open position does.
+
+    TWO EXIT TIMES, AND THE SECOND ONE IS NOT DECORATION. Whichever exit the
+    account actually takes is the one that frees the symbol for the next
+    setup. Only `exit_time` used to be recorded -- the FIXED stop -- so a trade
+    that scratched at break-even after four minutes went on occupying its
+    symbol until the fixed stop or target resolved, sometimes hours later, and
+    every setup in between was silently dropped.
+
+    That is not a rounding error on a fast section. It under-counts trades in
+    exact proportion to how often break-even fires and how much earlier it
+    fires, which on an M1 strategy is most trades and by a lot.
 
     `manage` IS THE QUESTION THE RESEARCH NEVER ASKED, and `TradeManagementConfig`
     is switched on for these sections with no per-module exception.
@@ -256,6 +266,7 @@ def _resolve(
 
     fixed_r: float | None = None
     exit_at: datetime | None = None
+    managed_at: datetime | None = None
 
     for position in range(first, last):
         bar_high = float(highs[position])
@@ -280,6 +291,7 @@ def _resolve(
                 managed_r = reward_r
             if managed_r is not None:
                 managed_open = False
+                managed_at = index[position]
             else:
                 excursion = (bar_high - idea.entry) if long else (idea.entry - bar_low)
                 if not armed and excursion / risk >= trigger_r:
@@ -296,7 +308,8 @@ def _resolve(
 
     if managed_open:
         managed_r = None
-    return fixed_r, exit_at, managed_r
+        managed_at = None
+    return fixed_r, exit_at, managed_r, managed_at
 
 
 def _unresolvable_clocks(clocks: tuple[str, ...], finest: Timeframe) -> str:
@@ -527,7 +540,7 @@ def _one_clock(
                     )
                 )
                 continue
-            r, exit_at, managed_r = _resolve(
+            r, exit_at, managed_r, managed_at = _resolve(
                 resolve_frame,
                 upto,
                 idea,
@@ -535,9 +548,22 @@ def _one_clock(
                 manage=section_manage,
                 arrays=resolve_arrays,
             )
+            # FREED AT THE EXIT THE ACCOUNT ACTUALLY TAKES.
+            #
+            # This used to be `exit_at`, the FIXED stop, on every run --
+            # including the runs judged on the break-even column. A trade that
+            # scratched after four minutes kept its symbol occupied until the
+            # fixed stop resolved hours later, and every setup in between was
+            # dropped without a trace. On an M1 section that is most of the
+            # trades.
+            #
             # Held to the end of the window when it never resolved, exactly as
             # an open position holds the symbol live.
-            busy[name] = exit_at if exit_at is not None else end + clock.duration
+            # PER SECTION, because the break-even rule is. A section running a
+            # fixed stop is freed by the fixed exit; one running break-even is
+            # freed by whichever exit it actually took.
+            freed = managed_at if section_manage is not None else exit_at
+            busy[name] = freed if freed is not None else end + clock.duration
             risk_money = sized.actual_risk_money
 
             # THE TRADE PAYS ITS OWN SPREAD. It did not until 31 August, and
@@ -1081,7 +1107,21 @@ def main(argv: list[str] | None = None) -> None:
         }
         measured = set(module_config)
         if args.sections_five_to_ten:
-            selected = {
+            # THE BOOK, AS IT ACTUALLY STANDS -- not a list written down when it
+            # had six entries.
+            #
+            # This was a hardcoded set including `section_five_m5` and
+            # `section_nine_vwap_m30`. Both came off the live allowlist on
+            # 2 September (-1.09 R over 170 trades and -0.02 R over 6), and a
+            # second copy of a list that must agree with `live_enabled_modules`
+            # is a copy that disagrees with it the moment one changes. It did,
+            # within the hour.
+            #
+            # Intersecting with `live` means this flag answers "what would the
+            # account have done" rather than "what would the account have done
+            # in August". A section that comes back on appears here again with
+            # no edit.
+            book = {
                 "failed_session_breakout",
                 "section_five_m5",
                 "section_six_gold_m5",
@@ -1089,12 +1129,15 @@ def main(argv: list[str] | None = None) -> None:
                 "section_nine_vwap_m30",
                 "section_ten_gold_m1",
             }
-            missing = selected - measured
+            missing = (book & live) - measured
             if missing:
                 raise SystemExit(
                     f"sections 5-10 are missing from the dry-run implementation: {sorted(missing)}"
                 )
-            measured = measured & selected
+            measured = measured & book & live
+            benched = sorted(book - live)
+            if benched:
+                print(f"  not measured, off the live allowlist: {', '.join(benched)}")
         if args.live_only:
             # `dryrun-live.cmd` means exactly what its name says. Previously
             # this flag only disabled the timeframe sweep, while `measured`

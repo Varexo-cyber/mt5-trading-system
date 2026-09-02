@@ -213,12 +213,12 @@ def report(records: list[dict[str, object]], database: Path) -> None:
                     for symbol, row in symbols.iterrows()
                 )
             )
-            by_month = approved.assign(month=approved["stamp"].dt.strftime("%Y-%m")).groupby(
-                "month"
-            )["net_r"].agg(["count", "mean"])
-            months = ", ".join(
-                f"{month} {row['mean']:+.2f}R" for month, row in by_month.iterrows()
+            by_month = (
+                approved.assign(month=approved["stamp"].dt.strftime("%Y-%m"))
+                .groupby("month")["net_r"]
+                .agg(["count", "mean"])
             )
+            months = ", ".join(f"{month} {row['mean']:+.2f}R" for month, row in by_month.iterrows())
             print("  months: " + months)
 
 

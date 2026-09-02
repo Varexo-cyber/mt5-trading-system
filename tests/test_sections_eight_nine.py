@@ -79,15 +79,35 @@ def test_section_nine_fades_a_two_atr_vwap_displacement() -> None:
 
 
 def test_new_sections_are_live_promoted_with_measured_targets() -> None:
+    """Section nine is DELIBERATELY not on the live list any more.
+
+    SECTION 5 AND SECTION 9 CAME OFF ON 2 SEPTEMBER, on the owner's dry-run:
+
+        section_five_m5        170 trades   -1,09 R   EUR  -1,11
+        section_nine_vwap_m30    6 trades   -0,02 R   EUR  -0,08
+
+    Section five is the clear one -- 170 trades is not noise any more and the
+    number is under zero. Section nine on six trades is not proven bad; six
+    observations prove nothing either way. It is off because it is not proven
+    GOOD while spending real money. Both stay enabled and weighted, so they
+    are still measured in the shadow.
+    """
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
 
     assert settings.analysis.section_eight_trend_day_h1.enabled is True
-    assert settings.analysis.section_nine_vwap_m30.enabled is True
     assert settings.analysis.section_ten_gold_m1.enabled is True
     assert settings.analysis.section_ten_gold_m1.minimum_break_atr == 0.75
     assert "section_eight_trend_day_h1" in settings.analysis.confluence.live_enabled_modules
-    assert "section_nine_vwap_m30" in settings.analysis.confluence.live_enabled_modules
     assert "section_ten_gold_m1" in settings.analysis.confluence.live_enabled_modules
+
+    live = settings.analysis.confluence.live_enabled_modules
+    assert "section_nine_vwap_m30" not in live
+    assert "section_five_m5" not in live
+    # Off is not deleted. A module with no weight cannot be measured, and that
+    # is how three M1 detectors went unjudged for months.
+    assert settings.analysis.section_nine_vwap_m30.enabled is True
+    assert settings.analysis.confluence.weights["section_nine_vwap_m30"] > 0
+    assert settings.analysis.confluence.weights["section_five_m5"] > 0
     assert (
         settings.analysis.confluence.target_r_multiple_by_family["section_eight_trend_day_h1"]
         == 1.0
