@@ -42,6 +42,7 @@ from analysis import (
     DriftBurst,
     DriftContinuation,
     EmaPullbackResume,
+    EntryTimingAssessment,
     EntryTimingDecision,
     FailedSessionBreakout,
     FastEmaCross,
@@ -6392,6 +6393,13 @@ class JarvisRunner:
 
     def _assess_entry_quality(self, context: MarketContext, idea: TradeIdea, asset_class):  # type: ignore[no-untyped-def]
         assert idea.direction is not None
+        if self._strategy_owns_entry(idea):
+            return EntryTimingAssessment(
+                EntryTimingDecision.ENTER_NOW,
+                "STRATEGY_OWNED_ENTRY",
+                "the standalone strategy's closed-bar event is its measured entry",
+                self.settings.analysis.entry_quality.timeframe,
+            )
         executable_price = None
         if context.tick is not None:
             executable_price = (
@@ -6472,6 +6480,13 @@ class JarvisRunner:
         return any(
             family in idea.setup_family
             for family in self.settings.analysis.confluence.entry_timing_exempt_families
+        )
+
+    def _strategy_owns_entry(self, idea: TradeIdea) -> bool:
+        """Whether the measured strategy's closed-bar event is the entry."""
+        return any(
+            family in idea.setup_family
+            for family in self.settings.analysis.confluence.strategy_owned_entry_families
         )
 
     @staticmethod

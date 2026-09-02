@@ -3697,6 +3697,13 @@ class ConfluenceConfig(Base):
     #: Matched on substring against `setup_family`, the same way
     #: `target_r_multiple_by_family` is.
     entry_timing_exempt_families: tuple[str, ...] = ()
+    #: Standalone strategies whose closed-bar trigger, stop and exit were
+    #: measured as one indivisible plan.  These families do not borrow the
+    #: generic HTF/timing policy or have their structural stop padded: doing
+    #: either changes the strategy that was tested.  Account, cost, exposure,
+    #: news and broker safety checks still run in the execution service.
+    #: Matched on substring because setup families carry their clock suffix.
+    strategy_owned_entry_families: tuple[str, ...] = ()
     #: Strategies whose target probability was measured directly on their own
     #: entries. The generic rolling reach statistic remains visible to the
     #: reviewer for these families, but may not veto the setup before review.
@@ -3936,8 +3943,22 @@ class SectionSixModelConfig(Base):
     polarity: int = Field(default=1, ge=-1, le=1)
     threshold: float = Field(default=0.075, gt=0.0, le=3.0)
     stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    long_only: bool = False
+    session_start_hour_utc: int | None = Field(default=None, ge=0, le=23)
+    session_end_hour_utc: int | None = Field(default=None, ge=0, le=23)
     score: float = Field(default=70.0, ge=0.0, le=100.0)
     confidence: float = Field(default=0.80, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def complete_session_window(self) -> SectionSixModelConfig:
+        if (self.session_start_hour_utc is None) != (self.session_end_hour_utc is None):
+            raise ValueError("section six session needs both start and end UTC hours")
+        if (
+            self.session_start_hour_utc is not None
+            and self.session_start_hour_utc == self.session_end_hour_utc
+        ):
+            raise ValueError("section six session start and end cannot be equal")
+        return self
 
 
 class AnalysisConfig(Base):

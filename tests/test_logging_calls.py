@@ -44,7 +44,16 @@ def offending_calls() -> list[str]:
     found: list[str] = []
     for path in ROOT.rglob("*.py"):
         text = str(path)
-        if ".venv" in text or f"{ROOT}/tests" in text:
+        relative_parts = path.relative_to(ROOT).parts
+        # Dependency scratch directories are ignored source-wise and are not
+        # part of this repository. Some package wheels also carry deliberately
+        # unreadable ACLs on Windows, so never traverse them as application
+        # logging code.
+        if (
+            ".venv" in text
+            or "tests" in relative_parts
+            or any(part in {".local-deps", "research-deps-local"} for part in path.parts)
+        ):
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))

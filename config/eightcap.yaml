@@ -1391,7 +1391,7 @@ analysis:
   # nieuwste kwart: 92 SPX500-trades, 44,6% raak bij 1,5R, +0,074R per trade,
   # EUR +12,02 op EUR 203. Alleen SPX500/H1 is bewezen; niets anders erft dit.
   walkforward_index:
-    enabled: true
+    enabled: false
     timeframe: H1
     allowed_symbols: [SPX500]
     threshold: 0.075
@@ -1419,17 +1419,22 @@ analysis:
     threshold: 0.15
     stop_atr: 1.0
 
-  # SECTIE ZES OPNIEUW GEBOUWD met een maandelijkse walk-forwardprocedure.
-  # Laatste ongeziene 30 dagen: XAUUSD 29 trades, +0,294R/trade. De exacte
-  # Jarvis-route bevestigde het teken: 309 trades, +21,90R. SPX500 leek in de
-  # onderzoeksresolver +0,126R/trade maar werd exact -4,86R; GER40 en US30
-  # faalden eveneens. Alleen goud staat daarom aan.
+  # SECTIE ZES, experimentele huidige-regimeroute. De eerste live week op de
+  # VPS verloor. Een eerlijke 180-daagse train/validatie/holdout-search vond
+  # GEEN vaste of trendadaptieve goudroute die alle drie perioden overleefde.
+  # Deze route is daarom NIET bewezen en alleen live omdat de eigenaar hem nu
+  # expliciet wil forward-testen: LONG, 20:00-02:00 UTC, 0,8 ATR stop en 3R.
+  # Op de meest recente 30 dagen: 171 trades, 34,5% raak, 18/25 groene dagen,
+  # +53,60R en +2,15 sigma. Dat is kalibratie, geen winstbelofte of holdout.
   section_six_gold_m5:
     enabled: true
     timeframe: M5
     polarity: -1
-    threshold: 0.075
-    stop_atr: 1.0
+    threshold: 0.15
+    stop_atr: 0.8
+    long_only: true
+    session_start_hour_utc: 20
+    session_end_hour_utc: 2
   section_six_spx_h1:
     # Onderzoeksresolver positief, exacte Jarvis-route -4,86R: NIET live.
     enabled: false
@@ -2176,7 +2181,7 @@ analysis:
       walkforward_index: 1.5
       failed_session_breakout: 1.5
       section_five_m5: 1.0
-      section_six_gold_m5: 1.5
+      section_six_gold_m5: 3.0
       section_six_spx_h1: 1.0
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
@@ -2201,11 +2206,16 @@ analysis:
     # eerste twaalf betaalde reviews precies dit vetoden en gelijk hadden. Het
     # onderscheid zit in de setup, niet in de drempel.
     entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5]
+    # Sectie 6 is als complete closed-barstrategie gemeten. Een geldig
+    # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
+    # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
+    # maken. Harde account-, nieuws-, kosten- en brokerchecks blijven actief.
+    strategy_owned_entry_families: [section_six_gold_m5]
     # De 1R-doelen van deze twee families zijn rechtstreeks gemeten op hun
     # eigen entries. De generieke rolling reach-test blijft in het reviewpakket
     # staan, maar mag die gemeten setup niet vóór de reviewer vervangen door
     # een ander, ongemeten selectiebeleid.
-    target_reach_advisory_families: [impulse_retest, order_block]
+    target_reach_advisory_families: [impulse_retest, order_block, section_six_gold_m5]
     target_reach_margin_pct: 0.0
     # Van 20% naar 25% van de stop. Quick/intraday-plannen hebben kleinere
     # stops en raakten hierdoor eerder de grens, zelfs wanneer de spread binnen
@@ -2637,7 +2647,6 @@ analysis:
     # positief is. Een nieuwe sectie wordt om dezelfde reden niet verzonnen en
     # live gezet zonder bewijs.
     live_enabled_modules:
-      - walkforward_index
       - failed_session_breakout
       - section_five_m5
       - section_six_gold_m5
@@ -3871,8 +3880,11 @@ risk:
     section_six_gold_m5:
       window: 30
       minimum_trades: 15
-      maximum_loss_share: 0.60
-      losing_streak: 6
+      # Bij 3R is ~65% verliezers normaal en nog ruim winstgevend. De oude
+      # 60%-grens kon dus een gezonde sample uitschakelen; 75% bewaakt het
+      # echte omslagpunt zonder de noodrem te verwijderen.
+      maximum_loss_share: 0.75
+      losing_streak: 10
     section_six_spx_h1:
       window: 30
       minimum_trades: 15

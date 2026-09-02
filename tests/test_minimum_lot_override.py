@@ -76,7 +76,6 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
         confluence = _live_settings().analysis.confluence
 
         assert set(confluence.live_enabled_modules) == {
-            "walkforward_index",
             "failed_session_breakout",
             "section_five_m5",
             "section_six_gold_m5",

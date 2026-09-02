@@ -269,6 +269,17 @@ class _SectionSixModel:
         if abs(directed) < cfg.threshold:
             return Signal.neutral(self.name, f"model magnitude {abs(directed):.3f} below threshold")
         direction = 1 if directed > 0.0 else -1
+        if cfg.long_only and direction < 0:
+            return Signal.neutral(self.name, "section six gold route is long-only")
+        if cfg.session_start_hour_utc is not None and cfg.session_end_hour_utc is not None:
+            hour = ctx.now.hour
+            start, end = cfg.session_start_hour_utc, cfg.session_end_hour_utc
+            inside = start <= hour < end if start < end else hour >= start or hour < end
+            if not inside:
+                return Signal.neutral(
+                    self.name,
+                    f"outside measured {start:02d}:00-{end:02d}:00 UTC gold session",
+                )
         price = ctx.tick.mid if ctx.tick is not None else float(series.df["close"].iloc[-1])
         return Signal(
             module=self.name,
