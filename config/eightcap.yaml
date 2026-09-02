@@ -1443,6 +1443,29 @@ analysis:
     threshold: 0.15
     stop_atr: 1.5
 
+  # SECTIE ACHT. Alleen SPX500/H1. De vorige UTC-dag moet in de bovenste of
+  # onderste 10% van zijn range sluiten; tussen 00:00 en 02:00 UTC wordt die
+  # richting gevolgd. Exacte EUR-203 audit: 26 trades, 65,4% raak, +6,99R;
+  # vroege en late tijdhelft beide positief. Nog te dun voor echt geld.
+  section_eight_trend_day_h1:
+    enabled: true
+    timeframe: H1
+    allowed_symbols: [SPX500]
+    lower_close_location: 0.10
+    upper_close_location: 0.90
+    entry_end_hour_utc: 2
+    stop_atr: 1.0
+
+  # SECTIE NEGEN. Alleen USDJPY/M30. Fade een slotkoers die minstens twee ATR
+  # van de volumegewogen prijs sinds 00:00 UTC staat. Exacte EUR-203 audit:
+  # 22 trades, 63,6% raak, +10,71R; beide tijdhelften positief. Ook nog dun.
+  section_nine_vwap_m30:
+    enabled: true
+    timeframe: M30
+    allowed_symbols: [USDJPY.i]
+    minimum_displacement_atr: 2.0
+    stop_atr: 1.0
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2183,6 +2206,8 @@ analysis:
       section_five_m5: 1.0
       section_six_gold_m5: 3.0
       section_six_spx_h1: 1.0
+      section_eight_trend_day_h1: 1.0
+      section_nine_vwap_m30: 1.5
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2912,6 +2937,8 @@ analysis:
       section_five_m5: 1.0
       section_six_gold_m5: 1.0
       section_six_spx_h1: 1.0
+      section_eight_trend_day_h1: 1.0
+      section_nine_vwap_m30: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3886,6 +3913,16 @@ risk:
       maximum_loss_share: 0.75
       losing_streak: 10
     section_six_spx_h1:
+      window: 30
+      minimum_trades: 15
+      maximum_loss_share: 0.60
+      losing_streak: 6
+    section_eight_trend_day_h1:
+      window: 30
+      minimum_trades: 15
+      maximum_loss_share: 0.60
+      losing_streak: 6
+    section_nine_vwap_m30:
       window: 30
       minimum_trades: 15
       maximum_loss_share: 0.60
