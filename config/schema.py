@@ -3994,7 +3994,7 @@ class SectionTenGoldM1Config(Base):
     timeframe: str = "M1"
     allowed_symbols: tuple[str, ...] = ("XAUUSD",)
     channel_period: int = Field(default=20, ge=10, le=200)
-    minimum_break_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    minimum_break_atr: float = Field(default=0.75, gt=0.0, le=5.0)
     retest_tolerance_atr: float = Field(default=0.15, ge=0.0, le=2.0)
     stop_beyond_atr: float = Field(default=0.75, gt=0.0, le=5.0)
     maximum_wait_bars: int = Field(default=96, ge=2, le=500)

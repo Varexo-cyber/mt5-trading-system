@@ -1466,21 +1466,21 @@ analysis:
     minimum_displacement_atr: 2.0
     stop_atr: 1.0
 
-  # SECTIE TIEN. Alleen XAUUSD/M1. Een kanaaluitbraak moet minstens 1 ATR
+  # SECTIE TIEN. Alleen XAUUSD/M1. Een kanaaluitbraak moet minstens 0,75 ATR
   # groot zijn; pas de eerste terugtest wordt op de GESLOTEN M1-bar gekocht
   # of verkocht. Dit is uitvoerbaar als market order, niet de fraaie maar
   # onuitvoerbare intrabar limit-fill uit de brede zoekrun. Exacte audit met
   # historische broker-spread, EUR 203 sizing en maximaal een positie tegelijk.
   # Het aaneengesloten liquide venster 03:00-19:00 UTC verbeterde beide helften:
-  # vast 357 trades en +41,18R; met de LIVE break-evenregel +56,90R / EUR 90,99,
-  # vroege +27,15R en late +29,75R. Na spread sloot 62,5% boven nul; bruto was
-  # 79,6% positief/scratch. Max drawdown -9,08R. Nog steeds SHADOW, niet live.
+  # Met de LIVE break-evenregel: 565 trades / circa 3,1 per kalenderdag,
+  # +82,00R, vroege +41,89R en late +40,11R. Na spread sloot 61,2% boven nul;
+  # max drawdown -5,41R. Nog steeds SHADOW, niet live.
   section_ten_gold_m1:
     enabled: true
     timeframe: M1
     allowed_symbols: [XAUUSD]
     channel_period: 20
-    minimum_break_atr: 1.0
+    minimum_break_atr: 0.75
     retest_tolerance_atr: 0.15
     stop_beyond_atr: 0.75
     maximum_wait_bars: 96
