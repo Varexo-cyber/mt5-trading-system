@@ -61,7 +61,9 @@ from analysis import (
     OrderBlock,
     PeerMove,
     Seasonality,
+    SectionEightTrendDayH1,
     SectionFiveM5,
+    SectionNineSessionVwapM30,
     SectionSixGoldM5,
     SectionSixSpxH1,
     SessionBreakout,
@@ -478,6 +480,8 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         SectionFiveM5(analysis.section_five_m5),
         SectionSixGoldM5(analysis.section_six_gold_m5),
         SectionSixSpxH1(analysis.section_six_spx_h1),
+        SectionEightTrendDayH1(analysis.section_eight_trend_day_h1),
+        SectionNineSessionVwapM30(analysis.section_nine_vwap_m30),
     ]
 
 

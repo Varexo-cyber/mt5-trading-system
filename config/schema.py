@@ -3961,6 +3961,32 @@ class SectionSixModelConfig(Base):
         return self
 
 
+class SectionEightTrendDayConfig(Base):
+    """SECTION EIGHT: SPX500 prior-day continuation on H1."""
+
+    enabled: bool = False
+    timeframe: str = "H1"
+    allowed_symbols: tuple[str, ...] = ("SPX500",)
+    lower_close_location: float = Field(default=0.10, ge=0.0, lt=0.5)
+    upper_close_location: float = Field(default=0.90, gt=0.5, le=1.0)
+    entry_end_hour_utc: int = Field(default=2, ge=1, le=23)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.76, ge=0.0, le=1.0)
+
+
+class SectionNineSessionVwapConfig(Base):
+    """SECTION NINE: USDJPY UTC-session VWAP reversion on M30."""
+
+    enabled: bool = False
+    timeframe: str = "M30"
+    allowed_symbols: tuple[str, ...] = ("USDJPY.i",)
+    minimum_displacement_atr: float = Field(default=2.0, gt=0.0, le=10.0)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.76, ge=0.0, le=1.0)
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -4008,6 +4034,8 @@ class AnalysisConfig(Base):
     section_five_m5: SectionFiveM5Config = SectionFiveM5Config()
     section_six_gold_m5: SectionSixModelConfig = SectionSixModelConfig()
     section_six_spx_h1: SectionSixModelConfig = SectionSixModelConfig(timeframe="H1")
+    section_eight_trend_day_h1: SectionEightTrendDayConfig = SectionEightTrendDayConfig()
+    section_nine_vwap_m30: SectionNineSessionVwapConfig = SectionNineSessionVwapConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

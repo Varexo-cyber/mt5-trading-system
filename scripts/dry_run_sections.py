@@ -1071,6 +1071,8 @@ def main(argv: list[str] | None = None) -> None:
             "section_five_m5": "section_five_m5",
             "section_six_gold_m5": "section_six_gold_m5",
             "section_six_spx_h1": "section_six_spx_h1",
+            "section_eight_trend_day_h1": "section_eight_trend_day_h1",
+            "section_nine_vwap_m30": "section_nine_vwap_m30",
         }
         measured = set(module_config)
         if args.live_only:
