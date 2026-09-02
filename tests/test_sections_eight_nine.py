@@ -84,6 +84,7 @@ def test_new_sections_are_measured_but_not_live_promoted() -> None:
     assert settings.analysis.section_eight_trend_day_h1.enabled is True
     assert settings.analysis.section_nine_vwap_m30.enabled is True
     assert settings.analysis.section_ten_gold_m1.enabled is True
+    assert settings.analysis.section_ten_gold_m1.minimum_break_atr == 0.75
     assert "section_eight_trend_day_h1" not in settings.analysis.confluence.live_enabled_modules
     assert "section_nine_vwap_m30" not in settings.analysis.confluence.live_enabled_modules
     assert "section_ten_gold_m1" not in settings.analysis.confluence.live_enabled_modules

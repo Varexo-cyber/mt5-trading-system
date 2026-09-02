@@ -139,11 +139,13 @@ def _market_big_impulse_retest(
     stop_beyond: float,
     confirmation: bool,
     entry_hours: tuple[int, int] | None = None,
+    channel_period: int = 20,
+    minimum_break_atr: float = 1.0,
 ) -> Batch:
     """Large channel break, then an executable close/confirmation entry."""
 
     high, low, close = (frame[column].to_numpy(float) for column in ("high", "low", "close"))
-    upper, lower = _channel(high, low, 20)
+    upper, lower = _channel(high, low, channel_period)
     rows: list[tuple[int, int, float, float]] = []
     end = len(close) - HORIZON_BARS - 1
     i = 220
@@ -159,7 +161,7 @@ def _market_big_impulse_retest(
         else:
             i += 1
             continue
-        if direction * (close[i] - level) < unit0:
+        if direction * (close[i] - level) < minimum_break_atr * unit0:
             i += 1
             continue
         for j in range(i + 1, min(i + HORIZON_BARS, end)):
@@ -232,6 +234,21 @@ for _start, _end in ((3, 19), (6, 19), (13, 19)):
         )
     )
 
+for _period in (10, 15, 20, 30):
+    for _minimum_break in (0.5, 0.75, 1.0, 1.25):
+        _name = f"market_retest_p{_period}_b{_minimum_break}_h3_19"
+        CATALOGUE[_name] = lambda frame, atr, period=_period, minimum=_minimum_break: (
+            _market_big_impulse_retest(
+                frame,
+                atr,
+                stop_beyond=0.75,
+                confirmation=False,
+                entry_hours=(3, 19),
+                channel_period=period,
+                minimum_break_atr=minimum,
+            )
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
@@ -245,7 +262,7 @@ class Candidate:
 CANDIDATES = (
     Candidate(8, "trend_day_continuation", "SPX500", "H1", 1.0),
     Candidate(9, "session_vwap_reversion", "USDJPY.i", "M30", 1.5),
-    Candidate(10, "market_big_retest_s0.75_h3_19", "XAUUSD", "M1", 1.5),
+    Candidate(10, "market_retest_p20_b0.75_h3_19", "XAUUSD", "M1", 1.5),
     Candidate(0, "swing_break_retest", "EURCHF.i", "M5", 0.75),
     Candidate(0, "trend_day_continuation", "GBPJPY.i", "M5", 1.5),
     Candidate(0, "rsi_divergence", "AUDUSD.i", "M5", 1.5),
@@ -489,6 +506,22 @@ def main() -> None:
             _print("EARLY", rows[rows["stamp"] < split])
             _print("LATE", rows[rows["stamp"] >= split])
             _print("ALL", rows)
+            if candidate.section == 10:
+                managed = audit_management(
+                    candidate,
+                    sizer,
+                    trigger_r=settings.trade_management.break_even_at_r,
+                    offset_atr=settings.trade_management.break_even_offset_atr,
+                )
+                print("    LIVE BREAK-EVEN MANAGEMENT")
+                if managed.empty:
+                    _print("EARLY", managed)
+                    _print("LATE", managed)
+                    _print("ALL", managed)
+                else:
+                    _print("EARLY", managed[managed["stamp"] < split])
+                    _print("LATE", managed[managed["stamp"] >= split])
+                    _print("ALL", managed)
     finally:
         data.close_database()
 

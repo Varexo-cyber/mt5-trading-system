@@ -231,4 +231,7 @@ class SectionTenGoldM1:
                     "wait_bars": at - broken_at,
                 },
             )
-        return Signal.neutral(self.name, "no first retest after a one-ATR M1 channel break")
+        return Signal.neutral(
+            self.name,
+            f"no first retest after a {cfg.minimum_break_atr:.2f}-ATR M1 channel break",
+        )
