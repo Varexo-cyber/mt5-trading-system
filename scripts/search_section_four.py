@@ -644,6 +644,29 @@ def resolve(
     candidate rather than flatter it: resolution starts on the bar AFTER the
     entry bar, and a bar that spans both barriers is a LOSS because the order
     inside it is unknowable.
+
+    ONE POSITION AT A TIME, WHICH THIS DID NOT DO, and it is not a detail --
+    it biased the search against exactly the mechanisms it was extended to
+    find.
+
+    A signal was taken on EVERY bar that carried one. A breakout candidate
+    fires once and does not care. A mean-reverter stays on for as long as
+    price is stretched, so one event was entered on ten consecutive bars and
+    counted as ten trades: the first at the edge of the move and the other
+    nine progressively deeper into it, each worse than the last. The first
+    gold run showed the shape plainly -- `stretch_fade` on M5 reported
+    150,055 trades where `opening_range_break`, which fires once per
+    direction per day by construction, reported 1,796 and carried the largest
+    per-trade edge in the grid.
+
+    So the fade candidates were not measured on their mechanism. They were
+    measured on their mechanism diluted nine parts to one with late entries
+    the account would never take, because the account holds one position per
+    symbol and this is what that costs.
+
+    The account's constraint is now the harness's: while a trade is open the
+    symbol is busy, and a trade that reaches neither barrier keeps it busy for
+    the whole horizon rather than quietly freeing it.
     """
     out = Trades()
     unit = _atr(frame)
@@ -652,7 +675,10 @@ def resolve(
     low = frame["low"].to_numpy()
     index = frame.index
 
+    free_at = WARMUP
     for i in range(WARMUP, len(frame) - 1):
+        if i < free_at:
+            continue
         direction = int(signals[i])
         if direction == 0 or not np.isfinite(unit[i]) or unit[i] <= 0:
             continue
@@ -660,19 +686,29 @@ def resolve(
         risk = stop_atr * unit[i]
         stop = entry - direction * risk
         target = entry + direction * ratio * risk
-        for j in range(i + 1, min(i + 1 + horizon, len(frame))):
+        last = min(i + 1 + horizon, len(frame))
+        result: float | None = None
+        exit_at = last
+        for j in range(i + 1, last):
             if direction > 0:
                 hit_stop, hit_target = low[j] <= stop, high[j] >= target
             else:
                 hit_stop, hit_target = high[j] >= stop, low[j] <= target
             if hit_stop:
-                out.r.append(-1.0 - cost_r)
+                result, exit_at = -1.0 - cost_r, j
                 break
             if hit_target:
-                out.r.append(ratio - cost_r)
+                result, exit_at = ratio - cost_r, j
                 break
-        else:
+        # UNRESOLVED IS STILL OCCUPIED. A trade that reached neither barrier
+        # is excluded from the statistics -- it has not answered the question
+        # -- but the account was in it the whole time and could not take the
+        # next signal. Freeing the symbol here would let a candidate skip its
+        # own dead trades and pick up the following setup for free.
+        free_at = exit_at
+        if result is None:
             continue
+        out.r.append(result)
         out.day.append(index[i].date())
         out.when.append(index[i])
     return out
@@ -1104,7 +1140,23 @@ def _report(cells: dict, args, costs: dict | None = None) -> None:
     if thin:
         print(f"\n  TOO THIN TO JUDGE — fired, but under 250 trades: {', '.join(thin)}")
 
+    # TWO DIFFERENT QUANTITIES SAT IN ONE ROW WITH NOTHING SAYING SO. The R
+    # column was NET of the random control and the sigma column was on the
+    # RAW daily totals, so the first gold run printed rows like "+0.049 R,
+    # +0.81 sigma" and they read as one measurement disagreeing with itself.
+    # They are two questions -- "does it beat a coin flip" and "is it
+    # distinguishable from zero" -- and both have to be answered, so both are
+    # now named and the raw per-trade number is printed beside them.
     print("\n  CLOSEST MISSES — what stopped each of the ten best")
+    print(
+        f"    {'candidate':<26}{'clock':<6}{'class':<9}"
+        f"{'raw R':>8}{'vs coin':>9}{'sigma':>8}  n"
+    )
+    print(
+        "      raw R    = per trade, cost charged, exactly as measured\n"
+        "      vs coin  = the same minus the random control on those bars\n"
+        "      sigma    = raw R over the spread of DAILY totals, not per trade"
+    )
     ranked = sorted(
         (c for c in real if len(c.train) >= 150),
         key=lambda c: -stats(c.train)[2],
@@ -1112,11 +1164,12 @@ def _report(cells: dict, args, costs: dict | None = None) -> None:
     for cell in ranked:
         _t, each, sigma, n = stats(cell.train)
         _ct, control_each, _cs, _cn = stats(cell.control)
-        _ok, why = verdict(cell, bar)
         print(
-            f"    {cell.candidate:<24} {cell.clock:<4} {cell.asset_class:<10} "
-            f"{each - control_each:+.3f} R  {sigma:+5.2f} sigma  n={n:<6} {why}"
+            f"    {cell.candidate:<26}{cell.clock:<6}{cell.asset_class:<9}"
+            f"{each:>+8.3f}{each - control_each:>+9.3f}{sigma:>+8.2f}  {n}"
         )
+        _ok, why = verdict(cell, bar)
+        print(f"      {why}")
 
     if args.csv:
         import csv as csv_module
