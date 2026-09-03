@@ -24,10 +24,14 @@ rem  Een kopie in %TEMP% wordt door niets aangeraakt, dus die kan niet
 rem  verschuiven. ZOEK11_ROOT houdt de map van de repo vast, want in de
 rem  kopie wijst %~dp0 naar %TEMP% en dan vindt hij .venv-live niet.
 rem ==================================================================
+rem  De aanroep geeft %* door en niet %1 %2 %3 %4: `zoek11.cmd trend index
+rem  M30 H1 360` is vijf woorden en het vijfde viel er stil af. Nu de
+rem  volgorde niet meer telt kan een aanroep langer worden dan de plekken
+rem  die ik vooraf had uitgeschreven.
 if not defined ZOEK11_ROOT set ZOEK11_ROOT=%~dp0
 if /i not "%~1"=="__uittemp" (
   copy /y "%~f0" "%TEMP%\zoek11-actief.cmd" >nul
-  call "%TEMP%\zoek11-actief.cmd" __uittemp %1 %2 %3 %4
+  call "%TEMP%\zoek11-actief.cmd" __uittemp %*
   exit /b
 )
 shift
@@ -94,15 +98,29 @@ echo  nul (hier -0,025 R op M15, -0,037 R op M5).
 echo.
 echo  MT5 moet draaien en ingelogd zijn.
 echo.
-echo  GEBRUIK
-echo    zoek11.cmd                  1:1, stop 1,0 ATR   -- de eerste pass
-echo    zoek11.cmd mean             0,5:1, stop 1,5 ATR -- fadergeometrie
-echo    zoek11.cmd trend            2:1, stop 1,0 ATR   -- volgergeometrie
-echo    zoek11.cmd mean 720         zelfde, over 720 dagen
-echo    zoek11.cmd base 360 M30 H1  tragere klokken  (M15 kost de helft van
-echo                                M5, en alle drie de beste cellen stonden
-echo                                op M15 -- trager is hier consequent beter)
-echo    zoek11.cmd mean 360 M15 XAUUSD    alleen goud
+echo  GEBRUIK -- DE VOLGORDE DOET ER NIET TOE. Een getal is dagen, M5/M15/
+echo  M30/H1 is een klok (meerdere mag), forex/metal/index/crypto is een
+echo  klasse, en al het andere is een symbool.
+echo.
+echo    zoek11.cmd forex H1 M30 720   FOREX, en dit is de grote open vraag.
+echo                                  De zestien mechanismen hieronder zijn
+echo                                  NOOIT ergens anders dan op metaal
+echo                                  gericht. London-open en COMEX zijn
+echo                                  sessie-effecten, en FX heeft de
+echo                                  scherpste sessiestructuur die er is.
+echo    zoek11.cmd index H1 M30 720   dezelfde vraag op de indices
+echo    zoek11.cmd                    metaal, 1:1, stop 1,0 ATR
+echo    zoek11.cmd mean               0,5:1, stop 1,5 ATR (fadergeometrie)
+echo    zoek11.cmd trend              2:1, stop 1,0 ATR  (volgergeometrie)
+echo    zoek11.cmd mean forex H1      combineer gerust
+echo    zoek11.cmd 360 M15 XAUUSD     alleen goud
+echo.
+echo  WAAROM FOREX EN NIET NOG EEN GOUDPASS. Vier passes op metaal, 96
+echo  hypotheses, beste cel 1,61 sigma tegen een lat van 3,25. Kosten waren
+echo  nooit de rem -- 1,6%% van de stop op H1. Nog een geometrie op hetzelfde
+echo  metaal is de vijfde manier om dezelfde vraag te stellen. De mechanismen
+echo  zijn nooit op een andere ACTIVAKLASSE losgelaten, en dat is geen
+echo  variant maar een andere vraag.
 echo.
 echo  WAAROM DIE GEOMETRIE EEN APARTE PASS IS. De eerste run testte zestien
 echo  instaps op EEN uitgang: stop 1 ATR, doel 1:1. Dit archief weet dat de
@@ -138,51 +156,59 @@ set SCHUIF=0
 if /i "%VORM%"=="mean"  (set STOP=1.5& set DOEL=0.5& set TOT=44& set SCHUIF=1)
 if /i "%VORM%"=="trend" (set STOP=1.0& set DOEL=2.0& set TOT=44& set SCHUIF=1)
 if /i "%VORM%"=="base"  (set SCHUIF=1)
+if "%SCHUIF%"=="0" set VORM=
+if "%SCHUIF%"=="1" shift
 
-if "%SCHUIF%"=="0" (
-  set DAGEN=%1
-  set KLOKKEN=%2
-  set MARKT=%3
-  set VORM=
-) else (
-  set DAGEN=%2
-  set KLOKKEN=%3
-  set MARKT=%4
-)
+rem ------------------------------------------------------------------
+rem ELK WOORD WORDT HERKEND AAN ZIJN VORM, NIET AAN ZIJN PLAATS.
+rem
+rem De positieversie is hier twee keer op stukgegaan. Eerst las
+rem `zoek11.cmd 720` de 720 als vormwoord en draaide stil 360 dagen. Toen
+rem zette `zoek11.cmd base 360 M30 H1` de H1 op de symboolplek en werd dat
+rem `--symbols H1` -- geen enkele markt heet zo, dus elke markt zou zijn
+rem overgeslagen met "no spec" en de run kwam terug met nul cellen, wat er
+rem in de output uitziet als "gemeten en niets gevonden".
+rem
+rem Aanhalingstekens helpen niet en komma's ook niet, want cmd knipt de
+rem regel op allebei. Wat wel werkt is niet meer op volgorde vertrouwen:
+rem een getal is dagen, M5/H1/... is een klok, forex/metal/index is een
+rem klasse, en al het andere is een symbool. De volgorde doet er niet toe
+rem en meerdere klokken kunnen gewoon achter elkaar.
+rem ------------------------------------------------------------------
+set DAGEN=
+set KLOKKEN=
+set MARKTEN=
+
+:volgendwoord
+if "%~1"=="" goto woordenklaar
+set STUK=%~1
+set SOORT=symbool
+echo %STUK%| findstr /r /c:"^[0-9][0-9]*$" >nul 2>&1 && set SOORT=dagen
+for %%T in (M1 M5 M15 M30 H1 H4 D1) do if /i "%STUK%"=="%%T" set SOORT=klok
+for %%C in (forex metal index crypto commodity) do if /i "%STUK%"=="%%C" set SOORT=klasse
+if "%SOORT%"=="dagen"   set DAGEN=%STUK%
+if "%SOORT%"=="klok"    set KLOKKEN=%KLOKKEN% %STUK%
+if "%SOORT%"=="klasse"  set MARKTEN=--asset-class %STUK%
+if "%SOORT%"=="symbool" set MARKTEN=--symbols %STUK%
+shift
+goto volgendwoord
+:woordenklaar
 
 if "%DAGEN%"=="" set DAGEN=360
 if "%KLOKKEN%"=="" set KLOKKEN=M5 M15
 
-rem EEN TWEEDE KLOK IS EEN KLOK, GEEN SYMBOOL. cmd splitst op spaties, dus
-rem `zoek11.cmd base 360 M30 H1` zette H1 op de symboolplek en dat werd
-rem `--symbols H1`. Geen enkel symbool heet H1, dus elke markt zou zijn
-rem overgeslagen met "no spec" en de run kwam terug met nul cellen -- wat er
-rem in de output uitziet als "gemeten en niets gevonden". Aanhalingstekens
-rem helpen niet en komma's ook niet: cmd knipt de regel dan alsnog.
-set ISKLOK=0
-if /i "%MARKT%"=="M1" set ISKLOK=1
-if /i "%MARKT%"=="M5" set ISKLOK=1
-if /i "%MARKT%"=="M15" set ISKLOK=1
-if /i "%MARKT%"=="M30" set ISKLOK=1
-if /i "%MARKT%"=="H1" set ISKLOK=1
-if /i "%MARKT%"=="H4" set ISKLOK=1
-if /i "%MARKT%"=="D1" set ISKLOK=1
-if "%ISKLOK%"=="1" set KLOKKEN=%KLOKKEN% %MARKT%
-if "%ISKLOK%"=="1" set MARKT=
-
-rem STANDAARD ALLE METALEN, niet alleen XAUUSD. Eightcap noteert goud ook
-rem tegen EUR, GBP, AUD en JPY, met zilver, platina, palladium en de
-rem industriemetalen ernaast -- dertien in totaal -- en de scanner vindt hoe
-rem deze broker ze spelt. Ik ga niet gokken naar de namen.
+rem STANDAARD ALLE METALEN, en de scanner-classificatie vindt hoe deze
+rem broker ze spelt -- goud tegen USD, EUR, GBP, AUD en JPY, zilver,
+rem platina, palladium en de industriemetalen, dertien in totaal. Ik ga
+rem niet gokken naar de namen.
 rem
 rem DIT IS GEEN ONAFHANKELIJK BEWIJS. XAUUSD en XAUEUR zijn hetzelfde goud
 rem door een valutabril: breekt goud 's ochtends, dan breekt het in alle
-rem vier. Ze staan er wel in omdat de KOSTEN per metaal flink verschillen en
-rem dat verschil beslist of iets betaalbaar is. Daarom wordt de sigma per
-rem DAG geclusterd en niet per trade -- dertien metalen die samen bewegen
-rem zijn een observatie, geen dertien.
-set MARKTEN=--asset-class metal
-if not "%MARKT%"=="" set MARKTEN=--symbols %MARKT%
+rem vier. Ze staan er wel in omdat de KOSTEN per metaal flink verschillen
+rem en dat verschil beslist of iets betaalbaar is. Daarom wordt de sigma
+rem per DAG geclusterd en niet per trade -- dertien metalen die samen
+rem bewegen zijn een observatie, geen dertien.
+if "%MARKTEN%"=="" set MARKTEN=--asset-class metal
 
 if not exist ".venv-live\Scripts\python.exe" (
   echo  ERROR: .venv-live\Scripts\python.exe niet gevonden. Doe eerst update.cmd.
@@ -191,8 +217,12 @@ if not exist ".venv-live\Scripts\python.exe" (
 )
 
 if not exist "runtime" mkdir runtime
-set UIT=runtime\zoek11.csv
-if not "%VORM%"=="" set UIT=runtime\zoek11-%VORM%.csv
+rem DE KLASSE HOORT IN DE BESTANDSNAAM. Zonder dat schrijft een forex-run
+rem over de metaalrun heen en is het bewijs voor de vorige conclusie weg.
+set KLASSE=metal
+for %%C in (forex index crypto commodity) do if "%MARKTEN%"=="--asset-class %%C" set KLASSE=%%C
+set UIT=runtime\zoek11-%KLASSE%.csv
+if not "%VORM%"=="" set UIT=runtime\zoek11-%KLASSE%-%VORM%.csv
 
 echo  DRAAIT: %DAGEN% dagen, klokken %KLOKKEN%, stop %STOP% ATR, doel %DOEL%:1
 echo          Bonferroni telt %TOT% eerdere hypotheses mee.
