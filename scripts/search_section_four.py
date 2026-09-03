@@ -251,7 +251,7 @@ def prior_day_fade(frame: pd.DataFrame) -> np.ndarray:
 #: Name -> signal function. Every mechanism appears in BOTH directions where
 #: that makes sense, so a family cannot be credited for the half that happened
 #: to work.
-CANDIDATES: dict[str, Callable[[pd.DataFrame], np.ndarray]] = {
+INDEX_CANDIDATES: dict[str, Callable[[pd.DataFrame], np.ndarray]] = {
     "gap_continuation": gap_continuation,
     "gap_fade": gap_fade,
     "overnight_drift": overnight_drift,
@@ -265,6 +265,351 @@ CANDIDATES: dict[str, Callable[[pd.DataFrame], np.ndarray]] = {
     "prior_day_break": prior_day_break,
     "prior_day_fade": prior_day_fade,
 }
+
+
+# --------------------------------------------------------------------------
+# GOLD INTRADAY — the family section eleven would come out of
+#
+# WHY A SECOND FAMILY AT ALL, and why gold specifically.
+#
+# The account's whole trade count already comes from gold. Over the 180-day
+# replay of 3 September the four live sections took 1,236 trades and 1,083 of
+# them -- 88% -- were the two gold sections. `failed_session_breakout` and
+# `section_eight_trend_day_h1` contributed 153 trades and +5.45 R between
+# them, which over 137 days is nothing either way.
+#
+# So "more trades" is a question about gold, and the twelve candidates above
+# cannot answer it: they were written for index CFDs on M15 and slower, and
+# ten of them key off a session boundary or a daily level that a metal
+# trading 23 hours a day barely has.
+#
+# WHAT MAKES THIS FAMILY DIFFERENT FROM WHAT IS ALREADY LIVE, which is the
+# only reason to add anything. Every live section is a MOMENTUM section:
+# section six projects features onto a frozen linear model and follows it,
+# section ten breaks a micro range, section seven trades a failed break, and
+# section eight rides a trend day. All four are long the same underlying bet
+# -- that a move continues -- so all four are red on the same days. The
+# replay says so: 78 green days out of 137, and the red ones cluster.
+#
+# Half of what follows fades instead of follows. A mean-reverter is the only
+# thing in this repo that can be green on the days the others are red, and
+# that is worth more to a EUR 223 account than another momentum section
+# would be, because what kills a small account is the depth of one drawdown
+# rather than the height of the curve.
+#
+# EVERY MECHANISM IS HERE IN BOTH DIRECTIONS. Fading and following are the
+# same observation read two ways, and a family that only ships the half that
+# paid on the sample is a family that has fitted the sample. If `quiet_hour`
+# pays in one direction and not the other, that is a finding; if it pays in
+# whichever direction the search happened to try, that is noise.
+# --------------------------------------------------------------------------
+
+
+def _session_anchor(
+    frame: pd.DataFrame, hour: int, minute: int = 0, *, span: int = 12
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per bar: the open of the day's first bar at `hour:minute`, and its age.
+
+    Both are only defined for the `span` bars from that opening bar onward --
+    `nan` and `-1` everywhere else -- so a candidate can restrict itself to a
+    window without writing the day walk again.
+
+    THE 30-MINUTE TOLERANCE IS NOT COSMETIC. "The first bar at or after
+    midnight" on a Sunday is the Sunday OPEN, which on this broker can be
+    22:00 or 23:00 or 01:00 depending on the week. Without the tolerance a
+    midnight window silently becomes a Sunday-open window on one day in five,
+    and the candidate then measures a different event from the one it names.
+    """
+    index = frame.index
+    open_ = frame["open"].to_numpy()
+    minutes = index.hour.to_numpy() * 60 + index.minute.to_numpy()
+    days = index.normalize().to_numpy()
+    want = hour * 60 + minute
+
+    anchor = np.full(len(frame), np.nan)
+    age = np.full(len(frame), -1, dtype=int)
+    start = -1
+    current_day: object = None
+    for i in range(len(frame)):
+        if days[i] != current_day:
+            current_day, start = days[i], -1
+        if start < 0 and minutes[i] >= want and minutes[i] - want <= 30:
+            start = i
+        if start >= 0 and i - start < span:
+            anchor[i], age[i] = open_[start], i - start
+    return anchor, age
+
+
+def _stretch(frame: pd.DataFrame, lookback: int = 24) -> np.ndarray:
+    """How far the close sits from its own recent mean, in ATR.
+
+    The reference is a plain rolling mean of closes and NOT a session VWAP.
+    A VWAP needs the volume to be real; MT5 gives tick counts on a CFD, which
+    is a count of quote updates from one broker's feed and not traded size.
+    Building the reference on it would look more sophisticated and would key
+    the whole family off an artefact of the feed.
+    """
+    unit = _atr(frame)
+    close = frame["close"].to_numpy()
+    reference = pd.Series(close).rolling(lookback).mean().to_numpy()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return (close - reference) / np.where(unit > 0, unit, np.nan)
+
+
+def _from_stretch(
+    frame: pd.DataFrame, threshold: float, hours: tuple[int, ...] | None
+) -> np.ndarray:
+    stretch = _stretch(frame)
+    out = np.zeros(len(frame), dtype=int)
+    with np.errstate(invalid="ignore"):
+        out[stretch >= threshold] = -1
+        out[stretch <= -threshold] = 1
+    if hours is not None:
+        out[~np.isin(frame.index.hour.to_numpy(), hours)] = 0
+    return out
+
+
+def stretch_fade(frame: pd.DataFrame) -> np.ndarray:
+    """Price 1.8 ATR from its own two-hour mean; trade back toward it.
+
+    The plainest mean reversion there is, on every hour of the day, so that
+    the session-restricted versions below have something to be compared to.
+    If the unrestricted version pays as well as the restricted one, the
+    session story is decoration.
+    """
+    return _from_stretch(frame, 1.8, None)
+
+
+def stretch_continuation(frame: pd.DataFrame) -> np.ndarray:
+    return -stretch_fade(frame)
+
+
+#: 00:00-05:59 UTC. Gold trades through it, but the desks that price it do
+#: not: no European or US macro prints, no COMEX floor, and the thinnest book
+#: of the 23-hour day. A stretched move in a thin book has nobody informed
+#: behind it, which is the whole reason to expect it back.
+#:
+#: IT IS ALSO WHEN THE SPREAD IS WIDEST, so this is the candidate most likely
+#: to be killed by cost rather than by direction. The report prints the cost
+#: share per clock next to the result precisely so the two cannot be confused.
+_QUIET_HOURS = (0, 1, 2, 3, 4, 5)
+
+
+def quiet_stretch_fade(frame: pd.DataFrame) -> np.ndarray:
+    """The same stretch, only in the hours when nothing informed is trading."""
+    return _from_stretch(frame, 1.8, _QUIET_HOURS)
+
+
+def quiet_stretch_continuation(frame: pd.DataFrame) -> np.ndarray:
+    return -quiet_stretch_fade(frame)
+
+
+def _drive(frame: pd.DataFrame, hour: int, *, span: int, minimum: float = 0.5) -> np.ndarray:
+    """Direction of the move away from a session's opening price."""
+    anchor, age = _session_anchor(frame, hour, span=span)
+    unit = _atr(frame)
+    close = frame["close"].to_numpy()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        move = (close - anchor) / np.where(unit > 0, unit, np.nan)
+    out = np.zeros(len(frame), dtype=int)
+    live = age >= 1
+    with np.errstate(invalid="ignore"):
+        out[live & (move >= minimum)] = 1
+        out[live & (move <= -minimum)] = -1
+    return out
+
+
+def london_drive(frame: pd.DataFrame) -> np.ndarray:
+    """07:00 UTC. European desks arrive and gold's real day starts."""
+    return _drive(frame, 7, span=12)
+
+
+def london_fade(frame: pd.DataFrame) -> np.ndarray:
+    return -london_drive(frame)
+
+
+def comex_drive(frame: pd.DataFrame) -> np.ndarray:
+    """13:00 UTC. US data lands at 13:30 and COMEX opens behind it."""
+    return _drive(frame, 13, span=12)
+
+
+def comex_fade(frame: pd.DataFrame) -> np.ndarray:
+    return -comex_drive(frame)
+
+
+def pm_fix_fade(frame: pd.DataFrame) -> np.ndarray:
+    """The London PM fix window, faded.
+
+    The 15:00 London auction is the one moment in the day when a known,
+    large, price-insensitive quantity of gold changes hands at a single
+    printed price. Order flow around it is mechanical rather than
+    informational, which is the textbook shape of something that reverts.
+
+    ANCHORED AT 14:00 UTC AND NOT AT THE FIX ITSELF, and the reason is
+    boring: London is UTC+1 in summer and UTC+0 in winter, so "15:00 London"
+    is two different UTC hours across a 180-day window. The window here is
+    wide enough to contain the fix in both, and a candidate that only paid in
+    one half of the year would show up as a train/holdout failure rather than
+    as a discovery.
+    """
+    return -_drive(frame, 14, span=18, minimum=0.4)
+
+
+def pm_fix_drive(frame: pd.DataFrame) -> np.ndarray:
+    return -pm_fix_fade(frame)
+
+
+def round_number_fade(frame: pd.DataFrame, step: float = 10.0) -> np.ndarray:
+    """Approaching a ten-dollar level; trade against the approach.
+
+    Gold is quoted in dollars and the resting book clusters on round tens --
+    stops above, take-profits below, and option strikes on the hundreds. This
+    is the one candidate in the family that could not exist on an FX pair,
+    where the equivalent level is a pip value nobody but a machine sees, and
+    it is here because it is cheap to measure and impossible to reach by
+    tuning anything already in the repo.
+    """
+    unit = _atr(frame)
+    close = frame["close"].to_numpy()
+    previous = np.empty(len(close))
+    previous[0] = close[0] if len(close) else 0.0
+    previous[1:] = close[:-1]
+    level = np.round(close / step) * step
+    # THE BAND IS THE WIDER OF A VOLATILITY DISTANCE AND A PRICE DISTANCE.
+    # 0.15 ATR alone is 4 cents on quiet M1 gold, which asks price to land
+    # inside a band no human order sits in -- the candidate would report
+    # "never fired" and read as a measured failure. A resting order at 3300
+    # is at 3300, not at 3300 plus a fraction of this minute's range, so the
+    # floor is a share of the STEP and the ATR term only widens it on a
+    # clock fast enough to need it.
+    with np.errstate(invalid="ignore"):
+        band = np.maximum(0.15 * unit, 0.05 * step)
+        near = np.isfinite(unit) & (np.abs(close - level) <= band)
+    out = np.zeros(len(frame), dtype=int)
+    out[near & (close > previous) & (close <= level)] = -1
+    out[near & (close < previous) & (close >= level)] = 1
+    return out
+
+
+def round_number_break(frame: pd.DataFrame) -> np.ndarray:
+    return -round_number_fade(frame)
+
+
+def opening_range_break(frame: pd.DataFrame, build: int = 12, window: int = 48) -> np.ndarray:
+    """The gold day's first hour sets a range; take its first break each way.
+
+    Once per direction per day, deliberately: a level that has already been
+    broken is not the same level, and re-entering on every bar beyond it
+    counts one event as twenty.
+    """
+    _anchor, age = _session_anchor(frame, 0, span=window)
+    high, low, close = (frame[c].to_numpy() for c in ("high", "low", "close"))
+    out = np.zeros(len(frame), dtype=int)
+    total = len(frame)
+    i = 0
+    while i < total:
+        if age[i] != 0:
+            i += 1
+            continue
+        stop = min(i + window, total)
+        if i + build >= stop:
+            i = stop
+            continue
+        ceiling = float(high[i : i + build].max())
+        floor = float(low[i : i + build].min())
+        up = down = False
+        for j in range(i + build, stop):
+            if close[j] > ceiling and not up:
+                out[j], up = 1, True
+            elif close[j] < floor and not down:
+                out[j], down = -1, True
+        i = stop
+    return out
+
+
+def opening_range_fade(frame: pd.DataFrame) -> np.ndarray:
+    return -opening_range_break(frame)
+
+
+def day_range_exhaustion_fade(frame: pd.DataFrame, span: int = 20) -> np.ndarray:
+    """Today has already travelled further than it usually does; fade more.
+
+    A day's range is the most reliably mean-reverting quantity on any
+    instrument -- a wide day is followed by a narrow one far more often than
+    chance -- and this asks the intraday version of it: once the day has
+    already spent its usual range, does the next extension pay or give back?
+
+    Distinct from `stretch_fade`, which measures distance from a two-hour
+    mean and knows nothing about the day.
+    """
+    high, low, close = (frame[c].to_numpy() for c in ("high", "low", "close"))
+    days = frame.index.normalize()
+    frame_days = pd.Series(days)
+    running_high = pd.Series(high).groupby(frame_days).cummax().to_numpy()
+    running_low = pd.Series(low).groupby(frame_days).cummin().to_numpy()
+    travelled = running_high - running_low
+
+    full = pd.Series(high).groupby(frame_days).transform("max") - pd.Series(low).groupby(
+        frame_days
+    ).transform("min")
+    # The median of the PREVIOUS `span` days, never today's own range: using
+    # the finished range of the day being traded is look-ahead, and it is the
+    # single easiest way to manufacture an edge in a study like this.
+    per_day = full.groupby(frame_days).first()
+    typical = per_day.shift(1).rolling(span).median()
+    expected = frame_days.map(typical).to_numpy()
+
+    # AT ITS TYPICAL RANGE, NOT AT 1.2x IT, and "near the extreme" rather
+    # than exactly on it. The first version asked for both -- 1.2x the median
+    # range AND a close equal to the running high to the last decimal -- and
+    # fired zero times in ninety days. Two defensible-looking thresholds
+    # multiplied into an impossible one, and the output would have been
+    # indistinguishable from a mechanism that was measured and lost.
+    unit = _atr(frame)
+    out = np.zeros(len(frame), dtype=int)
+    with np.errstate(invalid="ignore"):
+        spent = np.isfinite(expected) & (expected > 0) & (travelled >= expected)
+        edge = np.where(np.isfinite(unit), 0.25 * unit, 0.0)
+        out[spent & (close >= running_high - edge)] = -1
+        out[spent & (close <= running_low + edge)] = 1
+    return out
+
+
+def day_range_exhaustion_break(frame: pd.DataFrame) -> np.ndarray:
+    return -day_range_exhaustion_fade(frame)
+
+
+#: The gold-intraday grid. Sixteen cells per clock, and the Bonferroni bar in
+#: the report is computed from however many of them actually fired -- so
+#: adding a seventeenth idea raises the bar every other idea has to clear.
+#: That is the correct incentive and it is why this dict is short.
+GOLD_CANDIDATES: dict[str, Callable[[pd.DataFrame], np.ndarray]] = {
+    "stretch_fade": stretch_fade,
+    "stretch_continuation": stretch_continuation,
+    "quiet_stretch_fade": quiet_stretch_fade,
+    "quiet_stretch_continuation": quiet_stretch_continuation,
+    "london_drive": london_drive,
+    "london_fade": london_fade,
+    "comex_drive": comex_drive,
+    "comex_fade": comex_fade,
+    "pm_fix_fade": pm_fix_fade,
+    "pm_fix_drive": pm_fix_drive,
+    "round_number_fade": round_number_fade,
+    "round_number_break": round_number_break,
+    "opening_range_break": opening_range_break,
+    "opening_range_fade": opening_range_fade,
+    "day_range_exhaustion_fade": day_range_exhaustion_fade,
+    "day_range_exhaustion_break": day_range_exhaustion_break,
+}
+
+FAMILIES: dict[str, dict[str, Callable[[pd.DataFrame], np.ndarray]]] = {
+    "index": INDEX_CANDIDATES,
+    "gold": GOLD_CANDIDATES,
+    "all": {**INDEX_CANDIDATES, **GOLD_CANDIDATES},
+}
+
+#: Kept so anything importing the old name still works.
+CANDIDATES = INDEX_CANDIDATES
 
 
 @dataclass
@@ -291,6 +636,7 @@ def resolve(
     stop_atr: float,
     ratio: float,
     cost_r: float,
+    horizon: int = HORIZON,
 ) -> Trades:
     """First touch of stop or target, entry at the signal bar's close.
 
@@ -314,7 +660,7 @@ def resolve(
         risk = stop_atr * unit[i]
         stop = entry - direction * risk
         target = entry + direction * ratio * risk
-        for j in range(i + 1, min(i + 1 + HORIZON, len(frame))):
+        for j in range(i + 1, min(i + 1 + horizon, len(frame))):
             if direction > 0:
                 hit_stop, hit_target = low[j] <= stop, high[j] >= target
             else:
@@ -468,8 +814,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="timeframes to try each candidate on, space or comma separated",
     )
     parser.add_argument("--symbols", default="", help="comma list; default = the core universe")
+    parser.add_argument(
+        "--asset-class",
+        default="",
+        help="every market the scanner puts in this class, e.g. metal. Ignored "
+        "when --symbols is given.",
+    )
     parser.add_argument("--stop-atr", type=float, default=1.0)
     parser.add_argument("--ratio", type=float, default=1.0)
+    parser.add_argument(
+        "--family",
+        choices=sorted(FAMILIES),
+        default="index",
+        help="which candidate grid to run: index (the original twelve), "
+        "gold (the sixteen intraday metal mechanisms), or all",
+    )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=HORIZON,
+        help="bars a trade is given to reach a barrier before it is discarded",
+    )
+    parser.add_argument(
+        "--cells-already-tried",
+        type=int,
+        default=0,
+        help=(
+            "cells searched in EARLIER runs of this script, added to this run's "
+            "count before the Bonferroni bar is computed. Two searches of forty "
+            "cells are eighty hypotheses, and paying for forty twice is how a "
+            "search launders itself into a discovery."
+        ),
+    )
     parser.add_argument("--csv", default="", help="write every cell's numbers here")
     parser.add_argument(
         "--database",
@@ -508,6 +884,37 @@ def main() -> None:
 
         if args.symbols:
             symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        elif args.asset_class:
+            # THE SCANNER'S OWN CLASSIFIER, not a substring match on the name.
+            # Eightcap's metals are not all called XAU-something and the
+            # spelling carries suffixes; asking the classifier means the
+            # search finds whatever this broker actually lists rather than
+            # whatever I guessed it was called. An empty result is reported
+            # rather than run, because zero symbols and zero setups print the
+            # same way and this repo has confused the two before.
+            assert connector is not None
+            wanted = args.asset_class.strip().lower()
+            symbols = []
+            for item in connector.symbols():
+                if settings.instruments.is_ignored(item.name):
+                    continue
+                try:
+                    found = UniverseScanner._path_class(connector.spec(item.name).path).value
+                except Exception:  # noqa: BLE001 - a bad symbol is not a reason to stop
+                    continue
+                if found.lower() == wanted:
+                    symbols.append(item.name)
+            if not symbols:
+                classes = sorted(
+                    {
+                        UniverseScanner._path_class(connector.spec(i.name).path).value
+                        for i in connector.symbols()[:400]
+                    }
+                )
+                raise SystemExit(
+                    f"no symbols in asset class {wanted!r}. "
+                    f"This broker's catalogue has: {', '.join(classes)}"
+                )
         elif dataset is not None:
             symbols = dataset.symbols()
         else:
@@ -528,11 +935,13 @@ def main() -> None:
         #: (clock, asset class) -> cost share, printed with the result. It is
         #: the number the whole search turns on and it was invisible.
         costs: dict[tuple[str, str], float] = {}
+        grid = FAMILIES[args.family]
         print(
             f"\nSEARCHING {len(symbols)} markets x {len(clocks)} clocks "
-            f"x {len(CANDIDATES)} candidates, {args.days} days"
+            f"x {len(grid)} candidates ({args.family} family), {args.days} days"
         )
-        print(f"train up to {split:%Y-%m-%d}, holdout after it\n")
+        print(f"train up to {split:%Y-%m-%d}, holdout after it")
+        print(f"horizon {args.horizon} bars, stop {args.stop_atr} ATR, target {args.ratio}:1\n")
 
         for position, symbol in enumerate(symbols, 1):
             try:
@@ -563,12 +972,17 @@ def main() -> None:
                 cost_r = _cost_share(sizer, spec, stop_price)
                 costs[(clock_name, asset_class)] = cost_r
 
-                for name, detector in CANDIDATES.items():
+                for name, detector in grid.items():
                     key = (name, clock_name, asset_class)
                     cell = cells.setdefault(key, Cell(name, clock_name, asset_class))
                     signals = detector(frame)
                     found = resolve(
-                        frame, signals, stop_atr=args.stop_atr, ratio=args.ratio, cost_r=cost_r
+                        frame,
+                        signals,
+                        stop_atr=args.stop_atr,
+                        ratio=args.ratio,
+                        cost_r=cost_r,
+                        horizon=args.horizon,
                     )
                     _split_into(found, split, cell)
                 # ONE control per (clock, asset class), not per candidate: it
@@ -584,6 +998,7 @@ def main() -> None:
                     stop_atr=args.stop_atr,
                     ratio=args.ratio,
                     cost_r=cost_r,
+                    horizon=args.horizon,
                 )
                 _split_into(found, split, control)
             print(f"  [{position}/{len(symbols)}] {symbol} done")
@@ -620,15 +1035,21 @@ def _report(cells: dict, args, costs: dict | None = None) -> None:
     }
     real = [cell for cell in cells.values() if cell.candidate != "__control__"]
     tested = [c for c in real if len(c.train) >= 150 and len(c.test) >= 100]
-    bar = bonferroni_sigma(max(len(tested), 1))
+    earlier = max(int(getattr(args, "cells_already_tried", 0) or 0), 0)
+    counted = max(len(tested), 1) + earlier
+    bar = bonferroni_sigma(counted)
 
     print("\n" + "=" * 78)
     print("SEARCH RESULT")
     print("=" * 78)
     print(f"  {len(real)} cells built, {len(tested)} had enough trades to judge")
-    print(f"  Bonferroni bar at {len(tested)} live cells: {bar:.2f} sigma on train")
+    if earlier:
+        print(f"  plus {earlier} cells declared from earlier searches of this project")
+    print(f"  Bonferroni bar at {counted} hypotheses: {bar:.2f} sigma on train")
     print("     (2.0 would be the bar for ONE hypothesis. Keeping the best of")
     print("      many finds a 2-sigma result on pure noise most of the time.)")
+    print("     The holdout bar stays 2.0, and it has to be cleared on the")
+    print("     holdout's own trades -- that half was never searched over.")
 
     if costs:
         print("\n  WHAT A ROUND TRIP COSTS, as a share of the stop")
