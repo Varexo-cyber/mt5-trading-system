@@ -84,6 +84,35 @@ NEEDED = SWEEPABLE
 WARMUP = 260
 
 
+#: `--manage-grid`: `(label, trigger in R, where the stop goes in R)`.
+#:
+#: THE QUESTION IS WHETHER A LOOSER BREAK-EVEN BEATS NO BREAK-EVEN, and it
+#: cannot be answered by turning one on and comparing two runs. Break-even
+#: frees the symbol earlier, the freed symbol takes the next setup, and the
+#: two runs then hold different trades -- so the comparison silently becomes
+#: "these entries against those entries" instead of "this exit against that
+#: exit". Every level here is resolved on the SAME entry.
+#:
+#: The stop goes to the entry itself at 0.0 and slightly into profit at 0.1.
+#: Both matter: a stop exactly at entry is scratched by the spread on its way
+#: past, which is why a locked tick exists at all, and it is also why the
+#: locked variants take fewer trades to the target.
+#:
+#: TRIGGERS ARE IN R AND NOT IN PIPS. "Fifty pips toward the target" is a
+#: different rule on every instrument and on every day -- on this account's
+#: gold M1 stop it is roughly ten times the risk, which is past the target and
+#: would never fire. R is the same distance in every market, which is the
+#: whole reason this project measures in it.
+MANAGE_GRID: tuple[tuple[str, float, float], ...] = (
+    ("BE @ 0.25R", 0.25, 0.0),
+    ("BE @ 0.50R", 0.50, 0.0),
+    ("BE @ 0.75R", 0.75, 0.0),
+    ("BE @ 1.00R", 1.00, 0.0),
+    ("+0.1R @ 0.50R", 0.50, 0.1),
+    ("+0.1R @ 1.00R", 1.00, 0.1),
+)
+
+
 @dataclass(slots=True)
 class Decision:
     when: datetime
@@ -112,6 +141,11 @@ class Decision:
     #: two exits are compared on identical entries rather than on two runs.
     managed_r: float | None = None
     managed_money: float | None = None
+    #: `--manage-grid` only: the same trade again at every break-even trigger
+    #: in `MANAGE_GRID`, as `((label, r), ...)`. Measured on the SAME entry, so
+    #: the levels are compared against each other and against the fixed exit
+    #: without any of them getting a different set of trades to work with.
+    grid_r: tuple[tuple[str, float | None], ...] = ()
     #: What the round trip cost this trade, as a fraction of its own stop.
     #:
     #: ALREADY SUBTRACTED from `result_r` and `managed_r`. Kept so the gross
@@ -480,6 +514,7 @@ def _one_clock(
     clock: Timeframe,
     resolve_on: Timeframe,
     needed: tuple[Timeframe, ...] | None = None,
+    manage_grid: bool = False,
 ) -> dict:
     """Every section that reads one clock, walked ONCE.
 
@@ -701,6 +736,34 @@ def _one_clock(
                 # Fixed-exit families intentionally use the original broker
                 # stop and target, so their live result is the fixed result.
                 managed_r = r
+
+            # THE SAME ENTRY, WALKED AGAIN AT EVERY TRIGGER IN THE GRID.
+            #
+            # This deliberately does NOT update `busy`. A break-even level that
+            # frees the symbol earlier would take different later setups, and
+            # then the columns below would be comparing entry sets rather than
+            # exit rules -- which is the question nobody asked. What this table
+            # answers is narrower and honest: on the trades this section
+            # actually took, which exit would have kept more of them.
+            #
+            # A level that wins here has earned a full replay with `busy`
+            # following it, not a promotion.
+            grid_rows: tuple[tuple[str, float | None], ...] = ()
+            if manage_grid:
+                risk_price = abs(idea.entry - idea.stop_loss)
+                measured: list[tuple[str, float | None]] = []
+                for label, trigger_r, lock_r in MANAGE_GRID:
+                    _f, _e, grid_result, _ga = _resolve(
+                        resolve_frame,
+                        upto,
+                        idea,
+                        horizon_bars=horizon,
+                        manage=(trigger_r, lock_r * risk_price),
+                        arrays=resolve_arrays,
+                        force_close_at=force_close_at,
+                    )
+                    measured.append((label, None if grid_result is None else grid_result - cost))
+                grid_rows = tuple(measured)
             out[name].append(
                 Decision(
                     upto,
@@ -721,6 +784,7 @@ def _one_clock(
                     managed_r=managed_r,
                     managed_money=None if managed_r is None else managed_r * risk_money,
                     cost_r=cost,
+                    grid_r=grid_rows,
                 )
             )
     return out
@@ -760,6 +824,39 @@ CORE_UNIVERSE: tuple[str, ...] = (
     "SPX500",
     "GER40",
 )
+
+
+def _section_ten_universe(spec: str, connector, settings) -> tuple[str, ...]:
+    """`--section-ten-symbols` as this broker actually spells it.
+
+    `metals` asks the scanner's own classifier rather than matching on the
+    name, because Eightcap's metals are not all called XAU-something and a
+    guessed list that matches nothing returns an empty tuple -- which reads
+    as "the section took no trades" instead of "the section was given no
+    markets". That confusion is this file's oldest defect and it gets an
+    explicit refusal here rather than a quiet empty run.
+    """
+    if spec.strip().lower() != "metals":
+        named = tuple(part.strip() for part in spec.split(",") if part.strip())
+        if not named:
+            raise SystemExit("--section-ten-symbols was given nothing to use")
+        return named
+
+    from scanner.universe import UniverseScanner
+
+    found: list[str] = []
+    for item in connector.symbols():
+        if settings.instruments.is_ignored(item.name):
+            continue
+        try:
+            asset_class = UniverseScanner._path_class(connector.spec(item.name).path).value
+        except Exception:  # noqa: BLE001 - one bad symbol is not a reason to stop
+            continue
+        if asset_class.lower() == "metal":
+            found.append(item.name)
+    if not found:
+        raise SystemExit("--section-ten-symbols metals found no metals in this broker's catalogue")
+    return tuple(found)
 
 
 def _core_universe(connector, settings) -> list[str]:
@@ -997,6 +1094,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv", default="", help="write every decision to this file")
     parser.add_argument("--equity", type=float, default=0.0, help="override account equity")
     parser.add_argument(
+        "--manage-grid",
+        action="store_true",
+        help=(
+            "resolve every taken trade again at each break-even trigger in "
+            "MANAGE_GRID and print what each one would have kept, on the same "
+            "entries as the fixed exit"
+        ),
+    )
+    parser.add_argument(
+        "--section-ten-symbols",
+        default="",
+        help=(
+            "comma list replacing section ten's allowed_symbols FOR THIS RUN only, "
+            "or the word 'metals' for every metal the scanner finds. The file on "
+            "disk is untouched, so this measures a wider section ten without "
+            "putting one live."
+        ),
+    )
+    parser.add_argument(
         "--sweep",
         nargs="*",
         default=[],
@@ -1170,6 +1286,44 @@ def main(argv: list[str] | None = None) -> None:
             ]
             if args.limit:
                 symbols = symbols[: args.limit]
+
+        # SECTION TEN ON MORE THAN ONE METAL, MEASURED WITHOUT PUTTING ONE LIVE.
+        #
+        # Section ten is the only live component with a positive measured edge
+        # per trade, and it sees one market. Widening `allowed_symbols` in the
+        # file is a real-money change to an unmeasured setting -- the exact
+        # move that put section six live at what later read -71.65 R. This
+        # widens it FOR THIS RUN, in memory, so the 180-day replay says what it
+        # would have done before anything is decided.
+        #
+        # The symbols the section may take are also added to what the run
+        # fetches. Without that the section would be widened onto markets the
+        # loop never visits, and it would come back with the same trade count
+        # and look like a widening that changed nothing.
+        if args.section_ten_symbols:
+            wanted_ten = _section_ten_universe(args.section_ten_symbols, connector, settings)
+            settings = settings.model_copy(
+                update={
+                    "analysis": settings.analysis.model_copy(
+                        update={
+                            "section_ten_gold_m1": (
+                                settings.analysis.section_ten_gold_m1.model_copy(
+                                    update={"allowed_symbols": wanted_ten}
+                                )
+                            )
+                        }
+                    )
+                }
+            )
+            missing = [name for name in wanted_ten if name not in symbols]
+            symbols = symbols + missing
+            print(
+                f"section ten widened FOR THIS RUN ONLY to {len(wanted_ten)} markets: "
+                f"{', '.join(wanted_ten)}"
+            )
+            if missing:
+                print(f"  and {len(missing)} of them added to the fetch: {', '.join(missing)}")
+
         stored_window = store.window() if store is not None else None
         end = (
             datetime.fromisoformat(stored_window[1])
@@ -1509,6 +1663,7 @@ def main(argv: list[str] | None = None) -> None:
                     clock=clock,
                     resolve_on=finest,
                     needed=_frames_read(settings, clock, finest, tuple(names)),
+                    manage_grid=args.manage_grid,
                 )
                 for name, rows in produced.items():
                     results[(name, tf_name)].extend(rows)
@@ -1771,6 +1926,7 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
 
     if managed:
         _break_even_verdict(trades, settings)
+    _manage_grid_report(trades)
     _is_this_real(trades, keys, managed)
     _shadow_report(results, settings, slots, managed, days)
 
@@ -1821,6 +1977,87 @@ def _shadow_report(results: dict, settings, slots: int, managed: bool, days: int
         )
     print("  Switched off is not deleted. These are the numbers that decide")
     print("  whether a section comes back, so they have to be printed.")
+
+
+def _grid_line(label, rows, early, late, pick) -> None:
+    """One exit rule's row. A free function so the closure cannot capture the
+    loop variables of its caller -- the kind of binding that works today and
+    silently reports the last section's numbers under every section's name
+    the moment the call moves."""
+    values = [v for v in (pick(r) for r in rows) if v is not None]
+    if not values:
+        return
+    early_v = [v for v in (pick(r) for r in early) if v is not None]
+    late_v = [v for v in (pick(r) for r in late) if v is not None]
+    won = sum(1 for v in values if v > 0)
+    print(
+        f"    {label:<16}{sum(values):>+9.2f}{sum(values) / len(values):>+11.3f}"
+        f"{sum(early_v):>+9.2f}{sum(late_v):>+9.2f}{won / len(values):>7.1%}"
+    )
+
+
+def _manage_grid_report(trades: list[Decision]) -> None:
+    """Every break-even trigger on the same entries, per section, split by date.
+
+    WHAT THIS ANSWERS AND WHAT IT DOES NOT.
+
+    It answers: on the trades this section actually took, would moving the stop
+    to break-even after some distance have kept more of them? Every row is the
+    same entries, the same costs, the same 20:50 flatten -- only the exit rule
+    differs. That is the narrow question and it is the one worth asking first.
+
+    It does NOT answer whether to ship the winner. Break-even frees a symbol
+    earlier, an earlier free symbol takes the next setup, and a section that
+    trades a different set of entries is a different section. A level that
+    wins here earns a full replay with the position book following it, not a
+    promotion.
+
+    AND IT PRINTS BOTH HALVES OF THE PERIOD, side by side, because picking the
+    best of seven columns on one sample is how this project has produced most
+    of its disappointments. A rule that helps in the older 60% and the newer
+    40% is worth replaying. One that only helps in one half is the sample.
+    """
+    graded = [
+        row for row in trades if row.grid_r and row.result_r is not None and row.outcome == "TRADE"
+    ]
+    if not graded:
+        return
+
+    order = sorted(row.when for row in graded)
+    split = order[int(len(order) * 0.6)]
+
+    print("\nBREAK-EVEN GRID — the same trades, a different exit rule")
+    print("  Only the exit differs. Same entries, same costs, same flatten time.")
+    print("  A level that helps in BOTH halves is worth a full replay; one that")
+    print("  helps in a single half is the sample, not a rule.")
+
+    by_section: dict[str, list[Decision]] = {}
+    for row in graded:
+        by_section.setdefault(row.module, []).append(row)
+
+    for module, rows in sorted(by_section.items()):
+        early = [r for r in rows if r.when < split]
+        late = [r for r in rows if r.when >= split]
+        print(f"\n  {module}   {len(rows)} trades   ({len(early)} early / {len(late)} late)")
+        print(
+            f"    {'exit rule':<16}{'total R':>9}{'per trade':>11}"
+            f"{'early R':>9}{'late R':>9}{'hit':>7}"
+        )
+
+        _grid_line("fixed SL/TP", rows, early, late, lambda r: r.result_r)
+        for index, (label, _trigger, _lock) in enumerate(MANAGE_GRID):
+            _grid_line(
+                label,
+                rows,
+                early,
+                late,
+                lambda r, i=index: (r.grid_r[i][1] if i < len(r.grid_r) else None),
+            )
+
+    print("\n  A break-even level costs the trades that dip below entry and then")
+    print("  reach the target anyway, and saves the ones that turn. Which effect")
+    print("  is larger is a property of the section, not of the idea, so it has")
+    print("  to be read per section and never carried across.")
 
 
 def _is_this_real(
