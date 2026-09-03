@@ -3999,7 +3999,7 @@ class SectionNineSessionVwapConfig(Base):
 
 
 class SectionTenGoldM1Config(Base):
-    """SECTION TEN: executable large-break retest on XAUUSD M1."""
+    """SECTION TEN: XAUUSD M1 first retest confirmed by closed M5 trend."""
 
     enabled: bool = False
     timeframe: str = "M1"
@@ -4009,10 +4009,26 @@ class SectionTenGoldM1Config(Base):
     retest_tolerance_atr: float = Field(default=0.15, ge=0.0, le=2.0)
     stop_beyond_atr: float = Field(default=0.75, gt=0.0, le=5.0)
     maximum_wait_bars: int = Field(default=96, ge=2, le=500)
+    confirmation_timeframe: str = "M5"
+    confirmation_ema_period: int = Field(default=20, ge=5, le=200)
+    confirmation_slope_bars: int = Field(default=3, ge=1, le=24)
     entry_start_hour_utc: int = Field(default=3, ge=0, le=23)
     entry_end_hour_utc: int = Field(default=19, ge=1, le=24)
+    blocked_start_hour_utc: int = Field(default=7, ge=0, le=23)
+    blocked_end_hour_utc: int = Field(default=13, ge=1, le=24)
     score: float = Field(default=70.0, ge=0.0, le=100.0)
     confidence: float = Field(default=0.58, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _entry_windows_are_ordered(self) -> SectionTenGoldM1Config:
+        if not (
+            self.entry_start_hour_utc
+            <= self.blocked_start_hour_utc
+            < self.blocked_end_hour_utc
+            <= self.entry_end_hour_utc
+        ):
+            raise ValueError("section ten entry and blocked UTC windows are not ordered")
+        return self
 
 
 class AnalysisConfig(Base):

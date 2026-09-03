@@ -1161,6 +1161,7 @@ class TestTheLoneFloorCanBeSetPerDetector:
             "impulse_break",
             "fast_ema_cross",
             "session_breakout",
+            "section_ten_gold_m1",
         }
         # And a released detector still has to be CONVINCED. Loosening below
         # the module confidence floor would make the entry meaningless: every
