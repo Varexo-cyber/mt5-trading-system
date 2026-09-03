@@ -626,10 +626,18 @@ def _one_clock(
     # keeps producing in other forms: an absent line reading as nothing
     # happening.
     #
-    # Every 20,000 bars, on the clock that dominates the walk. Cheap, and it
-    # carries the two numbers that answer "is this working and how long".
+    # ROUGHLY EIGHT TIMES PER CLOCK, WHATEVER THE WINDOW IS.
+    #
+    # The first version beat every 20,000 bars and only above 40,000, which
+    # silently assumed a 180-day run. A 30-day M1 window is about 29,000 bars
+    # -- gold trades 23 hours on weekdays only -- so it fell under the floor
+    # and printed nothing at all for the entire walk. The threshold reproduced
+    # exactly the silence it was added to remove, on the shorter run somebody
+    # reaches for precisely because they do not want to wait.
+    #
+    # A share of the window has no such assumption in it.
     total_bars = len(window.index)
-    beat = 20_000 if total_bars > 40_000 else 0
+    beat = max(total_bars // 8, 2_000)
     walk_began = _time.perf_counter()
     for step, bar_time in enumerate(window.index):
         if beat and step and step % beat == 0:
@@ -1605,6 +1613,12 @@ def main(argv: list[str] | None = None) -> None:
 
         for index, symbol in enumerate(symbols, 1):
             began = _time.perf_counter()
+            # THE FETCH IS THE OTHER SILENCE, and on a market this terminal has
+            # never been asked for it is the longer one. Five new metals means
+            # five M1 downloads of a hundred thousand bars each before a single
+            # bar is walked, and nothing was printed until the whole symbol
+            # finished. Said before it starts, so the wait has a name.
+            print(f"  [{index}/{len(symbols)}] {symbol}: fetching history...", flush=True)
             try:
                 spec = connector.spec(symbol)
                 frames = {
