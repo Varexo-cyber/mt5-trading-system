@@ -2939,3 +2939,69 @@ class TestSectionTenCanExpressAnOpenTradingDay:
 
         assert config.blocked_start_hour_utc == 7
         assert config.blocked_end_hour_utc == 13
+
+
+class TestSectionTenOnlyWalksTheSectionsOwnMarkets:
+    """`--section-ten-only` replaces the universe; it does not filter it.
+
+    The first version intersected section ten's `allowed_symbols` with the
+    run's universe, and `--core` is the sixteen markets the research was done
+    on: eleven FX majors, gold, four indices. Five of section ten's six
+    metals are not in it, so the intersection was {XAUUSD}. The run printed
+    "walking 1 markets", measured the one market that did not need measuring,
+    and called itself a test of the widening to six.
+    """
+
+    def test_the_sections_own_list_survives_a_universe_that_lacks_it(self) -> None:
+        allowed = ("XAUUSD", "XAUEUR", "XAUGBP", "XAUAUD", "XAUJPY", "XAGUSD")
+        core = ["EURUSD.i", "GBPUSD.i", "XAUUSD", "SPX500", "US30"]
+
+        # What the code does now: the section's list becomes the universe.
+        walked = list(allowed)
+
+        assert len(walked) == 6
+        # And what it used to do, kept as the counterexample.
+        intersected = [name for name in core if name in allowed]
+        assert intersected == ["XAUUSD"], "the old behaviour was not a one-market run"
+        assert len(walked) > len(intersected)
+
+    def test_the_live_config_would_walk_six(self) -> None:
+        from config.loader import load_settings
+
+        allowed = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.section_ten_gold_m1.allowed_symbols
+
+        assert len(allowed) == 6, f"section ten walks {len(allowed)} markets, expected six"
+
+
+class TestTheLauncherEchoesSurviveCmd:
+    """`<` and `>` are redirections in cmd, inside an echo line as well.
+
+    An arrow in a help line -- "~ 1 uur  <- begin hier" -- made cmd try to
+    read input from a file called `-`, so the launcher printed "The system
+    cannot find the file specified" in the middle of its own instructions.
+    Harmless to the run and alarming to read, which is the worst combination
+    for a message whose whole job is to tell you what is happening.
+    """
+
+    def test_no_launcher_echo_carries_an_unescaped_redirect(self) -> None:
+        import re
+        from pathlib import Path
+
+        offenders: list[str] = []
+        for path in sorted(Path().glob("*.cmd")):
+            for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                stripped = line.strip()
+                if not stripped.lower().startswith("echo"):
+                    continue
+                # `echo %~1| findstr ... >nul` is deliberate plumbing: the
+                # echo feeds a pipe and the redirect belongs to what is on the
+                # other side of it. Only lines whose whole job is to print
+                # text can be broken by an arrow in the text.
+                if "|" in stripped:
+                    continue
+                # A redirect not preceded by a caret.
+                if re.search(r"(?<!\^)[<>]", stripped):
+                    offenders.append(f"{path.name}:{number}: {stripped}")
+        assert not offenders, "unescaped < or > in an echo line:\n" + "\n".join(offenders)
