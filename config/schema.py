@@ -501,6 +501,10 @@ class SectionBreakerConfig(Base):
     maximum_loss_share: float = Field(default=0.70, gt=0.0, le=1.0)
     #: Consecutive losses that stop it regardless of the window.
     losing_streak: int = Field(default=10, ge=2, le=100)
+    #: Optional expectancy floor over the complete recent window. This catches
+    #: a route with many tiny protected wins but fewer full-stop losses: its
+    #: win rate can look healthy while its average trade is still losing.
+    minimum_average_r: float | None = Field(default=None, ge=-5.0, le=5.0)
 
     @model_validator(mode="after")
     def _window_can_reach_the_minimum(self) -> SectionBreakerConfig:
@@ -3963,6 +3967,9 @@ class SectionSixModelConfig(Base):
     #: the newest 45. Reading the whole window first and picking the best
     #: lookback is how a filter that fits August gets built.
     confirmation_bars: int = Field(default=0, ge=0, le=200)
+    #: Optional second closed-bar horizon. Both horizons must agree; Section 6
+    #: uses 12 M5 bars for local momentum and 48 for the broader four-hour leg.
+    secondary_confirmation_bars: int = Field(default=0, ge=0, le=500)
     session_start_hour_utc: int | None = Field(default=None, ge=0, le=23)
     session_end_hour_utc: int | None = Field(default=None, ge=0, le=23)
     score: float = Field(default=70.0, ge=0.0, le=100.0)
@@ -4237,6 +4244,9 @@ class TradeManagementConfig(Base):
     #: Strategies whose measured edge uses the original broker SL/TP unchanged.
     #: Exact MT5 comments prevent unrelated positions from inheriting this.
     fixed_exit_comments: tuple[str, ...] = ()
+    #: Families measured with break-even protection but without the generic
+    #: discretionary exits. Exact comments keep the exception local.
+    break_even_only_comments: tuple[str, ...] = ()
     #: Fixed-exit families that are STILL flattened before the session closes.
     #:
     #: `fixed_exit_comments` returns early from the manager, which also removes

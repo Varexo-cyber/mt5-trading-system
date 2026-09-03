@@ -582,6 +582,11 @@ class PositionManager:
                 if wind_down is not None:
                     events.append(wind_down)
             return events
+        if comment in {item.casefold() for item in config.break_even_only_comments}:
+            protected = self._break_even_move(position, config, r_now, risk, risk_money)
+            if protected is not None:
+                events.append(protected)
+            return events
         # Before anything else, because everything else assumes we intend to
         # still be in the trade. Nothing that happens after 20:15 UTC is
         # worth the spread it costs to be there.
@@ -701,50 +706,10 @@ class PositionManager:
         # None when the ATR is unknown, and then break-even and the trail
         # below are both skipped rather than run with a zero offset. See
         # `_atr_offset`: a zero offset is not a neutral one.
-        be_offset = self._atr_offset(
-            position.symbol, config.break_even_offset_atr, position.direction
-        )
-        break_even = (
-            position.price_open + be_offset if be_offset is not None else position.price_open
-        )
-        # The R floor, or enough money that the R floor is the wrong
-        # question. Same fault as the profit lock and peak stall: a wide
-        # structural stop makes real money look like a small R, and the
-        # rule whose whole job is to stop a winner turning into a loser
-        # never sees it. The live CADCHF long sat on 2.2% of the account
-        # at 0.44R with its stop still twelve pips below entry.
-        #
-        # Measured on the LIVE price rather than the peak, unlike the
-        # lock: this rule protects the entry, so what matters is whether
-        # the money is on the table now, not whether it once was.
-        worth_protecting = self._is_account_meaningful(r_now, risk_money)
-        if (
-            be_offset is not None
-            and (r_now >= config.break_even_at_r or worth_protecting)
-            and self._worth_moving(position, break_even, risk)
-        ):
-            result = self.broker.modify_stops(
-                position,
-                sl=self.broker.spec(position.symbol).normalize_price(break_even),
-                tp=position.tp,
-            )
-            if result.ok:
-                events.append(
-                    ManagementEvent(
-                        position.ticket,
-                        "BREAK_EVEN",
-                        f"stop protected at {r_now:.2f}R"
-                        + (
-                            f" — {worth_protecting:.2f} is "
-                            f"{worth_protecting / self.equity * 100:.1f}% of the account, "
-                            f"so the {config.break_even_at_r:.2f}R floor was not the "
-                            f"right question"
-                            if worth_protecting and r_now < config.break_even_at_r
-                            else ""
-                        ),
-                    )
-                )
-                return events
+        protected = self._break_even_move(position, config, r_now, risk, risk_money)
+        if protected is not None:
+            events.append(protected)
+            return events
         partial_actions = ("PARTIAL_CLOSE", "PARTIAL_CLOSE_RECOVERED")
         if r_now >= config.partial_close_at_r and not self.journal.management_action_exists(
             position.ticket, partial_actions
@@ -2736,6 +2701,47 @@ class PositionManager:
             )
 
         return events
+
+    def _break_even_move(
+        self,
+        position: Position,
+        config: TradeManagementConfig,
+        r_now: float,
+        risk: float,
+        risk_money: float,
+    ) -> ManagementEvent | None:
+        """Apply the one break-even rule shared by full and BE-only profiles."""
+        be_offset = self._atr_offset(
+            position.symbol, config.break_even_offset_atr, position.direction
+        )
+        if be_offset is None:
+            return None
+        break_even = position.price_open + be_offset
+        worth_protecting = self._is_account_meaningful(r_now, risk_money)
+        if not (
+            (r_now >= config.break_even_at_r or worth_protecting)
+            and self._worth_moving(position, break_even, risk)
+        ):
+            return None
+        result = self.broker.modify_stops(
+            position,
+            sl=self.broker.spec(position.symbol).normalize_price(break_even),
+            tp=position.tp,
+        )
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "BREAK_EVEN",
+            f"stop protected at {r_now:.2f}R"
+            + (
+                f" — {worth_protecting:.2f} is "
+                f"{worth_protecting / self.equity * 100:.1f}% of the account, "
+                f"so the {config.break_even_at_r:.2f}R floor was not the right question"
+                if worth_protecting and r_now < config.break_even_at_r
+                else ""
+            ),
+        )
 
     def _atr(self, symbol: str, period: int = 14) -> float:
         key = (symbol, period)

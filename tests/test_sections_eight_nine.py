@@ -272,6 +272,9 @@ def test_the_fixed_exit_list_is_matched_against_real_broker_comments() -> None:
     for item in settings.trade_management.fixed_exit_comments:
         assert item.casefold() in known, f"{item} is not a comment any section sends"
 
+    for item in settings.trade_management.break_even_only_comments:
+        assert item.casefold() in known, f"{item} is not a comment any section sends"
+
 
 class TestSectionTenGoesFlatBeforeGoldShuts:
     """Keeping the measured exit also removed the time exit.

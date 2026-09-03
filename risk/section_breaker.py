@@ -136,10 +136,20 @@ def assess(db: sqlite3.Connection, module: str, config: SectionBreakerConfig) ->
             losses,
             streak,
         )
+    average_r = sum(outcomes) / trades
+    if config.minimum_average_r is not None and average_r < config.minimum_average_r:
+        return BreakerVerdict(
+            module,
+            True,
+            f"last {trades} trades average {average_r:+.3f}R",
+            trades,
+            losses,
+            streak,
+        )
     return BreakerVerdict(
         module,
         False,
-        f"{trades - losses} of {trades} won",
+        f"{trades - losses} of {trades} won, average {average_r:+.3f}R",
         trades,
         losses,
         streak,

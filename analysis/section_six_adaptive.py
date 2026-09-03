@@ -292,20 +292,25 @@ class _SectionSixModel:
         # the forming bar -- because a filter that peeks is how a backtest
         # invents an edge that live cannot take.
         #
-        # It is a filter, not a rescue. June and July stayed negative in the
-        # exact engine replay and the drawdown is still around -51R. The owner
-        # is forward-testing this knowingly.
-        if cfg.confirmation_bars > 0:
+        # It is a filter, not a rescue. The final dual-horizon replay still had
+        # two losing months and only +0.98 sigma. The owner is forward-testing
+        # this knowingly, behind a section-specific expectancy breaker.
+        for confirmation_bars in (
+            cfg.confirmation_bars,
+            cfg.secondary_confirmation_bars,
+        ):
+            if confirmation_bars <= 0:
+                continue
             closes = series.df["close"].astype(float)
-            if len(closes) <= cfg.confirmation_bars:
+            if len(closes) <= confirmation_bars:
                 return Signal.neutral(
-                    self.name, f"needs {cfg.confirmation_bars + 1} closed {cfg.timeframe} bars"
+                    self.name, f"needs {confirmation_bars + 1} closed {cfg.timeframe} bars"
                 )
-            drift = float(closes.iloc[-1]) - float(closes.iloc[-1 - cfg.confirmation_bars])
+            drift = float(closes.iloc[-1]) - float(closes.iloc[-1 - confirmation_bars])
             if drift * direction <= 0.0:
                 return Signal.neutral(
                     self.name,
-                    f"{cfg.confirmation_bars} closed {cfg.timeframe} bars do not confirm "
+                    f"{confirmation_bars} closed {cfg.timeframe} bars do not confirm "
                     f"the direction ({drift:+.2f})",
                 )
 

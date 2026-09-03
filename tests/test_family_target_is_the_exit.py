@@ -153,10 +153,8 @@ class TestTheShippedAccountAgrees:
         confluence = self._live().analysis.confluence
         expected = {
             "failed_session_breakout": 1.5,
-            "section_five_m5": 1.0,
             "section_six_gold_m5": 3.0,
             "section_eight_trend_day_h1": 1.0,
-            "section_nine_vwap_m30": 1.5,
             "section_ten_gold_m1": 1.5,
         }
 

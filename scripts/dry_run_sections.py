@@ -697,7 +697,7 @@ def _one_clock(
             cost = sizer.cost_share(spec, abs(idea.entry - idea.stop_loss), spread_price)
             r = None if r is None else r - cost
             managed_r = None if managed_r is None else managed_r - cost
-            if section_manage is None:
+            if resolved_manage is None:
                 # Fixed-exit families intentionally use the original broker
                 # stop and target, so their live result is the fixed result.
                 managed_r = r
