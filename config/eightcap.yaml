@@ -1540,11 +1540,34 @@ analysis:
     confirmation_slope_bars: 3
     entry_start_hour_utc: 3
     entry_end_hour_utc: 19
-    # De volledige broker-replay over maart-augustus wees 07:00-13:00 UTC
-    # aan als het instabiele blok. De resterende vensters waren in alle zes
-    # maanden positief in de eerste uitsplitsing; de engine-run blijft leidend.
-    blocked_start_hour_utc: 7
-    blocked_end_hour_utc: 13
+    # HET BLOK 07:00-13:00 STAAT UIT PER 3 SEPTEMBER, op verzoek van de
+    # eigenaar, en gelijke uren betekent "geen geblokkeerd venster".
+    #
+    # Wat er stond: "De volledige broker-replay over maart-augustus wees
+    # 07:00-13:00 UTC aan als het instabiele blok. De resterende vensters
+    # waren in alle zes maanden positief in de eerste uitsplitsing."
+    #
+    # WAAROM DAT ARGUMENT ZWAKKER IS DAN HET KLINKT. Die uurselectie komt uit
+    # DEZELFDE 180 dagen waarop de sectie gekalibreerd is -- het staat er in
+    # de sectiekop zelf: "kalibratie, geen onafhankelijke holdout of
+    # winstbelofte". Zestien uur opdelen en de slechtste zes eruit knippen
+    # vindt op elke willekeurige reeks een slecht blok. Dat is geen bewijs dat
+    # die uren slecht zijn, het is de definitie van de slechtste zes uur van
+    # deze steekproef.
+    #
+    # En die zes uur zijn 07:00-13:00 UTC: de Londense ochtend, veruit de
+    # drukste en meest liquide uren die goud heeft. Dat uitgerekend die het
+    # instabiele blok zouden zijn is mogelijk, maar het is ook precies wat je
+    # verwacht als het toeval is -- daar zitten de meeste trades, dus daar
+    # zit de meeste spreiding.
+    #
+    # Dit is dus geen correctie maar een OPEN VRAAG die nu gesteld wordt.
+    # `sectie10.cmd` speelt 180 dagen terug met deze uren open en print een
+    # uitsplitsing per uur. Blijkt 07:00-13:00 daar opnieuw negatief, dan gaat
+    # het blok terug en staat er dan een tweede meting onder in plaats van
+    # dezelfde ene.
+    blocked_start_hour_utc: 3
+    blocked_end_hour_utc: 3
 
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
