@@ -275,7 +275,12 @@ def _resolve(
     managed_r: float | None = None
     managed_stop = idea.stop_loss
     armed = False
-    trigger_r, offset_r = manage or (0.0, 0.0)
+    # OFFSET IN PRICE, not in R. The caller converts the configured ATR
+    # multiple using the symbol's H1 ATR at entry, because that is the input
+    # `PositionManager._atr_offset` reads live. Passing an R multiple here
+    # understated the real distance by 2.4x to 4.4x depending on the section's
+    # clock -- see `_break_even_rule`.
+    trigger_r, offset_price = manage or (0.0, 0.0)
     direction_sign = 1.0 if long else -1.0
 
     fixed_r: float | None = None
@@ -308,9 +313,16 @@ def _resolve(
                 managed_at = index[position]
             else:
                 excursion = (bar_high - idea.entry) if long else (idea.entry - bar_low)
-                if not armed and excursion / risk >= trigger_r:
+                # A PROTECTIVE STOP CANNOT BE PLACED BEYOND THE PRICE. Live the
+                # broker refuses it and `_worth_moving` never gets there; the
+                # simulator happily armed a stop above the market and then
+                # "filled" it on the same bar, inventing profit that no order
+                # could have taken. So the move needs the excursion to cover
+                # the offset as well as the trigger.
+                reach = max(trigger_r * risk, offset_price)
+                if not armed and excursion >= reach:
                     armed = True
-                    managed_stop = idea.entry + offset_r * risk * direction_sign
+                    managed_stop = idea.entry + offset_price * direction_sign
 
         if fixed_r is None:
             if hit_stop:
@@ -526,6 +538,44 @@ def _one_clock(
         resolve_frame["close"].to_numpy(),
     )
 
+    # THE H1 ATR, because that is the one live reads.
+    #
+    # `ExecutionManager._atr_offset` multiplies `break_even_offset_atr` by
+    # `_compute_atr`, and that function's own docstring says "Recent H1
+    # volatility" -- H1 on every symbol and every section, whatever clock the
+    # section trades on. Built once per symbol here and looked up per trade,
+    # because rebuilding a 14-bar rolling mean inside the bar loop is the
+    # shape of waste this file has already been rewritten twice for.
+    #
+    # Absent H1 means the offset is unknown, and live refuses to move the stop
+    # at all in that case (`_atr_offset` returns None). The lookup below
+    # returns 0.0 and the caller reads that the same way.
+    hourly = frames.get(Timeframe.H1)
+    if hourly is not None and len(hourly) > 15:
+        _previous = hourly["close"].shift(1)
+        _spans = pd.concat(
+            [
+                hourly["high"] - hourly["low"],
+                (hourly["high"] - _previous).abs(),
+                (hourly["low"] - _previous).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr_index = hourly.index
+        atr_values = _spans.rolling(14).mean().to_numpy()
+    else:
+        atr_index, atr_values = None, None
+
+    def _hourly_atr(when: datetime) -> float:
+        """The last CLOSED H1 ATR before `when`, or 0.0 for "not known"."""
+        if atr_index is None:
+            return 0.0
+        cut = int(atr_index.searchsorted(when, side="right")) - 1
+        if cut < 0:
+            return 0.0
+        value = float(atr_values[cut])
+        return value if np.isfinite(value) and value > 0.0 else 0.0
+
     for step, bar_time in enumerate(window.index):
         upto = bar_time + clock.duration
         awake = [row for row in sections if busy[row[0]] is None or upto > busy[row[0]]]
@@ -579,6 +629,16 @@ def _one_clock(
                     )
                 )
                 continue
+            # The configured multiple becomes a distance in price, using this
+            # symbol's H1 ATR at the moment of entry. When the ATR is unknown
+            # the offset is zero and, exactly as live does, the protective move
+            # is then skipped rather than made at an invented distance.
+            resolved_manage = section_manage
+            if section_manage is not None:
+                trigger_r, offset_atr = section_manage
+                offset_price = offset_atr * _hourly_atr(upto)
+                resolved_manage = (trigger_r, offset_price) if offset_price > 0.0 else None
+
             force_close_at = None
             if flatten_time is not None:
                 hour, minute = (int(part) for part in flatten_time.split(":", 1))
@@ -590,7 +650,7 @@ def _one_clock(
                 upto,
                 idea,
                 horizon_bars=horizon,
-                manage=section_manage,
+                manage=resolved_manage,
                 arrays=resolve_arrays,
                 force_close_at=force_close_at,
             )
@@ -608,7 +668,7 @@ def _one_clock(
             # PER SECTION, because the break-even rule is. A section running a
             # fixed stop is freed by the fixed exit; one running break-even is
             # freed by whichever exit it actually took.
-            freed = managed_at if section_manage is not None else exit_at
+            freed = managed_at if resolved_manage is not None else exit_at
             busy[name] = freed if freed is not None else end + clock.duration
             risk_money = sized.actual_risk_money
 
@@ -750,7 +810,7 @@ def _core_universe(connector, settings) -> list[str]:
 
 
 def _break_even_rule(settings) -> tuple[float, float] | None:
-    """`(trigger_r, offset_r)` for the break-even move, or None if it is off.
+    """`(trigger_r, offset_atr_multiple)`, or None if break-even is off.
 
     TWO TRIGGERS, AND THE SECOND IS THE ONE THAT BITES ON THIS ACCOUNT.
     `break_even_at_r` is 0.25, but `_is_account_meaningful` arms the same move
@@ -770,12 +830,33 @@ def _break_even_rule(settings) -> tuple[float, float] | None:
     is `equity * share`, the risk is `equity * risk_pct`, and the equity
     cancels. The crossover is `share / risk_pct` at any account size.
 
-    `break_even_offset_atr` is 0.10 ATR. Both live families are built on a
-    one-ATR stop -- 0.85 beyond the level plus up to 0.15 of tolerance for
-    `impulse_retest`, 1.00 for `order_block` -- so 0.10 ATR is 0.10R to within
-    a rounding error, and the offset is expressed in R here. That
-    approximation is worth naming: it is exact for `order_block` and up to 15%
-    generous for `impulse_retest`.
+    THE SECOND VALUE IS AN ATR MULTIPLE, NOT AN R MULTIPLE, and treating it as
+    R was wrong by a factor of four.
+
+    This used to return `break_even_offset_atr` and `_resolve` multiplied it by
+    the trade's RISK, on the argument that both live families use a one-ATR
+    stop so 0.10 ATR is 0.10R "to within a rounding error". Two things are
+    wrong with that.
+
+    The offset live applies is `_atr_offset`, and its ATR is `_compute_atr`,
+    whose own docstring reads "Recent H1 volatility". It is H1 on every
+    symbol and every section, whatever clock the section trades. So the
+    comparison is not stop-ATR against offset-ATR at all; it is an H1 ATR
+    against a stop measured on M5, M15 or M30.
+
+        section six    stop 0.80 x M5-ATR    offset 0.10 x H1-ATR
+                       H1-ATR is roughly 3.5x an M5-ATR
+                       -> the real offset is about 0.44R, modelled as 0.10R
+
+        impulse_retest stop ~1.0 x M15-ATR   -> about 0.24R, modelled as 0.10R
+
+    Understating the offset does not simply flatter or penalise the result: a
+    higher stop scratches for MORE when it is hit and is hit MORE OFTEN. Which
+    way it moves a given section is not reasonable to argue about, which is
+    exactly why it has to be measured at the real distance.
+
+    The caller now converts this multiple into a PRICE using the symbol's H1
+    ATR at the moment of entry, the same input live reads.
     """
     config = settings.trade_management
     offset_atr = float(getattr(config, "break_even_offset_atr", 0.0) or 0.0)
@@ -1368,8 +1449,7 @@ def main(argv: list[str] | None = None) -> None:
                     continue
                 group = []
                 flattened = {
-                    item.casefold()
-                    for item in settings.trade_management.pre_close_flatten_comments
+                    item.casefold() for item in settings.trade_management.pre_close_flatten_comments
                 }
                 for name in names:
                     tuned = _retimed(settings, name, tf_name)
@@ -1597,8 +1677,7 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     fixed_names = {
         name
         for name, _clock in keys
-        if broker_comment(name, is_addon=False, experimental_live=True).casefold()
-        in fixed_comments
+        if broker_comment(name, is_addon=False, experimental_live=True).casefold() in fixed_comments
     }
     has_break_even = _break_even_rule(settings) is not None
     all_fixed = len(fixed_names) == len(keys)

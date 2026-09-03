@@ -211,9 +211,7 @@ def test_section_ten_rejects_an_m1_retest_against_the_closed_m5_slope() -> None:
         index=m5_index,
     )
 
-    signal = SectionTenGoldM1(SectionTenGoldM1Config(enabled=True)).analyze(
-        _gold_context(m1, m5)
-    )
+    signal = SectionTenGoldM1(SectionTenGoldM1Config(enabled=True)).analyze(_gold_context(m1, m5))
 
     assert signal.score == 0.0
     assert "M5 EMA slope disagrees" in signal.reasoning
