@@ -335,5 +335,63 @@ def test_a_mechanism_that_flips_sign_between_clocks_is_reported() -> None:
         builtins.print = real_print
 
     text = "\n".join(out)
-    assert "london_fade" in text, "a mechanism that flips sign was not reported"
-    assert "comex_fade" not in text, "a mechanism that agrees was reported as a flip"
+    # The row is named after the mechanism, not after the half: both halves
+    # are folded onto one line and the fade is read with its sign flipped.
+    assert "london" in text, "a mechanism that flips sign was not reported"
+    assert "comex" not in text, "a mechanism that agrees was reported as a flip"
+
+
+def test_a_mechanism_and_its_opposite_are_one_mechanism() -> None:
+    """The clearest contradiction in the M30/H1 run was filed under two names.
+
+    `opening_range_break` was the best cell on M15 at +0.053 against the coin
+    flip. `opening_range_fade` -- its exact negation -- was the best cell on
+    M30 at +0.105. Break wins on one clock, fade wins on another, and both
+    read as discoveries because the check compared each name only against
+    itself. Folded together they are one mechanism whose sign flips, which
+    is the opposite of a finding.
+    """
+    from scripts.search_section_four import Cell, _disagreements
+
+    def _cell(name: str, clock: str, per_trade: float) -> Cell:
+        cell = Cell(name, clock, "metal")
+        for day in range(200):
+            cell.train.r.append(per_trade)
+            cell.train.day.append(day)
+            cell.train.when.append(day)
+        return cell
+
+    controls = {(clock, "metal"): _cell("__control__", clock, 0.0) for clock in ("M15", "M30")}
+    cells = [
+        _cell("opening_range_break", "M15", 0.053),
+        _cell("opening_range_fade", "M15", -0.053),
+        _cell("opening_range_break", "M30", -0.105),
+        _cell("opening_range_fade", "M30", 0.105),
+    ]
+
+    out: list[str] = []
+    import builtins
+
+    real_print = builtins.print
+    builtins.print = lambda *a, **k: out.append(" ".join(str(x) for x in a))
+    try:
+        _disagreements(cells, controls)
+    finally:
+        builtins.print = real_print
+    text = "\n".join(out)
+
+    assert "opening_range" in text, "break on one clock and fade on another was not caught"
+    # One line per clock, not two. Both halves say the same thing by
+    # construction, and printing both reads as a mechanism corroborating
+    # itself.
+    body = [line for line in out if "opening_range" in line]
+    assert len(body) == 1
+    assert body[0].count("M15") == 1 and body[0].count("M30") == 1
+
+
+def test_every_gold_candidate_has_a_declared_opposite() -> None:
+    """The fold is by a hand-written list, so it has to stay complete."""
+    from scripts.search_section_four import _OPPOSITES
+
+    paired = {name for pair in _OPPOSITES for name in pair}
+    assert not set(GOLD_CANDIDATES) - paired

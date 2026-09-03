@@ -1055,6 +1055,24 @@ def _split_into(found: Trades, split: datetime, cell: Cell) -> None:
         target.when.append(when)
 
 
+#: Mechanism halves that are exact negations of each other. Folded together
+#: before the cross-clock check, or one mechanism reads as two discoveries.
+_OPPOSITES: tuple[tuple[str, str], ...] = (
+    ("stretch_continuation", "stretch_fade"),
+    ("quiet_stretch_continuation", "quiet_stretch_fade"),
+    ("london_drive", "london_fade"),
+    ("comex_drive", "comex_fade"),
+    ("pm_fix_drive", "pm_fix_fade"),
+    ("round_number_break", "round_number_fade"),
+    ("opening_range_break", "opening_range_fade"),
+    ("day_range_exhaustion_break", "day_range_exhaustion_fade"),
+    ("gap_continuation", "gap_fade"),
+    ("streak_continuation", "streak_reversal"),
+    ("close_position_in_range", "close_position_fade"),
+    ("prior_day_break", "prior_day_fade"),
+)
+
+
 def _disagreements(real: list[Cell], controls: dict) -> None:
     """One mechanism, two clocks, opposite answers — the signature of noise.
 
@@ -1087,6 +1105,33 @@ def _disagreements(real: list[Cell], controls: dict) -> None:
     for (name, clock), value in edge.items():
         clocks_for.setdefault(name, []).append((clock, value))
 
+    # A MECHANISM AND ITS OPPOSITE ARE ONE MECHANISM. The first version of
+    # this compared each name against itself across clocks and missed the
+    # clearest case in the M30/H1 run: `opening_range_break` was the best cell
+    # on M15 at +0.053 against the coin flip, and `opening_range_fade` -- the
+    # exact negation of it -- was the best cell on M30 at +0.105. Break wins
+    # on one clock, fade wins on another, and both looked like discoveries
+    # because they were filed under different names.
+    #
+    # So the pairs are folded together and the fade half is read with its
+    # sign flipped, which puts both halves of one mechanism on one line.
+    for one, other in _OPPOSITES:
+        if one not in clocks_for and other not in clocks_for:
+            continue
+        merged = clocks_for.pop(one, []) + [(c, -v) for c, v in clocks_for.pop(other, [])]
+        if not merged:
+            continue
+        # BOTH HALVES LAND ON THE SAME CLOCK and, being negations, say the
+        # same thing twice. Averaging them per clock keeps one number per
+        # clock -- printing both would show a mechanism agreeing with itself
+        # and read as corroboration.
+        per_clock: dict[str, list[float]] = {}
+        for clock, value in merged:
+            per_clock.setdefault(clock, []).append(value)
+        clocks_for[f"{one} (fade telt negatief)"] = [
+            (clock, sum(values) / len(values)) for clock, values in per_clock.items()
+        ]
+
     split = [
         (name, sorted(rows))
         for name, rows in sorted(clocks_for.items())
@@ -1099,7 +1144,7 @@ def _disagreements(real: list[Cell], controls: dict) -> None:
     print("    on the same event over the same days. At most one can be gold.")
     for name, rows in split:
         detail = ",  ".join(f"{clock} {value:+.3f}" for clock, value in rows)
-        print(f"    {name:<28}{detail}")
+        print(f"    {name:<34}{detail}")
 
 
 def _report(cells: dict, args, costs: dict | None = None) -> None:
