@@ -37,6 +37,11 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+
+# Module level: `_one_clock` prints a heartbeat during the bar walk and it is
+# not inside `main`. The local import that used to live in `main` shadowed
+# nothing and is gone.
+import time as _time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -611,7 +616,30 @@ def _one_clock(
         value = float(atr_values[cut])
         return value if np.isfinite(value) and value > 0.0 else 0.0
 
+    # A HEARTBEAT, BECAUSE TWENTY-TWO MINUTES OF SILENCE IS NOT DISTINGUISHABLE
+    # FROM A HANG.
+    #
+    # The per-symbol line only prints when a symbol FINISHES, and one metal on
+    # M1 over 180 days is 235,000 bars and about twenty minutes. The owner sat
+    # in front of a blank window for half an hour on the six-metal run with no
+    # way to tell whether it was working, which is the same failure this file
+    # keeps producing in other forms: an absent line reading as nothing
+    # happening.
+    #
+    # Every 20,000 bars, on the clock that dominates the walk. Cheap, and it
+    # carries the two numbers that answer "is this working and how long".
+    total_bars = len(window.index)
+    beat = 20_000 if total_bars > 40_000 else 0
+    walk_began = _time.perf_counter()
     for step, bar_time in enumerate(window.index):
+        if beat and step and step % beat == 0:
+            spent = _time.perf_counter() - walk_began
+            left = spent / step * (total_bars - step)
+            print(
+                f"      {symbol} {clock.value}: {step:,}/{total_bars:,} bars"
+                f"   ~{left / 60:.0f} min left on this clock",
+                flush=True,
+            )
         upto = bar_time + clock.duration
         awake = [row for row in sections if busy[row[0]] is None or upto > busy[row[0]]]
         if not awake:
@@ -1564,7 +1592,6 @@ def main(argv: list[str] | None = None) -> None:
         fetch_seconds = 0.0
         compute_seconds = 0.0
         unaffordable: list[tuple[str, float]] = []
-        import time as _time
 
         for index, symbol in enumerate(symbols, 1):
             began = _time.perf_counter()

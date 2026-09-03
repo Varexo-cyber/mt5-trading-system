@@ -61,8 +61,18 @@ echo  volgende setup, en een sectie die andere trades neemt is een andere
 echo  sectie. Wint een niveau hier, dan verdient het een volledige replay
 echo  met het positieboek erachteraan -- geen promotie.
 echo.
-echo  MT5 moet draaien en ingelogd zijn. 180 dagen M1 over zes metalen duurt
-echo  lang. Laat hem staan.
+echo  HOELANG DIT DUURT, gemeten en niet geschat. De run van 3 september
+echo  deed XAUUSD alleen in 22,6 minuten: 235.000 M1-bars over 180 dagen.
+echo.
+echo     180 dagen x 6 metalen  ~ 2 tot 2,5 uur
+echo     180 dagen x 1 metaal   ~ 25 min
+echo      90 dagen x 6 metalen  ~ 1 uur       <- begin hier als je wacht
+echo.
+echo  Elke 20.000 bars komt er een regel met hoeveel er te gaan is, zodat
+echo  stilte niet meer op vastlopen lijkt. De regel PER MARKT verschijnt pas
+echo  als die markt helemaal klaar is.
+echo.
+echo  MT5 moet draaien en ingelogd zijn.
 echo.
 echo  GEBRUIK
 echo    sectie10.cmd              180 dagen, de zes metalen uit de config
