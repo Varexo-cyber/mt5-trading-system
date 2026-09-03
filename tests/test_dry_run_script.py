@@ -2837,11 +2837,11 @@ class TestSectionTenRunsOnlyWhereItCanTrade:
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         )
         allowed = set(settings.analysis.section_ten_gold_m1.allowed_symbols)
-        universe = ["EURUSD.i", "GBPUSD.i", "XAUUSD", "SPX500", "XAGUSD", "US30"]
+        universe = ["EURUSD.i", "GBPUSD.i", "XAUUSD", "SPX500", "XAUEUR", "US30"]
 
         kept = [name for name in universe if name in allowed]
 
-        assert kept == ["XAUUSD", "XAGUSD"]
+        assert kept == ["XAUUSD", "XAUEUR"]
         assert "EURUSD.i" not in kept and "SPX500" not in kept
 
     def test_section_ten_trades_more_than_one_metal(self) -> None:
@@ -2965,14 +2965,17 @@ class TestSectionTenOnlyWalksTheSectionsOwnMarkets:
         assert intersected == ["XAUUSD"], "the old behaviour was not a one-market run"
         assert len(walked) > len(intersected)
 
-    def test_the_live_config_would_walk_six(self) -> None:
+    def test_the_live_config_would_walk_the_metals_that_can_pay(self) -> None:
+        """XAGUSD came off on 3 September: 150 setups, 0 trades, refused on
+        cost at over 20% of the stop. Five metals, and the cost gate is what
+        decided it rather than an opinion."""
         from config.loader import load_settings
 
         allowed = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.section_ten_gold_m1.allowed_symbols
 
-        assert len(allowed) == 6, f"section ten walks {len(allowed)} markets, expected six"
+        assert len(allowed) == 5, f"section ten walks {len(allowed)} markets, expected five"
 
 
 class TestTheLauncherEchoesSurviveCmd:

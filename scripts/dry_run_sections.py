@@ -2011,6 +2011,7 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     if managed:
         _break_even_verdict(trades, settings)
     _manage_grid_report(trades)
+    _by_market_report(trades)
     _by_hour_report(trades, settings)
     _is_this_real(trades, keys, managed)
     _shadow_report(results, settings, slots, managed, days)
@@ -2142,6 +2143,66 @@ def _by_hour_report(trades: list[Decision], settings) -> None:
         print("  Negative again, on the wider market set? Then the block goes back.")
         print("  Positive, or level with the rest? Then it was the worst six hours")
         print("  of one sample and shutting them cost trades for nothing.")
+
+
+def _by_market_report(trades: list[Decision]) -> None:
+    """Per section, per market: is a new symbol carrying its weight or diluting?
+
+    THE QUESTION A WIDENING ACTUALLY ASKS, and the first version of this
+    report could not answer it. Section ten went from one metal to six and
+    came back with 429 trades and +19.66 R against 16 trades on the live
+    account. More trades and more R -- but "BY SECTION" adds the six together,
+    so five markets carrying a sixth, or one market carrying five, print
+    identically.
+
+    That is the difference between a widening that worked and a widening that
+    happened to be rescued by the market it started from, and it is the whole
+    reason for adding symbols in the first place.
+
+    Sections that trade one market print one row, which costs nothing.
+    """
+    taken = [row for row in trades if row.outcome == "TRADE" and row.result_r is not None]
+    if not taken:
+        return
+    by_section: dict[str, list[Decision]] = {}
+    for row in taken:
+        by_section.setdefault(row.module, []).append(row)
+    interesting = {
+        name: rows for name, rows in by_section.items() if len({r.symbol for r in rows}) > 1
+    }
+    if not interesting:
+        return
+
+    print("\nPER SECTION, PER MARKET — is every symbol paying its own way?")
+    print("  A section is only as widened as its worst market. One symbol")
+    print("  carrying five is not a wider section, it is the old one plus noise.")
+
+    for module, rows in sorted(interesting.items()):
+        order = sorted(row.when for row in rows)
+        split = order[int(len(order) * 0.6)]
+        print(f"\n  {module}   {len(rows)} trades over {len({r.symbol for r in rows})} markets")
+        print(
+            f"    {'market':<12}{'trades':>7}{'total R':>9}{'per trade':>11}"
+            f"{'early':>8}{'late':>8}{'hit':>7}"
+        )
+        by_symbol: dict[str, list[Decision]] = {}
+        for row in rows:
+            by_symbol.setdefault(row.symbol, []).append(row)
+        ranked = sorted(by_symbol.items(), key=lambda kv: -sum(r.result_r or 0.0 for r in kv[1]))
+        for symbol, got in ranked:
+            values = [r.result_r for r in got if r.result_r is not None]
+            early = [r.result_r for r in got if r.when < split and r.result_r is not None]
+            late = [r.result_r for r in got if r.when >= split and r.result_r is not None]
+            won = sum(1 for v in values if v > 0)
+            print(
+                f"    {symbol:<12}{len(values):>7}{sum(values):>+9.2f}"
+                f"{sum(values) / len(values):>+11.3f}{sum(early):>+8.2f}"
+                f"{sum(late):>+8.2f}{won / len(values):>7.1%}"
+            )
+        losing = [s for s, g in by_symbol.items() if sum(r.result_r or 0.0 for r in g) < 0]
+        if losing:
+            names = ", ".join(sorted(losing))
+            print(f"    {len(losing)} of {len(by_symbol)} markets negative: {names}")
 
 
 def _grid_line(label, rows, early, late, pick) -> None:

@@ -1525,11 +1525,32 @@ analysis:
     # en een veel bredere spread, en de regel is op goud gekalibreerd. Zes is
     # dezelfde weddenschap zes keer bekijken; dertien is een andere sectie.
     #
-    # WAT DIT TERUGDRAAIT. `sectie10.cmd` draait dit als replay over 180 dagen.
-    # Blijft +0,156R per trade niet ongeveer overeind -- zeg, zakt het onder
-    # +0,05R of wordt de sectie negatief -- dan gaat deze regel terug naar
-    # [XAUUSD] en is dat het einde ervan.
-    allowed_symbols: [XAUUSD, XAUEUR, XAUGBP, XAUAUD, XAUJPY, XAGUSD]
+    # XAGUSD IS ER WEER AF, DOOR DE METING. `sectie10.cmd 30`, 3 september:
+    #
+    #     XAUUSD  273 setups  228 trades      XAUEUR  118 setups   86 trades
+    #     XAUAUD  122 setups   99 trades      XAUJPY  125 setups   71 trades
+    #     XAUGBP  123 setups   88 trades      XAGUSD  150 setups    0 trades
+    #
+    # Zilver vormde 150 setups en nam er nul: "over 20% of the stop, so
+    # unaffordable at any sane limit: XAGUSD (148)". De kostenpoort weigerde
+    # elke setup, precies zoals hierboven voorspeld -- alleen kost het wel
+    # 23 minuten bar-walken per run om die nul te bevestigen. Vijf metalen dus,
+    # niet zes, en dat is de poort die zijn werk doet en niet een tegenvaller.
+    #
+    # WAT DE VERBREDING OPLEVERDE, zelfde run, 30 dagen:
+    #
+    #     sectie tien   429 trades   +19,66 R   EUR +91,83   (+0,046 per trade)
+    #
+    # Tegen 16 trades op de live rekening in dezelfde maand. Dat is de
+    # tradecount waar het om ging. De +0,046 R staat net onder de +0,05 die
+    # hierboven als lat stond, maar die lat kwam van een live cijfer met acht
+    # extra poorten ervoor en zestien waarnemingen erachter -- dat is geen
+    # eerlijke vergelijking en de lat wordt niet strikt toegepast op een
+    # steekproef van dertig dagen die zelf zegt NOT ENOUGH TO CONCLUDE.
+    #
+    # WAT DIT NOG STEEDS TERUGDRAAIT: de 180-daagse replay. Blijft sectie tien
+    # daar niet positief per trade, dan gaat deze regel terug naar [XAUUSD].
+    allowed_symbols: [XAUUSD, XAUEUR, XAUGBP, XAUAUD, XAUJPY]
     channel_period: 20
     minimum_break_atr: 0.75
     retest_tolerance_atr: 0.15
