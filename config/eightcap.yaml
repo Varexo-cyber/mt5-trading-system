@@ -1561,13 +1561,39 @@ analysis:
     # verwacht als het toeval is -- daar zitten de meeste trades, dus daar
     # zit de meeste spreiding.
     #
-    # Dit is dus geen correctie maar een OPEN VRAAG die nu gesteld wordt.
-    # `sectie10.cmd` speelt 180 dagen terug met deze uren open en print een
-    # uitsplitsing per uur. Blijkt 07:00-13:00 daar opnieuw negatief, dan gaat
-    # het blok terug en staat er dan een tweede meting onder in plaats van
-    # dezelfde ene.
-    blocked_start_hour_utc: 3
-    blocked_end_hour_utc: 3
+    # ---------------------------------------------------------------------
+    # HET BLOK IS DEZELFDE DAG WEER AAN, en het bovenstaande argument is
+    # WEERLEGD. Dit is de tweede meting, niet dezelfde nog een keer.
+    #
+    # `sectie10.cmd 180 goud`, 3 september, XAUUSD, uren OPEN, 989 trades:
+    #
+    #     07:00-13:00 samen   422 trades   -65,96 R   (-0,156 per trade)
+    #     elk ander uur       567 trades   +73,03 R   (+0,129 per trade)
+    #
+    # En per uur, zes van de zes negatief:
+    #
+    #     07:00  68 trades  -0,052      10:00  73 trades  -0,028
+    #     08:00  68 trades  -0,425      11:00  87 trades  -0,021
+    #     09:00  67 trades  -0,155      12:00  59 trades  -0,326
+    #     13:00  32 trades  +0,523   <- eerste uur BUITEN het blok, positief
+    #
+    # Mijn redenering hierboven -- "de slechtste zes uur van elke reeks zijn
+    # slecht, dat bewijst niets" -- klopt als algemeen bezwaar en is hier
+    # gewoon fout gebleken. Dit is een ANDERE meting dan die het blok koos:
+    # 989 trades tegen 446, een langere periode, en de scheiding valt precies
+    # op dezelfde uurgrens. Zes van de zes de goede kant op is geen toeval dat
+    # zich twee keer voordoet.
+    #
+    # WAT HET OPENGOOIEN KOSTTE, in dezelfde run afleesbaar: de eerdere
+    # engine-replay met blok las 446 trades en +50,88 R. Met de uren open
+    # werden het er 989 en bleef er +7,07 R over. De 543 extra trades kwamen
+    # vrijwel volledig uit de dode uren en kostten ruim 40 R.
+    #
+    # DUS: meer trades uit dit venster halen is geen optie. Wat wel overblijft
+    # zijn de zes metalen (nog niet gemeten -- deze run draaide `goud`) en het
+    # break-evenrooster hieronder.
+    blocked_start_hour_utc: 7
+    blocked_end_hour_utc: 13
 
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
