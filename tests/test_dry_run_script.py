@@ -2700,3 +2700,117 @@ class TestTheExitsAreNotModelledEither:
         assert "fixed-exit" in out
         assert "broker barriers" in out
         assert "configured pause flatten" in out
+
+
+class TestTheBreakEvenGridComparesExitsAndNotEntries:
+    """`--manage-grid` answers one narrow question and must not overstate it.
+
+    The owner asked whether a LOOSER break-even -- one that only arms after
+    the trade has already run a long way -- would beat section ten's fixed
+    stop and target. That cannot be settled by switching break-even on and
+    comparing two runs: an earlier exit frees the symbol, a freed symbol
+    takes the next setup, and the two runs then hold different trades. The
+    comparison silently becomes "these entries against those entries".
+
+    So every level is resolved on the SAME entry, and these tests pin that.
+    """
+
+    def _row(self, when, fixed, grid_values):
+        from scripts.dry_run_sections import MANAGE_GRID, Decision
+
+        return Decision(
+            when,
+            "XAUUSD",
+            "section_ten_gold_m1",
+            "TRADE",
+            result_r=fixed,
+            grid_r=tuple(
+                (label, value)
+                for (label, _t, _l), value in zip(MANAGE_GRID, grid_values, strict=True)
+            ),
+        )
+
+    def _rows(self, count=40):
+        from datetime import UTC, datetime, timedelta
+
+        base = datetime(2026, 3, 1, tzinfo=UTC)
+        made = []
+        for index in range(count):
+            fixed = 1.5 if index % 3 == 0 else -1.0
+            # Break-even scratches every loser and half the winners.
+            managed = 0.0 if fixed < 0 or index % 6 == 0 else fixed
+            made.append(self._row(base + timedelta(days=index), fixed, [managed] * 6))
+        return made
+
+    def test_every_level_is_reported_beside_the_fixed_baseline(self, capsys) -> None:
+        from scripts.dry_run_sections import MANAGE_GRID, _manage_grid_report
+
+        _manage_grid_report(self._rows())
+        out = capsys.readouterr().out
+
+        assert "fixed SL/TP" in out, "the baseline the levels are judged against is missing"
+        for label, _trigger, _lock in MANAGE_GRID:
+            assert label in out, f"{label} was measured and not printed"
+
+    def test_both_halves_of_the_period_are_shown(self, capsys) -> None:
+        """Picking the best of seven columns on one sample is how this project
+        has produced most of its disappointments."""
+        from scripts.dry_run_sections import _manage_grid_report
+
+        _manage_grid_report(self._rows())
+        out = capsys.readouterr().out
+
+        assert "early R" in out and "late R" in out
+        assert "early /" in out or "early" in out
+
+    def test_a_run_without_the_flag_prints_nothing(self, capsys) -> None:
+        """The grid is opt-in, and a section with no grid rows is not a section
+        whose grid was all zeros."""
+        from datetime import UTC, datetime
+
+        from scripts.dry_run_sections import Decision, _manage_grid_report
+
+        plain = [
+            Decision(
+                datetime(2026, 3, 1, tzinfo=UTC),
+                "XAUUSD",
+                "section_ten_gold_m1",
+                "TRADE",
+                result_r=1.0,
+            )
+        ]
+        _manage_grid_report(plain)
+        assert capsys.readouterr().out == ""
+
+    def test_each_section_gets_its_own_table(self, capsys) -> None:
+        """Whether break-even pays is a property of the section, and averaging
+        section six and section ten together answers neither."""
+        from datetime import UTC, datetime, timedelta
+
+        rows = self._rows()
+        base = datetime(2026, 3, 1, tzinfo=UTC)
+        for index in range(20):
+            row = self._row(base + timedelta(days=index), -1.0, [0.0] * 6)
+            row.module = "section_six_gold_m5"
+            rows.append(row)
+
+        from scripts.dry_run_sections import _manage_grid_report
+
+        _manage_grid_report(rows)
+        out = capsys.readouterr().out
+
+        assert "section_ten_gold_m1" in out and "section_six_gold_m5" in out
+        # Two tables, so two baselines.
+        assert out.count("fixed SL/TP") == 2
+
+    def test_the_triggers_are_in_r_and_not_in_pips(self) -> None:
+        """ "Fifty pips toward the target" is a different rule on every
+        instrument and on every day. On this account's gold M1 stop it is
+        roughly ten times the risk -- past the target, so it would never fire
+        and the column would read as "break-even does not help"."""
+        from scripts.dry_run_sections import MANAGE_GRID
+
+        assert MANAGE_GRID
+        for label, trigger, lock in MANAGE_GRID:
+            assert 0.0 < trigger <= 2.0, label
+            assert 0.0 <= lock < trigger, label
