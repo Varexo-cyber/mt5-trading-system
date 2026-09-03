@@ -1419,13 +1419,11 @@ analysis:
     threshold: 0.15
     stop_atr: 1.0
 
-  # SECTIE ZES, experimentele huidige-regimeroute. De eerste live week op de
-  # VPS verloor. Een eerlijke 180-daagse train/validatie/holdout-search vond
-  # GEEN vaste of trendadaptieve goudroute die alle drie perioden overleefde.
-  # Deze route is daarom NIET bewezen en alleen live omdat de eigenaar hem nu
-  # expliciet wil forward-testen: LONG, 20:00-02:00 UTC, 0,8 ATR stop en 3R.
-  # Op de meest recente 30 dagen: 171 trades, 34,5% raak, 18/25 groene dagen,
-  # +53,60R en +2,15 sigma. Dat is kalibratie, geen winstbelofte of holdout.
+  # SECTIE ZES, experimentele huidige-regimeroute. De recente 30 dagen waren
+  # sterk, maar de volledige broker-replay weerlegt die indruk: 885 trades,
+  # 24,5% raak, -71,65R / -EUR 259,85 over 180 dagen. De positieve korte
+  # periode was regimeconcentratie, geen robuuste edge. Enabled en gewogen
+  # voor shadow-metingen, maar vanaf 3 september niet meer live.
   section_six_gold_m5:
     enabled: true
     timeframe: M5
@@ -1466,15 +1464,18 @@ analysis:
     minimum_displacement_atr: 2.0
     stop_atr: 1.0
 
-  # SECTIE TIEN. Alleen XAUUSD/M1. Een kanaaluitbraak moet minstens 0,75 ATR
-  # groot zijn; pas de eerste terugtest wordt op de GESLOTEN M1-bar gekocht
-  # of verkocht. Dit is uitvoerbaar als market order, niet de fraaie maar
+  # SECTIE TIEN. Alleen XAUUSD: M1 vindt de snelle setup; de EMA20-slope over
+  # drie al gesloten M5-bars moet dezelfde richting bevestigen. Een
+  # kanaaluitbraak moet minstens 0,75 ATR groot zijn; pas de eerste terugtest
+  # wordt op de GESLOTEN M1-bar gekocht of verkocht. Dit is uitvoerbaar als
+  # market order, niet de fraaie maar
   # onuitvoerbare intrabar limit-fill uit de brede zoekrun. Exacte audit met
   # historische broker-spread, EUR 203 sizing en maximaal een positie tegelijk.
-  # Het aaneengesloten liquide venster 03:00-19:00 UTC verbeterde beide helften:
-  # Met de LIVE break-evenregel: 565 trades / circa 3,1 per kalenderdag,
-  # +82,00R, vroege +41,89R en late +40,11R. Na spread sloot 61,2% boven nul;
-  # max drawdown -5,41R. Nog steeds SHADOW, niet live.
+  # De volledige engine-replay van 3 maart t/m 31 augustus, inclusief vaste
+  # SL/TP, kosten en 20:50-flatten: 446/446 resolved, 46,9% raak, +50,88R,
+  # +2,27 dag-geclusterde sigma en 6/6 positieve maanden. Eerste/laatste 223
+  # trades: +42,21R / +8,68R. De uurselectie komt uit dezelfde 180 dagen en is
+  # dus kalibratie, geen onafhankelijke holdout of winstbelofte.
   section_ten_gold_m1:
     enabled: true
     timeframe: M1
@@ -1484,8 +1485,16 @@ analysis:
     retest_tolerance_atr: 0.15
     stop_beyond_atr: 0.75
     maximum_wait_bars: 96
+    confirmation_timeframe: M5
+    confirmation_ema_period: 20
+    confirmation_slope_bars: 3
     entry_start_hour_utc: 3
     entry_end_hour_utc: 19
+    # De volledige broker-replay over maart-augustus wees 07:00-13:00 UTC
+    # aan als het instabiele blok. De resterende vensters waren in alle zes
+    # maanden positief in de eerste uitsplitsing; de engine-run blijft leidend.
+    blocked_start_hour_utc: 7
+    blocked_end_hour_utc: 13
 
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
@@ -2695,13 +2704,16 @@ analysis:
     # live gezet zonder bewijs.
     live_enabled_modules:
       - failed_session_breakout
-      - section_six_gold_m5
       # Explicitly promoted 2 September 2026 after the owner's instruction to
       # dry-run the complete S5-S10 book before launching Jarvis. S8 has
       # positive early and late halves but only 26 historical trades; its
       # section breaker is therefore essential, not optional.
       - section_eight_trend_day_h1
       - section_ten_gold_m1
+
+    # S6 is 3 september van live gehaald na de 180-daagse broker-replay:
+    # 885 trades, 24,5% raak en -71,65R. Hij blijft enabled en gewogen zodat
+    # toekomstige dry-runs kunnen tonen of een nieuw regime dit echt herstelt.
 
     # SECTIE 5 EN SECTIE 9 ZIJN ER 2 SEPTEMBER AFGEHAALD, op instructie van de
     # eigenaar, op de dry-run die hij voor zich had:
@@ -2840,6 +2852,11 @@ analysis:
       impulse_break: 0.55
       fast_ema_cross: 0.60
       session_breakout: 0.75
+      # S10 is een volledig omschreven zelfstandige strategie. De module
+      # stuurt 0,58 confidence uit; zonder deze expliciete vloer weigert de
+      # generieke 0,65-lone-modulepoort letterlijk ieder geldig S10-signaal.
+      # Dit verlaagt geen algemene poort en raakt geen andere detector.
+      section_ten_gold_m1: 0.58
 
     # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
     # documented as a quick entry but classified as intraday, so a fresh M5

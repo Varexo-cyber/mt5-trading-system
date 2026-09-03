@@ -24,6 +24,18 @@ def _context(symbol: str, timeframe: Timeframe, frame: pd.DataFrame) -> MarketCo
     return MarketContext(symbol, now, {timeframe: Series(symbol, timeframe, frame, now)})
 
 
+def _gold_context(m1: pd.DataFrame, m5: pd.DataFrame) -> MarketContext:
+    now = m1.index[-1].to_pydatetime()
+    return MarketContext(
+        "XAUUSD",
+        now,
+        {
+            Timeframe.M1: Series("XAUUSD", Timeframe.M1, m1, now),
+            Timeframe.M5: Series("XAUUSD", Timeframe.M5, m5, now),
+        },
+    )
+
+
 def test_section_eight_follows_an_extreme_prior_spx_close() -> None:
     index = pd.date_range("2026-08-29 00:00", periods=49, freq="1h", tz=UTC)
     close = np.full(len(index), 5000.0)
@@ -97,17 +109,27 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
     assert settings.analysis.section_eight_trend_day_h1.enabled is True
     assert settings.analysis.section_ten_gold_m1.enabled is True
     assert settings.analysis.section_ten_gold_m1.minimum_break_atr == 0.75
+    assert settings.analysis.section_ten_gold_m1.confirmation_timeframe == "M5"
+    assert settings.analysis.section_ten_gold_m1.confirmation_slope_bars == 3
+    assert settings.analysis.section_ten_gold_m1.blocked_start_hour_utc == 7
+    assert settings.analysis.section_ten_gold_m1.blocked_end_hour_utc == 13
     assert "section_eight_trend_day_h1" in settings.analysis.confluence.live_enabled_modules
     assert "section_ten_gold_m1" in settings.analysis.confluence.live_enabled_modules
 
     live = settings.analysis.confluence.live_enabled_modules
     assert "section_nine_vwap_m30" not in live
     assert "section_five_m5" not in live
+    assert "section_six_gold_m5" not in live
     # Off is not deleted. A module with no weight cannot be measured, and that
     # is how three M1 detectors went unjudged for months.
     assert settings.analysis.section_nine_vwap_m30.enabled is True
     assert settings.analysis.confluence.weights["section_nine_vwap_m30"] > 0
     assert settings.analysis.confluence.weights["section_five_m5"] > 0
+    assert settings.analysis.confluence.weights["section_six_gold_m5"] > 0
+    assert (
+        settings.analysis.confluence.lone_floor_for("section_ten_gold_m1")
+        == settings.analysis.section_ten_gold_m1.confidence
+    )
     assert (
         settings.analysis.confluence.target_r_multiple_by_family["section_eight_trend_day_h1"]
         == 1.0
@@ -134,17 +156,74 @@ def test_section_ten_enters_first_closed_bar_retest_after_large_gold_break() -> 
         },
         index=index,
     )
+    m5_index = pd.date_range("2026-07-31", periods=300, freq="5min", tz=UTC)
+    m5_close = np.linspace(90.0, 110.0, len(m5_index))
+    m5 = pd.DataFrame(
+        {
+            "open": m5_close,
+            "high": m5_close + 1.0,
+            "low": m5_close - 1.0,
+            "close": m5_close,
+            "volume": 100.0,
+            "spread": 1.0,
+        },
+        index=m5_index,
+    )
     signal = SectionTenGoldM1(SectionTenGoldM1Config(enabled=True)).analyze(
-        _context("XAUUSD", Timeframe.M1, frame)
+        _gold_context(frame, m5)
     )
 
     assert signal.score > 0.0
     assert signal.invalidation_price is not None
     assert signal.details["wait_bars"] == 1
+    assert signal.details["confirmation_timeframe"] == "M5"
+
+
+def test_section_ten_rejects_an_m1_retest_against_the_closed_m5_slope() -> None:
+    index = pd.date_range("2026-08-01", periods=250, freq="1min", tz=UTC)
+    close = np.full(len(index), 100.0)
+    high = np.full(len(index), 101.0)
+    low = np.full(len(index), 99.0)
+    close[-2], high[-2], low[-2] = 104.0, 104.5, 100.0
+    close[-1], high[-1], low[-1] = 102.0, 103.0, 101.0
+    m1 = pd.DataFrame(
+        {
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": 100.0,
+            "spread": 1.0,
+        },
+        index=index,
+    )
+    m5_index = pd.date_range("2026-07-31", periods=300, freq="5min", tz=UTC)
+    m5_close = np.linspace(110.0, 90.0, len(m5_index))
+    m5 = pd.DataFrame(
+        {
+            "open": m5_close,
+            "high": m5_close + 1.0,
+            "low": m5_close - 1.0,
+            "close": m5_close,
+            "volume": 100.0,
+            "spread": 1.0,
+        },
+        index=m5_index,
+    )
+
+    signal = SectionTenGoldM1(SectionTenGoldM1Config(enabled=True)).analyze(
+        _gold_context(m1, m5)
+    )
+
+    assert signal.score == 0.0
+    assert "M5 EMA slope disagrees" in signal.reasoning
 
 
 def test_section_ten_keeps_the_exit_it_was_measured_on() -> None:
-    """Break-even COSTS section ten fifteen R, on its own dry-run:
+    """Break-even cost the earlier S10 candidate fifteen R on identical entries.
+
+    This regression checks the exit routing, not the final promoted strategy's
+    performance; the current exact replay uses fixed SL/TP plus pause flatten.
 
         stop fixed        +25.29 R   EUR  +93.08
         stop protected    +10.29 R   EUR  +34.09

@@ -7,7 +7,8 @@ echo  ============================================
 echo   SECTIONS 5 THROUGH 10, EXACTLY AS CONFIGURED
 echo  ============================================
 echo.
-echo  Sections 5, 6, 7, 8, 9 and 10 are the current real-money allowlist.
+echo  Sections 7, 8 and 10 are the current real-money allowlist.
+echo  Sections 5, 6 and 9 stay enabled for shadow measurement, but are not live.
 echo  Every section runs on its own configured clock, with the account's
 echo  real position cap. No impulse or old order-block module is measured.
 echo.

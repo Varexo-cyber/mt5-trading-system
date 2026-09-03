@@ -138,100 +138,154 @@ class SectionNineSessionVwapM30:
 
 
 class SectionTenGoldM1:
-    """Enter XAUUSD only when a large M1 channel break gets its first retest."""
+    """Enter an M1 first retest only when the closed M5 trend agrees."""
 
     name = "section_ten_gold_m1"
 
     def __init__(self, config: SectionTenGoldM1Config | None = None) -> None:
         self.config = config or SectionTenGoldM1Config()
+        self._states: dict[str, dict[str, object]] = {}
 
     def analyze(self, ctx: MarketContext) -> Signal:
         cfg = self.config
         if not cfg.enabled or ctx.symbol not in cfg.allowed_symbols:
             return Signal.neutral(self.name, "section ten disabled for this market")
         series = ctx.series.get(Timeframe.parse(cfg.timeframe))
+        confirmation = ctx.series.get(Timeframe.parse(cfg.confirmation_timeframe))
         needed = max(240, cfg.channel_period + cfg.maximum_wait_bars + 20)
         if series is None or len(series.df) < needed:
             return Signal.neutral(self.name, f"section ten needs {needed} closed M1 bars")
+        confirmation_needed = cfg.confirmation_ema_period + cfg.confirmation_slope_bars + 2
+        if confirmation is None or len(confirmation.df) < confirmation_needed:
+            return Signal.neutral(
+                self.name,
+                f"section ten needs {confirmation_needed} closed M5 bars for confirmation",
+            )
+
+        m5_close = confirmation.df["close"].astype(float)
+        m5_ema = m5_close.ewm(span=cfg.confirmation_ema_period, adjust=False).mean()
+        m5_slope = float(m5_ema.iloc[-1] - m5_ema.iloc[-1 - cfg.confirmation_slope_bars])
 
         frame = series.df
-        entry_hour = int(frame.index[-1].hour)
-        if not cfg.entry_start_hour_utc <= entry_hour < cfg.entry_end_hour_utc:
-            return Signal.neutral(self.name, "outside the measured 03:00-19:00 UTC window")
         high = frame["high"].astype(float)
         low = frame["low"].astype(float)
         close = frame["close"].astype(float)
         atr = _atr(frame)
         upper = high.shift(1).rolling(cfg.channel_period).max()
         lower = low.shift(1).rolling(cfg.channel_period).min()
-        at = len(frame) - 1
+        current_stamp = frame.index[-1]
+        state = self._states.get(ctx.symbol)
+        if state is not None and state["last_seen"] == current_stamp:
+            return state["last_signal"]  # type: ignore[return-value]
+        if state is None or state["last_seen"] not in frame.index:
+            state = {
+                "last_seen": None,
+                "candidate": None,
+                "last_signal": Signal.neutral(self.name, "section ten warming its lifecycle"),
+            }
+            start = max(cfg.channel_period + 14, len(frame) - cfg.maximum_wait_bars * 3)
+        else:
+            start = int(frame.index.searchsorted(state["last_seen"], side="right"))
 
-        start = max(220, at - cfg.maximum_wait_bars)
-        for broken_at in range(at - 1, start - 1, -1):
-            unit = float(atr.iloc[broken_at])
-            if not np.isfinite(unit) or unit <= 0.0:
-                continue
-            broken_close = float(close.iloc[broken_at])
-            if broken_close > float(upper.iloc[broken_at]):
-                direction, level = 1, float(upper.iloc[broken_at])
-            elif broken_close < float(lower.iloc[broken_at]):
-                direction, level = -1, float(lower.iloc[broken_at])
-            else:
-                continue
-            if direction * (broken_close - level) < cfg.minimum_break_atr * unit:
-                continue
-
-            already_resolved = False
-            for check_at in range(broken_at + 1, at):
-                check_close = float(close.iloc[check_at])
+        signal = Signal.neutral(
+            self.name,
+            f"no first retest after a {cfg.minimum_break_atr:.2f}-ATR M1 channel break",
+        )
+        candidate = state["candidate"]
+        for at in range(start, len(frame)):
+            stamp = frame.index[at]
+            consumed = False
+            if candidate is not None:
+                direction = int(candidate["direction"])
+                level = float(candidate["level"])
+                unit = float(candidate["unit"])
+                age = int(candidate["age"]) + 1
+                check_close = float(close.iloc[at])
                 failed = (
                     check_close < level - cfg.stop_beyond_atr * unit
                     if direction > 0
                     else check_close > level + cfg.stop_beyond_atr * unit
                 )
                 touched = (
-                    float(low.iloc[check_at]) <= level + cfg.retest_tolerance_atr * unit
+                    float(low.iloc[at]) <= level + cfg.retest_tolerance_atr * unit
                     if direction > 0
-                    else float(high.iloc[check_at]) >= level - cfg.retest_tolerance_atr * unit
+                    else float(high.iloc[at]) >= level - cfg.retest_tolerance_atr * unit
                 )
-                if failed or touched:
-                    already_resolved = True
-                    break
-            if already_resolved:
-                continue
+                if failed or age >= cfg.maximum_wait_bars:
+                    candidate = None
+                elif touched:
+                    break_atr = float(candidate["break_atr"])
+                    candidate = None
+                    consumed = True
+                    in_session = (
+                        cfg.entry_start_hour_utc
+                        <= int(stamp.hour)
+                        < cfg.entry_end_hour_utc
+                    )
+                    in_dead_zone = (
+                        cfg.blocked_start_hour_utc
+                        <= int(stamp.hour)
+                        < cfg.blocked_end_hour_utc
+                    )
+                    if stamp == current_stamp and in_session and not in_dead_zone:
+                        m5_direction = 1 if m5_slope > 0.0 else -1 if m5_slope < 0.0 else 0
+                        if m5_direction == direction:
+                            entry = ctx.tick.mid if ctx.tick is not None else check_close
+                            stop = level - direction * cfg.stop_beyond_atr * unit
+                            if direction * (entry - stop) > 0.0:
+                                signal = Signal(
+                                    module=self.name,
+                                    score=cfg.score * direction,
+                                    confidence=cfg.confidence,
+                                    reasoning=(
+                                        "XAUUSD M1 first retest agrees with closed M5 trend"
+                                    ),
+                                    invalidation_price=stop,
+                                    key_levels=(level,),
+                                    details={
+                                        "timeframe": cfg.timeframe,
+                                        "confirmation_timeframe": cfg.confirmation_timeframe,
+                                        "break_level": level,
+                                        "break_atr": round(break_atr, 6),
+                                        "m5_ema_slope": round(m5_slope, 6),
+                                        "wait_bars": age,
+                                    },
+                                )
+                        else:
+                            signal = Signal.neutral(
+                                self.name,
+                                "M1 first retest rejected because closed M5 EMA slope disagrees",
+                            )
+                else:
+                    candidate = {**candidate, "age": age}
 
-            current_close = float(close.iloc[at])
-            failed_now = (
-                current_close < level - cfg.stop_beyond_atr * unit
-                if direction > 0
-                else current_close > level + cfg.stop_beyond_atr * unit
-            )
-            touched_now = (
-                float(low.iloc[at]) <= level + cfg.retest_tolerance_atr * unit
-                if direction > 0
-                else float(high.iloc[at]) >= level - cfg.retest_tolerance_atr * unit
-            )
-            if failed_now or not touched_now:
+            # A touch consumes the active setup. A new breakout may only begin
+            # on a later bar, never inside the same already-resolved candle.
+            if candidate is not None or consumed:
                 continue
-            entry = ctx.tick.mid if ctx.tick is not None else current_close
-            stop = level - direction * cfg.stop_beyond_atr * unit
-            if direction * (entry - stop) <= 0.0:
+            unit = float(atr.iloc[at])
+            if not np.isfinite(unit) or unit <= 0.0:
                 continue
-            return Signal(
-                module=self.name,
-                score=cfg.score * direction,
-                confidence=cfg.confidence,
-                reasoning="large XAUUSD M1 channel break returned to its level for the first time",
-                invalidation_price=stop,
-                key_levels=(level,),
-                details={
-                    "timeframe": cfg.timeframe,
-                    "break_level": level,
-                    "break_atr": round(direction * (broken_close - level) / unit, 6),
-                    "wait_bars": at - broken_at,
-                },
-            )
-        return Signal.neutral(
-            self.name,
-            f"no first retest after a {cfg.minimum_break_atr:.2f}-ATR M1 channel break",
-        )
+            broken_close = float(close.iloc[at])
+            if broken_close > float(upper.iloc[at]):
+                direction, level = 1, float(upper.iloc[at])
+            elif broken_close < float(lower.iloc[at]):
+                direction, level = -1, float(lower.iloc[at])
+            else:
+                continue
+            break_atr = direction * (broken_close - level) / unit
+            if break_atr < cfg.minimum_break_atr:
+                continue
+            candidate = {
+                "direction": direction,
+                "level": level,
+                "unit": unit,
+                "age": 0,
+                "break_atr": break_atr,
+            }
+
+        state["last_seen"] = current_stamp
+        state["candidate"] = candidate
+        state["last_signal"] = signal
+        self._states[ctx.symbol] = state
+        return signal

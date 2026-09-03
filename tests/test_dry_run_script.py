@@ -120,7 +120,6 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "failed_session_breakout",
-            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
@@ -302,7 +301,7 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         the over-count is BIASED: a retest that works leaves the level in a bar
         and yields one entry, a retest that fails sits on it and yields five.
         Duplicates are drawn from the losers."""
-        assert "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}" in SOURCE
+        assert "busy: dict = {row[0]: None for row in sections}" in SOURCE
         assert (
             "awake = [row for row in sections if busy[row[0]] is None or upto > busy[row[0]]]"
             in SOURCE
@@ -412,6 +411,48 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
 
         assert r == -1.0
         assert exit_at == index[1]
+
+    def test_fixed_trade_is_closed_at_its_configured_pre_pause_time(self) -> None:
+        """S10 has no break-even manager, but live closes it before gold's
+        daily pause. The replay must do the same instead of holding one quiet
+        trade for the rest of a 180-day run."""
+        from datetime import datetime, timedelta
+
+        import pandas as pd
+
+        from core.types import Direction
+        from scripts.dry_run_sections import _resolve
+
+        start = datetime(2026, 8, 24, 19, 0, tzinfo=UTC)
+        index = pd.DatetimeIndex(
+            [start + timedelta(minutes=30 * i) for i in range(1, 5)]
+        )
+        frame = pd.DataFrame(
+            {
+                "open": [100.0, 100.1, 100.2, 100.3],
+                "high": [100.2, 100.3, 100.4, 100.5],
+                "low": [99.8, 99.9, 100.0, 100.1],
+                "close": [100.1, 100.2, 100.3, 100.4],
+            },
+            index=index,
+        )
+
+        class _Idea:
+            direction = Direction.LONG
+            entry = 100.0
+            stop_loss = 99.0
+            take_profit = 102.0
+
+        fixed, exit_at, _managed, _managed_at = _resolve(
+            frame,
+            start,
+            _Idea(),
+            horizon_bars=2,
+            force_close_at=start.replace(hour=20, minute=50),
+        )
+
+        assert fixed == pytest.approx(0.4)
+        assert exit_at == index[-1]
 
     def test_the_slot_cap_is_applied_in_time_order(self) -> None:
         from datetime import datetime, timedelta
@@ -1661,7 +1702,6 @@ class TestAShadowedSectionCanActuallyVote:
         assert allowed == {
             "market_structure",
             "failed_session_breakout",
-            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
@@ -1674,14 +1714,12 @@ class TestAShadowedSectionCanActuallyVote:
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "failed_session_breakout",
-            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
         assert set(tuned.analysis.confluence.live_enabled_modules) == {
             "order_block",
             "failed_session_breakout",
-            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
@@ -1878,7 +1916,7 @@ class TestTheSweepDoesNotBuildEveryContextTwice:
     def test_each_section_keeps_its_own_open_position(self) -> None:
         """Sharing one `busy_until` across sections would be a different bug:
         refusing section three a trade because section two is in one."""
-        assert "busy: dict = {name: None for name, _engine, _sizer, _manage in sections}" in SOURCE
+        assert "busy: dict = {row[0]: None for row in sections}" in SOURCE
         assert "busy[name] = freed" in " ".join(SOURCE.split())
 
     def test_only_the_frames_something_reads_are_sliced(self) -> None:
@@ -2473,15 +2511,13 @@ class TestTheLiveDryRunMeasuresOnlyWhatRuns:
         assert "section_five_m5" not in live
         assert "section_nine_vwap_m30" not in live
 
-    def test_what_remains_live_is_the_four_that_earned_it(self) -> None:
-        """S6 +43.90 R, S7 +4.08 R, S8 +3.18 R on the owner's dry-run, and S10
-        which that run did not cover but which measured 153 trades and
-        +10.33 R on its own."""
+    def test_what_remains_live_excludes_the_long_window_six_failure(self) -> None:
+        """S6's recent +43.90R did not survive the 180-day replay: 885 trades
+        lost 71.65R, so the shorter winning regime cannot authorize it live."""
         live = set(self._settings().analysis.confluence.live_enabled_modules)
 
         assert live == {
             "failed_session_breakout",
-            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
@@ -2640,4 +2676,6 @@ class TestTheExitsAreNotModelledEither:
         assert "AND THE EXITS" in out
         assert "partial_close_at_r" in out
         assert "trailing_mode" in out
-        assert "ran to target untouched" in out
+        assert "fixed-exit" in out
+        assert "broker barriers" in out
+        assert "configured pause flatten" in out

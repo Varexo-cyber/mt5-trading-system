@@ -186,7 +186,13 @@ def _context(
 
 
 def _resolve(
-    frame: pd.DataFrame, start: datetime, idea, horizon_bars: int, manage=None, arrays=None
+    frame: pd.DataFrame,
+    start: datetime,
+    idea,
+    horizon_bars: int,
+    manage=None,
+    arrays=None,
+    force_close_at: datetime | None = None,
 ):
     """First touch of stop or target on the bars after entry.
 
@@ -245,12 +251,20 @@ def _resolve(
             frame.index,
             frame["high"].to_numpy(),
             frame["low"].to_numpy(),
+            frame["close"].to_numpy(),
         )
-    index, highs, lows = arrays
+    if len(arrays) == 3:
+        index, highs, lows = arrays
+        closes = frame["close"].to_numpy()
+    else:
+        index, highs, lows, closes = arrays
     first = int(index.searchsorted(start, side="left"))
-    last = min(first + horizon_bars, len(index))
+    if force_close_at is None:
+        last = min(first + horizon_bars, len(index))
+    else:
+        last = min(int(index.searchsorted(force_close_at, side="left")) + 1, len(index))
     if first >= last:
-        return None, None, None
+        return None, None, None, None
     long = idea.direction is Direction.LONG
     risk = abs(idea.entry - idea.stop_loss)
     reward_r = (abs(idea.take_profit - idea.entry) / risk) if risk > 0 else 0.0
@@ -303,6 +317,16 @@ def _resolve(
                 fixed_r, exit_at = -1.0, index[position]
             elif hit_target:
                 fixed_r, exit_at = reward_r, index[position]
+
+        # Reproduce the live pre-pause market close for selected comments.
+        forced_now = force_close_at is not None and index[position] >= force_close_at
+        if forced_now:
+            close_r = (float(closes[position]) - idea.entry) / risk * direction_sign
+            if fixed_r is None:
+                fixed_r, exit_at = close_r, index[position]
+            if managed_open:
+                managed_r, managed_at = close_r, index[position]
+                managed_open = False
         if fixed_r is not None and not managed_open:
             break
 
@@ -474,8 +498,8 @@ def _one_clock(
     M1 that makes the row pessimistic, and `_sweep_report` prints that caveat
     beside the number instead of leaving it to be remembered.
     """
-    out: dict = {name: [] for name, _engine, _sizer, _manage in sections}
-    busy: dict = {name: None for name, _engine, _sizer, _manage in sections}
+    out: dict = {row[0]: [] for row in sections}
+    busy: dict = {row[0]: None for row in sections}
     bars = frames[clock]
     window = bars[(bars.index >= start) & (bars.index <= end)]
     horizon = int(96 * clock.duration / resolve_on.duration)
@@ -499,6 +523,7 @@ def _one_clock(
         resolve_frame.index,
         resolve_frame["high"].to_numpy(),
         resolve_frame["low"].to_numpy(),
+        resolve_frame["close"].to_numpy(),
     )
 
     for step, bar_time in enumerate(window.index):
@@ -511,7 +536,9 @@ def _one_clock(
         if ctx is None:
             continue
 
-        for name, engine, sizer, section_manage in awake:
+        for row in awake:
+            name, engine, sizer, section_manage = row[:4]
+            flatten_time = row[4] if len(row) > 4 else None
             idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
             module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
             if not idea.approved:
@@ -552,6 +579,12 @@ def _one_clock(
                     )
                 )
                 continue
+            force_close_at = None
+            if flatten_time is not None:
+                hour, minute = (int(part) for part in flatten_time.split(":", 1))
+                force_close_at = upto.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if force_close_at <= upto:
+                    force_close_at += timedelta(days=1)
             r, exit_at, managed_r, managed_at = _resolve(
                 resolve_frame,
                 upto,
@@ -559,6 +592,7 @@ def _one_clock(
                 horizon_bars=horizon,
                 manage=section_manage,
                 arrays=resolve_arrays,
+                force_close_at=force_close_at,
             )
             # FREED AT THE EXIT THE ACCOUNT ACTUALLY TAKES.
             #
@@ -1333,6 +1367,10 @@ def main(argv: list[str] | None = None) -> None:
                         )
                     continue
                 group = []
+                flattened = {
+                    item.casefold()
+                    for item in settings.trade_management.pre_close_flatten_comments
+                }
                 for name in names:
                     tuned = _retimed(settings, name, tf_name)
                     only = [m for m in build_analysis_modules(tuned) if m.name == name]
@@ -1340,12 +1378,18 @@ def main(argv: list[str] | None = None) -> None:
                     fixed = {
                         item.casefold() for item in settings.trade_management.fixed_exit_comments
                     }
+                    flatten_time = None
+                    if comment.casefold() in flattened:
+                        flatten_time = settings.filters.session.evening_flat_by_class.get(
+                            spec.asset_class.value
+                        )
                     group.append(
                         (
                             name,
                             ConfluenceEngine(only, tuned.analysis.confluence),
                             PositionSizer(tuned),
                             None if comment.casefold() in fixed else manage,
+                            flatten_time,
                         )
                     )
                 produced = _one_clock(
@@ -1549,7 +1593,16 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     slots = settings.effective_max_positions(equity)
     everything = [d for key in keys for d in results[key] if d.outcome == "TRADE"]
     trades = _under_the_slot_cap(everything, slots)
-    managed = _break_even_rule(settings) is not None
+    fixed_comments = {item.casefold() for item in settings.trade_management.fixed_exit_comments}
+    fixed_names = {
+        name
+        for name, _clock in keys
+        if broker_comment(name, is_addon=False, experimental_live=True).casefold()
+        in fixed_comments
+    }
+    has_break_even = _break_even_rule(settings) is not None
+    all_fixed = len(fixed_names) == len(keys)
+    managed = has_break_even and not all_fixed
     closed = [d for d in trades if _live_exit(d, managed) is not None]
 
     print("\n" + "=" * 78)
@@ -1557,10 +1610,13 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     print("=" * 78)
     print("  " + ", ".join(f"{name} on {clock}" for name, clock in keys))
     print(f"  max {slots} positions at once at EUR {equity:.2f}, one per symbol")
-    print(
-        "  exit: "
-        + ("break-even stop, which is what the account runs" if managed else "fixed stop")
-    )
+    if all_fixed:
+        print("  exit: fixed broker stop/target, which these sections actually run")
+    elif fixed_names:
+        print("  exit: configured per section (fixed SL/TP or break-even)")
+        print("    fixed SL/TP: " + ", ".join(sorted(fixed_names)))
+    else:
+        print("  exit: break-even stop, which these sections actually run")
     if len(everything) != len(trades):
         print(f"  {len(everything) - len(trades)} signals dropped: every slot was already busy")
 
@@ -1593,7 +1649,8 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
             f"{won / len(rows):>5.1%} win  {row_r:+7.2f} R  EUR {row_money:+8.2f}"
         )
 
-    _break_even_verdict(trades, settings)
+    if managed:
+        _break_even_verdict(trades, settings)
     _is_this_real(trades, keys, managed)
     _shadow_report(results, settings, slots, managed, days)
 
@@ -1987,14 +2044,15 @@ def _gates_this_run_does_not_apply() -> None:
         f"  is actually spending the setups on any given day."
     )
 
-    print("\n  AND THE EXITS. Only ONE position-management rule is simulated here,")
-    print("  the break-even move. The account runs these on top of it:\n")
+    print("\n  AND THE EXITS. This replay simulates the break-even move for managed")
+    print("  families, fixed broker SL/TP for fixed-exit families, and their configured")
+    print("  pre-close flatten before a daily market pause. It does NOT simulate:\n")
     for name, what in EXITS_NOT_MODELLED:
         print(f"    {name:<30}{what}")
     print(
-        "\n  So a +1.00R here is a trade that ran to target untouched. Live, half"
-        "\n  of it came off at 1.5R and the rest trailed out somewhere else. Not"
-        "\n  necessarily worse -- different, and not measured by this script."
+        "\n  A managed-family +1.00R here is still not a complete live forecast:"
+        "\n  partials, trailing and the other exits above can change it. A fixed-exit"
+        "\n  family is judged on its broker barriers and configured pause flatten."
     )
     print(f"{'=' * 78}")
 
