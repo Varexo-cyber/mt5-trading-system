@@ -293,3 +293,47 @@ def test_the_gold_family_is_selectable_and_separate() -> None:
     assert set(FAMILIES["gold"]) == set(GOLD_CANDIDATES)
     assert not set(FAMILIES["index"]) & set(GOLD_CANDIDATES)
     assert set(FAMILIES["all"]) == set(FAMILIES["index"]) | set(GOLD_CANDIDATES)
+
+
+def test_a_mechanism_that_flips_sign_between_clocks_is_reported() -> None:
+    """The reading the first two gold runs needed a human to make.
+
+    `london_fade` on M15 came back at +0.060 R against the coin flip --
+    "the London open reverses on metals" -- and `london_drive` on M5 at
+    +0.029, which says the same open continues. Same event, same 360 days,
+    same thirteen markets; only the bar size differs, so at most one of them
+    is describing gold. Both sat in the ten best and nothing in the output
+    connected them.
+    """
+    from scripts.search_section_four import Cell, _disagreements
+
+    def _cell(name: str, clock: str, per_trade: float) -> Cell:
+        cell = Cell(name, clock, "metal")
+        # 200 trades over 200 distinct days, each worth `per_trade`.
+        for day in range(200):
+            cell.train.r.append(per_trade)
+            cell.train.day.append(day)
+            cell.train.when.append(day)
+        return cell
+
+    controls = {
+        ("M5", "metal"): _cell("__control__", "M5", 0.0),
+        ("M15", "metal"): _cell("__control__", "M15", 0.0),
+    }
+
+    agrees = _cell("comex_fade", "M5", 0.02), _cell("comex_fade", "M15", 0.03)
+    flips = _cell("london_fade", "M5", -0.04), _cell("london_fade", "M15", 0.06)
+
+    out: list[str] = []
+    import builtins
+
+    real_print = builtins.print
+    builtins.print = lambda *a, **k: out.append(" ".join(str(x) for x in a))
+    try:
+        _disagreements([*agrees, *flips], controls)
+    finally:
+        builtins.print = real_print
+
+    text = "\n".join(out)
+    assert "london_fade" in text, "a mechanism that flips sign was not reported"
+    assert "comex_fade" not in text, "a mechanism that agrees was reported as a flip"

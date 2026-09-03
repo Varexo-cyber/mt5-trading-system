@@ -1055,6 +1055,53 @@ def _split_into(found: Trades, split: datetime, cell: Cell) -> None:
         target.when.append(when)
 
 
+def _disagreements(real: list[Cell], controls: dict) -> None:
+    """One mechanism, two clocks, opposite answers — the signature of noise.
+
+    WHY THIS IS WORTH PRINTING RATHER THAN LEAVING TO WHOEVER READS THE
+    TABLE. The gold run's best cell was `london_fade` on M15 at +0.060 R
+    against the coin flip, which reads as "the London open reverses on
+    metals". Four rows below it sat `london_drive` on M5 at +0.029, which
+    says the same open CONTINUES. The same event, the same 360 days, the
+    same thirteen markets, and the only difference is how the bars were
+    sliced -- so at most one of them can be describing gold, and the other
+    is describing the sample.
+
+    Both were among the ten best, neither cleared the bar, and nothing in
+    the output connected them. A reader who wanted `london_fade` to be real
+    would have had no reason to notice.
+
+    A mechanism whose sign flips between neighbouring clocks is not a
+    near miss to tune. It is the clearest evidence the grid produces that
+    there is nothing underneath.
+    """
+    edge: dict[tuple[str, str], float] = {}
+    for cell in real:
+        if len(cell.train) < 150:
+            continue
+        control = controls.get((cell.clock, cell.asset_class))
+        control_each = stats(control.train)[1] if control is not None else 0.0
+        edge[(cell.candidate, cell.clock)] = stats(cell.train)[1] - control_each
+
+    clocks_for: dict[str, list[tuple[str, float]]] = {}
+    for (name, clock), value in edge.items():
+        clocks_for.setdefault(name, []).append((clock, value))
+
+    split = [
+        (name, sorted(rows))
+        for name, rows in sorted(clocks_for.items())
+        if len(rows) > 1 and min(v for _c, v in rows) < 0 < max(v for _c, v in rows)
+    ]
+    if not split:
+        return
+    print(f"\n  DISAGREES WITH ITSELF ACROSS CLOCKS — {len(split)} mechanisms")
+    print("    Beating the coin flip on one clock and losing to it on another,")
+    print("    on the same event over the same days. At most one can be gold.")
+    for name, rows in split:
+        detail = ",  ".join(f"{clock} {value:+.3f}" for clock, value in rows)
+        print(f"    {name:<28}{detail}")
+
+
 def _report(cells: dict, args, costs: dict | None = None) -> None:
     """What survived, and if nothing did, what stopped each one.
 
@@ -1139,6 +1186,8 @@ def _report(cells: dict, args, costs: dict | None = None) -> None:
         print("    That is a threshold that does not match this feed, not a result.")
     if thin:
         print(f"\n  TOO THIN TO JUDGE — fired, but under 250 trades: {', '.join(thin)}")
+
+    _disagreements(real, controls)
 
     # TWO DIFFERENT QUANTITIES SAT IN ONE ROW WITH NOTHING SAYING SO. The R
     # column was NET of the random control and the sigma column was on the
