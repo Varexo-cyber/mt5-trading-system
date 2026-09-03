@@ -1,6 +1,38 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+
+rem ==================================================================
+rem  DRAAI VANUIT EEN KOPIE IN %TEMP%, EN DAT IS GEEN NETHEID.
+rem
+rem  cmd.exe leest een batchbestand NIET in een keer in. Het onthoudt een
+rem  byte-positie en gaat na elk commando terug naar de schijf voor de
+rem  volgende regel. Verandert het bestand ondertussen -- een git pull,
+rem  een update.cmd, een editor die opslaat -- dan hervat cmd op dezelfde
+rem  byte-positie in het NIEUWE bestand. Dat komt midden in een woord uit.
+rem
+rem  Precies dat gebeurde tijdens de `mean`-run van 3 september: de zoek-
+rem  tocht was klaar, en toen kwam er
+rem
+rem      'e' is not recognized as an internal or external command
+rem
+rem  gevolgd door DRAAIT: ... en de hele zoektocht NOG EEN KEER. Die `e`
+rem  is een halve `echo`. Er is niets mis met de zoektocht; het bestand
+rem  verschoof onder de uitvoering vandaan en cmd viel terug in het blok
+rem  erboven.
+rem
+rem  Een kopie in %TEMP% wordt door niets aangeraakt, dus die kan niet
+rem  verschuiven. ZOEK11_ROOT houdt de map van de repo vast, want in de
+rem  kopie wijst %~dp0 naar %TEMP% en dan vindt hij .venv-live niet.
+rem ==================================================================
+if not defined ZOEK11_ROOT set ZOEK11_ROOT=%~dp0
+if /i not "%~1"=="__uittemp" (
+  copy /y "%~f0" "%TEMP%\zoek11-actief.cmd" >nul
+  call "%TEMP%\zoek11-actief.cmd" __uittemp %1 %2 %3 %4
+  exit /b
+)
+shift
+
+cd /d "%ZOEK11_ROOT%"
 
 echo.
 echo  ==================================================================
