@@ -3955,6 +3955,14 @@ class SectionSixModelConfig(Base):
     threshold: float = Field(default=0.075, gt=0.0, le=3.0)
     stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
     long_only: bool = False
+    #: Closed bars of same-direction drift required before the model may fire.
+    #:
+    #: 0 disables it, which is the default so no other route changes. Section
+    #: six gold runs 12 -- one hour of M5 -- and that number was chosen on the
+    #: first 90 days, validated on the next 45, and only then checked against
+    #: the newest 45. Reading the whole window first and picking the best
+    #: lookback is how a filter that fits August gets built.
+    confirmation_bars: int = Field(default=0, ge=0, le=200)
     session_start_hour_utc: int | None = Field(default=None, ge=0, le=23)
     session_end_hour_utc: int | None = Field(default=None, ge=0, le=23)
     score: float = Field(default=70.0, ge=0.0, le=100.0)

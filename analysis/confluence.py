@@ -387,8 +387,7 @@ class ConfluenceEngine:
         profile = self.config.horizon_profiles[horizon]
 
         strategy_owned = any(
-            family in setup_family
-            for family in self.config.strategy_owned_entry_families
+            family in setup_family for family in self.config.strategy_owned_entry_families
         )
 
         against_the_tide = (

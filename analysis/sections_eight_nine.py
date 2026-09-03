@@ -218,14 +218,10 @@ class SectionTenGoldM1:
                     candidate = None
                     consumed = True
                     in_session = (
-                        cfg.entry_start_hour_utc
-                        <= int(stamp.hour)
-                        < cfg.entry_end_hour_utc
+                        cfg.entry_start_hour_utc <= int(stamp.hour) < cfg.entry_end_hour_utc
                     )
                     in_dead_zone = (
-                        cfg.blocked_start_hour_utc
-                        <= int(stamp.hour)
-                        < cfg.blocked_end_hour_utc
+                        cfg.blocked_start_hour_utc <= int(stamp.hour) < cfg.blocked_end_hour_utc
                     )
                     if stamp == current_stamp and in_session and not in_dead_zone:
                         m5_direction = 1 if m5_slope > 0.0 else -1 if m5_slope < 0.0 else 0

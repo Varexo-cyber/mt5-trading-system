@@ -120,6 +120,7 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "failed_session_breakout",
+            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
@@ -1708,6 +1709,7 @@ class TestAShadowedSectionCanActuallyVote:
         assert allowed == {
             "market_structure",
             "failed_session_breakout",
+            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
@@ -1720,12 +1722,14 @@ class TestAShadowedSectionCanActuallyVote:
 
         assert set(settings.analysis.confluence.live_enabled_modules) == {
             "failed_session_breakout",
+            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
         assert set(tuned.analysis.confluence.live_enabled_modules) == {
             "order_block",
             "failed_session_breakout",
+            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }
@@ -2517,13 +2521,24 @@ class TestTheLiveDryRunMeasuresOnlyWhatRuns:
         assert "section_five_m5" not in live
         assert "section_nine_vwap_m30" not in live
 
-    def test_what_remains_live_excludes_the_long_window_six_failure(self) -> None:
-        """S6's recent +43.90R did not survive the 180-day replay: 885 trades
-        lost 71.65R, so the shorter winning regime cannot authorize it live."""
+    def test_the_live_allowlist_is_the_four_the_owner_chose(self) -> None:
+        """S6 came off on 3 September and went back on the same day.
+
+        The measurement that took it off is not disputed and is not softened
+        here: 885 trades over 180 days, 24.5% win, -71.65 R. The recent +43.90R
+        was one regime.
+
+        It is back because two things changed under it -- a causal 12-bar M5
+        confirmation, and position management finally reaching it at all (it
+        sat on `fixed_exit_comments`, so the manager returned early and no
+        break-even ever ran) -- and because the owner asked to forward-test
+        that combination. Its section breaker is what bounds it.
+        """
         live = set(self._settings().analysis.confluence.live_enabled_modules)
 
         assert live == {
             "failed_session_breakout",
+            "section_six_gold_m5",
             "section_eight_trend_day_h1",
             "section_ten_gold_m1",
         }

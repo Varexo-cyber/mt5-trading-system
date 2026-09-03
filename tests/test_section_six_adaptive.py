@@ -87,4 +87,11 @@ def test_live_overlay_keeps_the_measured_gold_exit_and_rejects_spx() -> None:
     assert settings.analysis.confluence.target_r_multiple_by_family["section_six_gold_m5"] == 3.0
     assert settings.analysis.confluence.strategy_owned_entry_families == ("section_six_gold_m5",)
     assert "section_six_gold_m5" in settings.analysis.confluence.target_reach_advisory_families
-    assert "JARVIS-S6-AU-M5" in settings.trade_management.fixed_exit_comments
+    # OFF THE FIXED-EXIT LIST ON 3 SEPTEMBER, and that is the whole change the
+    # owner asked for. While the label sat there the manager returned early and
+    # this route received NO position management -- not live and not in the dry
+    # run -- so "dry run with position management" could not be done at all.
+    # On the same 180-day entries, break-even alone moved the outcome from
+    # -53.23R to +36.42R, and that figure still stood on the broken offset.
+    assert "JARVIS-S6-AU-M5" not in settings.trade_management.fixed_exit_comments
+    assert settings.analysis.section_six_gold_m5.confirmation_bars == 12
