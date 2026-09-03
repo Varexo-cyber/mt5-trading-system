@@ -21,11 +21,17 @@ if not exist ".venv-live\Scripts\python.exe" (
   exit /b 1
 )
 
-if "%~1"=="" (
-  ".venv-live\Scripts\python.exe" scripts\backtest_playbooks.py --days 90
-) else (
-  ".venv-live\Scripts\python.exe" scripts\backtest_playbooks.py %*
-)
+rem EEN KAAL GETAL IS EEN AANTAL DAGEN, dezelfde scheefstand als in
+rem scorecard.cmd: `backtest.cmd 90` gaf een argparse-usage terug omdat het
+rem script alleen --days kent, terwijl elke andere launcher hier een kaal
+rem getal aanneemt.
+set ARGS=%*
+if "%~1"=="" set ARGS=--days 90
+set ISGETAL=0
+echo %~1| findstr /r /c:"^[0-9][0-9]*$" >nul 2>&1 && set ISGETAL=1
+if "%ISGETAL%"=="1" set ARGS=--days %*
+
+".venv-live\Scripts\python.exe" scripts\backtest_playbooks.py %ARGS%
 
 echo.
 pause
