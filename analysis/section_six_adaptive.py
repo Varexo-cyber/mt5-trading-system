@@ -280,6 +280,35 @@ class _SectionSixModel:
                     self.name,
                     f"outside measured {start:02d}:00-{end:02d}:00 UTC gold session",
                 )
+        # ONE HOUR OF MOMENTUM IN THE SAME DIRECTION, on already-closed bars.
+        #
+        # The full 180-day broker replay put this route at 885 trades, 24.5%
+        # and -71.65R. The strong recent month was regime, not edge. This is
+        # the one causal filter that survived being split before it was
+        # looked at: first 90 days +57.16R, next 45 validated +4.14R, and only
+        # then the newest 45 at +46.33R.
+        #
+        # Causal on purpose -- `confirmation_bars` CLOSED bars back, no part of
+        # the forming bar -- because a filter that peeks is how a backtest
+        # invents an edge that live cannot take.
+        #
+        # It is a filter, not a rescue. June and July stayed negative in the
+        # exact engine replay and the drawdown is still around -51R. The owner
+        # is forward-testing this knowingly.
+        if cfg.confirmation_bars > 0:
+            closes = series.df["close"].astype(float)
+            if len(closes) <= cfg.confirmation_bars:
+                return Signal.neutral(
+                    self.name, f"needs {cfg.confirmation_bars + 1} closed {cfg.timeframe} bars"
+                )
+            drift = float(closes.iloc[-1]) - float(closes.iloc[-1 - cfg.confirmation_bars])
+            if drift * direction <= 0.0:
+                return Signal.neutral(
+                    self.name,
+                    f"{cfg.confirmation_bars} closed {cfg.timeframe} bars do not confirm "
+                    f"the direction ({drift:+.2f})",
+                )
+
         price = ctx.tick.mid if ctx.tick is not None else float(series.df["close"].iloc[-1])
         return Signal(
             module=self.name,

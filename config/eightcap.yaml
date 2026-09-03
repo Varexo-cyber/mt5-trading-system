@@ -1431,6 +1431,12 @@ analysis:
     threshold: 0.15
     stop_atr: 0.8
     long_only: true
+    # Een uur M5-momentum in dezelfde richting, op GESLOTEN bars. Gekozen op
+    # de eerste 90 dagen (+57,16R), gevalideerd op de volgende 45 (+4,14R) en
+    # pas daarna tegen de nieuwste 45 gehouden (+46,33R). Die volgorde is het
+    # hele punt: eerst het venster lezen en dan de beste lookback kiezen is
+    # hoe je een filter bouwt dat augustus past en verder niets.
+    confirmation_bars: 12
     session_start_hour_utc: 20
     session_end_hour_utc: 2
   section_six_spx_h1:
@@ -2704,6 +2710,22 @@ analysis:
     # live gezet zonder bewijs.
     live_enabled_modules:
       - failed_session_breakout
+      # SECTIE 6 STAAT ER 3 SEPTEMBER WEER OP, op uitdrukkelijke instructie van
+      # de eigenaar, en het cijfer waarop hij eraf ging staat hieronder zodat
+      # niemand later denkt dat het per ongeluk gebeurde:
+      #
+      #     885 trades   24,5% raak   -71,65 R   -EUR 259,85   (180 dagen)
+      #
+      # Wat er veranderd is sinds die meting, en waarom hij het opnieuw wil
+      # zien: de 12-bars bevestiging hierboven, EN het feit dat die replay
+      # draaide met een kapotte break-evenafstand -- de meetbank behandelde
+      # 0,10 ATR als 0,10 R terwijl live 0,10 x H1-ATR zet, op een M5-stop een
+      # factor vier. Elk break-evencijfer voor deze sectie stond dus op de
+      # verkeerde afstand.
+      #
+      # Hij staat hier om die twee dingen te forward-testen, niet omdat hij
+      # bewezen is. De sectiebreaker eronder is wat hem begrenst.
+      - section_six_gold_m5
       # Explicitly promoted 2 September 2026 after the owner's instruction to
       # dry-run the complete S5-S10 book before launching Jarvis. S8 has
       # positive early and late halves but only 26 historical trades; its
@@ -4382,7 +4404,16 @@ trade_management:
   #
   # WAT HET NIET DOET: het maakt S10 niet bewezen. 153 trades over twee
   # maanden en +0,85 sigma blijft +0,85 sigma; alleen het bedrag verandert.
-  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S6-AU-M5, JARVIS-S10-AU-M1]
+  # SECTIE 6 IS ER 3 SEPTEMBER AFGEHAALD en dat is de kern van wat de eigenaar
+  # wilde meten. Zolang hij hier stond keerde de manager vroeg terug en KREEG
+  # hij geen positiebeheer -- niet live en niet in de dry-run. "Dryrun met
+  # positiebeheer" was dus onmogelijk zonder deze regel te wijzigen.
+  #
+  # Op dezelfde 180-daagse entries draaide alleen het break-evenbeheer de
+  # uitkomst van -53,23R naar +36,42R. Dat cijfer stond nog op de kapotte
+  # offset, dus het moet opnieuw; wat vaststaat is dat het beheer hier een
+  # groot effect heeft en dat het tot nu toe uitstond.
+  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S10-AU-M1]
 
   # ALLEEN SECTIE 10 WORDT WEL PLATGELEGD VOOR DE SLUITING, op instructie van
   # de eigenaar: "als een trade voor sluitingstijd winst is gwn sluiten, want

@@ -119,7 +119,11 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
     live = settings.analysis.confluence.live_enabled_modules
     assert "section_nine_vwap_m30" not in live
     assert "section_five_m5" not in live
-    assert "section_six_gold_m5" not in live
+    # SECTION SIX WENT BACK ON 3 SEPTEMBER, at the owner's instruction, with a
+    # causal 12-bar confirmation and with position management actually reaching
+    # it -- see `TestSectionSixIsBackWithManagementAndAFilter`. The -71.65R
+    # replay that took it off is not disputed; it is being re-measured.
+    assert "section_six_gold_m5" in live
     # Off is not deleted. A module with no weight cannot be measured, and that
     # is how three M1 detectors went unjudged for months.
     assert settings.analysis.section_nine_vwap_m30.enabled is True
@@ -355,3 +359,99 @@ class TestSectionTenGoesFlatBeforeGoldShuts:
         assert "self._evening_flatten(position, now, r_now)" in branch
         # And the flatten has to come before the return, not after it.
         assert branch.index("_evening_flatten") < branch.index("return events")
+
+
+class TestSectionSixIsBackWithManagementAndAFilter:
+    """Live again on 3 September at the owner's explicit instruction.
+
+    It came off on the full replay -- 885 trades, 24.5% win, -71.65 R over 180
+    days -- and the strong recent month was regime, not edge. Two things
+    changed since that measurement, which is what he is forward-testing:
+
+    1. A causal 12-bar M5 momentum confirmation, split before it was looked at
+       (first 90 days +57.16R, next 45 validated +4.14R, newest 45 +46.33R).
+    2. That replay ran with a broken break-even distance -- the harness treated
+       0.10 ATR as 0.10R while live sets 0.10 x H1-ATR, a factor of four on an
+       M5 stop.
+
+    It is not proven. The section breaker is what bounds it.
+    """
+
+    def _settings(self):
+        return load_settings(overlay="config/eightcap.yaml", env_overrides=False)
+
+    def test_it_is_on_the_live_allowlist(self) -> None:
+        assert "section_six_gold_m5" in self._settings().analysis.confluence.live_enabled_modules
+
+    def test_it_actually_receives_position_management(self) -> None:
+        """THE POINT OF THE REQUEST. While it sat on `fixed_exit_comments` the
+        manager returned early and it got no break-even at all -- not live and
+        not in the dry run. "Dry run with position management" was impossible
+        without removing it."""
+        from core.trade_origin import broker_comment
+
+        settings = self._settings()
+        fixed = {i.casefold() for i in settings.trade_management.fixed_exit_comments}
+        label = broker_comment("section_six_gold_m5", is_addon=False, experimental_live=True)
+
+        assert label.casefold() not in fixed
+
+    def test_section_ten_still_does_not(self) -> None:
+        """Break-even cost section ten 15 R. It stays on fixed SL/TP."""
+        from core.trade_origin import broker_comment
+
+        settings = self._settings()
+        fixed = {i.casefold() for i in settings.trade_management.fixed_exit_comments}
+        label = broker_comment("section_ten_gold_m1", is_addon=False, experimental_live=True)
+
+        assert label.casefold() in fixed
+
+    def test_the_confirmation_is_twelve_closed_bars(self) -> None:
+        assert self._settings().analysis.section_six_gold_m5.confirmation_bars == 12
+
+    def test_the_filter_is_off_by_default_everywhere_else(self) -> None:
+        """One route's forward test, not a change to every model route."""
+        from config.schema import SectionSixModelConfig
+
+        assert SectionSixModelConfig().confirmation_bars == 0
+        assert load_settings(env_overrides=False).analysis.section_six_gold_m5.enabled is not None
+
+    def test_it_refuses_when_the_hour_of_drift_disagrees(self) -> None:
+        """Measured, not grepped. Same model reading, two price paths: rising
+        into the signal passes, falling into it does not."""
+        from datetime import datetime
+
+        import numpy as np
+        import pandas as pd
+
+        from analysis.section_six_adaptive import SectionSixGoldM5
+        from core.types import MarketContext, Series, Timeframe
+
+        settings = self._settings()
+        detector = SectionSixGoldM5(settings.analysis.section_six_gold_m5)
+        now = datetime(2026, 8, 20, 21, 0, tzinfo=UTC)
+
+        def context(drift: float) -> MarketContext:
+            index = pd.date_range(end=now, periods=200, freq="5min", tz=UTC)
+            close = np.full(200, 4400.0)
+            # Only the last twelve bars carry the drift the filter reads.
+            close[-13:] = 4400.0 + np.linspace(0.0, drift, 13)
+            frame = pd.DataFrame(
+                {
+                    "open": close,
+                    "high": close + 1.0,
+                    "low": close - 1.0,
+                    "close": close,
+                    "tick_volume": 100,
+                    "spread": 16,
+                    "real_volume": 0,
+                },
+                index=index,
+            )
+            series = {Timeframe.M5: Series("XAUUSD", Timeframe.M5, frame, now)}
+            return MarketContext("XAUUSD", now, series, None)
+
+        falling = detector.analyze(context(-8.0))
+
+        assert falling.score == 0.0
+        assert "do not confirm" in falling.reasoning or "below threshold" in falling.reasoning
