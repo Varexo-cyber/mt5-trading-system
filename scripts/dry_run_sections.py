@@ -1103,6 +1103,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--section-ten-only",
+        action="store_true",
+        help=(
+            "walk only the markets section ten is allowed to trade. Everything "
+            "else in the universe is skipped rather than measured and refused."
+        ),
+    )
+    parser.add_argument(
         "--section-ten-symbols",
         default="",
         help=(
@@ -1323,6 +1331,31 @@ def main(argv: list[str] | None = None) -> None:
             )
             if missing:
                 print(f"  and {len(missing)} of them added to the fetch: {', '.join(missing)}")
+
+        # WALK ONLY THE MARKETS THE SECTION CAN TRADE.
+        #
+        # The first section-ten run spent 252 seconds on EURUSD and 505 on
+        # GBPUSD before it reached a single metal, with an hour left to go, and
+        # section ten cannot take a trade in either of them -- `allowed_symbols`
+        # refuses them on the first bar. Sixteen markets to measure six is not
+        # thoroughness, it is an hour of walking bars to watch a symbol filter
+        # say no twelve thousand times.
+        if args.section_ten_only:
+            allowed = tuple(settings.analysis.section_ten_gold_m1.allowed_symbols)
+            keep = [name for name in symbols if name in allowed]
+            if not keep:
+                raise SystemExit(
+                    "--section-ten-only left no markets: section ten allows "
+                    f"{', '.join(allowed) or '(nothing)'}, and none of them is in "
+                    "this run's universe. Add --section-ten-symbols metals, or name "
+                    "them with --symbols."
+                )
+            dropped = len(symbols) - len(keep)
+            symbols = keep
+            print(
+                f"section ten only: walking {len(symbols)} markets "
+                f"({', '.join(symbols)}), skipping {dropped} the section cannot trade"
+            )
 
         stored_window = store.window() if store is not None else None
         end = (
@@ -1927,6 +1960,7 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     if managed:
         _break_even_verdict(trades, settings)
     _manage_grid_report(trades)
+    _by_hour_report(trades, settings)
     _is_this_real(trades, keys, managed)
     _shadow_report(results, settings, slots, managed, days)
 
@@ -1977,6 +2011,86 @@ def _shadow_report(results: dict, settings, slots: int, managed: bool, days: int
         )
     print("  Switched off is not deleted. These are the numbers that decide")
     print("  whether a section comes back, so they have to be printed.")
+
+
+def _by_hour_report(trades: list[Decision], settings) -> None:
+    """Section ten's result per UTC hour, with its own blocked window marked.
+
+    THE ONE THING THAT DECIDES WHETHER 07:00-13:00 DESERVED TO BE SHUT.
+
+    That window was picked by splitting sixteen hours on the same 180 days the
+    section was calibrated on and cutting the worst six. On ANY sequence that
+    finds a bad block -- it is the definition of the worst six hours of a
+    sample, not evidence that those hours are bad. And the six in question are
+    the London morning, the busiest and most liquid gold has, which is exactly
+    where the most trades and therefore the most spread sit.
+
+    So the hours are open and this prints what they did. Read it the boring
+    way: is 07:00-13:00 negative AGAIN, on a wider set of markets, or was it
+    six hours that happened to be the worst once? A block that only looks bad
+    in the sample it was chosen from has not been confirmed by seeing it again
+    in that same sample -- it has to be bad here, with the metals added, to
+    mean anything.
+
+    Both halves of the period are printed for the same reason as the
+    break-even grid: one number per hour on one sample is how a window like
+    this gets chosen in the first place.
+    """
+    rows = [
+        row
+        for row in trades
+        if row.outcome == "TRADE" and row.result_r is not None and "section_ten" in row.module
+    ]
+    if not rows:
+        return
+    config = settings.analysis.section_ten_gold_m1
+    blocked = range(config.blocked_start_hour_utc, config.blocked_end_hour_utc)
+
+    order = sorted(row.when for row in rows)
+    split = order[int(len(order) * 0.6)]
+
+    print("\nSECTION TEN BY UTC HOUR — did the closed window deserve to be closed?")
+    print(
+        f"  entry window {config.entry_start_hour_utc:02d}:00-"
+        f"{config.entry_end_hour_utc:02d}:00 UTC, "
+        + (
+            f"blocked {config.blocked_start_hour_utc:02d}:00-"
+            f"{config.blocked_end_hour_utc:02d}:00"
+            if len(blocked)
+            else "no blocked window"
+        )
+    )
+    print(f"    {'hour':<6}{'trades':>7}{'total R':>9}{'per trade':>11}{'early':>8}{'late':>8}   ")
+
+    by_hour: dict[int, list[Decision]] = {}
+    for row in rows:
+        by_hour.setdefault(int(row.when.hour), []).append(row)
+
+    for hour in sorted(by_hour):
+        got = by_hour[hour]
+        values = [r.result_r for r in got if r.result_r is not None]
+        early = [r.result_r for r in got if r.when < split and r.result_r is not None]
+        late = [r.result_r for r in got if r.when >= split and r.result_r is not None]
+        mark = "  <- was blocked" if hour in blocked else ""
+        print(
+            f"    {hour:02d}:00 {len(values):>6}{sum(values):>+9.2f}"
+            f"{sum(values) / len(values):>+11.3f}{sum(early):>+8.2f}{sum(late):>+8.2f}{mark}"
+        )
+
+    old_block = [r.result_r for r in rows if 7 <= int(r.when.hour) < 13 and r.result_r is not None]
+    rest = [r.result_r for r in rows if not 7 <= int(r.when.hour) < 13 and r.result_r is not None]
+    if old_block and rest:
+        print(
+            f"\n  07:00-13:00 together: {len(old_block)} trades, {sum(old_block):+.2f} R "
+            f"({sum(old_block) / len(old_block):+.3f} per trade)"
+        )
+        print(
+            f"  every other hour:     {len(rest)} trades, {sum(rest):+.2f} R "
+            f"({sum(rest) / len(rest):+.3f} per trade)"
+        )
+        print("  Negative again, on the wider market set? Then the block goes back.")
+        print("  Positive, or level with the rest? Then it was the worst six hours")
+        print("  of one sample and shutting them cost trades for nothing.")
 
 
 def _grid_line(label, rows, early, late, pick) -> None:

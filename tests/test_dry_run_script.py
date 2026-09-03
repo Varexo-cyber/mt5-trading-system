@@ -1240,6 +1240,10 @@ class TestTheScanUniverseIsTheLiveOne:
                 # Offline measurement, same universe, no terminal.
                 "snel.cmd",
                 "ophalen.cmd",
+                # Section ten's replay. It starts from the same core universe
+                # and then narrows to the markets that section may trade, so it
+                # has to know the flag in order to hand it over.
+                "sectie10.cmd",
             }, f"{path} is not a measurement file and must not know about --core"
 
     def test_the_scanner_covers_every_class_except_stocks(self) -> None:
@@ -2814,3 +2818,108 @@ class TestTheBreakEvenGridComparesExitsAndNotEntries:
         for label, trigger, lock in MANAGE_GRID:
             assert 0.0 < trigger <= 2.0, label
             assert 0.0 <= lock < trigger, label
+
+
+class TestSectionTenRunsOnlyWhereItCanTrade:
+    """A run that walks markets the section refuses on the first bar.
+
+    The first section-ten replay spent 252 seconds on EURUSD and 505 on
+    GBPUSD before reaching a single metal, with an hour still to go, and
+    section ten cannot open a trade in either -- `allowed_symbols` refuses
+    them immediately. Sixteen markets to measure six is an hour of walking
+    bars to watch a symbol filter say no.
+    """
+
+    def test_the_universe_shrinks_to_the_sections_own_symbols(self) -> None:
+        from config.loader import load_settings
+
+        settings = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        )
+        allowed = set(settings.analysis.section_ten_gold_m1.allowed_symbols)
+        universe = ["EURUSD.i", "GBPUSD.i", "XAUUSD", "SPX500", "XAGUSD", "US30"]
+
+        kept = [name for name in universe if name in allowed]
+
+        assert kept == ["XAUUSD", "XAGUSD"]
+        assert "EURUSD.i" not in kept and "SPX500" not in kept
+
+    def test_section_ten_trades_more_than_one_metal(self) -> None:
+        """The widening of 3 September, pinned so it cannot silently revert."""
+        from config.loader import load_settings
+
+        settings = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        )
+        allowed = settings.analysis.section_ten_gold_m1.allowed_symbols
+
+        assert "XAUUSD" in allowed
+        assert len(allowed) > 1, "section ten is back to one market"
+        # Gold crosses and liquid silver only. Platinum, palladium and the
+        # industrial metals have a different volatility structure and much
+        # wider spreads, and the rule is calibrated on gold's.
+        assert all(name.startswith(("XAU", "XAG")) for name in allowed), allowed
+
+
+class TestSectionTenCanExpressAnOpenTradingDay:
+    """Equal blocked hours mean no blocked window, and that has to be sayable.
+
+    The validator demanded `blocked_start < blocked_end`, so switching the
+    07:00-13:00 block off had no expressible value: the nearest thing was a
+    one-hour block at some quiet hour, which is a different setting that
+    merely looks like "off". A question you cannot express is a question you
+    cannot answer, and this one is open -- that window was chosen by cutting
+    the worst six hours out of the same 180 days the section was calibrated
+    on, which finds a bad block in any sequence.
+    """
+
+    def test_equal_hours_are_accepted_and_block_nothing(self) -> None:
+        from config.schema import SectionTenGoldM1Config
+
+        config = SectionTenGoldM1Config(
+            entry_start_hour_utc=3,
+            entry_end_hour_utc=19,
+            blocked_start_hour_utc=3,
+            blocked_end_hour_utc=3,
+        )
+
+        blocked = range(config.blocked_start_hour_utc, config.blocked_end_hour_utc)
+        assert len(blocked) == 0
+        assert not any(
+            config.blocked_start_hour_utc <= hour < config.blocked_end_hour_utc
+            for hour in range(24)
+        )
+
+    def test_a_block_outside_the_entry_window_is_still_refused(self) -> None:
+        """Relaxing one bound must not relax the ordering itself."""
+        import pytest as _pytest
+        from pydantic import ValidationError
+
+        from config.schema import SectionTenGoldM1Config
+
+        with _pytest.raises(ValidationError):
+            SectionTenGoldM1Config(
+                entry_start_hour_utc=3,
+                entry_end_hour_utc=19,
+                blocked_start_hour_utc=1,
+                blocked_end_hour_utc=5,
+            )
+        with _pytest.raises(ValidationError):
+            SectionTenGoldM1Config(
+                entry_start_hour_utc=3,
+                entry_end_hour_utc=19,
+                blocked_start_hour_utc=13,
+                blocked_end_hour_utc=7,
+            )
+
+    def test_the_live_config_has_the_window_open(self) -> None:
+        from config.loader import load_settings
+
+        config = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.section_ten_gold_m1
+
+        assert config.blocked_start_hour_utc == config.blocked_end_hour_utc, (
+            "the 07:00-13:00 block is back on; if that was measured, say so in the "
+            "config comment beside it"
+        )

@@ -4036,10 +4036,25 @@ class SectionTenGoldM1Config(Base):
 
     @model_validator(mode="after")
     def _entry_windows_are_ordered(self) -> SectionTenGoldM1Config:
+        """The blocked window sits inside the entry window, or is empty.
+
+        EQUAL HOURS MEAN NO BLOCKED WINDOW, and that is a real setting rather
+        than a loophole. The detector asks
+        `blocked_start <= hour < blocked_end`, which is empty when the two are
+        equal, so the section trades its whole entry window.
+
+        This used to demand `blocked_start < blocked_end`, so switching the
+        block off had no expressible value at all -- the nearest thing was a
+        one-hour block at some hour that happened to be quiet, which is a
+        different setting that merely looks like "off". The 07:00-13:00 block
+        was chosen on the same 180 days the section was calibrated on, so
+        whether it deserves to exist is an open question, and a question you
+        cannot express is a question you cannot answer.
+        """
         if not (
             self.entry_start_hour_utc
             <= self.blocked_start_hour_utc
-            < self.blocked_end_hour_utc
+            <= self.blocked_end_hour_utc
             <= self.entry_end_hour_utc
         ):
             raise ValueError("section ten entry and blocked UTC windows are not ordered")
