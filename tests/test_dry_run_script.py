@@ -3005,3 +3005,36 @@ class TestTheLauncherEchoesSurviveCmd:
                 if re.search(r"(?<!\^)[<>]", stripped):
                     offenders.append(f"{path.name}:{number}: {stripped}")
         assert not offenders, "unescaped < or > in an echo line:\n" + "\n".join(offenders)
+
+
+class TestTheHeartbeatFiresOnEveryWindowLength:
+    """The progress line must not have a window length baked into it.
+
+    The first version beat every 20,000 bars and only above 40,000, which
+    silently assumed a 180-day run. A 30-day M1 window is about 29,000 bars --
+    gold trades 23 hours on weekdays only -- so it fell under the floor and
+    printed nothing for the whole walk. The threshold reproduced exactly the
+    silence it was added to remove, and it did so on the SHORTER run, which is
+    the one somebody reaches for because they do not want to wait.
+    """
+
+    def _beat(self, total_bars: int) -> int:
+        return max(total_bars // 8, 2_000)
+
+    def test_a_thirty_day_m1_window_still_reports(self) -> None:
+        # ~21 trading days x 1,380 M1 bars.
+        total = 29_000
+        beat = self._beat(total)
+        assert beat > 0
+        assert total // beat >= 4, "a 30-day walk would print fewer than four times"
+
+    def test_a_hundred_and_eighty_day_window_does_not_flood(self) -> None:
+        total = 235_000
+        beat = self._beat(total)
+        assert 4 <= total // beat <= 12, "a 180-day walk should print a handful of times"
+
+    def test_a_short_window_does_not_print_on_every_bar(self) -> None:
+        """An H1 clock over 180 days is about 3,000 bars. One line is fine;
+        three thousand is worse than silence."""
+        total = 3_000
+        assert total // self._beat(total) <= 1
