@@ -361,3 +361,107 @@ class TestTheCountersExplainTheTotal:
         assert "cut short" in source
         assert "for d in scratched" in source
         assert "for d in rescued" in source
+
+
+class TestTheOffsetIsAnAtrDistanceNotAnRMultiple:
+    """The simulator understated the protective step by two to four times.
+
+    `_break_even_rule` returns `break_even_offset_atr` (0.10) and `_resolve`
+    multiplied it by the trade's RISK. The argument was that both live
+    families use a one-ATR stop, so 0.10 ATR is 0.10R. Both halves are wrong.
+
+    Live applies `PositionManager._atr_offset`, whose ATR is `_compute_atr` --
+    "Recent H1 volatility", on every symbol and every section whatever clock it
+    trades. So the real comparison is an H1 ATR against a stop measured on M5,
+    M15 or M30:
+
+        section six      stop 0.80 x M5-ATR   -> offset about 0.44R, not 0.10R
+        impulse_retest   stop ~1.0 x M15-ATR  -> offset about 0.24R, not 0.10R
+
+    And it does not simply flatter or penalise: a higher protective stop
+    scratches for MORE when hit and is hit MORE OFTEN. Which way it moves a
+    section is not something to reason about, which is why it has to be at the
+    real distance.
+
+    The fixture at the top of this file kept passing throughout, because it
+    uses entry 100 / stop 99 -- R is exactly 1.0, so an R and a price point are
+    the same number there and the bug is invisible.
+    """
+
+    def test_a_wider_offset_scratches_higher(self) -> None:
+        """Same bars, same entry, two offsets. The larger one keeps more."""
+        bars = _bars((99.9, 100.6), (99.0, 100.1))
+
+        _fixed, _at, small = _run(LONG, bars, manage=(0.25, 0.10))
+        _fixed, _at, large = _run(LONG, bars, manage=(0.25, 0.40))
+
+        assert small is not None and large is not None
+        assert large > small, "a stop further above entry books more when taken"
+
+    def test_the_offset_is_price_so_it_scales_with_the_instrument(self) -> None:
+        """0.10 meant 0.10R before and means 0.10 of PRICE now. On a 1.10 quote
+        with a ten-pip stop those differ by a factor of a hundred, and the
+        arming guard refuses the second."""
+        from core.types import Direction
+
+        idea = _Idea(Direction.LONG, entry=1.1000, stop_loss=1.0990, take_profit=1.1030)
+        bars = _bars((1.0999, 1.1020), (1.0985, 1.1005))
+
+        _f, _a, sane = _run(idea, bars, manage=(0.25, 0.00010))
+        _f2, _a2, absurd = _run(idea, bars, manage=(0.25, 0.10))
+
+        assert sane is not None and sane > 0
+        assert absurd == -1.0, "a stop a tenth of a euro above entry can never arm"
+
+    def test_a_stop_cannot_be_armed_beyond_the_price(self) -> None:
+        """Live the broker refuses it and `_worth_moving` never gets there. The
+        simulator used to arm it anyway and then fill it on the same bar,
+        inventing profit no order could have taken.
+
+        Price reaches +0.30 here; an offset of 0.50 is past that."""
+        bars = _bars((99.9, 100.3), (98.5, 100.1))
+
+        _fixed, _at, managed = _run(LONG, bars, manage=(0.10, 0.50))
+
+        assert managed == -1.0, "unreachable offset means the stop never moved"
+
+    def test_the_rule_returns_the_multiple_and_says_so(self) -> None:
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+        from scripts.dry_run_sections import _break_even_rule
+
+        settings = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+        rule = _break_even_rule(settings)
+
+        assert rule is not None
+        _trigger, offset = rule
+        assert offset == settings.trade_management.break_even_offset_atr
+        assert _break_even_rule.__doc__ is not None
+        assert "offset_atr_multiple" in _break_even_rule.__doc__
+
+    def test_the_harness_reads_the_same_atr_live_does(self) -> None:
+        """H1, named in `_compute_atr`'s own docstring. A harness reading the
+        section's own clock would model a different rule."""
+        import inspect
+
+        from execution import manager
+        from scripts import dry_run_sections
+
+        assert "Recent H1 volatility" in inspect.getsource(manager.PositionManager._compute_atr)
+
+        harness = " ".join(inspect.getsource(dry_run_sections).split())
+        assert "hourly = frames.get(Timeframe.H1)" in harness
+        assert "offset_price = offset_atr * _hourly_atr(upto)" in harness
+
+    def test_an_unknown_atr_skips_the_move_rather_than_inventing_one(self) -> None:
+        """`_atr_offset` returns None live and nothing is modified. Zero would
+        put the stop exactly at entry, which on a long closes at the bid and is
+        a guaranteed loss of the spread -- the very cost the offset exists for."""
+        import inspect
+
+        from scripts import dry_run_sections
+
+        harness = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert "if offset_price > 0.0 else None" in harness

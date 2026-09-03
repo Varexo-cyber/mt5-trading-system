@@ -326,7 +326,11 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         """
         source = " ".join(SOURCE.split())
 
-        assert "freed = managed_at if section_manage is not None else exit_at" in source
+        # `resolved_manage`, not `section_manage`: the rule is resolved per
+        # trade now, and it comes back None when the H1 ATR is unknown -- live
+        # refuses to move a stop in that case too. Reading the CONFIGURED rule
+        # here would free the symbol on a managed exit that never happened.
+        assert "freed = managed_at if resolved_manage is not None else exit_at" in source
 
     def test_the_resolver_reports_both_exit_times(self) -> None:
         """Measured, not grepped. Break-even scratches this trade on the first
@@ -359,8 +363,12 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
             stop_loss = 1.0990
             take_profit = 1.1030
 
+        # OFFSET IN PRICE. Risk here is 0.0010, so a 0.10R protective step is
+        # 0.00010 of price. Passing 0.10 meant a stop a tenth of a euro above
+        # entry on a 1.10 quote -- a hundred times the whole stop -- and the
+        # arming guard correctly refused it.
         fixed, exit_at, managed, managed_at = _resolve(
-            frame, base, _Idea(), horizon_bars=96, manage=(0.25, 0.10)
+            frame, base, _Idea(), horizon_bars=96, manage=(0.25, 0.00010)
         )
 
         assert fixed == -1.0, "the original stop was taken on the last bar"
@@ -424,9 +432,7 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         from scripts.dry_run_sections import _resolve
 
         start = datetime(2026, 8, 24, 19, 0, tzinfo=UTC)
-        index = pd.DatetimeIndex(
-            [start + timedelta(minutes=30 * i) for i in range(1, 5)]
-        )
+        index = pd.DatetimeIndex([start + timedelta(minutes=30 * i) for i in range(1, 5)])
         frame = pd.DataFrame(
             {
                 "open": [100.0, 100.1, 100.2, 100.3],
