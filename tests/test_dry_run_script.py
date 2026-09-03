@@ -2912,14 +2912,30 @@ class TestSectionTenCanExpressAnOpenTradingDay:
                 blocked_end_hour_utc=7,
             )
 
-    def test_the_live_config_has_the_window_open(self) -> None:
+    def test_the_live_config_blocks_the_hours_the_replay_condemned(self) -> None:
+        """The window went open on 3 September and shut again the same day.
+
+        I argued the block was probably fitted noise -- the worst six hours of
+        any sequence are bad by construction. That is a fair general objection
+        and it was simply wrong here. `sectie10.cmd 180 goud`, 989 trades with
+        the hours open:
+
+            07:00-13:00 together   422 trades   -65.96 R   (-0.156 each)
+            every other hour       567 trades   +73.03 R   (+0.129 each)
+
+        Six of the six blocked hours negative, and 13:00 -- the first hour
+        outside the block -- the best in the day at +0.523. A different
+        measurement from the one that chose the window, landing on the same
+        boundary.
+
+        So this pins the hours, and it pins them with the number. Opening them
+        again means beating that measurement, not repeating the argument.
+        """
         from config.loader import load_settings
 
         config = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.section_ten_gold_m1
 
-        assert config.blocked_start_hour_utc == config.blocked_end_hour_utc, (
-            "the 07:00-13:00 block is back on; if that was measured, say so in the "
-            "config comment beside it"
-        )
+        assert config.blocked_start_hour_utc == 7
+        assert config.blocked_end_hour_utc == 13

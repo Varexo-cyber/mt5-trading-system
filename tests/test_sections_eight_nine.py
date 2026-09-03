@@ -111,20 +111,26 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
     assert settings.analysis.section_ten_gold_m1.minimum_break_atr == 0.75
     assert settings.analysis.section_ten_gold_m1.confirmation_timeframe == "M5"
     assert settings.analysis.section_ten_gold_m1.confirmation_slope_bars == 3
-    # THE 07:00-13:00 BLOCK IS OFF SINCE 3 SEPTEMBER, and equal hours are how
-    # "no blocked window" is spelt -- the detector asks
-    # `blocked_start <= hour < blocked_end`, which is empty when they match.
+    # THE HOURS ARE MEASURED NOW RATHER THAN INHERITED, and that is the whole
+    # difference between this assertion and the one it replaces.
     #
-    # This pinned 7 and 13 as though they were part of what the section was
-    # measured on. They are not: that window was chosen by splitting the SAME
-    # 180 days the section was calibrated on and cutting the worst six hours,
-    # which finds a bad block in any sequence. The section's own config header
-    # calls the hour selection "kalibratie, geen onafhankelijke holdout".
+    # The block went OFF on 3 September on the argument that it was fitted:
+    # the window had been chosen by splitting the same 180 days the section
+    # was calibrated on and cutting the worst six hours, which finds a bad
+    # block in any sequence. Fair objection, and wrong here. It went back on
+    # the same day on a second measurement that disagreed -- 989 trades with
+    # the hours open:
     #
-    # So what is pinned now is that the window is a valid one, not which hours
-    # it happens to name. If a replay puts the block back it should come back
-    # with a second measurement written beside it, and this assertion should
-    # not be what stops that.
+    #     07:00-13:00 together   422 trades   -65.96 R   (-0.156 each)
+    #     every other hour       567 trades   +73.03 R   (+0.129 each)
+    #
+    # Six of the six blocked hours negative, and 13:00 -- the first hour
+    # outside the block -- the best in the day. A different measurement from
+    # the one that chose the window, landing on the same boundary.
+    #
+    # Opening them again means beating that number, not repeating the
+    # argument. See `TestSectionTenCanExpressAnOpenTradingDay` in
+    # test_dry_run_script for the ordering rule that still allows it.
     ten = settings.analysis.section_ten_gold_m1
     assert (
         ten.entry_start_hour_utc
@@ -132,10 +138,8 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
         <= ten.blocked_end_hour_utc
         <= ten.entry_end_hour_utc
     )
-    assert ten.blocked_start_hour_utc == ten.blocked_end_hour_utc, (
-        "the 07:00-13:00 block is back on. That is allowed, but the config "
-        "comment beside it has to say which measurement put it back."
-    )
+    assert ten.blocked_start_hour_utc == 7
+    assert ten.blocked_end_hour_utc == 13
     assert "section_eight_trend_day_h1" in settings.analysis.confluence.live_enabled_modules
     assert "section_ten_gold_m1" in settings.analysis.confluence.live_enabled_modules
 
