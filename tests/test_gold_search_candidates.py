@@ -208,6 +208,50 @@ def test_a_sunday_open_does_not_become_the_midnight_window() -> None:
     assert int(np.count_nonzero(age >= 0)) == 12
 
 
+def test_the_resolver_holds_one_position_at_a_time() -> None:
+    """Trades may not overlap, because the account cannot hold overlapping ones.
+
+    THIS IS THE CORRECTION THE FIRST GOLD RUN FORCED. Every signal bar was
+    entered, so a mechanism that stays on while price is stretched had one
+    event counted as ten trades -- the first at the edge of the move and nine
+    progressively deeper into it. Breakout candidates fire once and were
+    unaffected; the fade candidates, which is why the family was written,
+    were measured on their mechanism diluted with entries the account would
+    never reach.
+    """
+    frame = _gold_bars(days=40, seed=23)
+    signals = stretch_fade(frame)
+    taken = resolve(frame, signals, stop_atr=1.0, ratio=1.0, cost_r=0.0)
+    assert len(taken) > 0
+
+    stamps = list(taken.when)
+    assert stamps == sorted(stamps)
+    assert len(set(stamps)) == len(stamps), "the same bar was entered twice"
+
+    # An always-on detector must now take strictly fewer trades than it has
+    # signals. If these are equal the constraint is not being applied.
+    fired = int(np.count_nonzero(signals[WARMUP:]))
+    assert len(taken) < fired
+
+
+def test_a_trade_that_reaches_no_barrier_still_occupies_the_symbol() -> None:
+    """An unresolved trade is excluded from the statistics, not from the book.
+
+    Freeing the symbol when a trade times out would let a candidate skip its
+    own dead trades and collect the next setup for free -- which flatters
+    precisely the candidates that produce the most unresolved trades.
+    """
+    # A flat market: nothing ever reaches a barrier, so every entry times out.
+    index = pd.date_range("2026-03-02 00:00", periods=600, freq="5min", tz="UTC")
+    price = np.full(600, 3300.0)
+    frame = pd.DataFrame(
+        {"open": price, "high": price + 1.0, "low": price - 1.0, "close": price}, index=index
+    )
+    always = np.ones(600, dtype=int)
+    taken = resolve(frame, always, stop_atr=50.0, ratio=1.0, cost_r=0.0, horizon=10)
+    assert len(taken) == 0, "a barrier was reached in a market that cannot reach one"
+
+
 def test_the_resolver_charges_the_cost_on_both_outcomes() -> None:
     """Cost comes off a winner and is added to a loser, never skipped.
 
