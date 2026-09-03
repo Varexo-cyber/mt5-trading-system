@@ -67,7 +67,9 @@ echo    zoek11.cmd                  1:1, stop 1,0 ATR   -- de eerste pass
 echo    zoek11.cmd mean             0,5:1, stop 1,5 ATR -- fadergeometrie
 echo    zoek11.cmd trend            2:1, stop 1,0 ATR   -- volgergeometrie
 echo    zoek11.cmd mean 720         zelfde, over 720 dagen
-echo    zoek11.cmd mean 360 M30     op andere klokken
+echo    zoek11.cmd base 360 M30 H1  tragere klokken  (M15 kost de helft van
+echo                                M5, en alle drie de beste cellen stonden
+echo                                op M15 -- trager is hier consequent beter)
 echo    zoek11.cmd mean 360 M15 XAUUSD    alleen goud
 echo.
 echo  WAAROM DIE GEOMETRIE EEN APARTE PASS IS. De eerste run testte zestien
@@ -118,6 +120,23 @@ if "%SCHUIF%"=="0" (
 
 if "%DAGEN%"=="" set DAGEN=360
 if "%KLOKKEN%"=="" set KLOKKEN=M5 M15
+
+rem EEN TWEEDE KLOK IS EEN KLOK, GEEN SYMBOOL. cmd splitst op spaties, dus
+rem `zoek11.cmd base 360 M30 H1` zette H1 op de symboolplek en dat werd
+rem `--symbols H1`. Geen enkel symbool heet H1, dus elke markt zou zijn
+rem overgeslagen met "no spec" en de run kwam terug met nul cellen -- wat er
+rem in de output uitziet als "gemeten en niets gevonden". Aanhalingstekens
+rem helpen niet en komma's ook niet: cmd knipt de regel dan alsnog.
+set ISKLOK=0
+if /i "%MARKT%"=="M1" set ISKLOK=1
+if /i "%MARKT%"=="M5" set ISKLOK=1
+if /i "%MARKT%"=="M15" set ISKLOK=1
+if /i "%MARKT%"=="M30" set ISKLOK=1
+if /i "%MARKT%"=="H1" set ISKLOK=1
+if /i "%MARKT%"=="H4" set ISKLOK=1
+if /i "%MARKT%"=="D1" set ISKLOK=1
+if "%ISKLOK%"=="1" set KLOKKEN=%KLOKKEN% %MARKT%
+if "%ISKLOK%"=="1" set MARKT=
 
 rem STANDAARD ALLE METALEN, niet alleen XAUUSD. Eightcap noteert goud ook
 rem tegen EUR, GBP, AUD en JPY, met zilver, platina, palladium en de
