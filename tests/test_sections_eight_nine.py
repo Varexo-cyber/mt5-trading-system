@@ -111,8 +111,31 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
     assert settings.analysis.section_ten_gold_m1.minimum_break_atr == 0.75
     assert settings.analysis.section_ten_gold_m1.confirmation_timeframe == "M5"
     assert settings.analysis.section_ten_gold_m1.confirmation_slope_bars == 3
-    assert settings.analysis.section_ten_gold_m1.blocked_start_hour_utc == 7
-    assert settings.analysis.section_ten_gold_m1.blocked_end_hour_utc == 13
+    # THE 07:00-13:00 BLOCK IS OFF SINCE 3 SEPTEMBER, and equal hours are how
+    # "no blocked window" is spelt -- the detector asks
+    # `blocked_start <= hour < blocked_end`, which is empty when they match.
+    #
+    # This pinned 7 and 13 as though they were part of what the section was
+    # measured on. They are not: that window was chosen by splitting the SAME
+    # 180 days the section was calibrated on and cutting the worst six hours,
+    # which finds a bad block in any sequence. The section's own config header
+    # calls the hour selection "kalibratie, geen onafhankelijke holdout".
+    #
+    # So what is pinned now is that the window is a valid one, not which hours
+    # it happens to name. If a replay puts the block back it should come back
+    # with a second measurement written beside it, and this assertion should
+    # not be what stops that.
+    ten = settings.analysis.section_ten_gold_m1
+    assert (
+        ten.entry_start_hour_utc
+        <= ten.blocked_start_hour_utc
+        <= ten.blocked_end_hour_utc
+        <= ten.entry_end_hour_utc
+    )
+    assert ten.blocked_start_hour_utc == ten.blocked_end_hour_utc, (
+        "the 07:00-13:00 block is back on. That is allowed, but the config "
+        "comment beside it has to say which measurement put it back."
+    )
     assert "section_eight_trend_day_h1" in settings.analysis.confluence.live_enabled_modules
     assert "section_ten_gold_m1" in settings.analysis.confluence.live_enabled_modules
 

@@ -624,7 +624,22 @@ class TestReadingHistoryBackThroughAFilterThatDidNotExistYet:
         assert "excluding trades opened in: transition" in out
         # Not merely hidden from the regime column: the detector that only ever
         # fired in `transition` has no trades left to be credited with.
-        assert "drift_continuation" not in out
+        #
+        # SCOPED TO THE DETECTOR TABLE, and for a real reason. This asserted
+        # the name was absent from the WHOLE report, which held only while
+        # `drift_continuation` had no section breaker. It got one on
+        # 3 September -- it was the largest loss in the live book and the only
+        # significant voter without an automatic stop -- and every breaker is
+        # listed in the running-sections table whether it has trades or not.
+        #
+        # That table is deliberately NOT filtered by regime: it reports the
+        # live breaker's own state, and that does not change because a report
+        # was asked to leave a regime out. Asserting on the whole report made
+        # adding a safety switch look like a filter bug.
+        halves = out.split("WHICH DETECTOR WAS BEHIND IT", 1)
+        assert len(halves) == 2, "the detector table is missing from the report"
+        detector_table = halves[1].split("HOW SURE", 1)[0]
+        assert "drift_continuation" not in detector_table
 
     def test_keeping_a_regime_reports_only_that_one(
         self, journal: Path, capsys
