@@ -66,7 +66,10 @@ echo  deed XAUUSD alleen in 22,6 minuten: 235.000 M1-bars over 180 dagen.
 echo.
 echo     180 dagen x 6 metalen  ~ 2 tot 2,5 uur
 echo     180 dagen x 1 metaal   ~ 25 min
-echo      90 dagen x 6 metalen  ~ 1 uur       <- begin hier als je wacht
+rem `<` IS EEN REDIRECT IN CMD, ook midden in een echo-regel. Deze pijl gaf
+rem "The system cannot find the file specified" omdat cmd invoer uit een
+rem bestand `-` probeerde te lezen. Het caret escapet hem.
+echo      90 dagen x 6 metalen  ~ 1 uur       ^<- begin hier als je wacht
 echo.
 echo  Elke 20.000 bars komt er een regel met hoeveel er te gaan is, zodat
 echo  stilte niet meer op vastlopen lijkt. De regel PER MARKT verschijnt pas

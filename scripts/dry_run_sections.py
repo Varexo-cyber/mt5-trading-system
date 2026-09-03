@@ -1370,20 +1370,30 @@ def main(argv: list[str] | None = None) -> None:
         # say no twelve thousand times.
         if args.section_ten_only:
             allowed = tuple(settings.analysis.section_ten_gold_m1.allowed_symbols)
-            keep = [name for name in symbols if name in allowed]
-            if not keep:
-                raise SystemExit(
-                    "--section-ten-only left no markets: section ten allows "
-                    f"{', '.join(allowed) or '(nothing)'}, and none of them is in "
-                    "this run's universe. Add --section-ten-symbols metals, or name "
-                    "them with --symbols."
-                )
-            dropped = len(symbols) - len(keep)
-            symbols = keep
+            if not allowed:
+                raise SystemExit("--section-ten-only: section ten allows no symbols at all")
+            # THE SECTION'S LIST *REPLACES* THE UNIVERSE, it does not filter it.
+            #
+            # This intersected the two, and that quietly threw away the whole
+            # point. `--core` is the sixteen markets the research was done on:
+            # eleven FX majors, gold, four indices. Five of section ten's six
+            # metals are not in it. So the intersection was {XAUUSD} and the
+            # run printed "walking 1 markets" and measured exactly the thing
+            # that did not need measuring, while claiming to test a widening
+            # to six.
+            #
+            # A section's `allowed_symbols` IS the universe for a run about
+            # that section. Anything in it that this broker does not list will
+            # fail its own fetch and say so per symbol, which is visible;
+            # silently dropping five markets is not.
+            dropped = [name for name in symbols if name not in allowed]
+            symbols = list(allowed)
             print(
-                f"section ten only: walking {len(symbols)} markets "
-                f"({', '.join(symbols)}), skipping {dropped} the section cannot trade"
+                f"section ten only: walking its own {len(symbols)} markets "
+                f"({', '.join(symbols)})"
             )
+            if dropped:
+                print(f"  skipping {len(dropped)} the section cannot trade")
 
         stored_window = store.window() if store is not None else None
         end = (
