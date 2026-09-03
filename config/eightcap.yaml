@@ -3907,6 +3907,52 @@ risk:
       maximum_loss_share: 0.60
       losing_streak: 8
 
+    # DRIFT_CONTINUATION, EN DIT IS EEN GAT DAT DICHT MOET, GEEN NIEUW BELEID.
+    #
+    # Elke andere stemmende module hier heeft een noodstop. Deze niet, en hij
+    # is de duurste van allemaal. Scorecard van 3 september, 30 dagen, 361
+    # gesloten trades op de echte rekening:
+    #
+    #     drift_continuation   108 trades   57 raak   -38,43R   23% kept
+    #     trend_momentum       118 trades   72 raak    -3,71R   21%
+    #     impulse_break         50 trades   33 raak    -1,30R
+    #     section_ten_gold_m1   16 trades   10 raak    +2,49R
+    #
+    # Het hele boek stond die maand op -29,49R. Trades waar deze module op
+    # meestemde staan op -38,43R, oftewel -0,356R per stuk tegen -0,082R voor
+    # het boek als geheel. Hij is niet de enige stem op die trades -- die tabel
+    # telt een trade mee bij elke detector die erop stond -- maar het verschil
+    # met de nummer twee is een factor elf.
+    #
+    # EN HET IS GEEN EERSTE KEER. Deze config schrijft hierboven al op:
+    #
+    #     drift_continuation   364 trades   -0,083R   -30,14R
+    #
+    # Toen bleef hij staan met de redenering "het probleem was nooit de
+    # detector, het was waar hij mocht kijken". Dat kan waar zijn. Maar de
+    # module die dat argument kreeg is vervolgens de enige die zonder
+    # automatische stop verder mocht, en dertig dagen later is hij opnieuw de
+    # grootste verliespost. Een breaker beslist die vraag niet -- hij zorgt dat
+    # de module hem zelf beantwoordt, in plaats van dat iemand er over een
+    # maand weer naar moet kijken.
+    #
+    # DIT ZET HEM NIET UIT. Zijn gewicht blijft 0,70 en hij blijft meestemmen.
+    # Dit is de schakelaar die hem uitzet als hij doet wat hij net deed, en
+    # verder niets. Dat gewicht aanpassen is een beslissing van de eigenaar en
+    # staat hier los van.
+    #
+    # DE GETALLEN. 40 trades minimum, want op 108 in dertig dagen is dat ruim
+    # twee weken en geen pechreeks. 60% verliezers over die 40: in het monster
+    # hierboven verloor hij 51 van de 108, dus 60% is duidelijk slechter dan
+    # wat hij nu al doet en vuurt op afwijkend gedrag in plaats van op ruis. De
+    # streak op 8 volgt `trend_momentum`, de module die qua tempo het meest op
+    # hem lijkt.
+    drift_continuation:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.60
+      losing_streak: 8
+
     # LEVEL_RETEST, en zijn noodstop is de losste van allemaal met opzet.
     #
     # Hij gaat live op 80.207 gemeten trades -- meer dan duizend keer het
