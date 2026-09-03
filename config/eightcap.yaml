@@ -1437,6 +1437,10 @@ analysis:
     # hele punt: eerst het venster lezen en dan de beste lookback kiezen is
     # hoe je een filter bouwt dat augustus past en verder niets.
     confirmation_bars: 12
+    # Afzonderlijk gescreend op de oude 90 dagen en de daaropvolgende 45:
+    # alleen dezelfde richting over 48 M5-bars bleef daar positief. De nieuwste
+    # 45 dagen werden pas na die keuze bekeken en waren eveneens positief.
+    secondary_confirmation_bars: 48
     session_start_hour_utc: 20
     session_end_hour_utc: 2
   section_six_spx_h1:
@@ -2733,9 +2737,8 @@ analysis:
       - section_eight_trend_day_h1
       - section_ten_gold_m1
 
-    # S6 is 3 september van live gehaald na de 180-daagse broker-replay:
-    # 885 trades, 24,5% raak en -71,65R. Hij blijft enabled en gewogen zodat
-    # toekomstige dry-runs kunnen tonen of een nieuw regime dit echt herstelt.
+    # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
+    # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
 
     # SECTIE 5 EN SECTIE 9 ZIJN ER 2 SEPTEMBER AFGEHAALD, op instructie van de
     # eigenaar, op de dry-run die hij voor zich had:
@@ -3485,11 +3488,11 @@ filters:
     # voordat de spread oploopt, en zo laat mogelijk zodat er zo min mogelijk
     # handelstijd verdwijnt.
     #
-    # LET OP WIE DIT RAAKT. Alleen posities die de manager bereiken. Sectie 5,
-    # 6 en 10 staan op `trade_management.fixed_exit_comments` en keren daar
-    # vroeg terug; van die drie is alleen sectie 10 via
-    # `pre_close_flatten_comments` uitgezonderd. Sectie 6 draagt zijn goud dus
-    # nog steeds door de avond, precies zoals het gemeten is.
+    # LET OP WIE DIT RAAKT. Alleen posities die de manager bereiken. Sectie 5
+    # en 10 staan op `trade_management.fixed_exit_comments`; alleen sectie 10
+    # krijgt de expliciete pre-close flatten. Sectie 6 heeft zijn afzonderlijke
+    # break-even-only pad en keert eveneens vóór de generieke avondsluiting
+    # terug, precies zoals de nieuwe 180-daagse replay hem heeft gemeten.
     evening_flat_asset_classes: [forex, stock, metal]
     evening_flat_by_class:
       index: "20:00"
@@ -4009,12 +4012,16 @@ risk:
       losing_streak: 7
     section_six_gold_m5:
       window: 30
-      minimum_trades: 15
+      minimum_trades: 20
       # Bij 3R is ~65% verliezers normaal en nog ruim winstgevend. De oude
       # 60%-grens kon dus een gezonde sample uitschakelen; 75% bewaakt het
       # echte omslagpunt zonder de noodrem te verwijderen.
       maximum_loss_share: 0.75
-      losing_streak: 10
+      losing_streak: 8
+      # Break-even can create many small winners while full-stop losses still
+      # make the route negative. Stop S6 when its latest recent expectancy
+      # is below zero even if its headline win rate still looks acceptable.
+      minimum_average_r: 0.0
     section_six_spx_h1:
       window: 30
       minimum_trades: 15
@@ -4414,6 +4421,9 @@ trade_management:
   # offset, dus het moet opnieuw; wat vaststaat is dat het beheer hier een
   # groot effect heeft en dat het tot nu toe uitstond.
   fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S10-AU-M1]
+  # S6 is exact op deze ene managementregel gemeten. Geen partial, trailing,
+  # giveback, health- of time-exit mag die gemeten route stilletjes veranderen.
+  break_even_only_comments: [JARVIS-S6-AU-M5]
 
   # ALLEEN SECTIE 10 WORDT WEL PLATGELEGD VOOR DE SLUITING, op instructie van
   # de eigenaar: "als een trade voor sluitingstijd winst is gwn sluiten, want

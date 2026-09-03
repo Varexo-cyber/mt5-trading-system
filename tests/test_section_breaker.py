@@ -127,6 +127,23 @@ class TestTheTwoRules:
 
         assert not assess(journal([-1.0] * 10), "candle_momentum", config).tripped
 
+    def test_negative_expectancy_stops_a_high_win_rate_section(self) -> None:
+        """Tiny protected wins must not hide fewer full-stop losses."""
+        config = SectionBreakerConfig(
+            window=10,
+            minimum_trades=10,
+            maximum_loss_share=0.75,
+            losing_streak=9,
+            minimum_average_r=0.0,
+        )
+        outcomes = [0.05] * 7 + [-0.25, -0.25, -0.25]
+
+        verdict = assess(journal(outcomes), "candle_momentum", config)
+
+        assert verdict.tripped
+        assert verdict.losses == 3
+        assert "average" in verdict.reason
+
 
 class TestAttribution:
     """A trade belongs to a module when that module carried weight and scored

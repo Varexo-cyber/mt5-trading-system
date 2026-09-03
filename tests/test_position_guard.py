@@ -270,6 +270,26 @@ def test_a_measured_fixed_exit_family_keeps_its_broker_stop_and_target() -> None
     assert manager.last_observation[held.ticket]["r_now"] == pytest.approx(0.8)
 
 
+def test_a_break_even_only_family_cannot_inherit_partial_or_trailing_exits() -> None:
+    """S6 was replayed with one rule; generic management is another system."""
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(
+        broker,
+        journal,
+        break_even_only_comments=("JARVIS-S6-AU-M5",),
+        break_even_at_r=10.0,
+        partial_close_at_r=0.5,
+    )
+    held = replace(position(), comment="JARVIS-S6-AU-M5")
+
+    at(broker, 2.0)
+    events = manager.manage([held], NOW)
+
+    assert events == []
+    assert broker.modified == []
+    assert broker.closed == []
+
+
 def test_the_peak_only_ratchets_upward() -> None:
     """A late retrace must not erase the fact that the trade was once ahead —
     that memory is the entire input to the give-back rule."""
@@ -2082,7 +2102,7 @@ class TestASharedIsNotCarriedThroughItsOwnClose:
         """The guard that stops this being widened back out by an edit."""
         from config.schema import SessionFilterConfig
 
-        with pytest.raises(ValueError, match="may only be earlier"):
+        with pytest.raises(ValueError, match="before the rollover ends"):
             SessionFilterConfig(
                 evening_flat_from="20:15",
                 evening_flat_by_class={"stock": "22:00"},

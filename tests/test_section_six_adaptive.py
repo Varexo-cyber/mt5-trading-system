@@ -74,6 +74,34 @@ def test_gold_route_does_not_emit_outside_its_measured_session() -> None:
     assert "outside measured" in signal.reasoning
 
 
+def test_both_closed_bar_horizons_must_confirm(monkeypatch) -> None:
+    """A local bounce is not enough while the four-hour leg still falls."""
+    from analysis import section_six_adaptive
+
+    ctx = _context("XAUUSD", Timeframe.M5)
+    frame = ctx.series[Timeframe.M5].df.copy()
+    frame.loc[:, "close"] = 100.0
+    frame.iloc[-1, frame.columns.get_loc("close")] = 101.0
+    frame.iloc[-49, frame.columns.get_loc("close")] = 102.0
+    series = Series("XAUUSD", Timeframe.M5, frame, NOW)
+    ctx = MarketContext(ctx.symbol, ctx.now, {Timeframe.M5: series}, ctx.tick)
+    monkeypatch.setattr(section_six_adaptive, "model_reading", lambda *_args: (-1.0, 1.0))
+    config = SectionSixModelConfig(
+        enabled=True,
+        timeframe="M5",
+        polarity=-1,
+        threshold=0.15,
+        long_only=True,
+        confirmation_bars=12,
+        secondary_confirmation_bars=48,
+    )
+
+    signal = SectionSixGoldM5(config).analyze(ctx)
+
+    assert signal.score == 0.0
+    assert "48 closed M5 bars do not confirm" in signal.reasoning
+
+
 def test_live_overlay_keeps_the_measured_gold_exit_and_rejects_spx() -> None:
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
 
@@ -95,3 +123,5 @@ def test_live_overlay_keeps_the_measured_gold_exit_and_rejects_spx() -> None:
     # -53.23R to +36.42R, and that figure still stood on the broken offset.
     assert "JARVIS-S6-AU-M5" not in settings.trade_management.fixed_exit_comments
     assert settings.analysis.section_six_gold_m5.confirmation_bars == 12
+    assert settings.analysis.section_six_gold_m5.secondary_confirmation_bars == 48
+    assert "JARVIS-S6-AU-M5" in settings.trade_management.break_even_only_comments
