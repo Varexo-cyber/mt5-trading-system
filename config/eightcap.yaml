@@ -4017,43 +4017,63 @@ risk:
       maximum_loss_share: 0.60
       losing_streak: 8
 
-    # DRIFT_CONTINUATION, EN DIT IS EEN GAT DAT DICHT MOET, GEEN NIEUW BELEID.
+    # DRIFT_CONTINUATION. DE BREAKER BLIJFT, DE ONDERBOUWING HIERONDER IS
+    # INGETROKKEN -- 4 september, en dit hoort er zo te staan.
     #
-    # Elke andere stemmende module hier heeft een noodstop. Deze niet, en hij
-    # is de duurste van allemaal. Scorecard van 3 september, 30 dagen, 361
-    # gesloten trades op de echte rekening:
+    # Wat ik beweerde: "trades waar deze module op meestemde staan op -38,43R,
+    # de grootste verliespost van het boek". Dat kan niet kloppen. Deze module
+    # staat NIET op `live_enabled_modules`, en `ConfluenceConfig.
+    # effective_weights` zet live het gewicht van alles buiten die lijst op
+    # 0,0. Hij wordt berekend, hij wordt gelogd, en hij beslist niets. Hij kan
+    # dus geen enkele live trade veroorzaakt hebben.
+    #
+    # Waar die -38,43R dan vandaan kwam staat in de docstring van diezelfde
+    # methode: de journal schreef de RUWE `weights` weg in plaats van de
+    # effectieve, en `scorecard.py` schrijft elke module met gewicht > 0 de
+    # trade toe. Modules die geen stem uitbrachten kregen zo het resultaat van
+    # trades die anderen namen. Dat is op 2 september gerepareerd (f2ab908),
+    # en het scorecard-venster van 5 augustus tot 3 september ligt er grotendeels
+    # VOOR. De detectortabel van die run is voor deze vraag dus niet bruikbaar.
+    #
+    # DE BREAKER BLIJFT STAAN, om twee redenen: hij kan niets kapotmaken (een
+    # noodstop zet alleen iets uit dat verliest) en hij is precies wat je wil
+    # hebben als deze module ooit wel op de allowlist komt. Wat vervalt is de
+    # bewering dat hij nu geld kost.
+    #
+    # Het cijfer hieronder blijft staan omdat het is wat er op het scherm
+    # stond, met deze waarschuwing erboven. Een ingetrokken conclusie
+    # weghalen maakt hem niet ongedaan, het maakt hem alleen onvindbaar.
+    #
+    # Scorecard van 3 september, 30 dagen, 361 gesloten trades -- LEES DIT
+    # NIET ALS ATTRIBUTIE:
     #
     #     drift_continuation   108 trades   57 raak   -38,43R   23% kept
     #     trend_momentum       118 trades   72 raak    -3,71R   21%
     #     impulse_break         50 trades   33 raak    -1,30R
     #     section_ten_gold_m1   16 trades   10 raak    +2,49R
     #
-    # Het hele boek stond die maand op -29,49R. Trades waar deze module op
-    # meestemde staan op -38,43R, oftewel -0,356R per stuk tegen -0,082R voor
-    # het boek als geheel. Hij is niet de enige stem op die trades -- die tabel
-    # telt een trade mee bij elke detector die erop stond -- maar het verschil
-    # met de nummer twee is een factor elf.
+    # Het hele boek stond die maand op -29,49R. Die -38,43R is dus GROTER dan
+    # het verlies van het hele boek, wat op zichzelf al had moeten opvallen:
+    # een module die meer verliest dan het totaal is geen module die te veel
+    # verliest, het is een optelling die niet klopt.
     #
-    # EN HET IS GEEN EERSTE KEER. Deze config schrijft hierboven al op:
+    # WAT ER WEL VAN OVEREIND BLIJFT. Deze config schrijft hierboven al op:
     #
     #     drift_continuation   364 trades   -0,083R   -30,14R
     #
-    # Toen bleef hij staan met de redenering "het probleem was nooit de
-    # detector, het was waar hij mocht kijken". Dat kan waar zijn. Maar de
-    # module die dat argument kreeg is vervolgens de enige die zonder
-    # automatische stop verder mocht, en dertig dagen later is hij opnieuw de
-    # grootste verliespost. Een breaker beslist die vraag niet -- hij zorgt dat
-    # de module hem zelf beantwoordt, in plaats van dat iemand er over een
-    # maand weer naar moet kijken.
+    # Dat cijfer komt uit een replay en niet uit de journal-attributie, dus dat
+    # staat los van bovenstaande fout. Toen bleef hij staan met de redenering
+    # "het probleem was nooit de detector, het was waar hij mocht kijken", en
+    # hij was daarna de enige stemmende module zonder automatische stop. Dat
+    # gat dichten is de reden dat deze breaker er staat, en die reden houdt.
     #
-    # DIT ZET HEM NIET UIT. Zijn gewicht blijft 0,70 en hij blijft meestemmen.
-    # Dit is de schakelaar die hem uitzet als hij doet wat hij net deed, en
-    # verder niets. Dat gewicht aanpassen is een beslissing van de eigenaar en
-    # staat hier los van.
+    # DIT ZET HEM NIET UIT en kan hem live ook niet raken: buiten
+    # `live_enabled_modules` staat zijn effectieve gewicht toch al op 0,0.
+    # Het is de schakelaar voor het geval hij ooit wel mag stemmen.
     #
-    # DE GETALLEN. 40 trades minimum, want op 108 in dertig dagen is dat ruim
-    # twee weken en geen pechreeks. 60% verliezers over die 40: in het monster
-    # hierboven verloor hij 51 van de 108, dus 60% is duidelijk slechter dan
+    # DE GETALLEN. 40 trades minimum en 60% verliezers over die 40. Beide zijn
+    # gekozen op de 364-trade replay hierboven, niet op de ingetrokken tabel:
+    # bij -0,083R per trade is 60% verliezers duidelijk slechter dan
     # wat hij nu al doet en vuurt op afwijkend gedrag in plaats van op ruis. De
     # streak op 8 volgt `trend_momentum`, de module die qua tempo het meest op
     # hem lijkt.
