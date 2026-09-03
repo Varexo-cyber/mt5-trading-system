@@ -1489,7 +1489,47 @@ analysis:
   section_ten_gold_m1:
     enabled: true
     timeframe: M1
-    allowed_symbols: [XAUUSD]
+    # 3 SEPTEMBER: VAN EEN MARKT NAAR ZES, op verzoek van de eigenaar, en dit
+    # is de enige sectie waar meer trades iets waard is. Scorecard 30 dagen,
+    # echte rekening: +2,49R over 16 trades, +0,156 per trade, terwijl het
+    # hele boek op -29,49R over 361 trades stond. Hij is de enige live
+    # component met een positieve edge per trade en hij maakt een halve trade
+    # per dag omdat hij een markt ziet.
+    #
+    # WAAROM DIT GEEN NIEUWE GOK IS, en waarom het toch een risico is.
+    #
+    # De regel zelf is niet goudspecifiek: een M1-kanaaluitbraak van minstens
+    # 0,75 ATR, de eerste terugtest, bevestigd door de EMA20-helling over drie
+    # gesloten M5-bars. Daar staat geen enkele aanname in over WELK metaal het
+    # is. Wat wel goudspecifiek was, is dat het alleen op goud gemeten is.
+    #
+    # Wat de schade begrenst zijn vijf dingen die op deze rekening GEMETEN
+    # zijn, niet beredeneerd:
+    #
+    #   SPREAD_EATS_THE_STOP    193 geweigerd, bespaarde 27,41R
+    #   SECTOR_CONCENTRATION    157 geweigerd, bespaarde 12,72R
+    #   CORRELATED_EXPOSURE      80 geweigerd, bespaarde  9,70R
+    #   MAX_POSITIONS_REACHED    61 geweigerd, bespaarde  7,81R
+    #   section_breakers.section_ten_gold_m1  60 trades, 55% verlies, 8 op rij
+    #
+    # De eerste weigert elk metaal waar de spread niet uit kan -- dat is de
+    # poort die deze verbreding zelf terugdraait als een kruis te duur is. De
+    # volgende drie zorgen dat zes correlerende metalen niet zes keer dezelfde
+    # weddenschap worden; XAUUSD en XAUEUR zijn hetzelfde goud door een
+    # valutabril en breken op dezelfde ochtend. En de breaker eronder zet de
+    # hele sectie uit als dit misgaat.
+    #
+    # WELKE ZES EN WAAROM NIET DERTIEN. Goud tegen vijf valuta's plus het
+    # liquide zilver. Platina, palladium, zink, nikkel en koper staan er NIET
+    # in: dat zijn andere instrumenten met een andere volatiliteitsstructuur
+    # en een veel bredere spread, en de regel is op goud gekalibreerd. Zes is
+    # dezelfde weddenschap zes keer bekijken; dertien is een andere sectie.
+    #
+    # WAT DIT TERUGDRAAIT. `sectie10.cmd` draait dit als replay over 180 dagen.
+    # Blijft +0,156R per trade niet ongeveer overeind -- zeg, zakt het onder
+    # +0,05R of wordt de sectie negatief -- dan gaat deze regel terug naar
+    # [XAUUSD] en is dat het einde ervan.
+    allowed_symbols: [XAUUSD, XAUEUR, XAUGBP, XAUAUD, XAUJPY, XAGUSD]
     channel_period: 20
     minimum_break_atr: 0.75
     retest_tolerance_atr: 0.15
