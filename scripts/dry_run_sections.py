@@ -1363,6 +1363,9 @@ def main(argv: list[str] | None = None) -> None:
         results: dict[tuple[str, str], list[Decision]] = {key: [] for key in passes}
         skipped_symbols = 0
         unresolvable: dict[str, str] = {}
+        #: symbol -> [(timeframe, first bar actually stored)] for every market
+        #: whose history starts AFTER the window that was asked for.
+        short_history: dict[str, list[tuple[str, datetime]]] = {}
         manage = _break_even_rule(settings)
 
         # WHERE THE TIME ACTUALLY GOES. I estimated this run's length twice
@@ -1420,6 +1423,29 @@ def main(argv: list[str] | None = None) -> None:
             if any(len(frames.get(tf, [])) < WARMUP + 10 for tf in used if tf in frames):
                 skipped_symbols += 1
                 continue
+
+            # A WINDOW THE TERMINAL DOES NOT HAVE IS STILL REPORTED AS THE
+            # WINDOW THAT WAS ASKED FOR. `--days 180` fetches from 180 days
+            # back and MT5 answers with whatever depth it happens to hold --
+            # on M1 that is routinely a fraction of it. The run then prints
+            # "180 days" over a replay that covered forty, and every per-day
+            # figure below it is divided by the wrong number of days.
+            #
+            # Same failure as the rest of this file: a missing bar and a quiet
+            # market are the same silence. So say it out loud, per symbol, on
+            # the clocks the passes actually read.
+            for tf in sorted(used, key=lambda t: t.duration):
+                frame = frames.get(tf)
+                if frame is None or not len(frame):
+                    continue
+                first = frame.index[0]
+                first = first.to_pydatetime() if hasattr(first, "to_pydatetime") else first
+                if first.tzinfo is None:
+                    first = first.replace(tzinfo=UTC)
+                # A day of slack: a fetch that lands on a weekend legitimately
+                # starts on the Monday and that is not a truncated history.
+                if first > start + timedelta(days=1):
+                    short_history.setdefault(symbol, []).append((tf.value, first))
 
             # GROUPED BY CLOCK so the context is built once instead of once
             # per section. Two sections on one clock read an identical
@@ -1531,6 +1557,21 @@ def main(argv: list[str] | None = None) -> None:
         print("\nCLOCKS ASKED FOR AND NOT MEASURED")
         for tf_name, why in sorted(unresolvable.items()):
             print(f"    {tf_name:<6} {why}")
+
+    if short_history:
+        print(f"\nSHORTER THAN THE {args.days} DAYS ASKED FOR")
+        print("  The terminal has less stored history than the window. These markets")
+        print("  were replayed from the date shown, not from the start of the window,")
+        print("  so their trade counts and per-day figures cover LESS time than the")
+        print("  header says. Deepen it in MT5 (Tools > Options > Charts > max bars)")
+        print("  and scroll the chart back, or fetch once with ophalen.cmd.")
+        for name, rows in sorted(short_history.items()):
+            worst = max(rows, key=lambda row: row[1])
+            missing = (worst[1] - start).days
+            print(
+                f"    {name:<12} {worst[0]:<4} starts {worst[1]:%Y-%m-%d}"
+                f"   ({missing} of {args.days} days missing)"
+            )
 
     if unaffordable:
         print(

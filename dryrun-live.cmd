@@ -7,10 +7,15 @@ echo  ============================================
 echo   SECTIONS 5 THROUGH 10, EXACTLY AS CONFIGURED
 echo  ============================================
 echo.
-echo  Sections 7, 8 and 10 are the current real-money allowlist.
-echo  Sections 5, 6 and 9 stay enabled for shadow measurement, but are not live.
+echo  LIVE ALLOWLIST, 3 SEPTEMBER: sectie 6 (goud M5), 7 (failed session
+echo  breakout), 8 (trend day H1) en 10 (goud M1). Sectie 5 en 9 blijven
+echo  enabled voor shadowmeting maar mogen geen geld gebruiken.
 echo  Every section runs on its own configured clock, with the account's
 echo  real position cap. No impulse or old order-block module is measured.
+echo.
+echo  POSITIEBEHEER: sectie 6, 7 en 8 krijgen de break-even-stap zoals live.
+echo  Sectie 10 niet -- die staat op vaste SL/TP en wordt om 20:50 platgezet,
+echo  en de replay doet nu precies dat.
 echo.
 echo  SIXTEEN MARKETS, NOT 232. The eleven FX majors the research was done on,
 echo  gold, and four index CFDs. Every other market in the catalogue is an
@@ -21,9 +26,11 @@ echo  Roughly a fifteenth of the work of a full sweep.
 echo.
 echo  MT5 must be running and logged in.
 echo.
-echo  USAGE
+echo  USAGE  -- HET EERSTE GETAL IS HET AANTAL DAGEN. Zonder getal is het 7,
+echo         en 7 dagen is te weinig om iets over een sectie te zeggen.
+echo    dryrun-live.cmd 180        180 days, core markets  ^<-- DEZE
+echo    dryrun-live.cmd 90         90 days  (ongeveer de helft van de tijd)
 echo    dryrun-live.cmd            7 days, core markets
-echo    dryrun-live.cmd 30         30 days, core markets
 echo    dryrun-live.cmd 7 all      7 days, EVERY market the scanner sees
 echo                               (all ~230: forex, crypto, metals, indices,
 echo                                commodities. Stocks are never scanned.)
