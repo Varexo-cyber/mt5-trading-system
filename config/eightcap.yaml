@@ -1760,8 +1760,8 @@ analysis:
       XAUAUD: [16, 17]
       XAUJPY: [16, 17]
 
-  # Four separate discoveries. They are enabled for broker replay but remain
-  # weight 0 and outside the real-money allowlist until actual cross bars pass.
+  # Four separate discoveries. S11/XAUEUR was explicitly promoted after its
+  # actual-broker 30-day replay; S12-S14 remain shadow-only.
   section_eleven_xaueur_m1:
     enabled: true
     timeframe: M1
@@ -3050,9 +3050,13 @@ analysis:
       # section breaker is therefore essential, not optional.
       - section_eight_trend_day_h1
       - section_ten_gold_m1
+      # Explicit owner-authorised promotion, 4 September 2026. Actual Eightcap
+      # replay: 40 trades, +11.51R, +EUR 41.14 over 30 days. This is promising
+      # but not a long-term guarantee; its dedicated breaker remains mandatory.
+      - section_eleven_xaueur_m1
       # S11 is removed. Its forced model missed the multiplicity bar and then
-      # lost on every untouched market holdout. Research stays available, but
-      # no S11 signal can reach real money.
+      # lost on every untouched market holdout. That comment refers to the
+      # retired pooled `section_eleven_metals`, not the new XAUEUR-only S11.
 
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
@@ -3356,7 +3360,7 @@ analysis:
       section_nine_vwap_m30: 1.0
       section_ten_gold_m1: 1.0
       section_eleven_metals: 0.0
-      section_eleven_xaueur_m1: 0.0
+      section_eleven_xaueur_m1: 1.0
       section_twelve_xaugbp_m1: 0.0
       section_thirteen_xauaud_m5: 0.0
       section_fourteen_xaujpy_m1: 0.0

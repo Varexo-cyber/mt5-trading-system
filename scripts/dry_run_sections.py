@@ -1537,6 +1537,7 @@ def main(argv: list[str] | None = None) -> None:
                 "section_nine_vwap_m30",
                 "section_ten_gold_m1",
                 "section_eleven_metals",
+                "section_eleven_xaueur_m1",
             }
             missing = (book & live) - measured
             if missing:
