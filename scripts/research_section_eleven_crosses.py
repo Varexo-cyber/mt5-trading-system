@@ -294,6 +294,7 @@ def main() -> int:
     args = parser.parse_args()
     connection = sqlite3.connect(f"file:{args.database}?mode=ro", uri=True)
     frames: dict[tuple[str, str], pd.DataFrame] = {}
+    actual_markets: set[tuple[str, str]] = set()
     for timeframe in TIMEFRAMES:
         gold = load_bars(connection, "XAUUSD", timeframe)
         for market, (leg, operation) in COMPONENTS.items():
@@ -304,9 +305,21 @@ def main() -> int:
                 actual["fx_close"] = fx.close.reindex(actual.index)
                 actual["fx_sign"] = -1.0 if operation == "divide" else 1.0
                 frames[(market, timeframe)] = actual.dropna()
+                actual_markets.add((market, timeframe))
             else:
                 frames[(market, timeframe)] = synthetic_cross(gold, fx, operation)
     connection.close()
+
+    print("DATA PROVENANCE")
+    for market in COMPONENTS:
+        actual = [tf for tf in TIMEFRAMES if (market, tf) in actual_markets]
+        synthetic = [tf for tf in TIMEFRAMES if (market, tf) not in actual_markets]
+        print(
+            f"  {market}: actual={','.join(actual) or '-'} "
+            f"synthetic={','.join(synthetic) or '-'}"
+        )
+    if len(actual_markets) != len(COMPONENTS) * len(TIMEFRAMES):
+        print("  SYNTHETIC ROWS MAY GENERATE HYPOTHESES BUT MAY NOT PROMOTE LIVE.\n")
 
     cells = [
         (mechanism, timeframe, polarity, target_r, session)
