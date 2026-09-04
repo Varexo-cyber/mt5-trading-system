@@ -177,6 +177,31 @@ def signals(frame: pd.DataFrame, mechanism: str) -> np.ndarray:
         vwap = (typical * frame.volume).rolling(48).sum() / rolling_volume
         long = (close < vwap - unit) & (close > open_)
         short = (close > vwap + unit) & (close < open_)
+    elif mechanism.startswith("adaptive_channel_"):
+        threshold = float(mechanism.rsplit("_", 1)[1]) / 100.0
+        ceiling = high.shift(1).rolling(20).max()
+        floor = low.shift(1).rolling(20).min()
+        breakout_long, breakout_short = close > ceiling, close < floor
+        strong = (fast - slow).abs() / unit > threshold
+        long = (strong & breakout_long) | (~strong & breakout_short)
+        short = (strong & breakout_short) | (~strong & breakout_long)
+    elif mechanism == "jump_regime":
+        move = close.diff(6) / unit
+        volatility = unit / unit.rolling(48).mean()
+        unusual_volume = frame.volume > 1.25 * frame.volume.rolling(48).median()
+        # Moderate, liquid moves continue; extreme high-volatility jumps mean-revert.
+        continue_long = unusual_volume & (move > 0.75) & (move <= 2.0) & (volatility <= 1.5)
+        continue_short = unusual_volume & (move < -0.75) & (move >= -2.0) & (volatility <= 1.5)
+        reverse_long = (move < -2.0) & (volatility > 1.5) & (close > open_)
+        reverse_short = (move > 2.0) & (volatility > 1.5) & (close < open_)
+        long = continue_long | reverse_long
+        short = continue_short | reverse_short
+    elif mechanism == "vwap_trend_resume":
+        typical = (high + low + close) / 3.0
+        rolling_volume = frame.volume.rolling(48).sum().replace(0.0, np.nan)
+        vwap = (typical * frame.volume).rolling(48).sum() / rolling_volume
+        long = (trend > 0) & (low <= vwap) & (close > vwap) & (close > open_)
+        short = (trend < 0) & (high >= vwap) & (close < vwap) & (close < open_)
     elif mechanism == "two_leg_trend":
         gold_trend = np.sign(
             frame.gold_close.ewm(span=20, adjust=False).mean()
