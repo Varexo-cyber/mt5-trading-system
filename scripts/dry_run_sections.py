@@ -439,6 +439,13 @@ def _frames_read(
     confluence = settings.analysis.confluence
     wanted: set[Timeframe] = {clock, finest, Timeframe.M5}
     for name in sections:
+        if any(
+            family in name for family in confluence.strategy_owned_entry_families
+        ):
+            # A standalone section owns its trigger and stop. Loading an H4
+            # frame for it would silently reintroduce the generic trend veto
+            # that strategy ownership explicitly disables.
+            continue
         if name in confluence.quick_modules:
             horizon = "quick"
         elif name in confluence.intraday_modules:
@@ -1680,7 +1687,21 @@ def main(argv: list[str] | None = None) -> None:
             )
             args.no_m1 = False
             finest = Timeframe.M1
-        fetch_these = tuple(tf for tf in NEEDED if not (args.no_m1 and tf is Timeframe.M1))
+        if args.sweep:
+            required_frames = set(NEEDED)
+        else:
+            required_frames = {
+                timeframe
+                for name, tf_name in passes
+                for timeframe in _frames_read(
+                    settings, Timeframe.parse(tf_name), finest, (name,)
+                )
+            }
+        fetch_these = tuple(
+            tf
+            for tf in sorted(required_frames, key=lambda item: item.duration)
+            if not (args.no_m1 and tf is Timeframe.M1)
+        )
         results: dict[tuple[str, str], list[Decision]] = {key: [] for key in passes}
         skipped_symbols = 0
         unresolvable: dict[str, str] = {}

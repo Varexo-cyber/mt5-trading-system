@@ -2543,9 +2543,7 @@ class TestALiveSectionOnM1DoesNotVanishFromItsOwnReport:
 
         source = inspect.getsource(dry_run_sections)
 
-        assert source.index("args.no_m1 = False") < source.index(
-            "fetch_these = tuple(tf for tf in NEEDED"
-        )
+        assert source.index("args.no_m1 = False") < source.index("required_frames =")
 
     def test_the_m1_section_is_measurable_at_all(self) -> None:
         """`module_config` is the list of sections this script knows. A live
