@@ -143,6 +143,23 @@ def signals(frame: pd.DataFrame, mechanism: str) -> np.ndarray:
         floor = low.shift(1).rolling(12).min()
         long = quiet & (trend > 0) & (close > ceiling)
         short = quiet & (trend < 0) & (close < floor)
+    elif mechanism == "liquidity_sweep":
+        ceiling = high.shift(1).rolling(20).max()
+        floor = low.shift(1).rolling(20).min()
+        long = (low < floor) & (close > floor) & (close > open_)
+        short = (high > ceiling) & (close < ceiling) & (close < open_)
+    elif mechanism == "bollinger_reversal":
+        mean = close.rolling(20).mean()
+        deviation = close.rolling(20).std(ddof=0)
+        lower, upper = mean - 2.0 * deviation, mean + 2.0 * deviation
+        long = (low < lower) & (close > lower) & (close > open_)
+        short = (high > upper) & (close < upper) & (close < open_)
+    elif mechanism == "volatility_breakout":
+        active = unit > 1.25 * unit.rolling(48).mean()
+        ceiling = high.shift(1).rolling(20).max()
+        floor = low.shift(1).rolling(20).min()
+        long = active & (trend > 0) & (close > ceiling)
+        short = active & (trend < 0) & (close < floor)
     elif mechanism == "two_leg_trend":
         gold_trend = np.sign(
             frame.gold_close.ewm(span=20, adjust=False).mean()

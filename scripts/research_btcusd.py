@@ -32,6 +32,9 @@ MECHANISMS = (
     "aligned_momentum",
     "trend_rejection",
     "contraction_breakout",
+    "liquidity_sweep",
+    "bollinger_reversal",
+    "volatility_breakout",
 )
 SESSIONS = {
     "all": tuple(range(24)),
@@ -39,7 +42,18 @@ SESSIONS = {
     "london": tuple(range(7, 13)),
     "new_york": tuple(range(13, 20)),
     "late": tuple(range(20, 24)),
+    "weekday": tuple(range(24)),
+    "weekend": tuple(range(24)),
 }
+
+
+def clock_filter(trades: pd.DataFrame, session: str) -> pd.Series:
+    mask = trades.time.dt.hour.isin(SESSIONS[session])
+    if session == "weekday":
+        mask &= trades.time.dt.dayofweek < 5
+    elif session == "weekend":
+        mask &= trades.time.dt.dayofweek >= 5
+    return mask
 
 
 def main() -> int:
@@ -100,7 +114,7 @@ def main() -> int:
             replayed["market"] = "BTCUSD"
             trade_cache[replay_key] = replayed
         trades = trade_cache[replay_key]
-        trades = trades.loc[trades.time.dt.hour.isin(SESSIONS[session])].copy()
+        trades = trades.loc[clock_filter(trades, session)].copy()
         direction = "follow" if polarity > 0 else "fade"
         label = (
             f"{mechanism}/{timeframe}/{direction}/{stop_atr:g}ATR/"
@@ -124,7 +138,7 @@ def main() -> int:
     target_r = float(target_label.removesuffix("R"))
     frame = frames[timeframe]
     trades = trade_cache[(mechanism, timeframe, polarity, stop_atr, target_r)]
-    trades = trades.loc[trades.time.dt.hour.isin(SESSIONS[session])].copy()
+    trades = trades.loc[clock_filter(trades, session)].copy()
     validation = summarise(
         winner.cell, "validation", split_trades(trades, frame, 0.5, 0.75)
     )
