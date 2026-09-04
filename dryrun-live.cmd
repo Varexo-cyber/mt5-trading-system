@@ -8,28 +8,30 @@ echo   DE HELE LIVE BOEK, EXACTLY AS CONFIGURED
 echo  ============================================
 echo.
 echo  LIVE ALLOWLIST, 4 SEPTEMBER: sectie 6 (goud M5), 7 (failed session
-echo  breakout), 8 (trend day H1), 10 (goud M1) en 11 (de vier goudkruisen,
-echo  M5). Sectie 5 en 9 blijven enabled voor shadowmeting maar mogen geen
-echo  geld gebruiken.
+echo  breakout), 8 (trend day H1) en 10 (goud M1). Sectie 5, 9 en 11 blijven
+echo  enabled voor shadowmeting maar mogen geen geld gebruiken.
 echo  Every section runs on its own configured clock, with the account's
 echo  real position cap. No impulse or old order-block module is measured.
 echo.
-echo  SECTIE 11 HAALDE DE STATISTISCHE LAT NIET -- beste cel +2,56 sigma tegen
-echo  2,96 -- en zijn HOLDOUT stond in alle vier de markten NEGATIEF. Hij staat
-echo  hier om precies dat bevestigd of weerlegd te krijgen door een replay met
-echo  een andere resolver. Zonder modelbestanden weigert Jarvis te starten;
-echo  draai eerst train11.cmd 720 forceer.
+echo  TWEE DINGEN ZIJN OP 4 SEPTEMBER TERUGGEDRAAID, allebei op een cijfer:
+echo    SECTIE 10 staat weer op ALLEEN XAUUSD. Met de vier kruisen erbij deed
+echo    hij -31,10 R over 180 dagen; goud alleen deed +79,12 R over 595 trades.
+echo    De kruisen kostten 110 R en verdrongen bovendien 260 sectie-6-trades
+echo    die +40,48 R waard waren.
+echo    SECTIE 11 is er weer af. Hij haalde de statistische lat niet (+2,56
+echo    sigma tegen 2,96) en zijn holdout stond in vier markten van de vier
+echo    negatief. Meten kan nog met sectie11.cmd; geld uitgeven niet.
 echo.
-echo  POSITIEBEHEER: sectie 6, 7, 8 en 11 krijgen de break-even-stap zoals
-echo  live. Sectie 10 niet -- die staat op vaste SL/TP en wordt om 20:50
-echo  platgezet, en de replay doet nu precies dat.
+echo  POSITIEBEHEER: sectie 6, 7 en 8 krijgen de break-even-stap zoals live.
+echo  Sectie 10 niet -- die staat op vaste SL/TP en wordt om 20:50 platgezet,
+echo  en de replay doet nu precies dat.
 echo.
 echo  ZESTIEN KERNMARKTEN PLUS DE MARKTEN VAN DE SECTIES ZELF. De kern is de
-echo  elf FX-majors, goud en vier index-CFDs. Sectie 10 en 11 handelen op
-echo  metalen die daar niet in zitten, dus die worden erbij gezet en met naam
-echo  genoemd. Zonder dat zou sectie 11 nul trades tonen omdat hij nooit een
-echo  markt zag die hij mag handelen, en dat leest als "de strategie vond
-echo  niets". Elke andere markt uit de catalogus blijft een extrapolatie.
+echo  elf FX-majors, goud en vier index-CFDs. Handelt een live sectie een markt
+echo  die daar niet in zit, dan wordt die erbij gezet en met naam genoemd --
+echo  anders komt zo'n sectie terug met een nulregel omdat hij nooit een markt
+echo  zag die hij mag handelen, en dat leest als "de strategie vond niets".
+echo  Elke andere markt uit de catalogus blijft een extrapolatie.
 echo.
 echo  Roughly a fifteenth of the work of a full sweep.
 echo.
