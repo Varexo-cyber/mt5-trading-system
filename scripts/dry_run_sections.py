@@ -1978,6 +1978,39 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
         print("  exit: break-even stop, which these sections actually run")
     if len(everything) != len(trades):
         print(f"  {len(everything) - len(trades)} signals dropped: every slot was already busy")
+        # AND WHICH SECTION PAID FOR IT, because one number cannot say.
+        #
+        # The 4 September run printed "320 signals dropped" and left it there.
+        # Underneath, section six lost 244 of its 600 trades and 30.55 R to a
+        # busy slot while section ten lost 76 and 10.93 R -- three quarters of
+        # the cost landed on the section that was not being widened.
+        #
+        # That is the arithmetic that decides whether a widening was worth it.
+        # Section ten added 2,390 trades for +28.77 R and the cap took 30.55 R
+        # off section six in the same window; a change that pays for itself out
+        # of another section's pocket is not obviously a gain, and with one
+        # number for the whole book it was invisible.
+        kept: dict[str, list[Decision]] = {}
+        for row in trades:
+            kept.setdefault(row.module, []).append(row)
+        seen: dict[str, list[Decision]] = {}
+        for row in everything:
+            seen.setdefault(row.module, []).append(row)
+        rows: list[tuple[float, str, int, float]] = []
+        for module, offered in seen.items():
+            taken = kept.get(module, [])
+            lost = len(offered) - len(taken)
+            if lost <= 0:
+                continue
+            before = sum(_live_exit(d, managed) or 0.0 for d in offered)
+            after = sum(_live_exit(d, managed) or 0.0 for d in taken)
+            rows.append((before - after, module, lost, before - after))
+        if rows:
+            print("     what the cap cost each section, in trades and in R:")
+            for _sort, module, lost, cost in sorted(rows, key=lambda r: -r[0]):
+                print(f"       {module:<28}{lost:>6} trades   {cost:>+8.2f} R")
+            print("     A section paying for another section's trades is a real cost")
+            print("     and it does not show up in that one total above.")
 
     if not closed:
         print("\n  No resolved trades in this window.")
