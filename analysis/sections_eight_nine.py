@@ -220,9 +220,12 @@ class SectionTenGoldM1:
                     in_session = (
                         cfg.entry_start_hour_utc <= int(stamp.hour) < cfg.entry_end_hour_utc
                     )
-                    in_dead_zone = (
-                        cfg.blocked_start_hour_utc <= int(stamp.hour) < cfg.blocked_end_hour_utc
-                    )
+                    # PER SYMBOL, because gold and the gold crosses do not
+                    # share a bad hour. `hour_is_blocked` is the one place
+                    # that decides, so the detector and every report read the
+                    # same window -- a section measured on hours it does not
+                    # trade is a report about a strategy nobody runs.
+                    in_dead_zone = cfg.hour_is_blocked(ctx.symbol, int(stamp.hour))
                     if stamp == current_stamp and in_session and not in_dead_zone:
                         m5_direction = 1 if m5_slope > 0.0 else -1 if m5_slope < 0.0 else 0
                         if m5_direction == direction:

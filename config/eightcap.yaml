@@ -1528,7 +1528,50 @@ analysis:
     # 16:00, 17:00 UTC). Dat is gemeten over vijf metalen door elkaar, dus het
     # zegt nog niets over goud alleen -- `lees.cmd runtime\sectie10.csv` met
     # --symbol XAUUSD leest dat uit dezelfde run terug.
-    allowed_symbols: [XAUUSD]
+    # ---------------------------------------------------------------------
+    # DE KRUISEN KOMEN TERUG, MET HUN EIGEN DICHTE UREN. 4 september.
+    #
+    # Gisteren gingen ze eraf op -36,22 R over 1.897 trades. Dat cijfer klopt
+    # en het was het GEMIDDELDE over alle uren. Uitgesplitst per markt en per
+    # uur staat er iets anders. Op 16:00 UTC:
+    #
+    #     XAUAUD -10,77   XAUEUR -8,54   XAUGBP -14,28   XAUJPY -10,31
+    #     XAUUSD  +5,89
+    #
+    # Negatief in BEIDE helften van de periode, in vier kruisen van de vier.
+    # En op goud in beide helften positief. 17:00 is dezelfde vorm, drie van
+    # de vier. Dat is geen blok dat uit de steekproef geknipt is -- het is
+    # hetzelfde uur dat in vier onafhankelijke markten dezelfde kant op wijst
+    # en in de vijfde de andere kant.
+    #
+    # HET MECHANISME IS NIET RAADSELACHTIG. Een XAU-kruis heeft een FX-poot.
+    # Tussen 16:00 en 18:00 UTC is Londen weg terwijl goud nog handelt, dus de
+    # valutahelft van de quote wordt dun en de spread op het KRUIS loopt uit.
+    # XAUUSD heeft die poot niet.
+    #
+    # WAT HET DOET, op dezelfde 180 dagen:
+    #
+    #     XAUAUD  -40,12  ->  -12,36        XAUGBP  -16,76  ->   +3,78
+    #     XAUEUR   +5,09  ->  +29,59        XAUJPY  +15,57  ->  +32,02
+    #     samen   -36,22  ->  +53,03
+    #
+    # WAT IK NIET DOE, en dat hoort erbij. 04:00 en 06:00 zien er op het
+    # gemiddelde ook slecht uit, maar 04:00 is op XAUJPY positief in beide
+    # helften en 06:00 draait op XAUJPY in de tweede helft om. Twee van vier
+    # en drie van vier is niet hetzelfde als vier van vier, en de rest van
+    # deze config staat vol met wat er gebeurt als je dat verschil negeert.
+    #
+    # WAT DIT TERUGDRAAIT: de volgende 180-daagse replay. Komen de kruisen
+    # daar niet samen positief uit MET dit blok, dan gaan ze er definitief af.
+    allowed_symbols: [XAUUSD, XAUEUR, XAUGBP, XAUAUD, XAUJPY]
+    blocked_hours_by_symbol:
+      # Goud staat er bewust NIET in en houdt 07:00-13:00 uit het venster
+      # hierboven. Voor de kruisen geldt dat blok juist niet: hun probleem is
+      # de Londense sluiting, niet de Londense ochtend.
+      XAUEUR: [16, 17]
+      XAUGBP: [16, 17]
+      XAUAUD: [16, 17]
+      XAUJPY: [16, 17]
     channel_period: 20
     minimum_break_atr: 0.75
     retest_tolerance_atr: 0.15

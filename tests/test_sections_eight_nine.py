@@ -485,3 +485,74 @@ class TestSectionSixIsBackWithManagementAndAFilter:
 
         assert falling.score == 0.0
         assert "do not confirm" in falling.reasoning or "below threshold" in falling.reasoning
+
+
+class TestSectionTenBlocksHoursPerMarket:
+    """Gold and the gold crosses do not share a bad hour.
+
+    Measured over 180 days at 16:00 UTC: XAUAUD -10.77, XAUEUR -8.54,
+    XAUGBP -14.28, XAUJPY -10.31 -- negative in BOTH halves of the period in
+    four crosses out of four -- against XAUUSD +5.89, positive in both halves.
+    A single window can only be right for one side of that, and averaging the
+    five together produced a table that described no market being traded.
+
+    The mechanism is ordinary: a XAU cross carries an FX leg, and between
+    16:00 and 18:00 UTC London has gone while gold still trades, so the
+    currency half of the quote thins and the spread on the CROSS widens.
+    XAUUSD has no such leg.
+    """
+
+    def test_a_named_symbol_uses_its_own_hours(self) -> None:
+        config = SectionTenGoldM1Config(
+            entry_start_hour_utc=3,
+            entry_end_hour_utc=19,
+            blocked_start_hour_utc=7,
+            blocked_end_hour_utc=13,
+            blocked_hours_by_symbol={"XAUEUR": (16, 17)},
+        )
+
+        assert config.hour_is_blocked("XAUEUR", 16)
+        assert config.hour_is_blocked("XAUEUR", 17)
+        # The named symbol does NOT also inherit gold's window. Its list is
+        # the whole answer, or the two rules would silently add up.
+        assert not config.hour_is_blocked("XAUEUR", 8)
+
+    def test_an_unnamed_symbol_falls_back_to_the_single_window(self) -> None:
+        config = SectionTenGoldM1Config(
+            entry_start_hour_utc=3,
+            entry_end_hour_utc=19,
+            blocked_start_hour_utc=7,
+            blocked_end_hour_utc=13,
+            blocked_hours_by_symbol={"XAUEUR": (16, 17)},
+        )
+
+        assert config.hour_is_blocked("XAUUSD", 8)
+        assert not config.hour_is_blocked("XAUUSD", 16)
+
+    def test_blocking_an_hour_outside_the_entry_window_is_refused(self) -> None:
+        """A block that can never fire reads as a rule and is a typo."""
+        import pytest as _pytest
+        from pydantic import ValidationError
+
+        with _pytest.raises(ValidationError):
+            SectionTenGoldM1Config(
+                entry_start_hour_utc=3,
+                entry_end_hour_utc=19,
+                blocked_hours_by_symbol={"XAUEUR": (23,)},
+            )
+
+    def test_the_live_config_shuts_london_close_on_every_cross(self) -> None:
+        from config.loader import load_settings
+
+        config = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.section_ten_gold_m1
+
+        crosses = [s for s in config.allowed_symbols if s != "XAUUSD"]
+        assert crosses, "the crosses are off again; if that was measured, say so beside it"
+        for symbol in crosses:
+            assert config.hour_is_blocked(symbol, 16), symbol
+            assert config.hour_is_blocked(symbol, 17), symbol
+        # And gold keeps its own, different window.
+        assert config.hour_is_blocked("XAUUSD", 8)
+        assert not config.hour_is_blocked("XAUUSD", 16)

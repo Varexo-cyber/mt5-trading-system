@@ -2907,7 +2907,7 @@ class TestSectionTenRunsOnlyWhereItCanTrade:
 
         kept = [name for name in universe if name in allowed]
 
-        assert kept == ["XAUUSD"]
+        assert "XAUUSD" in kept
         assert "EURUSD.i" not in kept and "SPX500" not in kept
 
     def test_section_ten_is_back_to_gold_alone(self) -> None:
@@ -2940,11 +2940,23 @@ class TestSectionTenRunsOnlyWhereItCanTrade:
         )
         allowed = settings.analysis.section_ten_gold_m1.allowed_symbols
 
-        assert tuple(allowed) == ("XAUUSD",), (
-            "section ten is on more than gold again. That is allowed, but it has "
-            "to beat -36.22 R over 1,897 trades on the crosses plus 30.55 R "
-            "charged to section six by the position cap."
-        )
+        assert "XAUUSD" in allowed
+        # The crosses came back on 4 September, but only with 16:00 and 17:00
+        # UTC shut. That -36.22 R was the average over ALL hours; per market
+        # and per hour, 16:00 is negative in both halves in four crosses out
+        # of four and positive in both halves on gold. With those two hours
+        # closed the same 180 days read +53.03 R.
+        #
+        # So a cross on the live list without its own blocked hours is the
+        # measurement being ignored, and that is what this checks.
+        config = settings.analysis.section_ten_gold_m1
+        for symbol in allowed:
+            if symbol == "XAUUSD":
+                continue
+            assert config.hour_is_blocked(symbol, 16), (
+                f"{symbol} trades at 16:00 UTC. Four crosses out of four lose "
+                f"money in that hour in both halves of the period."
+            )
 
 
 class TestSectionTenCanExpressAnOpenTradingDay:
@@ -3052,12 +3064,11 @@ class TestSectionTenOnlyWalksTheSectionsOwnMarkets:
         assert len(walked) > len(intersected)
 
     def test_the_live_config_would_walk_the_metals_that_can_pay(self) -> None:
-        """Gold alone, after the 4 September measurement.
+        """Whatever section ten may trade, gold is in it and silver is not.
 
-        XAGUSD went first on cost -- 830 setups and 0 trades over 180 days,
-        over 20% of the stop. The other four crosses went next on result: they
-        lost 36.22 R between them and cost section six another 30.55 R through
-        the position cap.
+        XAGUSD is out on cost: 830 setups and 0 trades over 180 days, over 20%
+        of the stop. The crosses came off on result and came back with 16:00
+        and 17:00 UTC shut, which is where their loss was.
         """
         from config.loader import load_settings
 
@@ -3065,7 +3076,9 @@ class TestSectionTenOnlyWalksTheSectionsOwnMarkets:
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.section_ten_gold_m1.allowed_symbols
 
-        assert len(allowed) == 1, f"section ten walks {len(allowed)} markets, expected one"
+        assert "XAGUSD" not in allowed, "silver takes 0 trades; it only costs bar-walking time"
+        assert len(allowed) >= 1
+        assert "XAUUSD" in allowed
 
 
 class TestTheLauncherEchoesSurviveCmd:
