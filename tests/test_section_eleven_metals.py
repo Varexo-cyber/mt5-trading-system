@@ -287,3 +287,36 @@ class TestTheTrainerRefusesRatherThanShips:
         # ATR-normalised, so a gold-priced series does not produce values in
         # the thousands.
         assert np.abs(finite).max() < 50.0
+
+
+class TestTheFollowUpPaysForTheGridItAlreadySearched:
+    """The 4 September run spent sixteen cells and cleared nothing.
+
+    XAUJPY was the one market whose sigma ROSE with the threshold -- +0.82,
+    +0.86, +1.67, +2.56 across 0.10 to 0.30 -- which is the shape a real
+    signal makes when you select harder, and the shape noise does not reliably
+    make. That is a prediction worth testing at higher thresholds.
+
+    It is only a test if the earlier sixteen are still on the bill. Searching
+    a grid twice and paying for it once is how a search launders itself into
+    a discovery, and this repo has the receipts.
+    """
+
+    def test_declared_earlier_cells_raise_the_bar(self) -> None:
+        from scripts.train_section_eleven import bonferroni_sigma
+
+        fresh = bonferroni_sigma(10)
+        with_history = bonferroni_sigma(10 + 16)
+
+        assert with_history > fresh
+
+    def test_the_launcher_declares_the_sixteen_it_already_spent(self) -> None:
+        from pathlib import Path
+
+        text = Path("train11.cmd").read_text(errors="replace")
+
+        assert "--cells-already-tried 16" in text, (
+            "the follow-up run does not declare the sixteen cells the first run "
+            "spent, so its Bonferroni bar is too low"
+        )
+        assert "--thresholds 0.30,0.40,0.50,0.60,0.80" in text
