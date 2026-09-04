@@ -4066,6 +4066,53 @@ class SectionTenGoldM1Config(Base):
     score: float = Field(default=70.0, ge=0.0, le=100.0)
     confidence: float = Field(default=0.58, ge=0.0, le=1.0)
 
+    #: UTC hours this section may not enter on, PER SYMBOL, overriding the
+    #: single blocked window above for the symbols named here.
+    #:
+    #: WHY A SECOND MECHANISM AND NOT A WIDER FIRST ONE. Gold and the gold
+    #: crosses do not share a bad hour, and averaging them into one window
+    #: throws away both answers. Measured over 180 days, 16:00 UTC:
+    #:
+    #:     XAUAUD -10.77   XAUEUR -8.54   XAUGBP -14.28   XAUJPY -10.31
+    #:     XAUUSD  +5.89
+    #:
+    #: Negative in BOTH halves of the period in four crosses out of four, and
+    #: positive in both halves on gold. 17:00 is the same shape, three of four.
+    #: A single window can only be wrong for one side of that.
+    #:
+    #: The mechanism is not mysterious: a XAU cross carries an FX leg, and at
+    #: 16:00-18:00 UTC London has gone while gold is still trading, so the FX
+    #: half of the quote thins out and the spread on the CROSS widens. XAUUSD
+    #: has no such leg.
+    #:
+    #: A symbol absent from this map falls back to the single window.
+    blocked_hours_by_symbol: dict[str, tuple[int, ...]] = Field(default_factory=dict)
+
+    def hour_is_blocked(self, symbol: str, hour: int) -> bool:
+        """Is this section barred from entering `symbol` at this UTC hour?
+
+        One function so the detector and any report cannot disagree about a
+        window -- which is how a section ends up measured on hours it does not
+        trade.
+        """
+        named = self.blocked_hours_by_symbol.get(symbol)
+        if named is not None:
+            return int(hour) in named
+        return self.blocked_start_hour_utc <= int(hour) < self.blocked_end_hour_utc
+
+    @model_validator(mode="after")
+    def _blocked_hours_sit_inside_the_entry_window(self) -> SectionTenGoldM1Config:
+        for symbol, hours in self.blocked_hours_by_symbol.items():
+            for hour in hours:
+                if not 0 <= int(hour) <= 23:
+                    raise ValueError(f"{symbol}: {hour} is not a UTC hour")
+                if not self.entry_start_hour_utc <= int(hour) < self.entry_end_hour_utc:
+                    raise ValueError(
+                        f"{symbol}: blocking {hour:02d}:00 is a no-op, the entry window "
+                        f"is {self.entry_start_hour_utc:02d}:00-{self.entry_end_hour_utc:02d}:00"
+                    )
+        return self
+
     @model_validator(mode="after")
     def _entry_windows_are_ordered(self) -> SectionTenGoldM1Config:
         """The blocked window sits inside the entry window, or is empty.
