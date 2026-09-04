@@ -610,6 +610,38 @@ class RiskConfig(Base):
     #: its own.
     section_breakers: dict[str, SectionBreakerConfig] = Field(default_factory=dict)
 
+    #: May two DIFFERENT sections hold the same symbol at the same time?
+    #:
+    #: Default no, and that default is not caution for its own sake: two
+    #: positions on one instrument is twice the exposure to one thing going
+    #: wrong, and on a small account that is the failure that ends it.
+    #:
+    #: Turned on for this account on 4 September, on the owner's instruction,
+    #: with the reason written down. Section six and section ten both trade
+    #: XAUUSD, and the 180-day replay offered section six 600 trades and let
+    #: it take 356 -- 244 refused because a slot on gold was occupied, worth
+    #: 30.55 R. Which section was sitting there is not recorded, so part of
+    #: that is section six blocking itself, and this flag cannot recover that
+    #: part.
+    #:
+    #: WHAT IT DOES NOT UNDO. `max_concurrent_positions` still applies, every
+    #: position still carries its own stop, and a SECOND leg from the SAME
+    #: section is still refused -- that is pyramiding, and it keeps its own
+    #: gate that requires the existing leg to already be winning.
+    sections_may_share_a_symbol: bool = False
+    #: With the flag above on, still refuse a second section that wants the
+    #: OPPOSITE direction on a symbol another section already holds.
+    #:
+    #: This is arithmetic and not caution. Long and short on one instrument is
+    #: flat exposure bought with two spreads and two commissions; at most one
+    #: of the two stops can be reached, so the pair cannot win and the round
+    #: trip is paid twice. On gold M1, where a round trip is about 12% of the
+    #: stop, that is a structural loss with no upside.
+    #:
+    #: It matters here rather than in theory: section six is `long_only`, and
+    #: section ten trades both ways, so the two WILL disagree on gold.
+    refuse_opposite_direction_across_sections: bool = True
+
     max_concurrent_positions: int = Field(default=2, ge=1, le=10)
     #: Equity that buys one concurrent position. 0 keeps the flat cap above.
     #:

@@ -553,8 +553,74 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         assert 'clock = getattr(section, "timeframe", None)' in SOURCE
 
     def test_the_live_block_applies_the_accounts_own_cap(self) -> None:
-        assert "settings.effective_max_positions(equity)" in SOURCE
-        assert "_under_the_slot_cap(everything, slots)" in SOURCE
+        """DRIVEN, NOT MATCHED. This asserted the literal call text
+        `_under_the_slot_cap(everything, slots)`, so adding an argument to
+        that call broke it while the behaviour was unchanged -- and a
+        substring is not a behaviour. `test_the_override_actually_reaches_
+        the_target` in test_family_target_is_the_exit is the standing example:
+        it checked for a string that appeared, in a loop whose answer was
+        discarded four hundred lines later."""
+        from datetime import UTC, datetime, timedelta
+
+        from scripts.dry_run_sections import Decision, _under_the_slot_cap
+
+        base = datetime(2026, 3, 2, tzinfo=UTC)
+
+        def held(minute: int, symbol: str, module: str, hours: int = 4) -> Decision:
+            row = Decision(base + timedelta(minutes=minute), symbol, module, "TRADE")
+            row.exit_at = base + timedelta(minutes=minute, hours=hours)
+            row.direction = "LONG"
+            return row
+
+        # Two slots, three markets wanting one at the same moment.
+        wanted = [held(0, "XAUUSD", "a"), held(1, "SPX500", "a"), held(2, "US30", "a")]
+        assert len(_under_the_slot_cap(wanted, 2)) == 2
+        assert len(_under_the_slot_cap(wanted, 0)) == 3, "0 means no cap at all"
+
+        # One market, twice, while the first is still open.
+        twice = [held(0, "XAUUSD", "a"), held(30, "XAUUSD", "a")]
+        assert len(_under_the_slot_cap(twice, 4)) == 1
+
+        # And after it closes, the second is taken.
+        later = [held(0, "XAUUSD", "a", hours=1), held(120, "XAUUSD", "a")]
+        assert len(_under_the_slot_cap(later, 4)) == 2
+
+    def test_two_sections_share_a_symbol_only_when_the_account_allows_it(self) -> None:
+        """The replay has to hold the same book the account holds.
+
+        `sections_may_share_a_symbol` lets a SECOND section join a symbol
+        another section already has. A replay that keeps refusing per symbol
+        measures a different account from the one that trades, which is the
+        one thing this function exists to prevent.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        from scripts.dry_run_sections import Decision, _under_the_slot_cap
+
+        base = datetime(2026, 3, 2, tzinfo=UTC)
+
+        def row(minute: int, module: str, direction: str = "LONG") -> Decision:
+            made = Decision(base + timedelta(minutes=minute), "XAUUSD", module, "TRADE")
+            made.exit_at = base + timedelta(minutes=minute, hours=4)
+            made.direction = direction
+            return made
+
+        pair = [row(0, "section_six_gold_m5"), row(30, "section_ten_gold_m1")]
+
+        assert len(_under_the_slot_cap(pair, 4)) == 1
+        assert len(_under_the_slot_cap(pair, 4, share_between_sections=True)) == 2
+
+        # The same section twice is pyramiding, and it stays refused.
+        same = [row(0, "section_ten_gold_m1"), row(30, "section_ten_gold_m1")]
+        assert len(_under_the_slot_cap(same, 4, share_between_sections=True)) == 1
+
+        # Opposite directions is flat exposure bought with two spreads.
+        against = [row(0, "section_six_gold_m5"), row(30, "section_ten_gold_m1", "SHORT")]
+        assert len(_under_the_slot_cap(against, 4, share_between_sections=True)) == 1
+        assert (
+            len(_under_the_slot_cap(against, 4, share_between_sections=True, refuse_opposite=False))
+            == 2
+        )
 
 
 class TestTheSectionsFiveToTenLauncher:

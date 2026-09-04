@@ -1004,7 +1004,13 @@ def _break_even_rule(settings) -> tuple[float, float] | None:
     return trigger, offset_atr
 
 
-def _under_the_slot_cap(trades: list[Decision], slots: int) -> list[Decision]:
+def _under_the_slot_cap(
+    trades: list[Decision],
+    slots: int,
+    *,
+    share_between_sections: bool = False,
+    refuse_opposite: bool = True,
+) -> list[Decision]:
     """The trades that would actually have been opened, cap included.
 
     `max_concurrent_positions` is 4 on this account and `effective_max_positions`
@@ -1018,14 +1024,38 @@ def _under_the_slot_cap(trades: list[Decision], slots: int) -> list[Decision]:
     """
     if slots <= 0:
         return list(trades)
-    open_until: dict[str, datetime] = {}
+    # WHO IS HOLDING IT, not just that it is held.
+    #
+    # `sections_may_share_a_symbol` lets a SECOND section join a symbol another
+    # section already has -- separate plans, separate stops -- while a second
+    # leg of the SAME section stays refused, because that is pyramiding. A
+    # replay that keeps refusing per symbol measures a different account from
+    # the one that trades, and the whole point of this function is that it
+    # does not.
+    open_until: dict[str, tuple[datetime, str, str]] = {}
     taken: list[Decision] = []
     for trade in sorted(trades, key=lambda d: d.when):
-        open_until = {symbol: stamp for symbol, stamp in open_until.items() if stamp > trade.when}
-        if trade.symbol in open_until or len(open_until) >= slots:
+        open_until = {symbol: held for symbol, held in open_until.items() if held[0] > trade.when}
+        held = open_until.get(trade.symbol)
+        if held is not None:
+            _stamp, holder, holder_side = held
+            joinable = (
+                share_between_sections
+                and holder != trade.module
+                and (not refuse_opposite or holder_side == trade.direction)
+            )
+            if not joinable:
+                continue
+        elif len(open_until) >= slots:
             continue
         taken.append(trade)
-        open_until[trade.symbol] = trade.exit_at or datetime.max.replace(tzinfo=trade.when.tzinfo)
+        # The joining section does not take the slot over: the market stays
+        # busy until the LATER of the two exits, because both positions are
+        # open until then.
+        until = trade.exit_at or datetime.max.replace(tzinfo=trade.when.tzinfo)
+        if held is not None:
+            until = max(until, held[0])
+        open_until[trade.symbol] = (until, trade.module, trade.direction)
     return taken
 
 
@@ -1952,7 +1982,12 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
 
     slots = settings.effective_max_positions(equity)
     everything = [d for key in keys for d in results[key] if d.outcome == "TRADE"]
-    trades = _under_the_slot_cap(everything, slots)
+    trades = _under_the_slot_cap(
+        everything,
+        slots,
+        share_between_sections=settings.risk.sections_may_share_a_symbol,
+        refuse_opposite=settings.risk.refuse_opposite_direction_across_sections,
+    )
     fixed_comments = {item.casefold() for item in settings.trade_management.fixed_exit_comments}
     fixed_names = {
         name

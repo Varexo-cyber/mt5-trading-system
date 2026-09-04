@@ -65,3 +65,27 @@ def broker_comment(
     if origin is not None:
         return origin.comment
     return "jarvis-exp-live" if experimental_live else "jarvis"
+
+
+def section_of_comment(comment: str) -> str:
+    """The shipped section a live ticket belongs to, or "" if it has none.
+
+    The broker comment is the only thing an open position carries that says
+    which strategy opened it, and it is the field MT5 mobile shows. Matching
+    it back to a section here -- beside the table that produces it -- keeps
+    the two from drifting: a rule that lets two SECTIONS share a symbol has to
+    be able to tell one section from another, and a rename that broke that
+    silently would turn the rule into "anything may join anything".
+
+    A generic label (`jarvis`, `jarvis-exp-live`, `jarvis-scalp`) is not a
+    section and returns "". So does an unrecognised comment, which is the safe
+    answer: a caller that cannot identify the holder should not be granting
+    exceptions on its behalf.
+    """
+    text = str(comment or "").strip().upper()
+    if not text:
+        return ""
+    for _marker, origin in _ORIGINS:
+        if text == origin.comment.upper():
+            return origin.comment
+    return ""

@@ -4321,6 +4321,43 @@ risk:
   #   intraday 4,5 uur, swing 24 uur). Vier slots die in vier en een half uur
   #   vrijkomen geven ruim twintig trades per dag; vier slots die een etmaal
   #   bezet blijven gaven er vier. De doorstroom zit in de houdtijd, niet hier.
+  # TWEE SECTIES MOGEN NU DEZELFDE MARKT HOUDEN. 4 september, op instructie
+  # van de eigenaar: "verwijder die rem, s6 en s10 mogen beide traden".
+  #
+  # WAT DE REM KOSTTE. Sectie zes en sectie tien handelen allebei XAUUSD, en
+  # dezelfde-symboolregel keek naar het SYMBOOL en niet naar de sectie -- wie
+  # er als eerste in zat sloot de ander uit voor de duur van zijn trade. In de
+  # 180-daagse replay:
+  #
+  #     sectie zes   600 aangeboden -> 356 genomen   +48,21 -> +17,66 R
+  #
+  # 244 trades en 30,55 R aan een bezette plek. Wie daar zat is niet
+  # vastgelegd, dus een deel daarvan is sectie zes die zichzelf blokkeerde en
+  # dat deel haalt deze vlag niet terug. Hoeveel precies weten we na de
+  # volgende replay.
+  #
+  # WAT DIT KOST, en dat hoort er eerlijk bij te staan: twee posities in een
+  # instrument is twee keer de blootstelling aan een ding dat misgaat. Op goud
+  # met 2% per trade is dat 4% in een markt. De dagverlieslimiet van EUR 20
+  # eronder is wat dat begrenst.
+  #
+  # WAT DIT NIET IS. Een tweede leg van DEZELFDE sectie blijft geweigerd en
+  # blijft langs `pyramiding`, dat eist dat de open leg al wint. Bijkopen in
+  # je eigen verliezende idee blijft verboden -- dit gaat over twee
+  # onafhankelijke secties met elk hun eigen plan en eigen stop.
+  sections_may_share_a_symbol: true
+
+  # EN TEGENGESTELDE RICHTINGEN BLIJVEN GEWEIGERD, en dat is rekenkunde en
+  # geen voorzichtigheid. Sectie zes is long_only en sectie tien handelt beide
+  # kanten op, dus ze gaan het oneens zijn over goud. Long en short tegelijk
+  # is vlakke blootstelling gekocht met twee spreads: hoogstens een van de
+  # twee stops kan geraakt worden, dus het paar kan niet winnen en de round
+  # trip is twee keer betaald. Op goud M1 is een round trip ongeveer 12% van
+  # de stop.
+  #
+  # Zet dit op false als je ze ook tegen elkaar in wil laten handelen.
+  refuse_opposite_direction_across_sections: true
+
   max_concurrent_positions: 4
 
   # De broker-minimumlot mag het bedoelde risico nooit overschrijden. XAU/XPT

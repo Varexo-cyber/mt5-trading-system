@@ -182,10 +182,34 @@ def main(argv: list[str] | None = None) -> None:
                 "    carrying four is not a wider section, it is the old one plus noise."
             )
 
-        hours: dict[str, list[Row]] = defaultdict(list)
+        # PER MARKET AS WELL AS OVER ALL OF THEM, and the mix is the one that
+        # lies. On five metals together, 04:00, 06:00, 16:00 and 17:00 UTC all
+        # came back "negative in both halves" -- 114.68 R of it. On XAUUSD
+        # alone those same four hours are +2.44, +1.49, +5.89 and +15.75, and
+        # not one hour of gold is negative. The whole signal was the crosses.
+        #
+        # Four hours nearly went shut on a pattern that exists in no market
+        # being traded. An hour table over mixed instruments is an average of
+        # things that do not share a clock, and it has to be read per market
+        # or not at all.
+        by_hour_all: dict[str, list[Row]] = defaultdict(list)
         for row in got:
-            hours[f"{row.when.hour:02d}:00"].append(row)
-        _table(f"{module} — PER UTC HOUR", dict(sorted(hours.items())), split, column)
+            by_hour_all[f"{row.when.hour:02d}:00"].append(row)
+        _table(
+            f"{module} — PER UTC HOUR (all markets)",
+            dict(sorted(by_hour_all.items())),
+            split,
+            column,
+        )
+        if len(markets) > 1:
+            for market, rows_here in sorted(markets.items()):
+                per: dict[str, list[Row]] = defaultdict(list)
+                for row in rows_here:
+                    per[f"{row.when.hour:02d}:00"].append(row)
+                _table(
+                    f"{module} — PER UTC HOUR, {market}", dict(sorted(per.items())), split, column
+                )
+        hours = by_hour_all
         both = sorted(
             name
             for name, rows_here in hours.items()
