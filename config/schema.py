@@ -3466,6 +3466,10 @@ class ConfluenceConfig(Base):
         # test that caught it exists because this has now happened to every
         # section that went live without being named here.
         "section_eleven_metals",
+        "section_eleven_xaueur_m1",
+        "section_twelve_xaugbp_m1",
+        "section_thirteen_xauaud_m5",
+        "section_fourteen_xaujpy_m1",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
@@ -3473,6 +3477,10 @@ class ConfluenceConfig(Base):
         "fast_ema_cross",
         "ema_pullback_resume",
         "m1_micro_breakout",
+        "section_eleven_xaueur_m1",
+        "section_twelve_xaugbp_m1",
+        "section_thirteen_xauaud_m5",
+        "section_fourteen_xaujpy_m1",
     )
     #: These quick modules already prove immediate direction inside their own
     #: closed-bar definition. Repeating the generic M5 adverse-drift gate would
@@ -3481,6 +3489,10 @@ class ConfluenceConfig(Base):
         "fast_ema_cross",
         "ema_pullback_resume",
         "m1_micro_breakout",
+        "section_eleven_xaueur_m1",
+        "section_twelve_xaugbp_m1",
+        "section_thirteen_xauaud_m5",
+        "section_fourteen_xaujpy_m1",
     )
     #: Unconditional travel frequency is not the win rate conditional on a
     #: specific M1/M5 event. For quick plans it is evidence sent to Claude;
@@ -4178,6 +4190,36 @@ class SectionElevenMetalsConfig(Base):
         return int(hour) in self.blocked_hours_by_symbol.get(symbol, ())
 
 
+class GoldCrossDiscoveryConfig(Base):
+    """One frozen gold-cross discovery; real-money permission is separate."""
+
+    enabled: bool = False
+    allowed_symbols: tuple[str, ...] = ()
+    timeframe: str = "M5"
+    mechanism: Literal["channel_breakout", "aligned_momentum"] = "channel_breakout"
+    polarity: Literal[-1, 1] = 1
+    channel_period: int = Field(default=20, ge=10, le=200)
+    momentum_bars: int = Field(default=6, ge=1, le=100)
+    minimum_momentum_atr: float = Field(default=0.75, gt=0.0, le=5.0)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    target_r: float = Field(default=1.0, gt=0.0, le=5.0)
+    session_start_hour_utc: int = Field(default=7, ge=0, le=23)
+    session_end_hour_utc: int = Field(default=13, ge=1, le=24)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _complete_market_and_window(self) -> GoldCrossDiscoveryConfig:
+        if len(self.allowed_symbols) != 1:
+            raise ValueError("gold-cross discovery needs exactly one symbol")
+        if self.session_start_hour_utc >= self.session_end_hour_utc:
+            raise ValueError("gold-cross discovery session must be ordered inside one UTC day")
+        return self
+
+    def hour_is_open(self, hour: int) -> bool:
+        return self.session_start_hour_utc <= int(hour) < self.session_end_hour_utc
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -4229,6 +4271,18 @@ class AnalysisConfig(Base):
     section_nine_vwap_m30: SectionNineSessionVwapConfig = SectionNineSessionVwapConfig()
     section_ten_gold_m1: SectionTenGoldM1Config = SectionTenGoldM1Config()
     section_eleven_metals: SectionElevenMetalsConfig = SectionElevenMetalsConfig()
+    section_eleven_xaueur_m1: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("XAUEUR",)
+    )
+    section_twelve_xaugbp_m1: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("XAUGBP",)
+    )
+    section_thirteen_xauaud_m5: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("XAUAUD",)
+    )
+    section_fourteen_xaujpy_m1: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("XAUJPY",)
+    )
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

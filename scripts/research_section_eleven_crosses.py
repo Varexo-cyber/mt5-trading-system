@@ -27,9 +27,17 @@ MECHANISMS = (
     "contraction_breakout",
     "two_leg_trend",
     "two_leg_impulse",
+    "fair_value_gap",
 )
 STOP_ATR = 1.0
-TARGET_R = 1.5
+TARGETS_R = (0.5, 0.75, 1.0, 1.5, 2.0)
+SESSIONS = {
+    "all": tuple(range(24)),
+    "asia": tuple(range(0, 7)),
+    "london": tuple(range(7, 13)),
+    "new_york": tuple(range(13, 20)),
+    "late": tuple(range(20, 24)),
+}
 COST_R = 0.02
 WARMUP = 80
 
@@ -148,6 +156,35 @@ def signals(frame: pd.DataFrame, mechanism: str) -> np.ndarray:
         fx_large = fx_move.abs() > fx_move.abs().rolling(48).median()
         long = gold_large & fx_large & (gold_move > 0) & (fx_move > 0)
         short = gold_large & fx_large & (gold_move < 0) & (fx_move < 0)
+    elif mechanism == "fair_value_gap":
+        # M5 only. Spans 240 and 600 are the M5 equivalents of H1 EMA20/50.
+        h1_fast = close.ewm(span=240, adjust=False).mean()
+        h1_slow = close.ewm(span=600, adjust=False).mean()
+        long = pd.Series(False, index=frame.index)
+        short = pd.Series(False, index=frame.index)
+        active: tuple[int, float, int] | None = None
+        for index in range(2, len(frame)):
+            if active is not None:
+                formed, midpoint, direction = active
+                if index - formed > 24:
+                    active = None
+                elif direction > 0 and low.iloc[index] <= midpoint:
+                    if close.iloc[index] > midpoint and h1_fast.iloc[index] > h1_slow.iloc[index]:
+                        long.iloc[index] = True
+                    active = None
+                elif direction < 0 and high.iloc[index] >= midpoint:
+                    if close.iloc[index] < midpoint and h1_fast.iloc[index] < h1_slow.iloc[index]:
+                        short.iloc[index] = True
+                    active = None
+            body_ratio = abs(close.iloc[index - 1] - open_.iloc[index - 1]) / max(
+                high.iloc[index - 1] - low.iloc[index - 1], 1e-12
+            )
+            impulse = high.iloc[index - 1] - low.iloc[index - 1]
+            if body_ratio >= 0.7 and impulse >= 1.5 * unit.iloc[index - 1]:
+                if low.iloc[index] > high.iloc[index - 2]:
+                    active = (index, (low.iloc[index] + high.iloc[index - 2]) / 2.0, 1)
+                elif high.iloc[index] < low.iloc[index - 2]:
+                    active = (index, (high.iloc[index] + low.iloc[index - 2]) / 2.0, -1)
     else:
         raise ValueError(mechanism)
     out[long.fillna(False)] = 1
@@ -156,7 +193,9 @@ def signals(frame: pd.DataFrame, mechanism: str) -> np.ndarray:
     return out.to_numpy()
 
 
-def replay(frame: pd.DataFrame, directions: np.ndarray, horizon: int) -> pd.DataFrame:
+def replay(
+    frame: pd.DataFrame, directions: np.ndarray, horizon: int, target_r: float
+) -> pd.DataFrame:
     unit = atr(frame).to_numpy()
     open_, high, low, close = (frame[name].to_numpy() for name in ("open", "high", "low", "close"))
     records: list[tuple[pd.Timestamp, float]] = []
@@ -171,7 +210,7 @@ def replay(frame: pd.DataFrame, directions: np.ndarray, horizon: int) -> pd.Data
         if risk <= 0:
             continue
         stop = entry - direction * risk
-        target = entry + direction * TARGET_R * risk
+        target = entry + direction * target_r * risk
         final_bar = min(entry_bar + horizon - 1, len(frame) - 1)
         result: float | None = None
         exit_bar = final_bar
@@ -182,10 +221,10 @@ def replay(frame: pd.DataFrame, directions: np.ndarray, horizon: int) -> pd.Data
                 result, exit_bar = -1.0, bar
                 break
             if target_hit:
-                result, exit_bar = TARGET_R, bar
+                result, exit_bar = target_r, bar
                 break
         if result is None:
-            result = float(np.clip(direction * (close[final_bar] - entry) / risk, -1.0, TARGET_R))
+            result = float(np.clip(direction * (close[final_bar] - entry) / risk, -1.0, target_r))
         records.append((frame.index[entry_bar], result - COST_R))
         available = exit_bar + 1
     return pd.DataFrame(records, columns=["time", "r"])
@@ -231,6 +270,24 @@ def split_trades(
     return trades.loc[(trades.time >= low_time) & (trades.time < high_time)]
 
 
+def promotion_checks(
+    train: Result, validation: Result, holdout: Result, bar: float
+) -> dict[str, bool]:
+    return {
+        "train cleared multiplicity bar": train.sigma >= bar,
+        "validation positive": validation.total_r > 0,
+        "holdout positive": holdout.total_r > 0,
+        "both holdout halves positive": holdout.first_half_r > 0 and holdout.second_half_r > 0,
+        "at least 50 holdout trades": holdout.trades >= 50,
+        "holdout at least +2 sigma": holdout.sigma >= 2.0,
+    }
+
+
+def print_checks(checks: dict[str, bool]) -> None:
+    for label, passed in checks.items():
+        print(f"[{'x' if passed else ' '}] {label}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", type=Path, required=True)
@@ -251,32 +308,60 @@ def main() -> int:
                 frames[(market, timeframe)] = synthetic_cross(gold, fx, operation)
     connection.close()
 
-    cells = [(mechanism, timeframe) for mechanism in MECHANISMS for timeframe in TIMEFRAMES]
+    cells = [
+        (mechanism, timeframe, polarity, target_r, session)
+        for mechanism in MECHANISMS
+        for timeframe in TIMEFRAMES
+        for polarity in (1, -1)
+        for target_r in TARGETS_R
+        for session in SESSIONS
+        if mechanism != "fair_value_gap" or timeframe == "M5"
+    ]
     bar = NormalDist().inv_cdf(1.0 - 0.05 / len(cells))
     print(f"SEARCH cells={len(cells)} one-sided Bonferroni bar={bar:.2f}")
-    cached: dict[tuple[str, str, str], pd.DataFrame] = {}
+    raw_cache: dict[tuple[str, str, int, float, str], pd.DataFrame] = {}
+    cached: dict[tuple[str, str, int, float, str, str], pd.DataFrame] = {}
     train_results: list[Result] = []
-    for mechanism, timeframe in cells:
+    for mechanism, timeframe, polarity, target_r, session in cells:
         pooled = []
         for market in COMPONENTS:
             frame = frames[(market, timeframe)]
-            trades = replay(frame, signals(frame, mechanism), HORIZONS[timeframe])
-            trades["market"] = market
-            cached[(mechanism, timeframe, market)] = trades
+            raw_key = (mechanism, timeframe, polarity, target_r, market)
+            if raw_key not in raw_cache:
+                raw = replay(
+                    frame,
+                    polarity * signals(frame, mechanism),
+                    HORIZONS[timeframe],
+                    target_r,
+                )
+                raw["market"] = market
+                raw_cache[raw_key] = raw
+            raw = raw_cache[raw_key]
+            trades = raw.loc[raw.time.dt.hour.isin(SESSIONS[session])].copy()
+            cached[(mechanism, timeframe, polarity, target_r, session, market)] = trades
             pooled.append(split_trades(trades, frame, 0.0, 0.5))
-        train_results.append(summarise(f"{mechanism}/{timeframe}", "train", pd.concat(pooled)))
+        direction = "follow" if polarity > 0 else "fade"
+        train_results.append(
+            summarise(
+                f"{mechanism}/{timeframe}/{direction}/{target_r:g}R/{session}",
+                "train",
+                pd.concat(pooled),
+            )
+        )
     train_results.sort(key=lambda item: item.sigma, reverse=True)
     for result in train_results[:10]:
         print_result(result)
 
     selected = train_results[0]
-    mechanism, timeframe = selected.cell.split("/")
+    mechanism, timeframe, direction, target_label, session = selected.cell.split("/")
+    polarity = 1 if direction == "follow" else -1
+    target_r = float(target_label.removesuffix("R"))
     print(f"\nFROZEN WINNER {selected.cell}; later periods were not used for selection")
     later: list[Result] = []
     for name, low, high in (("validation", 0.5, 0.75), ("holdout", 0.75, 1.01)):
         pooled = [
             split_trades(
-                cached[(mechanism, timeframe, market)],
+                cached[(mechanism, timeframe, polarity, target_r, session, market)],
                 frames[(market, timeframe)],
                 low,
                 high,
@@ -288,19 +373,161 @@ def main() -> int:
         print_result(result)
 
     validation, holdout = later
-    checks = {
-        "train cleared multiplicity bar": selected.sigma >= bar,
-        "validation positive": validation.total_r > 0,
-        "holdout positive": holdout.total_r > 0,
-        "every holdout market positive": all(value > 0 for value in holdout.by_market.values()),
-        "both holdout halves positive": holdout.first_half_r > 0 and holdout.second_half_r > 0,
-        "at least 200 holdout trades": holdout.trades >= 200,
-        "holdout at least +2 sigma": holdout.sigma >= 2.0,
-    }
+    checks = promotion_checks(selected, validation, holdout, bar)
+    checks["every holdout market positive"] = all(value > 0 for value in holdout.by_market.values())
+    checks["at least 200 holdout trades"] = holdout.trades >= 200
+    checks.pop("at least 50 holdout trades")
     print("\nPROMOTION CHECKS")
-    for label, passed in checks.items():
-        print(f"[{'x' if passed else ' '}] {label}")
+    print_checks(checks)
     print("SYNTHETIC_CANDIDATE" if all(checks.values()) else "REJECTED")
+
+    print(f"\nPER-MARKET SEARCH — each market pays all {len(cells)} trials")
+    for market in COMPONENTS:
+        market_train: list[Result] = []
+        for (
+            candidate_mechanism,
+            candidate_timeframe,
+            candidate_polarity,
+            candidate_target,
+            candidate_session,
+        ) in cells:
+            candidate_frame = frames[(market, candidate_timeframe)]
+            candidate_trades = cached[
+                (
+                    candidate_mechanism,
+                    candidate_timeframe,
+                    candidate_polarity,
+                    candidate_target,
+                    candidate_session,
+                    market,
+                )
+            ]
+            train = split_trades(candidate_trades, candidate_frame, 0.0, 0.5)
+            candidate_direction = "follow" if candidate_polarity > 0 else "fade"
+            market_train.append(
+                summarise(
+                    f"{candidate_mechanism}/{candidate_timeframe}/{candidate_direction}/"
+                    f"{candidate_target:g}R/{candidate_session}",
+                    "train",
+                    train,
+                )
+            )
+        market_train.sort(key=lambda item: item.sigma, reverse=True)
+        winner = market_train[0]
+        (
+            winner_mechanism,
+            winner_timeframe,
+            winner_direction,
+            winner_target_label,
+            winner_session,
+        ) = winner.cell.split("/")
+        winner_polarity = 1 if winner_direction == "follow" else -1
+        winner_target = float(winner_target_label.removesuffix("R"))
+        winner_frame = frames[(market, winner_timeframe)]
+        winner_trades = cached[
+            (
+                winner_mechanism,
+                winner_timeframe,
+                winner_polarity,
+                winner_target,
+                winner_session,
+                market,
+            )
+        ]
+        market_validation = summarise(
+            winner.cell,
+            "validation",
+            split_trades(winner_trades, winner_frame, 0.5, 0.75),
+        )
+        market_holdout = summarise(
+            winner.cell,
+            "holdout",
+            split_trades(winner_trades, winner_frame, 0.75, 1.01),
+        )
+        print(f"\n{market} FROZEN WINNER")
+        print_result(winner)
+        print_result(market_validation)
+        print_result(market_holdout)
+        market_checks = promotion_checks(winner, market_validation, market_holdout, bar)
+        print_checks(market_checks)
+        print("SYNTHETIC_CANDIDATE" if all(market_checks.values()) else "REJECTED")
+
+        # The holdout has already been inspected above. This screen therefore
+        # generates the next hypothesis; it does not validate one. Any row it
+        # finds still needs fresh actual-broker data before implementation.
+        stable: list[tuple[float, Result, Result, Result]] = []
+        for (
+            candidate_mechanism,
+            candidate_timeframe,
+            candidate_polarity,
+            candidate_target,
+            candidate_session,
+        ) in cells:
+            candidate_frame = frames[(market, candidate_timeframe)]
+            candidate_trades = cached[
+                (
+                    candidate_mechanism,
+                    candidate_timeframe,
+                    candidate_polarity,
+                    candidate_target,
+                    candidate_session,
+                    market,
+                )
+            ]
+            candidate_direction = "follow" if candidate_polarity > 0 else "fade"
+            label = (
+                f"{candidate_mechanism}/{candidate_timeframe}/{candidate_direction}/"
+                f"{candidate_target:g}R/{candidate_session}"
+            )
+            discovery_train = summarise(
+                label,
+                "train",
+                split_trades(candidate_trades, candidate_frame, 0.0, 0.5),
+            )
+            discovery_validation = summarise(
+                label,
+                "validation",
+                split_trades(candidate_trades, candidate_frame, 0.5, 0.75),
+            )
+            discovery_holdout = summarise(
+                label,
+                "holdout",
+                split_trades(candidate_trades, candidate_frame, 0.75, 1.01),
+            )
+            splits = (discovery_train, discovery_validation, discovery_holdout)
+            if (
+                all(result.trades >= 50 and result.total_r > 0 for result in splits)
+                and discovery_holdout.first_half_r > 0
+                and discovery_holdout.second_half_r > 0
+            ):
+                floor = min(result.per_trade for result in splits)
+                stable.append(
+                    (floor, discovery_train, discovery_validation, discovery_holdout)
+                )
+        stable.sort(key=lambda item: item[0], reverse=True)
+        print(f"{market} STABILITY DISCOVERY (not independent evidence)")
+        if not stable:
+            print("  none")
+        for floor, discovery_train, discovery_validation, discovery_holdout in stable[:3]:
+            print(f"  floor R/trade {floor:+.3f}")
+            print_result(discovery_train)
+            print_result(discovery_validation)
+            print_result(discovery_holdout)
+        own_chart = [
+            item
+            for item in stable
+            if not item[1].cell.startswith(("two_leg_trend", "two_leg_impulse"))
+        ]
+        print(f"{market} BEST OWN-CHART DISCOVERY")
+        if not own_chart:
+            print("  none")
+        else:
+            floor, own_train, own_validation, own_holdout = own_chart[0]
+            print(f"  floor R/trade {floor:+.3f}")
+            print_result(own_train)
+            print_result(own_validation)
+            print_result(own_holdout)
+
     print("Actual broker-bar replay remains mandatory even when every box passes.")
     return 0 if all(checks.values()) else 2
 

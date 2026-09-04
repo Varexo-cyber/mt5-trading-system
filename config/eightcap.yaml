@@ -1760,6 +1760,54 @@ analysis:
       XAUAUD: [16, 17]
       XAUJPY: [16, 17]
 
+  # Four separate discoveries. They are enabled for broker replay but remain
+  # weight 0 and outside the real-money allowlist until actual cross bars pass.
+  section_eleven_xaueur_m1:
+    enabled: true
+    timeframe: M1
+    allowed_symbols: [XAUEUR]
+    mechanism: channel_breakout
+    polarity: -1
+    channel_period: 20
+    stop_atr: 1.0
+    target_r: 1.5
+    session_start_hour_utc: 7
+    session_end_hour_utc: 13
+  section_twelve_xaugbp_m1:
+    enabled: true
+    timeframe: M1
+    allowed_symbols: [XAUGBP]
+    mechanism: channel_breakout
+    polarity: -1
+    channel_period: 20
+    stop_atr: 1.0
+    target_r: 1.0
+    session_start_hour_utc: 7
+    session_end_hour_utc: 13
+  section_thirteen_xauaud_m5:
+    enabled: true
+    timeframe: M5
+    allowed_symbols: [XAUAUD]
+    mechanism: channel_breakout
+    polarity: 1
+    channel_period: 20
+    stop_atr: 1.0
+    target_r: 0.75
+    session_start_hour_utc: 13
+    session_end_hour_utc: 20
+  section_fourteen_xaujpy_m1:
+    enabled: true
+    timeframe: M1
+    allowed_symbols: [XAUJPY]
+    mechanism: aligned_momentum
+    polarity: -1
+    momentum_bars: 6
+    minimum_momentum_atr: 0.75
+    stop_atr: 1.0
+    target_r: 1.5
+    session_start_hour_utc: 7
+    session_end_hour_utc: 13
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2507,6 +2555,10 @@ analysis:
       # elke trade op stop 1,0 ATR en doel 1,5 R; een ander doel hier maakt
       # van deze modellen een meting van iets anders dan wat ze gaan doen.
       section_eleven_metals: 1.5
+      section_eleven_xaueur_m1: 1.5
+      section_twelve_xaugbp_m1: 1.0
+      section_thirteen_xauaud_m5: 0.75
+      section_fourteen_xaujpy_m1: 1.5
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -3295,6 +3347,10 @@ analysis:
       section_nine_vwap_m30: 1.0
       section_ten_gold_m1: 1.0
       section_eleven_metals: 0.0
+      section_eleven_xaueur_m1: 0.0
+      section_twelve_xaugbp_m1: 0.0
+      section_thirteen_xauaud_m5: 0.0
+      section_fourteen_xaujpy_m1: 0.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3327,8 +3383,8 @@ analysis:
       # Dat is een redenering, geen meting.
       candle_momentum: 0.6
 
-    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1]
-    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1]
+    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1, section_eleven_xaueur_m1, section_twelve_xaugbp_m1, section_thirteen_xauaud_m5, section_fourteen_xaujpy_m1]
+    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1, section_eleven_xaueur_m1, section_twelve_xaugbp_m1, section_thirteen_xauaud_m5, section_fourteen_xaujpy_m1]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #
@@ -4399,6 +4455,26 @@ risk:
       minimum_trades: 40
       maximum_loss_share: 0.65
       losing_streak: 6
+    section_eleven_xaueur_m1:
+      window: 60
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 8
+    section_twelve_xaugbp_m1:
+      window: 60
+      minimum_trades: 40
+      maximum_loss_share: 0.58
+      losing_streak: 8
+    section_thirteen_xauaud_m5:
+      window: 60
+      minimum_trades: 40
+      maximum_loss_share: 0.50
+      losing_streak: 7
+    section_fourteen_xaujpy_m1:
+      window: 60
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 8
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde

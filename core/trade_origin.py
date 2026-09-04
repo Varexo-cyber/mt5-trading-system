@@ -21,6 +21,22 @@ class TradeOrigin:
 # Specific aliases must precede their parent family.  Setup-family names carry
 # the module alias plus the clock (for example ``order_block_fast_m1``).
 _ORIGINS: tuple[tuple[str, TradeOrigin], ...] = (
+    (
+        "section_fourteen_xaujpy_m1",
+        TradeOrigin(14, "xaujpy_momentum_fade", "M1", "JARVIS-S14-JPY-M1"),
+    ),
+    (
+        "section_thirteen_xauaud_m5",
+        TradeOrigin(13, "xauaud_breakout", "M5", "JARVIS-S13-AUD-M5"),
+    ),
+    (
+        "section_twelve_xaugbp_m1",
+        TradeOrigin(12, "xaugbp_breakout_fade", "M1", "JARVIS-S12-GBP-M1"),
+    ),
+    (
+        "section_eleven_xaueur_m1",
+        TradeOrigin(11, "xaueur_breakout_fade", "M1", "JARVIS-S11-EUR-M1"),
+    ),
     # SECTION ELEVEN WENT LIVE WITHOUT ONE OF THESE, and the omission is the
     # same defect this project keeps shipping: a section wired into the
     # allowlist, the weights, the breakers and the guards, whose TRADES were

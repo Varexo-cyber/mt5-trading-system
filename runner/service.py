@@ -87,6 +87,7 @@ from analysis import (
     world_state as build_world_state,
 )
 from analysis.confluence import TradeIdea
+from analysis.gold_cross_discoveries import GoldCrossDiscovery
 from analysis.playbooks import (
     BreakConfig,
     FadeConfig,
@@ -500,6 +501,22 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         SectionElevenMetals(
             analysis.section_eleven_metals,
             models=load_section_eleven_models(analysis.section_eleven_metals.model_dir),
+        ),
+        GoldCrossDiscovery(
+            analysis.section_eleven_xaueur_m1,
+            name="section_eleven_xaueur_m1",
+        ),
+        GoldCrossDiscovery(
+            analysis.section_twelve_xaugbp_m1,
+            name="section_twelve_xaugbp_m1",
+        ),
+        GoldCrossDiscovery(
+            analysis.section_thirteen_xauaud_m5,
+            name="section_thirteen_xauaud_m5",
+        ),
+        GoldCrossDiscovery(
+            analysis.section_fourteen_xaujpy_m1,
+            name="section_fourteen_xaujpy_m1",
         ),
     ]
 
