@@ -21,73 +21,74 @@ echo  ==================================================================
 echo   SECTIE TIEN -- MEER TRADES ZONDER DE KWALITEIT TE VERNEUKEN
 echo  ==================================================================
 echo.
-echo  WAAROM JUIST DEZE SECTIE. Scorecard 30 dagen, echte rekening:
+echo  WAAROM JUIST DEZE SECTIE. Sectie tien is de enige live component met
+echo  een positieve gemeten edge per trade. Op de echte rekening deed hij in
+echo  30 dagen 16 trades voor +2,49 R, een halve trade per dag -- terwijl het
+echo  hele boek 361 trades deed voor -29,49 R. Dit is dus de plek waar meer
+echo  trades iets waard zijn; overal anders betekent meer trades meer verlies.
 echo.
-echo     section_ten_gold_m1    16 trades   +2,49 R    +0,156 per trade
-echo     section_six_gold_m5     3 trades   -0,72 R
-echo     drift_continuation    108 trades  -38,43 R
-echo     het hele boek         361 trades  -29,49 R
+echo  WAT ER TOT NU TOE GEMETEN IS
 echo.
-echo  Sectie tien is de enige live component met een positieve gemeten edge
-echo  per trade, en veruit de beste. Hij maakt maar een halve trade per dag.
-echo  Dat is dus de plek waar meer trades iets waard zijn -- overal anders
-echo  betekent meer trades meer verlies.
+echo   3 sep, 180 dagen, alleen XAUUSD, uren open:
+echo     989 trades, +7,07 R. Het blok 07:00-13:00 UTC bleek WEL echt:
+echo     -65,96 R over 422 trades daarbinnen tegen +73,03 R over 567 erbuiten,
+echo     zes van de zes uren negatief. Blok staat weer aan.
 echo.
-echo  WAT HEM NU AFREMT, in volgorde van grootte:
-echo    1. EEN markt. allowed_symbols stond op [XAUUSD]; sinds 3 september
-echo       staan er zes in: XAUUSD, XAUEUR, XAUGBP, XAUAUD, XAUJPY, XAGUSD.
-echo    2. DE UREN. Stond op 03:00-19:00 UTC met 07:00-13:00 dicht. Dat blok
-echo       is er per 3 september AF: die zes uur zijn gekozen door dezelfde
-echo       180 dagen op te delen waarop de sectie gekalibreerd is, en de
-echo       slechtste zes eruit knippen vindt op ELKE reeks een slecht blok.
-echo       Het zijn bovendien de Londense ochtenduren, de drukste die goud
-echo       heeft. Deze run print een uitsplitsing PER UUR zodat je ziet of
-echo       07:00-13:00 opnieuw negatief is of dat het toeval was.
-echo    3. Een positie tegelijk.
+echo   3 sep, 30 dagen, zes metalen, uren dicht:
+echo     sectie tien 429 trades, +19,66 R, EUR +91,83  (+0,046 per trade)
+echo     XAUUSD 228   XAUAUD 99   XAUGBP 88   XAUEUR 86   XAUJPY 71
+echo     XAGUSD 150 setups en NUL trades -- boven 20%% van de stop, door de
+echo     kostenpoort geweigerd. Zilver staat er sindsdien af.
 echo.
-echo  WAT DEZE RUN DOET
-echo    - sectie tien precies zoals hij NU in de config staat: zes metalen,
-echo      uren open. Dit meet wat er live gaat, niet iets ernaast.
-echo    - elke genomen trade OOK opnieuw opgelost bij zes break-even-
-echo      niveaus, op dezelfde instap, met dezelfde kosten en dezelfde
-echo      20:50-flatten. Alleen de uitgang verschilt.
-echo    - beide helften van de periode apart, want de beste van zeven
-echo      kolommen kiezen op een steekproef is hoe dit project de meeste
-echo      teleurstellingen heeft geproduceerd.
+echo  DE STAND NU: VIJF metalen, uren 03:00-19:00 UTC met 07:00-13:00 dicht.
+echo  Deze run meet precies dat, niets ernaast.
 echo.
-echo  WAT HET NIET DOET. Het beslist niet of een break-evenniveau live mag.
-echo  Break-even laat een symbool eerder los, een vrij symbool pakt de
+echo  WAT ER NOG OPEN STAAT, en dat is waarvoor je dit draait:
+echo    1. Dragen die vier nieuwe kruisen hun eigen gewicht, of leunen ze op
+echo       XAUUSD? De tabel PER SECTION, PER MARKET zegt het per metaal.
+echo    2. Verslaat een break-evenniveau de vaste SL/TP? Op 180 dagen goud won
+echo       +0,1R @ 1,00R; op 30 dagen zes metalen won +0,1R @ 0,50R. Andere
+echo       winnaar op andere data, dus nog geen regel -- wel steeds de
+echo       +0,1R-familie, en die verslaat elke keer de vaste uitgang.
+echo    3. Houdt het stand buiten augustus? Beide runs tot nu toe hingen aan
+echo       een maand die 130%% van het totaal was.
+echo.
+echo  WAT DEZE RUN NIET DOET. Hij beslist niet of een break-evenniveau live
+echo  mag. Break-even laat een symbool eerder los, een vrij symbool pakt de
 echo  volgende setup, en een sectie die andere trades neemt is een andere
-echo  sectie. Wint een niveau hier, dan verdient het een volledige replay
-echo  met het positieboek erachteraan -- geen promotie.
+echo  sectie. Wint een niveau hier, dan verdient het een volledige replay met
+echo  het positieboek erachteraan -- geen promotie.
 echo.
-echo  HOELANG DIT DUURT, gemeten en niet geschat. De run van 3 september
-echo  deed XAUUSD alleen in 22,6 minuten: 235.000 M1-bars over 180 dagen.
+echo  EN SECTIE ZES GAAT NIET MEE. `SectionSixGoldM5.symbol` staat hardcoded
+echo  op XAUUSD, dus die vuurt op geen enkel ander metaal, hoe goed hij hier
+echo  ook scoort. Zijn model is een bevroren lineair model met op goud gefitte
+echo  coefficienten; die op XAUJPY loslaten levert getallen op die nergens
+echo  over gaan. Verbreden vraagt een nieuw model per markt.
 echo.
-echo     180 dagen x 6 metalen  ~ 2 tot 2,5 uur
+echo  HOELANG DIT DUURT, gemeten en niet geschat. XAUUSD alleen kostte
+echo  22,6 minuten: 235.000 M1-bars over 180 dagen.
+echo.
+echo     180 dagen x 5 metalen  ~ 2 uur
 echo     180 dagen x 1 metaal   ~ 25 min
-rem `<` IS EEN REDIRECT IN CMD, ook midden in een echo-regel. Deze pijl gaf
-rem "The system cannot find the file specified" omdat cmd invoer uit een
-rem bestand `-` probeerde te lezen. Het caret escapet hem.
-echo      90 dagen x 6 metalen  ~ 1 uur       ^<- begin hier als je wacht
+echo      90 dagen x 5 metalen  ~ 50 min      ^<- begin hier als je wacht
 echo.
-echo  Elke 20.000 bars komt er een regel met hoeveel er te gaan is, zodat
-echo  stilte niet meer op vastlopen lijkt. De regel PER MARKT verschijnt pas
-echo  als die markt helemaal klaar is.
+echo  Per markt komt er eerst "fetching history..." en daarna ongeveer acht
+echo  voortgangsregels per klok, zodat stilte niet op vastlopen lijkt. De
+echo  regel met het aantal trades verschijnt pas als die markt klaar is.
 echo.
 echo  MT5 moet draaien en ingelogd zijn.
 echo.
 echo  GEBRUIK
-echo    sectie10.cmd              180 dagen, de zes metalen uit de config
+echo    sectie10.cmd              180 dagen, de vijf metalen uit de config
 echo    sectie10.cmd 90           korter
 echo    sectie10.cmd 180 goud     alleen XAUUSD, om het break-evenrooster
 echo                              los te zien van de verbreding
 echo    sectie10.cmd 180 alle     alle dertien metalen die de broker heeft,
 echo                              inclusief platina, zink en koper -- die
-echo                              staan NIET live en dit meet alleen of ze
+echo                              staan NIET live en dit kijkt alleen of ze
 echo                              er ooit bij zouden moeten
 echo.
-echo  ALLEEN DE ZES METALEN WORDEN GELOPEN. EURUSD, GBPUSD en de indices
+echo  ALLEEN DE VIJF METALEN WORDEN GELOPEN. EURUSD, GBPUSD en de indices
 echo  staan niet in sectie tiens allowed_symbols, dus daar kan hij geen trade
 echo  nemen -- ze aflopen kost minuten per markt om een symboolfilter nee te
 echo  horen zeggen. De andere secties komen in deze run dus niet aan bod; daar
@@ -97,15 +98,17 @@ echo.
 set DAGEN=%1
 if "%DAGEN%"=="" set DAGEN=180
 
-rem STANDAARD MEET DIT DE LIVE CONFIG en niets ernaast: de zes metalen die
-rem er nu in staan, met de uren open. Een run die iets ANDERS meet dan wat
-rem er gaat draaien beantwoordt de vraag niet.
+rem STANDAARD MEET DIT DE LIVE CONFIG en niets ernaast: de vijf metalen die
+rem er nu in staan, met 07:00-13:00 UTC dicht. Een run die iets ANDERS meet
+rem dan wat er gaat draaien beantwoordt de vraag niet.
 rem
 rem `goud` zet hem terug op alleen XAUUSD, zodat het break-evenrooster los
 rem van de verbreding te lezen is -- twee dingen tegelijk veranderen en dan
 rem een beter cijfer krijgen zegt niet welke van de twee het deed.
 rem `alle` verbreedt naar alle dertien metalen die de broker noteert, alleen
-rem in het geheugen; dat is een verkenning, geen voorstel.
+rem in het geheugen; dat is een verkenning, geen voorstel. Zilver zit daar
+rem weer bij en zal opnieuw nul trades nemen -- dat is de bevestiging, niet
+rem een fout.
 set METALEN=
 if /i "%2"=="alle" set METALEN=--section-ten-symbols metals
 if /i "%2"=="goud" set METALEN=--section-ten-symbols XAUUSD
@@ -139,22 +142,22 @@ if errorlevel 1 (
 echo.
 echo  Elke beslissing staat in runtime\sectie10.csv
 echo.
-echo  WAT JE MOET LEZEN
-echo    1. PER MARKET. Hoeveel trades nam sectie tien per metaal? Staat er
-echo       een metaal op nul, dan vuurde de detector daar niet -- dat is een
-echo       antwoord, geen fout.
-echo    2. BY SECTION. Blijft section_ten_gold_m1 positief met zes metalen
-echo       erin, of verdunt het? Meer trades die samen minder opleveren is
-echo       geen verbetering. De lat: +0,156 R per trade was het live cijfer
-echo       op een markt. Zakt het onder +0,05 R of wordt het negatief, dan
-echo       gaat allowed_symbols terug naar [XAUUSD].
-echo    3. SECTION TEN BY UTC HOUR. Is 07:00-13:00 opnieuw negatief, nu op
-echo       zes markten? Dan gaat dat blok terug. Staat het gelijk met de
-echo       rest of positief, dan waren het de slechtste zes uur van EEN
-echo       steekproef en heeft dichthouden trades gekost voor niets.
-echo    4. BREAK-EVEN GRID. Verslaat een niveau de regel `fixed SL/TP` in
-echo       ZOWEL de early- als de late-kolom? Alleen dan is het wat waard.
-echo       Wint niets, dan is geen positiebeheer het juiste antwoord en
-echo       blijft sectie tien zoals hij is.
+echo  WAT JE MOET LEZEN, in deze volgorde:
+echo    1. PER SECTION, PER MARKET. Dit is de vraag. Staan XAUEUR, XAUGBP,
+echo       XAUAUD en XAUJPY positief, of draagt XAUUSD ze? Een sectie is maar
+echo       zo verbreed als zijn slechtste markt.
+echo    2. BY SECTION. Blijft sectie tien positief per trade met vijf metalen
+echo       erin? Meer trades die samen minder opleveren is geen verbetering.
+echo    3. IS THIS REAL. Hoeveel maanden positief, en hoeveel procent van het
+echo       resultaat hangt aan de beste maand? Beide vorige runs hingen aan
+echo       augustus. Als dat hier weer zo is, is het cijfer een maand en geen
+echo       edge.
+echo    4. SECTION TEN BY UTC HOUR. Nu alleen ter controle: het blok staat
+echo       dicht, dus 07:00-13:00 hoort vrijwel leeg te zijn. Staat daar toch
+echo       volume, dan lekt er iets en wil ik dat weten.
+echo    5. BREAK-EVEN GRID. Verslaat een niveau `fixed SL/TP` in ZOWEL early
+echo       als late? Wint dezelfde +0,1R-variant als op 180 dagen goud, dan
+echo       zet ik hem aan. Wint niets, dan is geen positiebeheer het juiste
+echo       antwoord en blijft sectie tien zoals hij is.
 echo.
 pause
