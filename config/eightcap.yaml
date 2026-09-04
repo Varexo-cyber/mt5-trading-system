@@ -3202,6 +3202,15 @@ analysis:
       # Sectie elf mag alleen handelen, net als tien: hij IS de these, en een
       # generieke lone-modulepoort zou elk geldig signaal weigeren.
       section_eleven_metals: 0.55
+      # S11-S14 are each one complete, independently measured detector. Their
+      # configured 0.55 confidence is the frozen event definition; applying
+      # the generic 0.65 floor made 10,962 valid events mathematically
+      # impossible to replay. This only makes the broker dry-run reachable:
+      # all four remain weight 0 and outside the real-money allowlist.
+      section_eleven_xaueur_m1: 0.55
+      section_twelve_xaugbp_m1: 0.55
+      section_thirteen_xauaud_m5: 0.55
+      section_fourteen_xaujpy_m1: 0.55
 
     # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
     # documented as a quick entry but classified as intraday, so a fresh M5
