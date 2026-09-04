@@ -315,6 +315,17 @@ def build_parser() -> argparse.ArgumentParser:
         "against the Bonferroni bar.",
     )
     parser.add_argument("--penalty", type=float, default=25.0)
+    parser.add_argument(
+        "--cells-already-tried",
+        type=int,
+        default=0,
+        help=(
+            "cells fitted in EARLIER runs, added to this run's count before the "
+            "Bonferroni bar. Sixteen cells were spent on 4 September at "
+            "thresholds 0.10 to 0.30; a follow-up that ignores them is paying "
+            "for the grid once and searching it twice."
+        ),
+    )
     parser.add_argument("--holdout", type=float, default=0.2)
     parser.add_argument("--out", default=MODEL_DIR)
     parser.add_argument(
@@ -341,10 +352,13 @@ def main(argv: list[str] | None = None) -> None:
     connector.connect()
     sizer = PositionSizer(settings)
 
-    cells = len(symbols) * len(thresholds)
+    earlier = max(args.cells_already_tried, 0)
+    cells = len(symbols) * len(thresholds) + earlier
     bar = bonferroni_sigma(cells)
     print(f"\nSECTION ELEVEN — fitting {len(symbols)} markets x {len(thresholds)} thresholds")
     print(f"  {args.days} days of {clock.value}, {args.folds} walk-forward folds")
+    if earlier:
+        print(f"  plus {earlier} cells declared from earlier runs")
     print(f"  Bonferroni bar at {cells} cells: {bar:.2f} sigma on the searched part")
     print(f"  the newest {args.holdout:.0%} is never searched and must clear 2.0 on its own\n")
 

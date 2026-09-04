@@ -49,6 +49,16 @@ echo                                rapporteren -- er wordt niets weggeschreven
 echo    train11.cmd 360             kortere periode
 echo    train11.cmd 720 schrijf     schrijf een modelbestand voor elke markt
 echo                                die ELKE lat haalt
+echo    train11.cmd 720 hoger       DE VERVOLGVRAAG. Op 4 september haalde
+echo                                niets de lat, maar XAUJPY liet als enige
+echo                                een STIJGENDE lijn zien: sigma +0,82 bij
+echo                                drempel 0,10 en +2,56 bij 0,30. Als dat
+echo                                signaal echt is hoort strenger selecteren
+echo                                te BLIJVEN helpen; is het ruis, dan piekt
+echo                                het en zakt het weer. Dit draait 0,30 tot
+echo                                0,80 op XAUJPY en XAUGBP -- de twee met
+echo                                die vorm -- en telt de zestien cellen van
+echo                                4 september mee in de lat.
 echo.
 echo  EEN MODEL OP SCHIJF IS GEEN SECTIE OP DE LIVE LIJST. Daarna volgt nog
 echo  een replay door dry_run_sections voordat er geld aan te pas komt.
@@ -59,7 +69,15 @@ echo.
 set DAGEN=%1
 if "%DAGEN%"=="" set DAGEN=720
 set SCHRIJF=
+set EXTRA=
 if /i "%2"=="schrijf" set SCHRIJF=--write
+rem HOGER IS EEN VOORSPELLING, GEEN TWEEDE ZOEKTOCHT. Vooraf opgeschreven:
+rem als de aflezing van XAUJPY informatie draagt, hoort sigma door te stijgen
+rem naar 0,40 / 0,50 / 0,60 / 0,80. Piekt hij bij 0,30 en zakt daarna, dan is
+rem het de steekproef en gaat sectie elf van tafel. De zestien cellen van de
+rem eerste run tellen mee, want een grid twee keer doorzoeken en een keer
+rem betalen is hoe een zoektocht zichzelf witwast tot een ontdekking.
+if /i "%2"=="hoger" set EXTRA=--symbols XAUJPY,XAUGBP --thresholds 0.30,0.40,0.50,0.60,0.80 --cells-already-tried 16
 
 if not exist ".venv-live\Scripts\python.exe" (
   echo  ERROR: .venv-live\Scripts\python.exe niet gevonden. Doe eerst update.cmd.
@@ -67,7 +85,7 @@ if not exist ".venv-live\Scripts\python.exe" (
   exit /b 1
 )
 
-.venv-live\Scripts\python.exe scripts\train_section_eleven.py --days %DAGEN% %SCHRIJF%
+.venv-live\Scripts\python.exe scripts\train_section_eleven.py --days %DAGEN% %EXTRA% %SCHRIJF%
 
 echo.
 pause
