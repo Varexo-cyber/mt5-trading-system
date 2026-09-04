@@ -73,14 +73,16 @@ class TestOnlySectionsTwoAndThreeTradeRealMoney:
         on the screen -- "risico's moeten genomen worden om te testen" -- under
         the strictest breaker here (30 trades, 50% loss share, 7-streak).
         """
-        confluence = _live_settings().analysis.confluence
+        settings = _live_settings()
+        confluence = settings.analysis.confluence
 
-        assert set(confluence.live_enabled_modules) == {
-            "failed_session_breakout",
-            "section_six_gold_m5",
-            "section_eight_trend_day_h1",
-            "section_ten_gold_m1",
-        }
+        # The frozen list is a decision and it changes; the property is that
+        # everything trading real money can switch itself off.
+        live = set(confluence.live_enabled_modules)
+        assert live
+        assert live <= set(
+            settings.risk.section_breakers
+        ), f"live without a breaker: {sorted(live - set(settings.risk.section_breakers))}"
         for name in (
             "impulse_retest",
             "impulse_retest_m30",

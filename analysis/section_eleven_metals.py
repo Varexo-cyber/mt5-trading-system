@@ -83,6 +83,13 @@ class MetalModel:
     holdout_r: float = 0.0
     holdout_sigma: float = 0.0
     threshold: float = 0.15
+    #: Did this model clear every bar the trainer sets, or was it written on
+    #: the owner's instruction so the section could be REPLAYED rather than
+    #: argued about? Recorded either way, because the alternative is a model
+    #: whose provenance lives in somebody's memory of a conversation.
+    cleared_the_bar: bool = False
+    searched_sigma: float = 0.0
+    bar: float = 0.0
 
     def reading(self, features: np.ndarray) -> float:
         centre = np.asarray(self.centre)
@@ -205,6 +212,9 @@ def load_models(directory: Path | str) -> dict[str, MetalModel]:
             holdout_r=float(raw.get("holdout_r", 0.0)),
             holdout_sigma=float(raw.get("holdout_sigma", 0.0)),
             threshold=float(raw.get("threshold", 0.15)),
+            cleared_the_bar=bool(raw.get("cleared_the_bar", False)),
+            searched_sigma=float(raw.get("searched_sigma", 0.0)),
+            bar=float(raw.get("bar", 0.0)),
         )
         if len(model.centre) != 13 or len(model.scale) != 13:
             raise ValueError(f"{path.name}: expected 13 feature statistics")
@@ -230,6 +240,9 @@ def write_model(model: MetalModel, directory: Path | str) -> Path:
                 "trained_from": model.trained_from,
                 "trained_through": model.trained_through,
                 "threshold": model.threshold,
+                "cleared_the_bar": model.cleared_the_bar,
+                "searched_sigma": round(model.searched_sigma, 4),
+                "bar": round(model.bar, 4),
                 "holdout_trades": model.holdout_trades,
                 "holdout_r": round(model.holdout_r, 4),
                 "holdout_sigma": round(model.holdout_sigma, 4),

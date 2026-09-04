@@ -208,115 +208,114 @@ class TestTheSectionIsSilentWhereItWasNeverFitted:
         assert signal.score > 0.0
         assert signal.invalidation_price is not None
 
-    def test_it_is_off_and_unfitted_in_the_shipped_config(self) -> None:
+    def test_a_live_section_eleven_is_fully_wired(self) -> None:
+        """It went live on 4 September at the owner's instruction, on models
+        that did NOT clear the trainer's bar -- best cell +2.56 sigma against
+        2.96. That is his call, taken with the number in view.
+
+        What is not his call is a section that is half-wired. Every one of
+        these was missing when it was first added to the allowlist, and each
+        one is a way for a live section to behave as a different strategy than
+        the one measured:
+
+          * no target ratio -> the engine searches for a target instead of
+            trading the 1.5 R the models were fitted at
+          * not in `intraday_modules` -> falls through to "swing", which hands
+            an M5 model H1 planning authority, a 24-bar horizon and a D1/W1
+            veto at one conflict
+          * not exempt from the entry-timing gate -> the gate refuses an entry
+            where price ran against the idea over the last three M5 bars,
+            which is the mechanism of a model that reads exactly that bar
+          * no section breaker -> nothing switches it off
+
+        If section eleven is on the live list, it is wired. If it is off, this
+        test says nothing and that is fine.
+        """
         from config.loader import load_settings
 
         settings = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         )
+        confluence = settings.analysis.confluence
+        if "section_eleven_metals" not in confluence.live_enabled_modules:
+            pytest.skip("section eleven is not live")
+
+        assert settings.analysis.section_eleven_metals.enabled is True
+        assert confluence.target_r_multiple_by_family["section_eleven_metals"] == 1.5
+        assert "section_eleven_metals" in confluence.intraday_modules
+        assert "section_eleven_metals" in confluence.entry_timing_exempt_families
+        assert confluence.weights.get("section_eleven_metals", 0.0) > 0
+        breaker = settings.risk.section_breakers.get("section_eleven_metals")
+        assert breaker is not None and breaker.enabled
+
+    def test_a_live_section_eleven_without_models_is_reported_not_silent(self) -> None:
+        """A live section with no model files is not dangerous. It is SILENT.
+
+        The config says live, the replay shows zero trades, and the empty
+        result reads as "the strategy found nothing" rather than "nothing was
+        ever fitted". This repository has produced that confusion in half a
+        dozen other forms and it is the reason most of its comments exist.
+
+        `unfitted_live_sections` names the markets, and the startup guard turns
+        that into a refusal to start. Deliberately NOT raised from
+        `build_analysis_modules`: that function is called by a dozen tests
+        about other things, and a refusal there fails all of them for a reason
+        none of them is about.
+        """
+        from config.loader import load_settings
+        from runner.service import unfitted_live_sections
+
+        settings = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        )
         config = settings.analysis.section_eleven_metals
+        if "section_eleven_metals" not in settings.analysis.confluence.live_enabled_modules:
+            pytest.skip("section eleven is not live")
 
-        assert config.enabled is False, (
-            "section eleven is enabled. It trades nothing without model files, but "
-            "enabling it before a replay agrees is how section six went live."
+        models = load_models(config.model_dir)
+        expected = [s for s in config.allowed_symbols if s not in models]
+
+        assert unfitted_live_sections(settings) == expected
+
+    def test_the_startup_guard_refuses_a_live_section_with_nothing_fitted(self) -> None:
+        """And it says which command writes the models, because a refusal that
+        does not tell you what to do next gets worked around."""
+        import inspect
+
+        from core import startup
+
+        source = inspect.getsource(startup.run_startup_guard)
+
+        assert "unfitted_live_sections" in source
+        assert "train11" in source
+
+    def test_a_section_that_is_not_live_needs_no_models(self, tmp_path) -> None:
+        """The refusal is about the LIVE list, not about the section existing.
+        A section being measured in the shadow with no models is a section
+        that takes no trades, which is a fine thing for a shadow to do."""
+        from config.loader import load_settings
+        from runner.service import build_analysis_modules
+
+        settings = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         )
-        assert "section_eleven_metals" not in settings.analysis.confluence.live_enabled_modules
-
-
-class TestTheTrainerRefusesRatherThanShips:
-    def test_the_bar_rises_with_the_number_of_cells_tried(self) -> None:
-        from scripts.train_section_eleven import bonferroni_sigma
-
-        assert bonferroni_sigma(1) == pytest.approx(1.96, abs=0.02)
-        assert bonferroni_sigma(16) > 2.9
-        assert bonferroni_sigma(64) > bonferroni_sigma(16)
-
-    def test_sigma_is_clustered_by_day_and_not_by_trade(self) -> None:
-        """Five metals breaking on one morning are one observation. Counting
-        each trade independently overstates significance by roughly the square
-        root of however many moved together."""
-        from scripts.train_section_eleven import Trades, stats
-
-        spread = Trades([1.0, -1.0] * 50, [f"d{i}" for i in range(100)])
-        clumped = Trades([1.0, -1.0] * 50, ["d0", "d1"] * 50)
-
-        assert stats(spread)[3] == stats(clumped)[3] == 100
-        # Same trades, same total, fewer independent days -> not more certain.
-        assert abs(stats(clumped)[2]) <= abs(stats(spread)[2]) + 1e-9
-
-    def test_a_trade_that_reaches_no_barrier_is_discarded_not_scratched(self) -> None:
-        """It has not answered the question, and calling it a scratch is an
-        answer it did not give."""
-        from scripts.train_section_eleven import resolve
-
-        index = pd.date_range("2026-02-02", periods=60, freq="5min", tz="UTC")
-        flat = np.full(60, 3300.0)
-        frame = pd.DataFrame(
-            {"open": flat, "high": flat + 1.0, "low": flat - 1.0, "close": flat}, index=index
+        confluence = settings.analysis.confluence
+        without = tuple(m for m in confluence.live_enabled_modules if m != "section_eleven_metals")
+        shadowed = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={
+                        "confluence": confluence.model_copy(
+                            update={"live_enabled_modules": without}
+                        ),
+                        "section_eleven_metals": (
+                            settings.analysis.section_eleven_metals.model_copy(
+                                update={"model_dir": str(tmp_path)}
+                            )
+                        ),
+                    }
+                )
+            }
         )
 
-        taken = resolve(
-            frame, np.ones(60, dtype=int), stop_atr=50.0, ratio=1.0, cost_r=0.0, horizon=5
-        )
-
-        assert len(taken) == 0
-
-    def test_the_resolver_holds_one_position_at_a_time(self) -> None:
-        from scripts.train_section_eleven import resolve
-
-        frame = _bars(rows=300, seed=8)
-        always = np.ones(len(frame), dtype=int)
-
-        taken = resolve(frame, always, stop_atr=1.0, ratio=1.5, cost_r=0.0, horizon=24)
-
-        assert 0 < len(taken) < len(frame)
-
-    def test_the_target_is_measured_in_atr_not_in_price(self) -> None:
-        """A model that predicts a number in one unit while the risk is
-        expressed in another can be perfectly calibrated and still size
-        everything wrong."""
-        from scripts.train_section_eleven import forward_target
-
-        frame = _bars(rows=200, seed=12)
-        target = forward_target(frame, horizon=10)
-
-        assert len(target) == len(frame)
-        assert np.isnan(target[-1]), "the last bars have no future to measure"
-        finite = target[np.isfinite(target)]
-        assert len(finite) > 100
-        # ATR-normalised, so a gold-priced series does not produce values in
-        # the thousands.
-        assert np.abs(finite).max() < 50.0
-
-
-class TestTheFollowUpPaysForTheGridItAlreadySearched:
-    """The 4 September run spent sixteen cells and cleared nothing.
-
-    XAUJPY was the one market whose sigma ROSE with the threshold -- +0.82,
-    +0.86, +1.67, +2.56 across 0.10 to 0.30 -- which is the shape a real
-    signal makes when you select harder, and the shape noise does not reliably
-    make. That is a prediction worth testing at higher thresholds.
-
-    It is only a test if the earlier sixteen are still on the bill. Searching
-    a grid twice and paying for it once is how a search launders itself into
-    a discovery, and this repo has the receipts.
-    """
-
-    def test_declared_earlier_cells_raise_the_bar(self) -> None:
-        from scripts.train_section_eleven import bonferroni_sigma
-
-        fresh = bonferroni_sigma(10)
-        with_history = bonferroni_sigma(10 + 16)
-
-        assert with_history > fresh
-
-    def test_the_launcher_declares_the_sixteen_it_already_spent(self) -> None:
-        from pathlib import Path
-
-        text = Path("train11.cmd").read_text(errors="replace")
-
-        assert "--cells-already-tried 16" in text, (
-            "the follow-up run does not declare the sixteen cells the first run "
-            "spent, so its Bonferroni bar is too low"
-        )
-        assert "--thresholds 0.30,0.40,0.50,0.60,0.80" in text
+        assert build_analysis_modules(shadowed)

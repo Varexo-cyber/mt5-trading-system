@@ -114,18 +114,23 @@ class TestItLoadsTheAccountItIsMeantToMeasure:
         assert 'overlay=ROOT / "config" / "eightcap.yaml"' in SOURCE
 
     def test_the_overlay_keeps_quarantined_modules_measurable(self) -> None:
+        """A quarantined module keeps its raw weight so a shadow pass can still
+        measure it; what stops it spending money is its absence from the
+        allowlist, not a zeroed weight.
+
+        This asserts that PROPERTY and not a frozen list of live names -- an
+        earlier version pinned the four modules that happened to be live, so
+        promoting a fifth failed here with nothing actually wrong.
+        """
         from config.loader import load_settings
 
         settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        live = set(settings.analysis.confluence.live_enabled_modules)
 
-        assert set(settings.analysis.confluence.live_enabled_modules) == {
-            "failed_session_breakout",
-            "section_six_gold_m5",
-            "section_eight_trend_day_h1",
-            "section_ten_gold_m1",
-        }
-        assert settings.analysis.confluence.weights.get("impulse_retest", 0.0) > 0.0
-        assert settings.analysis.confluence.weights.get("order_block", 0.0) > 0.0
+        assert live, "the overlay is what grants permission to trade; it cannot be empty"
+        for quarantined in ("impulse_retest", "order_block"):
+            assert quarantined not in live
+            assert settings.analysis.confluence.weights.get(quarantined, 0.0) > 0.0
 
     def test_it_checks_for_live_modules_before_connecting(self) -> None:
         """Failing after `connect()` produced two stacked tracebacks, with the
@@ -1773,36 +1778,25 @@ class TestAShadowedSectionCanActuallyVote:
         pass, which changes what the confluence sees."""
         from scripts.dry_run_sections import _retimed
 
-        tuned = _retimed(self._settings(), "market_structure", "M15")
+        settings = self._settings()
+        before = set(settings.analysis.confluence.live_enabled_modules)
+
+        tuned = _retimed(settings, "market_structure", "M15")
         allowed = set(tuned.analysis.confluence.live_enabled_modules)
 
-        assert allowed == {
-            "market_structure",
-            "failed_session_breakout",
-            "section_six_gold_m5",
-            "section_eight_trend_day_h1",
-            "section_ten_gold_m1",
-        }
+        assert allowed == before | {"market_structure"}
 
     def test_a_shadowed_section_is_granted_for_its_measurement_pass(self) -> None:
         from scripts.dry_run_sections import _retimed
 
         settings = self._settings()
+        before = set(settings.analysis.confluence.live_enabled_modules)
+
         tuned = _retimed(settings, "order_block", "M30")
 
-        assert set(settings.analysis.confluence.live_enabled_modules) == {
-            "failed_session_breakout",
-            "section_six_gold_m5",
-            "section_eight_trend_day_h1",
-            "section_ten_gold_m1",
-        }
-        assert set(tuned.analysis.confluence.live_enabled_modules) == {
-            "order_block",
-            "failed_session_breakout",
-            "section_six_gold_m5",
-            "section_eight_trend_day_h1",
-            "section_ten_gold_m1",
-        }
+        assert "order_block" not in before
+        assert set(settings.analysis.confluence.live_enabled_modules) == before
+        assert set(tuned.analysis.confluence.live_enabled_modules) == before | {"order_block"}
 
 
 class TestTheSweepRanksOnTheExitTheAccountTakes:
@@ -2591,7 +2585,7 @@ class TestTheLiveDryRunMeasuresOnlyWhatRuns:
         assert "section_five_m5" not in live
         assert "section_nine_vwap_m30" not in live
 
-    def test_the_live_allowlist_is_the_four_the_owner_chose(self) -> None:
+    def test_section_six_is_live_and_bounded_by_its_breaker(self) -> None:
         """S6 came off on 3 September and went back on the same day.
 
         The measurement that took it off is not disputed and is not softened
@@ -2602,16 +2596,23 @@ class TestTheLiveDryRunMeasuresOnlyWhatRuns:
         confirmation, and position management finally reaching it at all (it
         sat on `fixed_exit_comments`, so the manager returned early and no
         break-even ever ran) -- and because the owner asked to forward-test
-        that combination. Its section breaker is what bounds it.
+        that combination. Its section breaker is what bounds it, and THAT is
+        what this asserts. An earlier version pinned the whole allowlist as a
+        frozen set of four, so promoting a fifth section failed here with
+        nothing wrong -- a test that pins a decision instead of a property.
         """
-        live = set(self._settings().analysis.confluence.live_enabled_modules)
+        settings = self._settings()
+        live = set(settings.analysis.confluence.live_enabled_modules)
 
-        assert live == {
-            "failed_session_breakout",
-            "section_six_gold_m5",
-            "section_eight_trend_day_h1",
-            "section_ten_gold_m1",
-        }
+        from core.trade_origin import section_of_comment
+
+        assert "section_six_gold_m5" in live
+        assert "section_six_gold_m5" in settings.risk.section_breakers
+        assert not [
+            comment
+            for comment in settings.trade_management.fixed_exit_comments
+            if section_of_comment(comment) == "section_six_gold_m5"
+        ], "section six is measured WITH position management; a fixed-exit entry returns early"
 
     def test_every_live_section_still_has_a_breaker(self) -> None:
         settings = self._settings()
