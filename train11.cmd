@@ -49,6 +49,11 @@ echo                                rapporteren -- er wordt niets weggeschreven
 echo    train11.cmd 360             kortere periode
 echo    train11.cmd 720 schrijf     schrijf een modelbestand voor elke markt
 echo                                die ELKE lat haalt
+echo    train11.cmd 720 forceer     schrijf ze OOK als ze de lat niet halen,
+echo                                met een drempel 0,30 voor alle vier. Het
+echo                                bestand stempelt er dan in dat het de lat
+echo                                niet haalde en welke sigma het wel had.
+echo                                Daarna beslist de dry run, niet dit script.
 echo    train11.cmd 720 hoger       DE VERVOLGVRAAG. Op 4 september haalde
 echo                                niets de lat, maar XAUJPY liet als enige
 echo                                een STIJGENDE lijn zien: sigma +0,82 bij
@@ -78,6 +83,15 @@ rem het de steekproef en gaat sectie elf van tafel. De zestien cellen van de
 rem eerste run tellen mee, want een grid twee keer doorzoeken en een keer
 rem betalen is hoe een zoektocht zichzelf witwast tot een ontdekking.
 if /i "%2"=="hoger" set EXTRA=--symbols XAUJPY,XAUGBP --thresholds 0.30,0.40,0.50,0.60,0.80 --cells-already-tried 16
+
+rem FORCEER schrijft de modellen ook als ze de lat niet halen, op uitdrukkelijke
+rem instructie van de eigenaar, met EEN drempel voor alle vier in plaats van de
+rem beste per markt -- dat is een keuze in plaats van vier, en dus een kans om
+rem te fitten in plaats van vier. Elk bestand krijgt `cleared_the_bar: false` en
+rem de sigma die het wel haalde erin gestempeld.
+rem
+rem De dry run is dan wat beslist, niet dit script.
+if /i "%2"=="forceer" set EXTRA=--write-anyway --threshold-for-all 0.30
 
 if not exist ".venv-live\Scripts\python.exe" (
   echo  ERROR: .venv-live\Scripts\python.exe niet gevonden. Doe eerst update.cmd.

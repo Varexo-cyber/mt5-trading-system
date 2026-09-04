@@ -1637,6 +1637,62 @@ analysis:
     blocked_start_hour_utc: 7
     blocked_end_hour_utc: 13
 
+  # SECTIE ELF. Sectie zes' mechanisme, een eigen getraind model per metaal,
+  # op de vier goudkruisen die sectie zes niet kan zien.
+  #
+  # WAT DE FIT ZEI, 4 september, 720 dagen M5, walk-forward met een holdout
+  # waar niet in gezocht is. Zestien cellen, Bonferroni-lat 2,96 sigma:
+  #
+  #     XAUJPY  drempel 0,30  12.714 trades  +375,48 R  +0,030/trade  +2,56 sigma
+  #     XAUGBP  drempel 0,30  13.875 trades  +217,20 R  +0,016/trade  +1,44 sigma
+  #     XAUAUD  drempel 0,30  13.996 trades   +89,28 R  +0,006/trade  +0,63 sigma
+  #     XAUEUR  drempel 0,30  13.529 trades   +65,31 R  +0,005/trade  +0,43 sigma
+  #
+  # NIETS HAALDE DE LAT. Dat staat hier bovenaan omdat het de belangrijkste
+  # zin is. De trainer schreef uit zichzelf niets weg; deze modellen bestaan
+  # omdat de eigenaar er expliciet om vroeg, en elk modelbestand draagt
+  # `cleared_the_bar: false` met de sigma die het wel haalde.
+  #
+  # WAT ER WEL STAAT. Alle zestien cellen positief, en alle zestien versloegen
+  # een muntworp op dezelfde bars bij hetzelfde vuurtempo -- die controle las
+  # -0,009 tot -0,029 per trade. Kosten zijn hier niet de rem: 0,4% tot 0,8%
+  # van de stop, tegen de 12% die goud M1 betaalt. Vier drempels op een markt
+  # zijn niet onafhankelijk en vier goudkruisen ook niet, dus lees het als
+  # ongeveer vier waarnemingen die alle vier de goede kant op wijzen.
+  #
+  # EEN DREMPEL VOOR ALLE VIER, en niet de beste per markt. De beste van vier
+  # kiezen per markt is vier keuzes en vier kansen om te fitten; 0,30 voor
+  # allemaal is er een. Op 0,30 is elke markt positief en neemt hij de minste
+  # trades, wat de voorkeur verdient zolang je het niet zeker weet.
+  #
+  # WAT ER NU MOET GEBEUREN, en waarom deze regels hier staan in plaats van
+  # in een shadowhoek: de eigenaar draait `dryrun-live.cmd 180` voordat Jarvis
+  # start. Die replay is een ONAFHANKELIJKE meting -- andere resolver, de
+  # echte positielimiet, de acht live poorten benoemd -- en die mag het met de
+  # trainer oneens zijn. Komt sectie elf daar niet positief uit, dan gaat deze
+  # sectie van de allowlist af en dat is het einde ervan.
+  #
+  # De sectiebreaker eronder is wat hem begrenst als hij toch live gaat.
+  section_eleven_metals:
+    enabled: true
+    timeframe: M5
+    allowed_symbols: [XAUEUR, XAUGBP, XAUAUD, XAUJPY]
+    model_dir: models/section_eleven
+    polarity: 1
+    stop_atr: 1.0
+    long_only: false
+    confidence: 0.55
+    # Dezelfde uren dicht als sectie tien op deze kruisen, en om dezelfde
+    # reden: een XAU-kruis heeft een FX-poot, en tussen 16:00 en 18:00 UTC is
+    # Londen weg terwijl goud nog handelt, dus de valutahelft van de quote
+    # wordt dun en de spread op het kruis loopt uit. Gemeten op sectie tien:
+    # 16:00 negatief in beide helften in vier kruisen van de vier.
+    blocked_hours_by_symbol:
+      XAUEUR: [16, 17]
+      XAUGBP: [16, 17]
+      XAUAUD: [16, 17]
+      XAUJPY: [16, 17]
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2380,6 +2436,10 @@ analysis:
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.5
       section_ten_gold_m1: 1.5
+      # SECTIE ELF is op 1,5 gefit en moet op 1,5 handelen. De trainer maakte
+      # elke trade op stop 1,0 ATR en doel 1,5 R; een ander doel hier maakt
+      # van deze modellen een meting van iets anders dan wat ze gaan doen.
+      section_eleven_metals: 1.5
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2402,7 +2462,11 @@ analysis:
     # voor de trend-entries waar hij voor geschreven is, en waar elf van de
     # eerste twaalf betaalde reviews precies dit vetoden en gelijk hadden. Het
     # onderscheid zit in de setup, niet in de drempel.
-    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1]
+    # SECTIE ELF staat er per 4 september bij, en om dezelfde reden als de
+    # rest: de instaptiming-poort weigert een instap waar prijs de laatste
+    # drie M5-bars tegenin liep, en dat IS het mechanisme van een model dat
+    # precies die bar afleest. De poort zou zijn eigen these weigeren.
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_metals]
     # Sectie 6 is als complete closed-barstrategie gemeten. Een geldig
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
@@ -2867,6 +2931,22 @@ analysis:
       # section breaker is therefore essential, not optional.
       - section_eight_trend_day_h1
       - section_ten_gold_m1
+      # SECTIE ELF, 4 september, op uitdrukkelijke instructie van de eigenaar
+      # en met het cijfer waarop het gebeurde erbij, zodat niemand later denkt
+      # dat het per ongeluk ging:
+      #
+      #     NIETS HAALDE DE BONFERRONI-LAT. Beste cel XAUJPY +2,56 sigma
+      #     tegen een lat van 2,96. De trainer schreef uit zichzelf niets weg.
+      #
+      # Wat er wel stond: alle zestien cellen positief, alle zestien beter dan
+      # een muntworp op dezelfde bars, en kosten van 0,4-0,8% van de stop die
+      # niets verbergen. Zie het blok bij `section_eleven_metals` hierboven.
+      #
+      # Hij staat hier om door `dryrun-live.cmd 180` gemeten te worden voordat
+      # Jarvis start -- dat is een onafhankelijke replay met een andere
+      # resolver, de echte positielimiet en de acht live poorten benoemd. Komt
+      # hij daar niet positief uit, dan gaat deze regel eruit.
+      - section_eleven_metals
 
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
@@ -3013,6 +3093,9 @@ analysis:
       # generieke 0,65-lone-modulepoort letterlijk ieder geldig S10-signaal.
       # Dit verlaagt geen algemene poort en raakt geen andere detector.
       section_ten_gold_m1: 0.58
+      # Sectie elf mag alleen handelen, net als tien: hij IS de these, en een
+      # generieke lone-modulepoort zou elk geldig signaal weigeren.
+      section_eleven_metals: 0.55
 
     # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
     # documented as a quick entry but classified as intraday, so a fresh M5
@@ -3157,6 +3240,7 @@ analysis:
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.0
       section_ten_gold_m1: 1.0
+      section_eleven_metals: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -4239,6 +4323,28 @@ risk:
       minimum_trades: 40
       maximum_loss_share: 0.55
       losing_streak: 8
+
+    # SECTIE ELF, EN VAN ALLE NOODSTOPPEN HIER IS DIT DE BELANGRIJKSTE.
+    #
+    # Deze sectie staat live op modellen die de statistische lat NIET haalden.
+    # Beste cel +2,56 sigma tegen 2,96, en de trainer weigerde uit zichzelf te
+    # schrijven. Dat is een bewuste keuze van de eigenaar met het cijfer in
+    # zicht, en dit is wat die keuze begrenst.
+    #
+    # DE GETALLEN, en ze zijn strenger dan elders. De fit voorspelt 40,6% raak
+    # bij een doel van 1,5 R -- dat is wat +0,030 R per trade oplevert. 55%
+    # verliezers is dus ongeveer wat er verwacht wordt; 65% over veertig
+    # trades is ruim drie sigma de verkeerde kant op bij die verwachting, en
+    # dat is geen pech meer maar een model dat op deze feed niet geldt.
+    #
+    # Veertig trades is hier bovendien snel bereikt: de fit nam er achttien
+    # per dag per markt, dus dit oordeelt binnen dagen in plaats van maanden.
+    # Zes op rij en niet acht, om dezelfde reden.
+    section_eleven_metals:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 6
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
     # voor het aanzetten. `live_enabled_modules` telt er vijf; deze lijst telde

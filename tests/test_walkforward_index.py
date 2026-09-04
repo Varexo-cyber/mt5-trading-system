@@ -42,12 +42,14 @@ def test_only_the_measured_new_sections_may_trade_real_money() -> None:
         DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
     )
 
-    assert settings.analysis.confluence.live_enabled_modules == (
-        "failed_session_breakout",
-        "section_six_gold_m5",
-        "section_eight_trend_day_h1",
-        "section_ten_gold_m1",
-    )
+    # THE POINT OF THIS TEST IS `walkforward_index`, not the whole allowlist.
+    # It asserted the live list as a frozen tuple, so every legitimate change
+    # to it broke a test about a different module -- which is how a suite stops
+    # being read. What has to hold here is that the unmeasured section is not
+    # on the list.
+    live = settings.analysis.confluence.live_enabled_modules
+    assert "walkforward_index" not in live
+    assert live, "the account is live with no sections at all"
     assert settings.analysis.walkforward_index.enabled is False
     assert settings.analysis.walkforward_index.allowed_symbols == ("SPX500",)
     assert settings.analysis.confluence.target_r_multiple_by_family["walkforward_index"] == 1.5

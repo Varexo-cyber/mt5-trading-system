@@ -1148,21 +1148,21 @@ class TestTheLoneFloorCanBeSetPerDetector:
         confluence = settings.analysis.confluence
         table = confluence.lone_module_minimum_confidence_by_module
 
-        # Every earner from the live table, and nothing else. A detector with
-        # no measured record must keep the single global floor.
-        assert set(table) == {
-            # The one entry here that does anything live, and the only detector
-            # in either backtest table that came out OUTSIDE chance: 66 lone
-            # trades, 76% win, +0.123R apiece, against a coin that took the
-            # same moments with the same stops and targets and reached 63%.
-            # Two independent 90-day runs agree on the sign.
-            "trend_momentum",
-            "ema_pullback_resume",
-            "impulse_break",
-            "fast_ema_cross",
-            "session_breakout",
-            "section_ten_gold_m1",
-        }
+        # Every key has to name a detector this configuration actually knows —
+        # a typo here is silent, because an entry for a name nothing emits is
+        # simply never consulted and the global floor keeps applying.
+        #
+        # This used to be a frozen set of the six names that happened to be in
+        # the table, which is a test pinning a DECISION rather than a property:
+        # promoting a seventh section failed here with nothing wrong. The names
+        # earning their entry are documented in the config beside the numbers.
+        known = set(confluence.weights) | set(confluence.live_enabled_modules)
+        assert set(table) <= known, sorted(set(table) - known)
+        # And the entry that carries the strongest record is still in it: 66
+        # lone trades, 76% win, +0.123R apiece, against a coin that took the
+        # same moments with the same stops and targets and reached 63%. Two
+        # independent 90-day runs agree on the sign.
+        assert "trend_momentum" in table
         # And a released detector still has to be CONVINCED. Loosening below
         # the module confidence floor would make the entry meaningless: every
         # firing would clear it and the corroboration requirement would be off

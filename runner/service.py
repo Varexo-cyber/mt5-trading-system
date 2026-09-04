@@ -102,6 +102,8 @@ from analysis.playbooks import (
     ScalpConfig,
     TrendPullback,
 )
+from analysis.section_eleven_metals import SectionElevenMetals
+from analysis.section_eleven_metals import load_models as load_section_eleven_models
 from analysis.target_reach import measure as measure_target_reach
 from analysis.target_reach import measure_first_touch
 from brain import SelectionEvidence, build_brain
@@ -111,7 +113,12 @@ from core.broker import Broker
 from core.clock import Clock, LiveClock
 from core.data_manager import DataManager, atr
 from core.data_quarantine import DataQuarantine
-from core.errors import DataIntegrityError, InsufficientDataError, TradingSystemError
+from core.errors import (
+    ConfigError,
+    DataIntegrityError,
+    InsufficientDataError,
+    TradingSystemError,
+)
 from core.instrument import InstrumentSpec
 from core.startup import run_startup_guard
 from core.trade_origin import broker_comment
@@ -484,7 +491,52 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         SectionEightTrendDayH1(analysis.section_eight_trend_day_h1),
         SectionNineSessionVwapM30(analysis.section_nine_vwap_m30),
         SectionTenGoldM1(analysis.section_ten_gold_m1),
+        # SECTION ELEVEN is built with whatever models exist, and none is a
+        # section that stays silent. Whether silence is ACCEPTABLE is a
+        # question about the live allowlist, not about building a module, and
+        # it is asked by `unfitted_live_sections` at startup and by the dry
+        # run. Refusing here made every other test that builds the module list
+        # fail for a reason none of them is about.
+        SectionElevenMetals(
+            analysis.section_eleven_metals,
+            models=load_section_eleven_models(analysis.section_eleven_metals.model_dir),
+        ),
     ]
+
+
+def unfitted_live_sections(settings: Settings) -> list[str]:
+    """Markets a live section eleven is allowed to trade and has no model for.
+
+    A live section with no model files is not dangerous -- it simply trades
+    nothing. It is worse than dangerous: it is SILENT. The config says live,
+    the replay shows zero trades, and the empty result reads as "the strategy
+    found nothing" rather than "nothing was ever fitted". This repository has
+    produced that confusion in half a dozen other forms, and it is the reason
+    most of its comments exist.
+
+    Returned rather than raised, so the caller decides whether this is a
+    startup abort or a line in a report.
+    """
+    config = settings.analysis.section_eleven_metals
+    if not config.enabled:
+        return []
+    if "section_eleven_metals" not in settings.analysis.confluence.live_enabled_modules:
+        return []
+    models = load_section_eleven_models(config.model_dir)
+    return [symbol for symbol in config.allowed_symbols if symbol not in models]
+    live = settings.analysis.confluence.live_enabled_modules
+    if "section_eleven_metals" not in live:
+        return models
+    missing = [symbol for symbol in config.allowed_symbols if symbol not in models]
+    if missing:
+        raise ConfigError(
+            f"section_eleven_metals is on the live allowlist but has no fitted model "
+            f"for {', '.join(missing)} in {config.model_dir}. Run "
+            f"`train11.cmd 720 forceer` to write them, or take the section off "
+            f"`live_enabled_modules`. A live section that cannot trade produces an "
+            f"empty result that reads as a strategy finding nothing."
+        )
+    return models
 
 
 class JarvisRunner:

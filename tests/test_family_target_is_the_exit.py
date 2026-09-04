@@ -171,6 +171,10 @@ class TestTheShippedAccountAgrees:
             "section_six_gold_m5": 3.0,
             "section_eight_trend_day_h1": 1.0,
             "section_ten_gold_m1": 1.5,
+            # Section eleven is fitted at stop 1.0 ATR and target 1.5 R, so it
+            # has to trade 1.5. A different target here makes these models a
+            # measurement of something other than what they will do.
+            "section_eleven_metals": 1.5,
         }
 
         live = set(confluence.live_enabled_modules)

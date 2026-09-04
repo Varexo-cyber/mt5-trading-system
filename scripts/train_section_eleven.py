@@ -334,6 +334,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="write a model file for every market that clears every bar. "
         "Without it nothing is written and the run only reports.",
     )
+    parser.add_argument(
+        "--write-anyway",
+        action="store_true",
+        help=(
+            "write the best cell per market EVEN IF IT DID NOT CLEAR THE BAR. "
+            "The file records that it did not, so the number travels with the "
+            "model instead of being forgotten. For an owner who wants the "
+            "section replayed rather than argued about -- the dry run is then "
+            "the thing that decides, not this script."
+        ),
+    )
+    parser.add_argument(
+        "--threshold-for-all",
+        type=float,
+        default=0.0,
+        help=(
+            "use ONE threshold for every market instead of each market's best. "
+            "Picking the best of four per market is four choices and four "
+            "chances to fit; one threshold is one choice."
+        ),
+    )
     return parser
 
 
@@ -480,7 +501,7 @@ def _report(results, args, bar: float) -> None:
         )
         winners.append((symbol, threshold, row, held))
 
-    if not winners:
+    if not winners and not args.write_anyway:
         print(
             "\n  NOTHING SURVIVED. That is the expected outcome of an honest fit\n"
             "  and it is not a failure of the run. Section six went live on a\n"
@@ -489,7 +510,36 @@ def _report(results, args, bar: float) -> None:
         )
         return
 
-    if not args.write:
+    if args.write_anyway and not winners:
+        # THE OWNER'S CALL, TAKEN WITH THE NUMBER IN VIEW.
+        #
+        # Nothing cleared, and the models are written anyway so the section can
+        # be REPLAYED rather than debated. That is a defensible thing to want:
+        # a dry run through `dry_run_sections` is an independent measurement
+        # with a different resolver, the real position cap and the eight live
+        # gates named, and it can disagree with this script.
+        #
+        # What is not defensible is losing the fact. Every file written this
+        # way records `cleared_the_bar: false` and the sigma it actually
+        # reached, so a year from now the provenance is in the file rather than
+        # in somebody's memory of a conversation.
+        print("\n  NOTHING CLEARED THE BAR — writing anyway, on the owner's instruction.")
+        print("  Each file records the sigma it reached and that it did not clear.")
+        chosen = args.threshold_for_all or None
+        for symbol, (threshold, row) in sorted(best.items()):
+            if chosen is not None:
+                match = [r for s, th, r in results if s == symbol and abs(th - chosen) < 1e-9]
+                if match:
+                    threshold, row = chosen, match[0]
+            held = _on_the_holdout(row, args, threshold)
+            winners.append((symbol, threshold, row, held))
+            print(
+                f"    {symbol} at threshold {threshold:.2f}: "
+                f"{row['total']:+.2f} R over {row['n']} at {row['sigma']:+.2f} sigma "
+                f"(bar {bar:.2f}), holdout {held[0]:+.2f} R over {held[3]}"
+            )
+
+    if not (args.write or args.write_anyway):
         print("\n  Nothing written. Re-run with --write to save these models.")
         return
 
@@ -511,6 +561,9 @@ def _report(results, args, bar: float) -> None:
             holdout_r=held[0],
             holdout_sigma=held[2],
             threshold=threshold,
+            cleared_the_bar=bool(row["sigma"] >= bar and row["net"] > 0 and held[2] >= 2.0),
+            searched_sigma=float(row["sigma"]),
+            bar=float(bar),
         )
         path = write_model(model, args.out)
         print(f"  wrote {path}")

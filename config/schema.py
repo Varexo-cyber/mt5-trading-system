@@ -3459,6 +3459,13 @@ class ConfluenceConfig(Base):
         "walkforward_index",
         "section_eight_trend_day_h1",
         "section_nine_vwap_m30",
+        # SECTION ELEVEN, for the sixth and seventh time in this list's short
+        # history. It reads M5 and would otherwise fall through to "swing":
+        # H1 planning authority, a 24-bar target horizon and the D1/W1 veto at
+        # one conflict, on a model whose whole input is the last M5 bar. The
+        # test that caught it exists because this has now happened to every
+        # section that went live without being named here.
+        "section_eleven_metals",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.

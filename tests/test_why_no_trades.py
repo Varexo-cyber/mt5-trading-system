@@ -485,11 +485,13 @@ class TestSilenceAndAbsenceAreDifferentFindings:
         assert seen["impulse_retest"] == (1, 1, 1)
 
     def test_the_live_list_is_read_from_config_not_restated(self) -> None:
+        # READ FROM THE CONFIG, NOT RESTATED HERE. That is the whole point of
+        # this test, and pinning the names in a second place was the thing it
+        # was written to prevent.
+        from config.loader import load_settings
         from scripts.why_no_trades import _live_modules
 
-        assert set(_live_modules()) == {
-            "failed_session_breakout",
-            "section_six_gold_m5",
-            "section_eight_trend_day_h1",
-            "section_ten_gold_m1",
-        }
+        shipped = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).analysis.confluence.live_enabled_modules
+        assert set(_live_modules()) == set(shipped)
