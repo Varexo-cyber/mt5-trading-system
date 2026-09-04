@@ -1507,6 +1507,9 @@ def main(argv: list[str] | None = None) -> None:
             "section_twelve_xaugbp_m1": "section_twelve_xaugbp_m1",
             "section_thirteen_xauaud_m5": "section_thirteen_xauaud_m5",
             "section_fourteen_xaujpy_m1": "section_fourteen_xaujpy_m1",
+            "section_fifteen_btc_m1": "section_fifteen_btc_m1",
+            "section_sixteen_btc_m5": "section_sixteen_btc_m5",
+            "section_seventeen_btc_m15": "section_seventeen_btc_m15",
         }
         measured = set(module_config)
         if args.sections_five_to_ten:

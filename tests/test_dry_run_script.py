@@ -1566,6 +1566,14 @@ class TestASwitchedOffSectionIsStillMeasured:
 
         assert parsed.only == "impulse_retest"
 
+    def test_btc_replay_sections_are_known(self) -> None:
+        for section in (
+            "section_fifteen_btc_m1",
+            "section_sixteen_btc_m5",
+            "section_seventeen_btc_m15",
+        ):
+            assert f'"{section}": "{section}"' in SOURCE
+
     def test_only_rejects_a_section_it_does_not_know(self) -> None:
         """A typo must stop the run rather than silently measure nothing --
         an empty result reads as "no setups", which is this script's signature
