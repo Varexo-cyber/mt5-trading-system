@@ -3086,6 +3086,12 @@ class JarvisRunner:
             direction=idea.direction,
             entry=idea.entry,
             allow_pyramid=allow_pyramid,
+            # WHICH SECTION IS ASKING. Without it the risk manager can see
+            # that a symbol is occupied but not by whom, and
+            # `sections_may_share_a_symbol` has no way to tell a second
+            # section from a second leg of the same one -- which are opposite
+            # things: one is two independent plans, the other is pyramiding.
+            setup_family=idea.setup_family,
         )
         if not risk_decision.approved:
             cycle_pk = self._record_skip(
@@ -3560,8 +3566,7 @@ class JarvisRunner:
         # already run, and an approval on this pair wipes the pattern outright.
         pattern = (
             self.veto_patterns.established(symbol, idea.direction.name, self.clock.now())
-            if self.operation is not OperationMode.MONITOR
-            and self._broad_veto_memory_applies(idea)
+            if self.operation is not OperationMode.MONITOR and self._broad_veto_memory_applies(idea)
             # "Only ever suppresses a paid call" — so only when there is one.
             and self._reviews_cost_money()
             else None

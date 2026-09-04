@@ -1622,3 +1622,167 @@ class TestTheLiveAccountCarriesTheTwentyEuroLimit:
         assert "daily_loss_limit_money" in inspect.getsource(
             risk_manager.RiskManager.check_can_trade
         )
+
+
+class TestTwoSectionsMayHoldOneSymbol:
+    """`sections_may_share_a_symbol`, and the line it must not cross.
+
+    Same-symbol exposure was refused per SYMBOL, so whichever section reached
+    gold first locked every other one out for the length of its trade. Section
+    six and section ten both trade XAUUSD: over 180 days section six was
+    offered 600 trades and took 356, and those 244 refusals were worth 30.55 R.
+    The owner asked for the limit to come off on 4 September.
+
+    The line: two INDEPENDENT sections with their own plans and their own
+    stops may share an instrument. A second leg of the SAME section is still
+    pyramiding and still has to prove the open leg is already winning. Adding
+    to your own losing idea stays forbidden, and none of this touches that.
+    """
+
+    def _sharing(self, tmp_path: Path, raw: dict[str, Any], journal: Journal, clock, **extra):
+        config = settings_for(
+            tmp_path,
+            raw,
+            **{
+                "system.mode": "scaling",
+                "risk.sections_may_share_a_symbol": True,
+                **extra,
+            },
+        )
+        return RiskManager(settings=config, journal=journal, clock=clock)
+
+    def _held_by(self, comment: str, direction: Direction = Direction.LONG) -> Position:
+        return replace(position("EURUSD", direction), comment=comment)
+
+    def test_a_second_section_may_join(self, tmp_path, raw, journal, clock, spec) -> None:
+        manager = self._sharing(tmp_path, raw, journal, clock)
+        state = manager.build_state(account(1_000.0), [self._held_by("JARVIS-S6-AU-M5")])
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.085,
+            setup_family="section_ten_gold_m1",
+        )
+
+        assert decision.approved, decision.detail
+
+    def test_the_same_section_still_cannot_add_a_leg(
+        self, tmp_path, raw, journal, clock, spec
+    ) -> None:
+        """THE WHOLE POINT OF THE DISTINCTION. Two sections is two opinions;
+        the same section twice is pyramiding, and it keeps the gate that
+        demands the open leg already be winning."""
+        manager = self._sharing(tmp_path, raw, journal, clock)
+        state = manager.build_state(account(1_000.0), [self._held_by("JARVIS-S10-AU-M1")])
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.085,
+            setup_family="section_ten_gold_m1",
+        )
+
+        assert not decision.approved
+        assert decision.reason is Reason.POSITION_ALREADY_OPEN
+
+    def test_the_opposite_direction_is_refused(self, tmp_path, raw, journal, clock, spec) -> None:
+        """Arithmetic, not caution. Long and short on one instrument is flat
+        exposure bought with two spreads: at most one of the two stops can be
+        reached, so the pair cannot win and the round trip is paid twice.
+
+        It matters here rather than in theory -- section six is long_only and
+        section ten trades both ways, so the two WILL disagree on gold."""
+        manager = self._sharing(tmp_path, raw, journal, clock)
+        state = manager.build_state(
+            account(1_000.0), [self._held_by("JARVIS-S6-AU-M5", Direction.LONG)]
+        )
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.SHORT,
+            entry=1.085,
+            setup_family="section_ten_gold_m1",
+        )
+
+        assert not decision.approved
+        assert decision.reason is Reason.POSITION_ALREADY_OPEN
+        assert "two spreads" in decision.detail
+
+    def test_the_opposite_direction_can_be_allowed_deliberately(
+        self, tmp_path, raw, journal, clock, spec
+    ) -> None:
+        manager = self._sharing(
+            tmp_path,
+            raw,
+            journal,
+            clock,
+            **{"risk.refuse_opposite_direction_across_sections": False},
+        )
+        state = manager.build_state(
+            account(1_000.0), [self._held_by("JARVIS-S6-AU-M5", Direction.LONG)]
+        )
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.SHORT,
+            entry=1.085,
+            setup_family="section_ten_gold_m1",
+        )
+
+        assert decision.approved, decision.detail
+
+    def test_it_is_off_unless_switched_on(self, manager: RiskManager, spec: InstrumentSpec) -> None:
+        """The default config must not quietly allow two positions on one
+        instrument. A small account is ended by one thing going wrong twice."""
+        state = manager.build_state(account(1_000.0), [self._held_by("JARVIS-S6-AU-M5")])
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.085,
+            setup_family="section_ten_gold_m1",
+        )
+
+        assert not decision.approved
+        assert decision.reason is Reason.POSITION_ALREADY_OPEN
+
+    def test_an_unlabelled_position_grants_nothing(
+        self, tmp_path, raw, journal, clock, spec
+    ) -> None:
+        """A ticket whose comment names no section cannot be told apart from
+        this section's own. The safe answer is the old one: refuse, and let
+        the pyramiding gate decide."""
+        manager = self._sharing(tmp_path, raw, journal, clock)
+        state = manager.build_state(account(1_000.0), [self._held_by("jarvis")])
+
+        decision = manager.check_symbol(
+            "EURUSD",
+            state,
+            spec,
+            direction=Direction.LONG,
+            entry=1.085,
+            setup_family="section_ten_gold_m1",
+        )
+
+        assert not decision.approved
+
+    def test_the_live_config_has_it_on_with_the_hedge_guard(self) -> None:
+        from config.loader import load_settings
+
+        risk = load_settings(
+            "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
+        ).risk
+
+        assert risk.sections_may_share_a_symbol is True
+        assert risk.refuse_opposite_direction_across_sections is True

@@ -31,6 +31,7 @@ from config.schema import NO_DRAWDOWN_BREAKER, NO_LOSS_LIMIT, UNLIMITED_TRADES, 
 from core.clock import Clock
 from core.errors import ForbiddenStrategyError
 from core.instrument import InstrumentSpec
+from core.trade_origin import broker_comment, section_of_comment
 from core.types import AccountSnapshot, Direction, Position
 from infra.killswitch import KillSwitch
 from infra.logging import get_logger
@@ -498,6 +499,7 @@ class RiskManager:
         direction: Direction | None = None,
         entry: float | None = None,
         allow_pyramid: bool = False,
+        setup_family: str = "",
     ) -> RiskDecision:
         """Per-symbol gates: whitelist, equity floor, and existing exposure."""
         allowed, reason_code = self.settings.symbol_allowed_at_equity(symbol, state.equity)
@@ -522,6 +524,9 @@ class RiskManager:
         # flat or losing idea remain blocked.
         if state.has_position_in(symbol):
             existing = state.positions_in(symbol)
+            shared = self._another_section_may_join(existing, symbol, direction, setup_family)
+            if shared is not None:
+                return shared
             pyramid = self._pyramid_permission(
                 existing,
                 all_positions=state.open_positions,
@@ -539,6 +544,83 @@ class RiskManager:
             )
 
         return RiskDecision.allow(f"{symbol} clear")
+
+    def _another_section_may_join(
+        self,
+        existing: tuple[Position, ...],
+        symbol: str,
+        direction: Direction | None,
+        setup_family: str,
+    ) -> RiskDecision | None:
+        """A SECOND SECTION on a symbol another section already holds.
+
+        Returns a decision when this rule has an opinion, and None when it does
+        not -- in which case the pyramiding gate below decides, exactly as
+        before.
+
+        WHY THIS EXISTS. Same-symbol exposure was refused per SYMBOL, so
+        whichever section reached gold first locked every other one out for the
+        length of its trade. Section six and section ten both trade XAUUSD:
+        over 180 days section six was offered 600 trades and took 356, and the
+        244 refusals were worth 30.55 R. The owner asked for the limit to come
+        off on 4 September.
+
+        THIS IS NOT PYRAMIDING AND MUST NOT BECOME IT. A second leg from the
+        SAME section is still refused here and still has to satisfy
+        `_pyramid_permission`, which demands every existing leg already be
+        winning. What this allows is two INDEPENDENT sections, each with its
+        own plan and its own stop, holding one instrument. Adding to your own
+        losing idea is the thing this account forbids outright, and nothing
+        below weakens it.
+
+        WHAT IT COSTS, said plainly: two positions on one instrument is twice
+        the exposure to one thing going wrong. That is the trade being made
+        deliberately, not a side effect.
+        """
+        if not self.settings.risk.sections_may_share_a_symbol:
+            return None
+        if not setup_family or not existing:
+            return None
+
+        mine = broker_comment(setup_family, is_addon=False, experimental_live=False)
+        family = section_of_comment(mine)
+        if not family:
+            return None
+        # EVERY open position has to be identifiable as a DIFFERENT section,
+        # and an unlabelled one is not identifiable at all.
+        #
+        # The first version only looked for a position carrying THIS section's
+        # comment and let everything else through. A ticket commented plain
+        # `jarvis` -- an older entry, a manual trade, a scalp add-on -- names
+        # no section, so it did not match, so it was treated as somebody
+        # else's and waved past. It could just as easily be this section's own,
+        # and then the exception for "two sections" has quietly authorised a
+        # second leg of one. That is the thing this whole rule exists to keep
+        # separate from pyramiding.
+        #
+        # Anything unrecognised means the old refusal stands.
+        holders = [section_of_comment(position.comment) for position in existing]
+        if any(not holder or holder == family for holder in holders):
+            return None
+
+        if self.settings.risk.refuse_opposite_direction_across_sections and direction is not None:
+            against = [p for p in existing if p.direction is not direction]
+            if against:
+                other = against[0]
+                return RiskDecision.block(
+                    Reason.POSITION_ALREADY_OPEN,
+                    f"{symbol}: {section_of_comment(other.comment) or 'another section'} is "
+                    f"{other.direction.name} here and this is {direction.name}. Long and "
+                    f"short on one instrument is flat exposure bought with two spreads; "
+                    f"at most one of the two stops can be reached, so the pair cannot "
+                    f"win. Set risk.refuse_opposite_direction_across_sections false to "
+                    f"allow it anyway.",
+                )
+
+        held = ", ".join(sorted(set(holders)))
+        return RiskDecision.allow(
+            f"{symbol}: {family} joins {held}; separate sections, separate stops"
+        )
 
     def _pyramid_permission(
         self,
@@ -895,6 +977,7 @@ class RiskManager:
         direction: Direction | None = None,
         entry: float | None = None,
         allow_pyramid: bool = False,
+        setup_family: str = "",
     ) -> RiskDecision:
         """Run every pre-sizing gate in order and return the first refusal."""
         for decision in (
@@ -906,6 +989,7 @@ class RiskManager:
                 direction=direction,
                 entry=entry,
                 allow_pyramid=allow_pyramid,
+                setup_family=setup_family,
             ),
         ):
             if not decision.approved:
