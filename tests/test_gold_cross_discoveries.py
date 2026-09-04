@@ -60,7 +60,7 @@ def test_gold_cross_discovery_is_exact_market_and_session_only() -> None:
     assert module.analyze(_context("XAUGBP", Timeframe.M1, _rising_frame())).score == 0.0
 
 
-def test_xaueur_is_live_and_other_discoveries_remain_shadowed() -> None:
+def test_four_discoveries_are_shadowed_after_full_broker_replay() -> None:
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
     names = (
         "section_eleven_xaueur_m1",
@@ -75,13 +75,11 @@ def test_xaueur_is_live_and_other_discoveries_remain_shadowed() -> None:
         0.75,
         1.5,
     ]
-    assert settings.analysis.confluence.weights[names[0]] == 1.0
-    assert names[0] in settings.analysis.confluence.live_enabled_modules
-    assert all(settings.analysis.confluence.weights[name] == 0.0 for name in names[1:])
-    assert all(name not in settings.analysis.confluence.live_enabled_modules for name in names[1:])
+    assert all(settings.analysis.confluence.weights[name] == 0.0 for name in names)
+    assert all(name not in settings.analysis.confluence.live_enabled_modules for name in names)
     assert all(settings.analysis.confluence.lone_floor_for(name) == 0.55 for name in names)
 
     measured = _retimed(settings, names[0], "M1")
     assert measured.analysis.confluence.weights[names[0]] == 1.0
     assert names[0] in measured.analysis.confluence.live_enabled_modules
-    assert settings.analysis.confluence.weights[names[0]] == 1.0
+    assert settings.analysis.confluence.weights[names[0]] == 0.0
