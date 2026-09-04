@@ -2,7 +2,26 @@
 
 ## Read this first
 
-**Nothing in this section cleared the statistical bar.** The best cell in the
+**The untouched holdout is negative in four markets out of four.** That is the
+result, and it arrived after the models were written:
+
+| market | holdout trades | holdout R | per trade |
+|---|---|---|---|
+| XAUAUD | 3 685 | **−193,22 R** | −0,052 |
+| XAUEUR | 3 621 | **−189,77 R** | −0,052 |
+| XAUGBP | 3 643 | **−148,93 R** | −0,041 |
+| XAUJPY | 3 783 | **−115,53 R** | −0,031 |
+
+The walk-forward read **+0,005 to +0,030 R** per trade; the holdout reads
+**−0,031 to −0,052**. A sign flip, on nearly fifteen thousand trades, in the
+one measurement containing no choices at all — no threshold picked, no market
+picked, no penalty argued. **The recommendation is that this section does not
+trade real money.** It is on the allowlist to be replayed by
+`dryrun-live.cmd 180`, which costs nothing; it should come off before Jarvis
+starts, and a positive dry run over a shorter window does not overturn the
+table above.
+
+**Nothing in this section cleared the statistical bar either.** The best cell in the
 whole search came out at **+2,56 day-clustered sigma against a Bonferroni bar
 of 2,96**, and the trainer refused to write a single model file on its own.
 The four model files that exist were written with `train11.cmd 720 forceer`
@@ -107,6 +126,9 @@ lowered to fit the result.
 
 ## Verdict
 
-`weight > 0, live for a measured forward test, on the owner's instruction and
-against the search result.` Off the allowlist if `dryrun-live.cmd 180` does not
-come out positive.
+`weight > 0, live for a measured forward test only, on the owner's instruction
+and against both the search result and the holdout.`
+
+Off the allowlist if `dryrun-live.cmd 180` does not come out positive — and the
+standing recommendation is that it comes off regardless, because the untouched
+holdout is negative in four markets out of four.

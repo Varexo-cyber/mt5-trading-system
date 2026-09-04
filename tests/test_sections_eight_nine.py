@@ -281,26 +281,23 @@ def test_the_fixed_exit_list_is_matched_against_real_broker_comments() -> None:
     """Every entry has to be a label some section actually sends, or it is a
     line of config that protects nothing. A typo here is silent: the manager
     simply never matches and break-even goes on running."""
-    from core.trade_origin import broker_comment
+    # DERIVED FROM THE LABEL TABLE, not from a second copy of the section
+    # names. The copy was six names long and went stale the moment an eleventh
+    # section shipped a label -- a test failing on a correct config, which is
+    # the same "pins a decision instead of a property" shape this project keeps
+    # finding. `_ORIGINS` IS the set of comments a section can send.
+    from core.trade_origin import _ORIGINS
 
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
-    known = {
-        broker_comment(name, is_addon=False, experimental_live=True).casefold()
-        for name in (
-            "section_five_m5",
-            "section_six_gold_m5",
-            "section_ten_gold_m1",
-            "failed_session_breakout",
-            "section_eight_trend_day_h1",
-            "section_nine_vwap_m30",
-        )
-    }
+    known = {origin.comment.casefold() for _marker, origin in _ORIGINS}
 
-    for item in settings.trade_management.fixed_exit_comments:
-        assert item.casefold() in known, f"{item} is not a comment any section sends"
-
-    for item in settings.trade_management.break_even_only_comments:
-        assert item.casefold() in known, f"{item} is not a comment any section sends"
+    for name in (
+        "fixed_exit_comments",
+        "break_even_only_comments",
+        "pre_close_flatten_comments",
+    ):
+        for item in getattr(settings.trade_management, name):
+            assert item.casefold() in known, f"{name}: {item} is not a comment any section sends"
 
 
 class TestSectionTenGoesFlatBeforeGoldShuts:

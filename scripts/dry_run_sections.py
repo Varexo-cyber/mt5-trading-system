@@ -1494,6 +1494,7 @@ def main(argv: list[str] | None = None) -> None:
             "section_eight_trend_day_h1": "section_eight_trend_day_h1",
             "section_nine_vwap_m30": "section_nine_vwap_m30",
             "section_ten_gold_m1": "section_ten_gold_m1",
+            "section_eleven_metals": "section_eleven_metals",
         }
         measured = set(module_config)
         if args.sections_five_to_ten:
@@ -1511,6 +1512,11 @@ def main(argv: list[str] | None = None) -> None:
             # account have done" rather than "what would the account have done
             # in August". A section that comes back on appears here again with
             # no edit.
+            #
+            # SECTION ELEVEN IS ON IT AS OF 4 SEPTEMBER. The flag is still
+            # called `--sections-five-to-ten` because that is what the launcher
+            # passes; the set is "the book", not a range of numbers, and a
+            # twelfth section belongs here the day it is written.
             book = {
                 "failed_session_breakout",
                 "section_five_m5",
@@ -1518,6 +1524,7 @@ def main(argv: list[str] | None = None) -> None:
                 "section_eight_trend_day_h1",
                 "section_nine_vwap_m30",
                 "section_ten_gold_m1",
+                "section_eleven_metals",
             }
             missing = (book & live) - measured
             if missing:
@@ -1575,6 +1582,41 @@ def main(argv: list[str] | None = None) -> None:
         else:
             for name in sorted(measured):
                 passes.append((name, getattr(settings.analysis, name).timeframe))
+
+        # A SECTION WHOSE MARKETS ARE NOT WALKED IS SILENT, NOT FLAT --
+        # the same confusion this file has now shipped seven times, in a new
+        # place, and this time it would have hit TWO live sections at once.
+        #
+        # `--core` is the sixteen markets the research was done on: eleven FX
+        # majors, gold, four indices. Section ten's `allowed_symbols` is five
+        # metals and section eleven's is four crosses, and only XAUUSD of those
+        # is in core. So `dryrun-live.cmd 180` would have replayed section ten
+        # on ONE of its five markets and section eleven on NONE of its four,
+        # and reported the result as if it were the book.
+        #
+        # Section eleven would have come back with a zero row, and a zero row
+        # reads as "the strategy found nothing" rather than "it was never shown
+        # a market it can trade". That is the exact sentence this project keeps
+        # writing.
+        #
+        # So: every measured section's own markets are added to the walk. Not
+        # intersected -- added. A market this broker does not list fails its own
+        # fetch and says so per symbol, which is visible; dropping it here is
+        # not.
+        #
+        # `--symbols` and `--section-ten-only` DECLARE the universe on purpose,
+        # so they are left alone. This fills a gap; it does not overrule a
+        # choice.
+        section_markets: dict[str, list[str]] = {}
+        widen = not args.symbols and not args.section_ten_only
+        for name in sorted({name for name, _tf in passes}) if widen else ():
+            allowed = tuple(getattr(getattr(settings.analysis, name), "allowed_symbols", ()) or ())
+            absent = [market for market in allowed if market not in symbols]
+            if absent:
+                section_markets[name] = absent
+                symbols = symbols + absent
+        for name, absent in section_markets.items():
+            print(f"  {name} trades {len(absent)} markets the universe missed: {', '.join(absent)}")
 
         # THE HEADER NAMES WHAT IS MEASURED, not what is allowed to trade.
         #

@@ -4,23 +4,32 @@ cd /d "%~dp0"
 
 echo.
 echo  ============================================
-echo   SECTIONS 5 THROUGH 10, EXACTLY AS CONFIGURED
+echo   DE HELE LIVE BOEK, EXACTLY AS CONFIGURED
 echo  ============================================
 echo.
-echo  LIVE ALLOWLIST, 3 SEPTEMBER: sectie 6 (goud M5), 7 (failed session
-echo  breakout), 8 (trend day H1) en 10 (goud M1). Sectie 5 en 9 blijven
-echo  enabled voor shadowmeting maar mogen geen geld gebruiken.
+echo  LIVE ALLOWLIST, 4 SEPTEMBER: sectie 6 (goud M5), 7 (failed session
+echo  breakout), 8 (trend day H1), 10 (goud M1) en 11 (de vier goudkruisen,
+echo  M5). Sectie 5 en 9 blijven enabled voor shadowmeting maar mogen geen
+echo  geld gebruiken.
 echo  Every section runs on its own configured clock, with the account's
 echo  real position cap. No impulse or old order-block module is measured.
 echo.
-echo  POSITIEBEHEER: sectie 6, 7 en 8 krijgen de break-even-stap zoals live.
-echo  Sectie 10 niet -- die staat op vaste SL/TP en wordt om 20:50 platgezet,
-echo  en de replay doet nu precies dat.
+echo  SECTIE 11 HAALDE DE STATISTISCHE LAT NIET -- beste cel +2,56 sigma tegen
+echo  2,96 -- en zijn HOLDOUT stond in alle vier de markten NEGATIEF. Hij staat
+echo  hier om precies dat bevestigd of weerlegd te krijgen door een replay met
+echo  een andere resolver. Zonder modelbestanden weigert Jarvis te starten;
+echo  draai eerst train11.cmd 720 forceer.
 echo.
-echo  SIXTEEN MARKETS, NOT 232. The eleven FX majors the research was done on,
-echo  gold, and four index CFDs. Every other market in the catalogue is an
-echo  extrapolation -- measuring them cannot confirm or refute the finding, and
-echo  it makes the run take all night.
+echo  POSITIEBEHEER: sectie 6, 7, 8 en 11 krijgen de break-even-stap zoals
+echo  live. Sectie 10 niet -- die staat op vaste SL/TP en wordt om 20:50
+echo  platgezet, en de replay doet nu precies dat.
+echo.
+echo  ZESTIEN KERNMARKTEN PLUS DE MARKTEN VAN DE SECTIES ZELF. De kern is de
+echo  elf FX-majors, goud en vier index-CFDs. Sectie 10 en 11 handelen op
+echo  metalen die daar niet in zitten, dus die worden erbij gezet en met naam
+echo  genoemd. Zonder dat zou sectie 11 nul trades tonen omdat hij nooit een
+echo  markt zag die hij mag handelen, en dat leest als "de strategie vond
+echo  niets". Elke andere markt uit de catalogus blijft een extrapolatie.
 echo.
 echo  Roughly a fifteenth of the work of a full sweep.
 echo.
