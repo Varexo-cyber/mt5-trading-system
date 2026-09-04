@@ -2841,11 +2841,32 @@ class TestSectionTenRunsOnlyWhereItCanTrade:
 
         kept = [name for name in universe if name in allowed]
 
-        assert kept == ["XAUUSD", "XAUEUR"]
+        assert kept == ["XAUUSD"]
         assert "EURUSD.i" not in kept and "SPX500" not in kept
 
-    def test_section_ten_trades_more_than_one_metal(self) -> None:
-        """The widening of 3 September, pinned so it cannot silently revert."""
+    def test_section_ten_is_back_to_gold_alone(self) -> None:
+        """The widening of 3 September was reverted on 4 September, measured.
+
+        Full 180-day replay, per market:
+
+            XAUUSD  569 trades  +75.91 R  +0.133 each, positive in BOTH halves
+            XAUJPY  422 trades  +15.57 R  +0.037   all of it in the late half
+            XAUEUR  459 trades   +5.09 R  +0.011   all of it in the late half
+            XAUGBP  466 trades  -16.76 R  -0.036
+            XAUAUD  550 trades  -40.12 R  -0.073
+
+        The four crosses together lost 36.22 R over 1,897 trades, and the two
+        that were positive were positive only in the second half -- the same
+        regime-concentration shape that took section six off live.
+
+        On top of that the position cap charged section six 244 trades and
+        30.55 R, because it also trades XAUUSD and it is one position per
+        symbol. The widening cost 66.77 R in total.
+
+        XAUUSD on its own reads +0.133 R a trade here against +0.114 in the
+        original engine replay. Two independent measurements of the same
+        number. The section was not too narrow.
+        """
         from config.loader import load_settings
 
         settings = load_settings(
@@ -2853,12 +2874,11 @@ class TestSectionTenRunsOnlyWhereItCanTrade:
         )
         allowed = settings.analysis.section_ten_gold_m1.allowed_symbols
 
-        assert "XAUUSD" in allowed
-        assert len(allowed) > 1, "section ten is back to one market"
-        # Gold crosses and liquid silver only. Platinum, palladium and the
-        # industrial metals have a different volatility structure and much
-        # wider spreads, and the rule is calibrated on gold's.
-        assert all(name.startswith(("XAU", "XAG")) for name in allowed), allowed
+        assert tuple(allowed) == ("XAUUSD",), (
+            "section ten is on more than gold again. That is allowed, but it has "
+            "to beat -36.22 R over 1,897 trades on the crosses plus 30.55 R "
+            "charged to section six by the position cap."
+        )
 
 
 class TestSectionTenCanExpressAnOpenTradingDay:
@@ -2966,16 +2986,20 @@ class TestSectionTenOnlyWalksTheSectionsOwnMarkets:
         assert len(walked) > len(intersected)
 
     def test_the_live_config_would_walk_the_metals_that_can_pay(self) -> None:
-        """XAGUSD came off on 3 September: 150 setups, 0 trades, refused on
-        cost at over 20% of the stop. Five metals, and the cost gate is what
-        decided it rather than an opinion."""
+        """Gold alone, after the 4 September measurement.
+
+        XAGUSD went first on cost -- 830 setups and 0 trades over 180 days,
+        over 20% of the stop. The other four crosses went next on result: they
+        lost 36.22 R between them and cost section six another 30.55 R through
+        the position cap.
+        """
         from config.loader import load_settings
 
         allowed = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.section_ten_gold_m1.allowed_symbols
 
-        assert len(allowed) == 5, f"section ten walks {len(allowed)} markets, expected five"
+        assert len(allowed) == 1, f"section ten walks {len(allowed)} markets, expected one"
 
 
 class TestTheLauncherEchoesSurviveCmd:
