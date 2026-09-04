@@ -1088,12 +1088,20 @@ def _retimed(settings, module_name: str, timeframe: str):
     section = getattr(analysis, module_name)
     confluence = analysis.confluence
     allowed = tuple(dict.fromkeys((*confluence.live_enabled_modules, module_name)))
+    measurement_weights = dict(confluence.weights)
+    if measurement_weights.get(module_name, 0.0) <= 0.0:
+        measurement_weights[module_name] = 1.0
     return settings.model_copy(
         update={
             "analysis": analysis.model_copy(
                 update={
                     module_name: section.model_copy(update={"timeframe": timeframe}),
-                    "confluence": confluence.model_copy(update={"live_enabled_modules": allowed}),
+                    "confluence": confluence.model_copy(
+                        update={
+                            "live_enabled_modules": allowed,
+                            "weights": measurement_weights,
+                        }
+                    ),
                 }
             )
         }
@@ -1495,6 +1503,10 @@ def main(argv: list[str] | None = None) -> None:
             "section_nine_vwap_m30": "section_nine_vwap_m30",
             "section_ten_gold_m1": "section_ten_gold_m1",
             "section_eleven_metals": "section_eleven_metals",
+            "section_eleven_xaueur_m1": "section_eleven_xaueur_m1",
+            "section_twelve_xaugbp_m1": "section_twelve_xaugbp_m1",
+            "section_thirteen_xauaud_m5": "section_thirteen_xauaud_m5",
+            "section_fourteen_xaujpy_m1": "section_fourteen_xaujpy_m1",
         }
         measured = set(module_config)
         if args.sections_five_to_ten:
