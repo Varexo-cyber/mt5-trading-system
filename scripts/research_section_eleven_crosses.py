@@ -160,6 +160,23 @@ def signals(frame: pd.DataFrame, mechanism: str) -> np.ndarray:
         floor = low.shift(1).rolling(20).min()
         long = active & (trend > 0) & (close > ceiling)
         short = active & (trend < 0) & (close < floor)
+    elif mechanism == "jump_impulse":
+        move = close.diff(6) / unit
+        unusual_volume = frame.volume > 1.5 * frame.volume.rolling(48).median()
+        long = unusual_volume & (move > 1.5) & (close > open_)
+        short = unusual_volume & (move < -1.5) & (close < open_)
+    elif mechanism == "volume_breakout":
+        unusual_volume = frame.volume > 1.5 * frame.volume.rolling(48).median()
+        ceiling = high.shift(1).rolling(20).max()
+        floor = low.shift(1).rolling(20).min()
+        long = unusual_volume & (trend > 0) & (close > ceiling)
+        short = unusual_volume & (trend < 0) & (close < floor)
+    elif mechanism == "vwap_reversal":
+        typical = (high + low + close) / 3.0
+        rolling_volume = frame.volume.rolling(48).sum().replace(0.0, np.nan)
+        vwap = (typical * frame.volume).rolling(48).sum() / rolling_volume
+        long = (close < vwap - unit) & (close > open_)
+        short = (close > vwap + unit) & (close < open_)
     elif mechanism == "two_leg_trend":
         gold_trend = np.sign(
             frame.gold_close.ewm(span=20, adjust=False).mean()
@@ -221,6 +238,7 @@ def replay(
     horizon: int,
     stop_atr: float,
     target_r: float,
+    max_spread_r: float | None = None,
 ) -> pd.DataFrame:
     unit = atr(frame).to_numpy()
     open_, high, low, close = (frame[name].to_numpy() for name in ("open", "high", "low", "close"))
@@ -234,6 +252,13 @@ def replay(
         entry = open_[entry_bar]
         risk = stop_atr * unit[signal_bar]
         if risk <= 0:
+            continue
+        spread_cost_r = 0.0
+        if "spread_price" in frame:
+            spread_price = float(frame.spread_price.iloc[entry_bar])
+            if np.isfinite(spread_price):
+                spread_cost_r = spread_price / risk
+        if max_spread_r is not None and spread_cost_r > max_spread_r:
             continue
         stop = entry - direction * risk
         target = entry + direction * target_r * risk
@@ -251,11 +276,6 @@ def replay(
                 break
         if result is None:
             result = float(np.clip(direction * (close[final_bar] - entry) / risk, -1.0, target_r))
-        spread_cost_r = 0.0
-        if "spread_price" in frame:
-            spread_price = float(frame.spread_price.iloc[entry_bar])
-            if np.isfinite(spread_price):
-                spread_cost_r = spread_price / risk
         records.append((frame.index[entry_bar], result - COST_R - spread_cost_r))
         available = exit_bar + 1
     return pd.DataFrame(records, columns=["time", "r"])

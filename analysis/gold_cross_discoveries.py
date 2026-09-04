@@ -51,6 +51,9 @@ class GoldCrossDiscovery:
         entry_hour = int((frame.index[-1] + timeframe.duration).hour)
         if not cfg.hour_is_open(entry_hour):
             return quiet
+        entry_weekday = int((frame.index[-1] + timeframe.duration).dayofweek)
+        if cfg.weekday_only and entry_weekday >= 5:
+            return quiet
 
         close = frame["close"].astype(float)
         open_ = frame["open"].astype(float)
@@ -80,6 +83,20 @@ class GoldCrossDiscovery:
                 and impulse < -cfg.minimum_momentum_atr
                 and close.iloc[-1] < open_.iloc[-1]
             ):
+                natural = -1
+        elif cfg.mechanism == "trend_rejection":
+            unit = float(_atr(frame).iloc[-1])
+            if not np.isfinite(unit) or unit <= 0:
+                return quiet
+            span = float(frame["high"].iloc[-1] - frame["low"].iloc[-1])
+            if span <= 0:
+                return quiet
+            close_position = float(
+                (close.iloc[-1] - frame["low"].iloc[-1]) / span
+            )
+            if frame["low"].iloc[-1] < fast.iloc[-1] and close_position > 0.8:
+                natural = 1
+            elif frame["high"].iloc[-1] > fast.iloc[-1] and close_position < 0.2:
                 natural = -1
         if natural == 0:
             return quiet

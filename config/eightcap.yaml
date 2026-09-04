@@ -1810,6 +1810,43 @@ analysis:
     session_start_hour_utc: 7
     session_end_hour_utc: 13
 
+  # BTCUSD discoveries from 180 days of actual Eightcap bars. These are
+  # deliberately shadow-only: all three periods were inspected to discover
+  # them, so only later forward data may grant real-money permission.
+  section_fifteen_btc_m1:
+    enabled: true
+    timeframe: M1
+    allowed_symbols: [BTCUSD]
+    mechanism: channel_breakout
+    polarity: 1
+    channel_period: 20
+    stop_atr: 4.0
+    target_r: 2.0
+    session_start_hour_utc: 7
+    session_end_hour_utc: 13
+  section_sixteen_btc_m5:
+    enabled: true
+    timeframe: M5
+    allowed_symbols: [BTCUSD]
+    mechanism: channel_breakout
+    polarity: -1
+    channel_period: 20
+    stop_atr: 4.0
+    target_r: 2.0
+    session_start_hour_utc: 0
+    session_end_hour_utc: 7
+  section_seventeen_btc_m15:
+    enabled: true
+    timeframe: M15
+    allowed_symbols: [BTCUSD]
+    mechanism: trend_rejection
+    polarity: 1
+    stop_atr: 6.0
+    target_r: 0.75
+    session_start_hour_utc: 0
+    session_end_hour_utc: 24
+    weekday_only: true
+
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
     #
@@ -2561,6 +2598,9 @@ analysis:
       section_twelve_xaugbp_m1: 1.0
       section_thirteen_xauaud_m5: 0.75
       section_fourteen_xaujpy_m1: 1.5
+      section_fifteen_btc_m1: 2.0
+      section_sixteen_btc_m5: 2.0
+      section_seventeen_btc_m15: 0.75
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -3213,6 +3253,9 @@ analysis:
       section_twelve_xaugbp_m1: 0.55
       section_thirteen_xauaud_m5: 0.55
       section_fourteen_xaujpy_m1: 0.55
+      section_fifteen_btc_m1: 0.55
+      section_sixteen_btc_m5: 0.55
+      section_seventeen_btc_m15: 0.55
 
     # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
     # documented as a quick entry but classified as intraday, so a fresh M5
@@ -3362,6 +3405,9 @@ analysis:
       section_twelve_xaugbp_m1: 0.0
       section_thirteen_xauaud_m5: 0.0
       section_fourteen_xaujpy_m1: 0.0
+      section_fifteen_btc_m1: 0.0
+      section_sixteen_btc_m5: 0.0
+      section_seventeen_btc_m15: 0.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3394,8 +3440,8 @@ analysis:
       # Dat is een redenering, geen meting.
       candle_momentum: 0.6
 
-    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1, section_eleven_xaueur_m1, section_twelve_xaugbp_m1, section_thirteen_xauaud_m5, section_fourteen_xaujpy_m1]
-    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1, section_eleven_xaueur_m1, section_twelve_xaugbp_m1, section_thirteen_xauaud_m5, section_fourteen_xaujpy_m1]
+    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1, section_eleven_xaueur_m1, section_twelve_xaugbp_m1, section_thirteen_xauaud_m5, section_fourteen_xaujpy_m1, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
+    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1, section_eleven_xaueur_m1, section_twelve_xaugbp_m1, section_thirteen_xauaud_m5, section_fourteen_xaujpy_m1, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #
@@ -4485,6 +4531,21 @@ risk:
       window: 60
       minimum_trades: 40
       maximum_loss_share: 0.65
+      losing_streak: 8
+    section_fifteen_btc_m1:
+      window: 60
+      minimum_trades: 40
+      maximum_loss_share: 0.60
+      losing_streak: 8
+    section_sixteen_btc_m5:
+      window: 60
+      minimum_trades: 40
+      maximum_loss_share: 0.60
+      losing_streak: 8
+    section_seventeen_btc_m15:
+      window: 60
+      minimum_trades: 40
+      maximum_loss_share: 0.60
       losing_streak: 8
 
     # DE TWEE DIE ER GEEN HADDEN, en dat viel pas op bij de laatste controle
