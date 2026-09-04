@@ -4140,6 +4140,37 @@ class SectionTenGoldM1Config(Base):
         return self
 
 
+class SectionElevenMetalsConfig(Base):
+    """SECTION ELEVEN: section six's mechanism, one trained model per metal.
+
+    ENABLED IS NOT THE SWITCH THAT MATTERS. This section is silent on any
+    market it has no fitted model file for, and there are none until
+    `scripts/train_section_eleven.py` writes one -- which it does only for a
+    market that clears a walk-forward fit, a random control, a Bonferroni bar
+    and an untouched holdout. Turning `enabled` on without model files trades
+    nothing, which is the intended failure mode.
+    """
+
+    enabled: bool = False
+    timeframe: str = "M5"
+    allowed_symbols: tuple[str, ...] = ()
+    model_dir: str = "models/section_eleven"
+    #: Section six ships `polarity: -1`; whether that holds per metal is one of
+    #: the things the fit decides, so it stays configurable and defaults to the
+    #: plain reading.
+    polarity: int = Field(default=1, ge=-1, le=1)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    long_only: bool = False
+    confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    #: Per-symbol UTC hours this section may not enter on. Same shape and same
+    #: reason as section ten's: the crosses lose money at London's close and
+    #: gold does not, so one window cannot serve both.
+    blocked_hours_by_symbol: dict[str, tuple[int, ...]] = Field(default_factory=dict)
+
+    def hour_is_blocked(self, symbol: str, hour: int) -> bool:
+        return int(hour) in self.blocked_hours_by_symbol.get(symbol, ())
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -4190,6 +4221,7 @@ class AnalysisConfig(Base):
     section_eight_trend_day_h1: SectionEightTrendDayConfig = SectionEightTrendDayConfig()
     section_nine_vwap_m30: SectionNineSessionVwapConfig = SectionNineSessionVwapConfig()
     section_ten_gold_m1: SectionTenGoldM1Config = SectionTenGoldM1Config()
+    section_eleven_metals: SectionElevenMetalsConfig = SectionElevenMetalsConfig()
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
