@@ -539,15 +539,32 @@ class TestSectionTenBlocksHoursPerMarket:
             )
 
     def test_the_live_config_shuts_london_close_on_every_cross(self) -> None:
+        """WHATEVER CROSSES SECTION TEN ALLOWS, 16:00 and 17:00 are shut.
+
+        It used to also assert that there WERE crosses, which is a test pinning
+        a decision: they came off on 4 September and this failed with nothing
+        wrong. The measurement that took them off, since the old assertion
+        asked for it beside the change -- 180 days, `sectie10.cmd 180`:
+
+            XAUUSD     595 trades    +79,12 R   +0,133 per trade
+            crosses  3.217 trades   -110,22 R   -0,034 per trade
+            section  3.812 trades    -31,10 R
+
+        Gold alone earns 79 R; with the crosses the section loses 31. On top of
+        that the position cap cost section SIX 260 trades worth +40,48 R, so
+        the crosses were paying themselves out of the neighbour's pocket.
+
+        The rule itself stays: if a cross is ever allowed again, London's close
+        is shut for it, because that finding (negative in both halves in four
+        crosses out of four, positive on gold) is unaffected by the above.
+        """
         from config.loader import load_settings
 
         config = load_settings(
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.section_ten_gold_m1
 
-        crosses = [s for s in config.allowed_symbols if s != "XAUUSD"]
-        assert crosses, "the crosses are off again; if that was measured, say so beside it"
-        for symbol in crosses:
+        for symbol in [s for s in config.allowed_symbols if s != "XAUUSD"]:
             assert config.hour_is_blocked(symbol, 16), symbol
             assert config.hour_is_blocked(symbol, 17), symbol
         # And gold keeps its own, different window.

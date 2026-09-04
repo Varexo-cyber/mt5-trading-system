@@ -1563,15 +1563,53 @@ analysis:
     #
     # WAT DIT TERUGDRAAIT: de volgende 180-daagse replay. Komen de kruisen
     # daar niet samen positief uit MET dit blok, dan gaan ze er definitief af.
-    allowed_symbols: [XAUUSD, XAUEUR, XAUGBP, XAUAUD, XAUJPY]
-    blocked_hours_by_symbol:
-      # Goud staat er bewust NIET in en houdt 07:00-13:00 uit het venster
-      # hierboven. Voor de kruisen geldt dat blok juist niet: hun probleem is
-      # de Londense sluiting, niet de Londense ochtend.
-      XAUEUR: [16, 17]
-      XAUGBP: [16, 17]
-      XAUAUD: [16, 17]
-      XAUJPY: [16, 17]
+    # ---------------------------------------------------------------------
+    # DIE REPLAY IS GEDRAAID EN DE VOORWAARDE HIERBOVEN IS GEVALLEN.
+    # `sectie10.cmd 180`, 4 september, 3.812 trades over vijf markten:
+    #
+    #     XAUUSD    595 trades   +79,12 R   +0,133 per trade   47,4% raak
+    #     XAUJPY    701 trades    +4,67 R   +0,007
+    #     XAUEUR    804 trades   -20,32 R   -0,025
+    #     XAUGBP    831 trades   -26,31 R   -0,032
+    #     XAUAUD    881 trades   -68,27 R   -0,077
+    #
+    #     de vier kruisen samen  3.217 trades  -110,22 R  (-0,034 per trade)
+    #     de sectie als geheel   3.812 trades   -31,10 R
+    #
+    # XAUUSD alleen is +79,12 R. Met de kruisen erbij is de sectie -31,10 R.
+    # De verbreding kostte dus ruim 110 R, en dat is de tweede keer dat
+    # dezelfde vraag hetzelfde antwoord geeft: -36,22 R op 3 september,
+    # -110,22 R nu, met het 16:00/17:00-blok er al in.
+    #
+    # WAT DE UREN ZEGGEN, en het is de moeite waard omdat het NIET het
+    # 16:00-verhaal is. `blocked_hours_by_symbol` VERVANGT het globale venster
+    # voor een symbool dat erin staat -- dus de vier kruisen, die alleen 16 en
+    # 17 noemden, handelden de hele Londense ochtend die voor goud dicht is:
+    #
+    #     07:00-13:00   1.664 trades   -168,07 R   (-0,101 per trade)
+    #     elk ander uur 2.148 trades   +136,97 R   (+0,064 per trade)
+    #
+    # Van die 1.664 is er geen enkele van XAUUSD, want dat blok staat voor goud
+    # aan. Het zijn allemaal kruisen. Buiten die uren doen de kruisen 1.553
+    # trades voor +57,85 R. Er zit dus wel degelijk iets, en het antwoord op
+    # "waarom verliezen ze" is hetzelfde uur dat op goud twee keer eerder is
+    # bevestigd.
+    #
+    # EN TOCH GAAN ZE ERAF, en dit is de reden. +57,85 R over 1.553 trades is
+    # +0,037 per trade. Die trades bezetten plekken: dezelfde run laat zien dat
+    # de positielimiet sectie ZES 260 trades kostte die +40,48 R waard waren,
+    # oftewel +0,16 per trade. Vier keer zoveel per trade. Een kruis binnenhalen
+    # dat +0,037 verdient door een goudtrade te verdringen die +0,16 verdient is
+    # geen verbreding, dat is ruilen tegen verlies -- bij dubbele blootstelling.
+    #
+    # De eigenaar heeft dat zelf gezegd toen hij de tabel zag, en hij heeft
+    # gelijk: sectie zes en sectie tien zijn voor GOUD gebouwd. De overige
+    # metalen krijgen hun eigen sectie of ze krijgen niets.
+    #
+    # `blocked_hours_by_symbol` is leeg omdat er niets meer in kan staan: goud
+    # is het enige symbool en dat gebruikt het globale 07:00-13:00 hieronder.
+    allowed_symbols: [XAUUSD]
+    blocked_hours_by_symbol: {}
     channel_period: 20
     minimum_break_atr: 0.75
     retest_tolerance_atr: 0.15
@@ -2955,22 +2993,25 @@ analysis:
       # section breaker is therefore essential, not optional.
       - section_eight_trend_day_h1
       - section_ten_gold_m1
-      # SECTIE ELF, 4 september, op uitdrukkelijke instructie van de eigenaar
-      # en met het cijfer waarop het gebeurde erbij, zodat niemand later denkt
-      # dat het per ongeluk ging:
+      # SECTIE ELF STOND HIER EEN DAG EN IS ER 4 SEPTEMBER WEER AFGEHAALD, op
+      # instructie van de eigenaar en met beide cijfers erbij, zodat niemand
+      # later denkt dat er nog iets open stond:
       #
       #     NIETS HAALDE DE BONFERRONI-LAT. Beste cel XAUJPY +2,56 sigma
       #     tegen een lat van 2,96. De trainer schreef uit zichzelf niets weg.
       #
-      # Wat er wel stond: alle zestien cellen positief, alle zestien beter dan
-      # een muntworp op dezelfde bars, en kosten van 0,4-0,8% van de stop die
-      # niets verbergen. Zie het blok bij `section_eleven_metals` hierboven.
+      #     EN DE HOLDOUT WAS NEGATIEF IN VIER MARKTEN VAN DE VIER:
+      #     XAUAUD -193,22 R / XAUEUR -189,77 / XAUGBP -148,93 / XAUJPY
+      #     -115,53. Walk-forward +0,005 tot +0,030 per trade, holdout -0,031
+      #     tot -0,052. Een tekenomslag op bijna vijftienduizend trades.
       #
-      # Hij staat hier om door `dryrun-live.cmd 180` gemeten te worden voordat
-      # Jarvis start -- dat is een onafhankelijke replay met een andere
-      # resolver, de echte positielimiet en de acht live poorten benoemd. Komt
-      # hij daar niet positief uit, dan gaat deze regel eruit.
-      - section_eleven_metals
+      # De module blijft bestaan, blijft `enabled` en houdt zijn gewicht, dus
+      # `sectie11.cmd 90` kan hem nog steeds meten. Wat hij niet meer heeft is
+      # toestemming om geld uit te geven, en dat is precies het verschil dat
+      # deze lijst maakt. `effective_weights` zet zijn gewicht live op 0,0.
+      #
+      # Zie het blok bij `section_eleven_metals` hierboven voor de volledige
+      # onderbouwing.
 
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.

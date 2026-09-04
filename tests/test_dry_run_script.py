@@ -3153,6 +3153,31 @@ class TestTheLauncherEchoesSurviveCmd:
                     offenders.append(f"{path.name}:{number}: {stripped}")
         assert not offenders, "unescaped < or > in an echo line:\n" + "\n".join(offenders)
 
+    def test_no_launcher_puts_a_comment_inside_a_continued_command(self) -> None:
+        """A `rem` between two `^` lines becomes PART of the command.
+
+        cmd joins a line ending in `^` to the one after it, whatever that line
+        is. So a comment written to explain a flag ends up passed as arguments,
+        and the run dies with something that has nothing to do with the
+        explanation. Caught while adding exactly such a comment to
+        `sectie11.cmd`; the same shape as every other defect in this file --
+        a thing that is correct in isolation and lands where it cannot work.
+        """
+        from pathlib import Path
+
+        offenders: list[str] = []
+        for path in sorted(Path().glob("*.cmd")):
+            lines = path.read_text(errors="replace").splitlines()
+            for number, line in enumerate(lines[:-1], 1):
+                if not line.rstrip().endswith("^"):
+                    continue
+                nxt = lines[number].strip()
+                if nxt.lower().startswith("rem ") or nxt.lower() == "rem" or not nxt:
+                    offenders.append(f"{path.name}:{number + 1}: {nxt or '(blank line)'}")
+        assert not offenders, "comment or blank line inside a ^ continuation:\n" + "\n".join(
+            offenders
+        )
+
 
 class TestTheHeartbeatFiresOnEveryWindowLength:
     """The progress line must not have a window length baked into it.

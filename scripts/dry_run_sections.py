@@ -2123,6 +2123,7 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     _manage_grid_report(trades)
     _by_market_report(trades)
     _by_hour_report(trades, settings)
+    _hours_for_other_sections(trades, settings)
     _is_this_real(trades, keys, managed)
     _shadow_report(results, settings, slots, managed, days)
 
@@ -2197,6 +2198,18 @@ def _by_hour_report(trades: list[Decision], settings) -> None:
     Both halves of the period are printed for the same reason as the
     break-even grid: one number per hour on one sample is how a window like
     this gets chosen in the first place.
+
+    PER MARKET AND NOT PER SECTION, as of 4 September, because reading it per
+    section hid the finding it exists to surface. Section ten's blocked window
+    is a per-SYMBOL setting: `blocked_hours_by_symbol` REPLACES the global
+    07:00-13:00 for any symbol it names, and the four crosses name only 16 and
+    17. So the crosses traded the whole London morning while XAUUSD did not,
+    the section-level table added the two together, and nothing said which
+    market the hours belonged to.
+
+    It cost -168.07 R over 1664 trades in the 180-day run, all of it the
+    crosses. The section total was -31.10 R; the hours were the whole of it and
+    then some.
     """
     rows = [
         row
@@ -2253,6 +2266,78 @@ def _by_hour_report(trades: list[Decision], settings) -> None:
         print("  Negative again, on the wider market set? Then the block goes back.")
         print("  Positive, or level with the rest? Then it was the worst six hours")
         print("  of one sample and shutting them cost trades for nothing.")
+
+
+def _hours_for_other_sections(trades: list[Decision], settings) -> None:
+    """The same hour question for every OTHER section that blocks hours.
+
+    THE TABLE ABOVE IS HARDCODED TO SECTION TEN, and section eleven trades the
+    same four crosses on the same clock with its own blocked hours -- so
+    `sectie11.cmd` would have printed no hour table at all. An absent table is
+    not "the hours are fine"; it is nobody having looked, which is the
+    confusion this file keeps shipping under new names.
+
+    It matters here specifically. Section ten's 180-day run found -168.07 R in
+    07:00-13:00 UTC on those crosses, against +57.85 R in every other hour, and
+    section eleven does not block that window. Whether a fitted model has the
+    same hole is an open question and this is what answers it.
+    """
+    rows = [
+        row
+        for row in trades
+        if row.outcome == "TRADE" and row.result_r is not None and "section_ten" not in row.module
+    ]
+    by_section: dict[str, list[Decision]] = {}
+    for row in rows:
+        section = getattr(settings.analysis, row.module, None)
+        if section is not None and getattr(section, "blocked_hours_by_symbol", None):
+            by_section.setdefault(row.module, []).append(row)
+    if not by_section:
+        return
+
+    for module in sorted(by_section):
+        got = by_section[module]
+        config = getattr(settings.analysis, module)
+        order = sorted(row.when for row in got)
+        split = order[int(len(order) * 0.6)]
+        print(f"\n{module.upper()} BY UTC HOUR — which hours pay, and which are open?")
+        print(f"    {'hour':<6}{'trades':>7}{'total R':>9}{'per trade':>11}{'early':>8}{'late':>8}")
+
+        by_hour: dict[int, list[Decision]] = {}
+        for row in got:
+            by_hour.setdefault(int(row.when.hour), []).append(row)
+        for hour in sorted(by_hour):
+            values = [r.result_r for r in by_hour[hour] if r.result_r is not None]
+            early = [r.result_r for r in by_hour[hour] if r.when < split and r.result_r is not None]
+            late = [r.result_r for r in by_hour[hour] if r.when >= split and r.result_r is not None]
+            # A blocked hour with trades in it means the block is per symbol
+            # and this hour's markets are not the ones it names -- exactly how
+            # section ten's crosses traded the whole London morning unnoticed.
+            shut = {
+                market
+                for market in getattr(config, "allowed_symbols", ())
+                if config.hour_is_blocked(market, hour)
+            }
+            mark = f"  <- shut for {len(shut)}/{len(config.allowed_symbols)}" if shut else ""
+            print(
+                f"    {hour:02d}:00 {len(values):>6}{sum(values):>+9.2f}"
+                f"{sum(values) / len(values):>+11.3f}{sum(early):>+8.2f}{sum(late):>+8.2f}{mark}"
+            )
+
+        scored = [r for r in got if r.result_r is not None]
+        london = [r.result_r for r in scored if 7 <= int(r.when.hour) < 13]
+        rest = [r.result_r for r in scored if not 7 <= int(r.when.hour) < 13]
+        if london and rest:
+            print(
+                f"\n  07:00-13:00 together: {len(london)} trades, {sum(london):+.2f} R "
+                f"({sum(london) / len(london):+.3f} per trade)"
+            )
+            print(
+                f"  every other hour:     {len(rest)} trades, {sum(rest):+.2f} R "
+                f"({sum(rest) / len(rest):+.3f} per trade)"
+            )
+            print("  Section ten lost -0.101 per trade in that window on these same")
+            print("  crosses. Negative here too means the same hole, not a new finding.")
 
 
 def _by_market_report(trades: list[Decision]) -> None:

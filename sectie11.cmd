@@ -23,6 +23,13 @@ echo.
 echo  Alleen sectie elf. Geen sectie 6, 7, 8 of 10 ernaast. Alleen de vier
 echo  markten waar sectie elf een getraind model voor heeft, alleen op M5.
 echo.
+echo  SECTIE ELF STAAT NIET LIVE, en dat is de bedoeling. Hij is er 4 september
+echo  afgehaald op de negatieve holdout hieronder. De module blijft bestaan en
+echo  houdt zijn gewicht, dus deze meting kan gewoon doorgaan -- wat hij niet
+echo  heeft is toestemming om geld uit te geven. Deze run geeft hem die ook
+echo  niet: de toekenning leeft op een KOPIE van de instellingen die nooit een
+echo  broker ziet.
+echo.
 echo  DAAROM IS DIT SNEL. Geen M1-historie (sectie elf is een M5-strategie,
 echo  dus M1 levert geen extra antwoord op), vier markten in plaats van
 echo  zestien, en een sectie in plaats van vijf. Minuten, geen uren.
@@ -104,8 +111,15 @@ if not exist "runtime" mkdir runtime
 echo  %DAGEN% dagen, vier markten, alleen sectie elf. Even geduld.
 echo.
 
+rem GEEN --live-only. Sectie elf staat niet op de allowlist, en `--live-only`
+rem snijdt de gemeten set daar tegenaan -- dan blijft er niets over en zegt
+rem `--only` dat het die sectie niet kent. Precies de reden dat een sectie
+rem uitzetten hem niet mag WISSEN: de meting is wat beslist of hij terugkomt.
+rem
+rem EN EEN `rem` MAG HIER NIET TUSSEN. cmd plakt een regel die op ^ eindigt aan
+rem de volgende; een commentaarregel ertussen wordt dus DEEL van het commando.
 .venv-live\Scripts\python.exe -m scripts.dry_run_sections ^
-  --days %DAGEN% %FIJN% --live-only --only section_eleven_metals ^
+  --days %DAGEN% %FIJN% --only section_eleven_metals ^
   --symbols XAUEUR,XAUGBP,XAUAUD,XAUJPY %BEHEER% ^
   --csv runtime\sectie11.csv
 
