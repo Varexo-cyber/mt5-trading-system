@@ -12,7 +12,7 @@ echo  broker contract specifications and the exact configuration snapshot.
 echo  Safe and read-only against MT5: no orders, no Claude, no live changes.
 echo.
 echo  Default: 180 evaluation days, EUR 203 research capital,
-echo  16 core markets, M1 M5 M15 M30 H1 H4.
+echo  20 markets including the four gold crosses, M1 M5 M15 M30 H1 H4.
 echo.
 echo  The command is resumable. If MT5 or Windows interrupts it, run it again.
 echo.

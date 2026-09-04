@@ -1735,8 +1735,13 @@ analysis:
   # sectie van de allowlist af en dat is het einde ervan.
   #
   # De sectiebreaker eronder is wat hem begrenst als hij toch live gaat.
+  # RETIRED 4 September. The fitted model below is retained as a rejected
+  # experiment, not as a live strategy. Its untouched holdout lost on all four
+  # markets. The replacement research protocol is documented in
+  # docs/hypotheses/section_eleven_metals.md and must clear actual broker bars
+  # before this switch or its weight may become non-zero again.
   section_eleven_metals:
-    enabled: true
+    enabled: false
     timeframe: M5
     allowed_symbols: [XAUEUR, XAUGBP, XAUAUD, XAUJPY]
     model_dir: models/section_eleven
@@ -2993,25 +2998,9 @@ analysis:
       # section breaker is therefore essential, not optional.
       - section_eight_trend_day_h1
       - section_ten_gold_m1
-      # SECTIE ELF STOND HIER EEN DAG EN IS ER 4 SEPTEMBER WEER AFGEHAALD, op
-      # instructie van de eigenaar en met beide cijfers erbij, zodat niemand
-      # later denkt dat er nog iets open stond:
-      #
-      #     NIETS HAALDE DE BONFERRONI-LAT. Beste cel XAUJPY +2,56 sigma
-      #     tegen een lat van 2,96. De trainer schreef uit zichzelf niets weg.
-      #
-      #     EN DE HOLDOUT WAS NEGATIEF IN VIER MARKTEN VAN DE VIER:
-      #     XAUAUD -193,22 R / XAUEUR -189,77 / XAUGBP -148,93 / XAUJPY
-      #     -115,53. Walk-forward +0,005 tot +0,030 per trade, holdout -0,031
-      #     tot -0,052. Een tekenomslag op bijna vijftienduizend trades.
-      #
-      # De module blijft bestaan, blijft `enabled` en houdt zijn gewicht, dus
-      # `sectie11.cmd 90` kan hem nog steeds meten. Wat hij niet meer heeft is
-      # toestemming om geld uit te geven, en dat is precies het verschil dat
-      # deze lijst maakt. `effective_weights` zet zijn gewicht live op 0,0.
-      #
-      # Zie het blok bij `section_eleven_metals` hierboven voor de volledige
-      # onderbouwing.
+      # S11 is removed. Its forced model missed the multiplicity bar and then
+      # lost on every untouched market holdout. Research stays available, but
+      # no S11 signal can reach real money.
 
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
@@ -3305,7 +3294,7 @@ analysis:
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.0
       section_ten_gold_m1: 1.0
-      section_eleven_metals: 1.0
+      section_eleven_metals: 0.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
