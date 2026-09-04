@@ -83,3 +83,21 @@ def test_four_discoveries_are_shadowed_after_full_broker_replay() -> None:
     assert measured.analysis.confluence.weights[names[0]] == 1.0
     assert names[0] in measured.analysis.confluence.live_enabled_modules
     assert settings.analysis.confluence.weights[names[0]] == 0.0
+
+
+def test_three_btc_discoveries_are_separate_and_shadow_only() -> None:
+    settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
+    sections = {
+        "section_fifteen_btc_m1": ("M1", "channel_breakout", 4.0, 2.0),
+        "section_sixteen_btc_m5": ("M5", "channel_breakout", 4.0, 2.0),
+        "section_seventeen_btc_m15": ("M15", "trend_rejection", 6.0, 0.75),
+    }
+
+    for name, expected in sections.items():
+        config = getattr(settings.analysis, name)
+        assert (config.timeframe, config.mechanism, config.stop_atr, config.target_r) == expected
+        assert config.allowed_symbols == ("BTCUSD",)
+        assert settings.analysis.confluence.weights[name] == 0.0
+        assert name not in settings.analysis.confluence.live_enabled_modules
+
+    assert settings.analysis.section_seventeen_btc_m15.weekday_only

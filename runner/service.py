@@ -518,6 +518,18 @@ def build_analysis_modules(settings: Settings) -> list[object]:
             analysis.section_fourteen_xaujpy_m1,
             name="section_fourteen_xaujpy_m1",
         ),
+        GoldCrossDiscovery(
+            analysis.section_fifteen_btc_m1,
+            name="section_fifteen_btc_m1",
+        ),
+        GoldCrossDiscovery(
+            analysis.section_sixteen_btc_m5,
+            name="section_sixteen_btc_m5",
+        ),
+        GoldCrossDiscovery(
+            analysis.section_seventeen_btc_m15,
+            name="section_seventeen_btc_m15",
+        ),
     ]
 
 

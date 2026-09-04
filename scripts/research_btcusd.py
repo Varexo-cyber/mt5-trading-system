@@ -13,8 +13,6 @@ import pandas as pd
 from scripts.research_section_eleven_crosses import (
     COST_R,
     HORIZONS,
-    STOP_ATRS,
-    TARGETS_R,
     load_bars,
     print_checks,
     print_result,
@@ -25,7 +23,10 @@ from scripts.research_section_eleven_crosses import (
     summarise,
 )
 
-TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1")
+TIMEFRAMES = ("M1", "M5", "M15")
+STOP_ATRS = (1.0, 2.0, 3.0, 4.0, 6.0)
+TARGETS_R = (0.75, 1.0, 1.5, 2.0, 3.0, 4.0)
+MAX_SPREAD_R = {"M1": 0.15, "M5": 0.12, "M15": 0.10}
 MECHANISMS = (
     "trend_pullback",
     "channel_breakout",
@@ -35,6 +36,9 @@ MECHANISMS = (
     "liquidity_sweep",
     "bollinger_reversal",
     "volatility_breakout",
+    "jump_impulse",
+    "volume_breakout",
+    "vwap_reversal",
 )
 SESSIONS = {
     "all": tuple(range(24)),
@@ -48,6 +52,8 @@ SESSIONS = {
 
 
 def clock_filter(trades: pd.DataFrame, session: str) -> pd.Series:
+    if trades.empty:
+        return pd.Series(False, index=trades.index, dtype=bool)
     mask = trades.time.dt.hour.isin(SESSIONS[session])
     if session == "weekday":
         mask &= trades.time.dt.dayofweek < 5
@@ -110,6 +116,7 @@ def main() -> int:
                 HORIZONS[timeframe],
                 stop_atr,
                 target_r,
+                MAX_SPREAD_R[timeframe],
             )
             replayed["market"] = "BTCUSD"
             trade_cache[replay_key] = replayed
@@ -124,37 +131,81 @@ def main() -> int:
             summarise(label, "train", split_trades(trades, frame, 0.0, 0.5))
         )
 
-    eligible = [result for result in train_results if result.trades >= 100]
-    eligible.sort(key=lambda result: result.sigma, reverse=True)
-    if not eligible:
-        raise SystemExit("no BTCUSD training candidate produced 100 trades")
-    for result in eligible[:10]:
-        print_result(result)
+    all_passed = True
+    for wanted_timeframe in TIMEFRAMES:
+        eligible = [
+            result
+            for result in train_results
+            if f"/{wanted_timeframe}/" in result.cell and result.trades >= 100
+        ]
+        eligible.sort(key=lambda result: result.sigma, reverse=True)
+        if not eligible:
+            print(f"\n{wanted_timeframe}: no candidate produced 100 training trades")
+            all_passed = False
+            continue
+        winner = eligible[0]
+        mechanism, timeframe, direction, stop_label, target_label, session = winner.cell.split("/")
+        polarity = 1 if direction == "follow" else -1
+        stop_atr = float(stop_label.removesuffix("ATR"))
+        target_r = float(target_label.removesuffix("R"))
+        frame = frames[timeframe]
+        trades = trade_cache[(mechanism, timeframe, polarity, stop_atr, target_r)]
+        trades = trades.loc[clock_filter(trades, session)].copy()
+        validation = summarise(
+            winner.cell, "validation", split_trades(trades, frame, 0.5, 0.75)
+        )
+        holdout = summarise(
+            winner.cell, "holdout", split_trades(trades, frame, 0.75, 1.01)
+        )
+        print(f"\nSECTION BTC-{timeframe} FROZEN WINNER {winner.cell}")
+        print_result(winner)
+        print_result(validation)
+        print_result(holdout)
+        checks = promotion_checks(winner, validation, holdout, multiplicity_bar)
+        print_checks(checks)
+        passed = all(checks.values())
+        all_passed &= passed
+        print("PROMOTION_CANDIDATE" if passed else "REJECTED — REMAINS SHADOW")
 
-    winner = eligible[0]
-    mechanism, timeframe, direction, stop_label, target_label, session = winner.cell.split("/")
-    polarity = 1 if direction == "follow" else -1
-    stop_atr = float(stop_label.removesuffix("ATR"))
-    target_r = float(target_label.removesuffix("R"))
-    frame = frames[timeframe]
-    trades = trade_cache[(mechanism, timeframe, polarity, stop_atr, target_r)]
-    trades = trades.loc[clock_filter(trades, session)].copy()
-    validation = summarise(
-        winner.cell, "validation", split_trades(trades, frame, 0.5, 0.75)
-    )
-    holdout = summarise(
-        winner.cell, "holdout", split_trades(trades, frame, 0.75, 1.01)
-    )
-    print(f"\nFROZEN WINNER {winner.cell}")
-    print_result(winner)
-    print_result(validation)
-    print_result(holdout)
-    checks = promotion_checks(winner, validation, holdout, multiplicity_bar)
-    print("\nPROMOTION CHECKS")
-    print_checks(checks)
-    passed = all(checks.values())
-    print("PROMOTION_CANDIDATE" if passed else "REJECTED — REMAINS SHADOW")
-    return 0 if passed else 2
+        discoveries = []
+        for candidate in cells:
+            candidate_mechanism, candidate_timeframe, candidate_polarity, candidate_stop, candidate_target, candidate_session = candidate
+            if candidate_timeframe != wanted_timeframe:
+                continue
+            candidate_direction = "follow" if candidate_polarity > 0 else "fade"
+            candidate_label = (
+                f"{candidate_mechanism}/{candidate_timeframe}/{candidate_direction}/"
+                f"{candidate_stop:g}ATR/{candidate_target:g}R/{candidate_session}"
+            )
+            candidate_trades = trade_cache[
+                (candidate_mechanism, candidate_timeframe, candidate_polarity, candidate_stop, candidate_target)
+            ]
+            candidate_trades = candidate_trades.loc[
+                clock_filter(candidate_trades, candidate_session)
+            ].copy()
+            parts = tuple(
+                summarise(
+                    candidate_label,
+                    name,
+                    split_trades(candidate_trades, frame, low, high),
+                )
+                for name, low, high in (
+                    ("train", 0.0, 0.5),
+                    ("validation", 0.5, 0.75),
+                    ("holdout", 0.75, 1.01),
+                )
+            )
+            if all(part.trades >= 50 and part.total_r > 0 for part in parts):
+                discoveries.append((min(part.per_trade for part in parts), parts))
+        discoveries.sort(key=lambda item: item[0], reverse=True)
+        print(f"{wanted_timeframe} STABLE DISCOVERIES — NOT INDEPENDENT EVIDENCE")
+        if not discoveries:
+            print("  none")
+        for floor, parts in discoveries[:3]:
+            print(f"  floor R/trade {floor:+.3f}")
+            for part in parts:
+                print_result(part)
+    return 0 if all_passed else 2
 
 
 if __name__ == "__main__":

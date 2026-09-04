@@ -4196,17 +4196,20 @@ class GoldCrossDiscoveryConfig(Base):
     enabled: bool = False
     allowed_symbols: tuple[str, ...] = ()
     timeframe: str = "M5"
-    mechanism: Literal["channel_breakout", "aligned_momentum"] = "channel_breakout"
+    mechanism: Literal["channel_breakout", "aligned_momentum", "trend_rejection"] = (
+        "channel_breakout"
+    )
     polarity: Literal[-1, 1] = 1
     channel_period: int = Field(default=20, ge=10, le=200)
     momentum_bars: int = Field(default=6, ge=1, le=100)
     minimum_momentum_atr: float = Field(default=0.75, gt=0.0, le=5.0)
-    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=10.0)
     target_r: float = Field(default=1.0, gt=0.0, le=5.0)
     session_start_hour_utc: int = Field(default=7, ge=0, le=23)
     session_end_hour_utc: int = Field(default=13, ge=1, le=24)
     score: float = Field(default=70.0, ge=0.0, le=100.0)
     confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    weekday_only: bool = False
 
     @model_validator(mode="after")
     def _complete_market_and_window(self) -> GoldCrossDiscoveryConfig:
@@ -4282,6 +4285,15 @@ class AnalysisConfig(Base):
     )
     section_fourteen_xaujpy_m1: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
         allowed_symbols=("XAUJPY",)
+    )
+    section_fifteen_btc_m1: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("BTCUSD",), timeframe="M1"
+    )
+    section_sixteen_btc_m5: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("BTCUSD",), timeframe="M5"
+    )
+    section_seventeen_btc_m15: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("BTCUSD",), timeframe="M15"
     )
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
