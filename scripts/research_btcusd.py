@@ -80,7 +80,21 @@ def main() -> int:
     if row is None:
         raise SystemExit("database contains no actual BTCUSD broker instrument")
     broker_symbol, spec_json = row
-    point = float(json.loads(spec_json)["point"])
+    spec = json.loads(spec_json)
+    point = float(spec["point"])
+    account_row = connection.execute(
+        "SELECT value_json FROM metadata WHERE key='account'"
+    ).fetchone()
+    if account_row is None:
+        raise SystemExit("database has no captured account equity")
+    equity = float(json.loads(account_row[0])["captured_equity"])
+    intended_risk = equity * 0.02
+    max_stop_price = (
+        intended_risk
+        / float(spec["volume_min"])
+        * float(spec["tick_size"])
+        / float(spec["tick_value"])
+    )
     frames: dict[str, pd.DataFrame] = {}
     for timeframe in TIMEFRAMES:
         frame = load_bars(connection, broker_symbol, timeframe)
@@ -122,6 +136,7 @@ def main() -> int:
                 stop_atr,
                 target_r,
                 MAX_SPREAD_R[timeframe],
+                max_stop_price,
             )
             replayed["market"] = "BTCUSD"
             trade_cache[replay_key] = replayed

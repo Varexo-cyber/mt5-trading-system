@@ -2632,7 +2632,7 @@ analysis:
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
     # maken. Harde account-, nieuws-, kosten- en brokerchecks blijven actief.
-    strategy_owned_entry_families: [section_six_gold_m5]
+    strategy_owned_entry_families: [section_six_gold_m5, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
     # De 1R-doelen van deze twee families zijn rechtstreeks gemeten op hun
     # eigen entries. De generieke rolling reach-test blijft in het reviewpakket
     # staan, maar mag die gemeten setup niet vóór de reviewer vervangen door

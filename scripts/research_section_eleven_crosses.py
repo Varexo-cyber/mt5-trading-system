@@ -264,6 +264,7 @@ def replay(
     stop_atr: float,
     target_r: float,
     max_spread_r: float | None = None,
+    max_stop_price: float | None = None,
 ) -> pd.DataFrame:
     unit = atr(frame).to_numpy()
     open_, high, low, close = (frame[name].to_numpy() for name in ("open", "high", "low", "close"))
@@ -277,6 +278,11 @@ def replay(
         entry = open_[entry_bar]
         risk = stop_atr * unit[signal_bar]
         if risk <= 0:
+            continue
+        if max_stop_price is not None and risk > max_stop_price:
+            # At the broker's minimum lot this stop would risk more than the
+            # account permits. Research rows that live sizing must refuse are
+            # not trading opportunities for this account.
             continue
         spread_cost_r = 0.0
         if "spread_price" in frame:
