@@ -39,6 +39,11 @@ MECHANISMS = (
     "jump_impulse",
     "volume_breakout",
     "vwap_reversal",
+    "adaptive_channel_25",
+    "adaptive_channel_50",
+    "adaptive_channel_100",
+    "jump_regime",
+    "vwap_trend_resume",
 )
 SESSIONS = {
     "all": tuple(range(24)),
