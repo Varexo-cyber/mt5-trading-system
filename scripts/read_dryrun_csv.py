@@ -120,6 +120,15 @@ def main(argv: list[str] | None = None) -> None:
         default="",
         help="only this section, e.g. section_ten_gold_m1",
     )
+    parser.add_argument(
+        "--symbol",
+        default="",
+        help=(
+            "only this market, e.g. XAUUSD. The hour table over five metals "
+            "mixed together says nothing about any one of them, and after a "
+            "widening is reverted that is exactly what is left in the file."
+        ),
+    )
     args = parser.parse_args(argv)
 
     column = "live" if args.exit == "live" else "fixed"
@@ -128,11 +137,16 @@ def main(argv: list[str] | None = None) -> None:
     rows = load(args.csv, column)
     if args.module:
         rows = [row for row in rows if row.module == args.module]
+    if args.symbol:
+        wanted = args.symbol.strip().upper()
+        rows = [row for row in rows if row.symbol.upper() == wanted]
     if not rows:
+        narrowed = " ".join(filter(None, (args.module, args.symbol)))
         raise SystemExit(
             f"{args.csv} holds no resolved trades"
-            + (f" for {args.module}" if args.module else "")
-            + ". Every row is a refusal, or the run took none."
+            + (f" for {narrowed}" if narrowed else "")
+            + ". Every row is a refusal, the run took none, or that name is "
+            "spelt differently in the file."
         )
 
     order = [row.when for row in rows]
@@ -153,21 +167,20 @@ def main(argv: list[str] | None = None) -> None:
         markets: dict[str, list[Row]] = defaultdict(list)
         for row in got:
             markets[row.symbol].append(row)
-        if len(markets) < 2:
-            continue
-        _table(f"{module} — PER MARKET", markets, split, column)
-        losing = [
-            name
-            for name, rows_here in markets.items()
-            if sum(getattr(r, column) or 0.0 for r in rows_here) < 0
-        ]
-        if losing:
-            names = ", ".join(sorted(losing))
-            print(f"    {len(losing)} of {len(markets)} markets negative: {names}")
-        print(
-            "    A section is only as widened as its worst market. One symbol\n"
-            "    carrying four is not a wider section, it is the old one plus noise."
-        )
+        if len(markets) > 1:
+            _table(f"{module} — PER MARKET", markets, split, column)
+            losing = [
+                name
+                for name, rows_here in markets.items()
+                if sum(getattr(r, column) or 0.0 for r in rows_here) < 0
+            ]
+            if losing:
+                names = ", ".join(sorted(losing))
+                print(f"    {len(losing)} of {len(markets)} markets negative: {names}")
+            print(
+                "    A section is only as widened as its worst market. One symbol\n"
+                "    carrying four is not a wider section, it is the old one plus noise."
+            )
 
         hours: dict[str, list[Row]] = defaultdict(list)
         for row in got:
