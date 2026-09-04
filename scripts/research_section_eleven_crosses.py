@@ -531,15 +531,15 @@ def main() -> int:
             for item in stable
             if not item[1].cell.startswith(("two_leg_trend", "two_leg_impulse"))
         ]
-        print(f"{market} BEST OWN-CHART DISCOVERY")
+        print(f"{market} TOP OWN-CHART DISCOVERIES")
         if not own_chart:
             print("  none")
         else:
-            floor, own_train, own_validation, own_holdout = own_chart[0]
-            print(f"  floor R/trade {floor:+.3f}")
-            print_result(own_train)
-            print_result(own_validation)
-            print_result(own_holdout)
+            for floor, own_train, own_validation, own_holdout in own_chart[:10]:
+                print(f"  floor R/trade {floor:+.3f}")
+                print_result(own_train)
+                print_result(own_validation)
+                print_result(own_holdout)
 
     print("Actual broker-bar replay remains mandatory even when every box passes.")
     return 0 if all(checks.values()) else 2
