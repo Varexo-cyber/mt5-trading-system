@@ -29,7 +29,7 @@ MECHANISMS = (
     "two_leg_impulse",
     "fair_value_gap",
 )
-STOP_ATR = 1.0
+STOP_ATRS = (1.0, 1.5, 2.0)
 TARGETS_R = (0.5, 0.75, 1.0, 1.5, 2.0)
 SESSIONS = {
     "all": tuple(range(24)),
@@ -199,7 +199,11 @@ def signals(frame: pd.DataFrame, mechanism: str) -> np.ndarray:
 
 
 def replay(
-    frame: pd.DataFrame, directions: np.ndarray, horizon: int, target_r: float
+    frame: pd.DataFrame,
+    directions: np.ndarray,
+    horizon: int,
+    stop_atr: float,
+    target_r: float,
 ) -> pd.DataFrame:
     unit = atr(frame).to_numpy()
     open_, high, low, close = (frame[name].to_numpy() for name in ("open", "high", "low", "close"))
@@ -211,7 +215,7 @@ def replay(
             continue
         direction = directions[signal_bar]
         entry = open_[entry_bar]
-        risk = STOP_ATR * unit[signal_bar]
+        risk = stop_atr * unit[signal_bar]
         if risk <= 0:
             continue
         stop = entry - direction * risk
@@ -339,59 +343,69 @@ def main() -> int:
         print("  SYNTHETIC ROWS MAY GENERATE HYPOTHESES BUT MAY NOT PROMOTE LIVE.\n")
 
     cells = [
-        (mechanism, timeframe, polarity, target_r, session)
+        (mechanism, timeframe, polarity, stop_atr, target_r, session)
         for mechanism in MECHANISMS
         for timeframe in TIMEFRAMES
         for polarity in (1, -1)
+        for stop_atr in STOP_ATRS
         for target_r in TARGETS_R
         for session in SESSIONS
         if mechanism != "fair_value_gap" or timeframe == "M5"
     ]
     bar = NormalDist().inv_cdf(1.0 - 0.05 / len(cells))
     print(f"SEARCH cells={len(cells)} one-sided Bonferroni bar={bar:.2f}")
-    raw_cache: dict[tuple[str, str, int, float, str], pd.DataFrame] = {}
-    cached: dict[tuple[str, str, int, float, str, str], pd.DataFrame] = {}
+    raw_cache: dict[tuple[str, str, int, float, float, str], pd.DataFrame] = {}
+    cached: dict[tuple[str, str, int, float, float, str, str], pd.DataFrame] = {}
+    signal_cache: dict[tuple[str, str, str], np.ndarray] = {}
     train_results: list[Result] = []
-    for mechanism, timeframe, polarity, target_r, session in cells:
+    for mechanism, timeframe, polarity, stop_atr, target_r, session in cells:
         pooled = []
         for market in COMPONENTS:
             frame = frames[(market, timeframe)]
-            raw_key = (mechanism, timeframe, polarity, target_r, market)
+            raw_key = (mechanism, timeframe, polarity, stop_atr, target_r, market)
             if raw_key not in raw_cache:
+                signal_key = (mechanism, timeframe, market)
+                if signal_key not in signal_cache:
+                    signal_cache[signal_key] = signals(frame, mechanism)
                 raw = replay(
                     frame,
-                    polarity * signals(frame, mechanism),
+                    polarity * signal_cache[signal_key],
                     HORIZONS[timeframe],
+                    stop_atr,
                     target_r,
                 )
                 raw["market"] = market
                 raw_cache[raw_key] = raw
             raw = raw_cache[raw_key]
             trades = raw.loc[raw.time.dt.hour.isin(SESSIONS[session])].copy()
-            cached[(mechanism, timeframe, polarity, target_r, session, market)] = trades
+            cached[(mechanism, timeframe, polarity, stop_atr, target_r, session, market)] = trades
             pooled.append(split_trades(trades, frame, 0.0, 0.5))
         direction = "follow" if polarity > 0 else "fade"
         train_results.append(
             summarise(
-                f"{mechanism}/{timeframe}/{direction}/{target_r:g}R/{session}",
+                f"{mechanism}/{timeframe}/{direction}/{stop_atr:g}ATR/{target_r:g}R/{session}",
                 "train",
                 pd.concat(pooled),
             )
         )
+    # Never let a handful of lucky trades win a large parameter search.
+    eligible_train = [item for item in train_results if item.trades >= 200]
+    eligible_train.sort(key=lambda item: item.sigma, reverse=True)
     train_results.sort(key=lambda item: item.sigma, reverse=True)
     for result in train_results[:10]:
         print_result(result)
 
-    selected = train_results[0]
-    mechanism, timeframe, direction, target_label, session = selected.cell.split("/")
+    selected = eligible_train[0]
+    mechanism, timeframe, direction, stop_label, target_label, session = selected.cell.split("/")
     polarity = 1 if direction == "follow" else -1
+    stop_atr = float(stop_label.removesuffix("ATR"))
     target_r = float(target_label.removesuffix("R"))
     print(f"\nFROZEN WINNER {selected.cell}; later periods were not used for selection")
     later: list[Result] = []
     for name, low, high in (("validation", 0.5, 0.75), ("holdout", 0.75, 1.01)):
         pooled = [
             split_trades(
-                cached[(mechanism, timeframe, polarity, target_r, session, market)],
+                cached[(mechanism, timeframe, polarity, stop_atr, target_r, session, market)],
                 frames[(market, timeframe)],
                 low,
                 high,
@@ -418,6 +432,7 @@ def main() -> int:
             candidate_mechanism,
             candidate_timeframe,
             candidate_polarity,
+            candidate_stop,
             candidate_target,
             candidate_session,
         ) in cells:
@@ -427,6 +442,7 @@ def main() -> int:
                     candidate_mechanism,
                     candidate_timeframe,
                     candidate_polarity,
+                    candidate_stop,
                     candidate_target,
                     candidate_session,
                     market,
@@ -437,21 +453,24 @@ def main() -> int:
             market_train.append(
                 summarise(
                     f"{candidate_mechanism}/{candidate_timeframe}/{candidate_direction}/"
-                    f"{candidate_target:g}R/{candidate_session}",
+                    f"{candidate_stop:g}ATR/{candidate_target:g}R/{candidate_session}",
                     "train",
                     train,
                 )
             )
-        market_train.sort(key=lambda item: item.sigma, reverse=True)
-        winner = market_train[0]
+        eligible_market_train = [item for item in market_train if item.trades >= 100]
+        eligible_market_train.sort(key=lambda item: item.sigma, reverse=True)
+        winner = eligible_market_train[0]
         (
             winner_mechanism,
             winner_timeframe,
             winner_direction,
+            winner_stop_label,
             winner_target_label,
             winner_session,
         ) = winner.cell.split("/")
         winner_polarity = 1 if winner_direction == "follow" else -1
+        winner_stop = float(winner_stop_label.removesuffix("ATR"))
         winner_target = float(winner_target_label.removesuffix("R"))
         winner_frame = frames[(market, winner_timeframe)]
         winner_trades = cached[
@@ -459,6 +478,7 @@ def main() -> int:
                 winner_mechanism,
                 winner_timeframe,
                 winner_polarity,
+                winner_stop,
                 winner_target,
                 winner_session,
                 market,
@@ -490,6 +510,7 @@ def main() -> int:
             candidate_mechanism,
             candidate_timeframe,
             candidate_polarity,
+            candidate_stop,
             candidate_target,
             candidate_session,
         ) in cells:
@@ -499,6 +520,7 @@ def main() -> int:
                     candidate_mechanism,
                     candidate_timeframe,
                     candidate_polarity,
+                    candidate_stop,
                     candidate_target,
                     candidate_session,
                     market,
@@ -507,7 +529,7 @@ def main() -> int:
             candidate_direction = "follow" if candidate_polarity > 0 else "fade"
             label = (
                 f"{candidate_mechanism}/{candidate_timeframe}/{candidate_direction}/"
-                f"{candidate_target:g}R/{candidate_session}"
+                f"{candidate_stop:g}ATR/{candidate_target:g}R/{candidate_session}"
             )
             discovery_train = summarise(
                 label,
