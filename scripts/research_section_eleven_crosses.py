@@ -1,4 +1,4 @@
-"""Bounded chronological search for a new section eleven on synthetic gold crosses."""
+"""Bounded chronological search for gold-cross sections on broker bars."""
 
 from __future__ import annotations
 
@@ -38,6 +38,8 @@ SESSIONS = {
     "new_york": tuple(range(13, 20)),
     "late": tuple(range(20, 24)),
 }
+# Extra round-trip allowance for commission/slippage. Historical broker spread is
+# charged separately at each actual entry, relative to that trade's stop.
 COST_R = 0.02
 WARMUP = 80
 
@@ -58,11 +60,13 @@ class Result:
 
 def load_bars(connection: sqlite3.Connection, symbol: str, timeframe: str) -> pd.DataFrame:
     rows = connection.execute(
-        "SELECT time_utc, open, high, low, close, tick_volume FROM bars "
+        "SELECT time_utc, open, high, low, close, tick_volume, spread FROM bars "
         "WHERE broker_symbol=? AND timeframe=? ORDER BY time_utc",
         (symbol, timeframe),
     ).fetchall()
-    frame = pd.DataFrame(rows, columns=["time", "open", "high", "low", "close", "volume"])
+    frame = pd.DataFrame(
+        rows, columns=["time", "open", "high", "low", "close", "volume", "spread"]
+    )
     frame.index = pd.to_datetime(frame.pop("time"), unit="s", utc=True)
     return frame.astype(float)
 
@@ -95,6 +99,7 @@ def synthetic_cross(gold: pd.DataFrame, fx: pd.DataFrame, operation: str) -> pd.
         }
     frame = pd.DataFrame(data, index=joined.index)
     frame["volume"] = np.minimum(joined.g_volume, joined.f_volume)
+    frame["spread"] = np.nan
     frame["gold_close"] = joined.g_close
     frame["fx_close"] = joined.f_close
     frame["fx_sign"] = -1.0 if operation == "divide" else 1.0
@@ -225,7 +230,12 @@ def replay(
                 break
         if result is None:
             result = float(np.clip(direction * (close[final_bar] - entry) / risk, -1.0, target_r))
-        records.append((frame.index[entry_bar], result - COST_R))
+        spread_cost_r = 0.0
+        if "spread_price" in frame:
+            spread_price = float(frame.spread_price.iloc[entry_bar])
+            if np.isfinite(spread_price):
+                spread_cost_r = spread_price / risk
+        records.append((frame.index[entry_bar], result - COST_R - spread_cost_r))
         available = exit_bar + 1
     return pd.DataFrame(records, columns=["time", "r"])
 
@@ -293,6 +303,12 @@ def main() -> int:
     parser.add_argument("--database", type=Path, required=True)
     args = parser.parse_args()
     connection = sqlite3.connect(f"file:{args.database}?mode=ro", uri=True)
+    points = {
+        symbol: float(__import__("json").loads(spec)["point"])
+        for symbol, spec in connection.execute(
+            "SELECT broker_symbol, spec_json FROM instruments"
+        )
+    }
     frames: dict[tuple[str, str], pd.DataFrame] = {}
     actual_markets: set[tuple[str, str]] = set()
     for timeframe in TIMEFRAMES:
@@ -301,6 +317,7 @@ def main() -> int:
             fx = load_bars(connection, leg, timeframe)
             if has_bars(connection, market, timeframe):
                 actual = load_bars(connection, market, timeframe)
+                actual["spread_price"] = actual.spread * points[market]
                 actual["gold_close"] = gold.close.reindex(actual.index)
                 actual["fx_close"] = fx.close.reindex(actual.index)
                 actual["fx_sign"] = -1.0 if operation == "divide" else 1.0
@@ -535,7 +552,7 @@ def main() -> int:
         if not own_chart:
             print("  none")
         else:
-            for floor, own_train, own_validation, own_holdout in own_chart[:10]:
+            for floor, own_train, own_validation, own_holdout in own_chart[:3]:
                 print(f"  floor R/trade {floor:+.3f}")
                 print_result(own_train)
                 print_result(own_validation)
