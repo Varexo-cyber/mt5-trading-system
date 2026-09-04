@@ -2604,21 +2604,61 @@ class TestTheLiveDryRunMeasuresOnlyWhatRuns:
         settings = self._settings()
         live = set(settings.analysis.confluence.live_enabled_modules)
 
-        from core.trade_origin import section_of_comment
+        from core.trade_origin import origin_for_setup_family
 
         assert "section_six_gold_m5" in live
         assert "section_six_gold_m5" in settings.risk.section_breakers
-        assert not [
-            comment
-            for comment in settings.trade_management.fixed_exit_comments
-            if section_of_comment(comment) == "section_six_gold_m5"
-        ], "section six is measured WITH position management; a fixed-exit entry returns early"
+
+        origin = origin_for_setup_family("section_six_gold_m5")
+        assert origin is not None
+        assert origin.comment not in settings.trade_management.fixed_exit_comments, (
+            "section six is measured WITH break-even management; a fixed-exit entry "
+            "makes the manager return early and no break-even ever runs"
+        )
 
     def test_every_live_section_still_has_a_breaker(self) -> None:
         settings = self._settings()
 
         for module in settings.analysis.confluence.live_enabled_modules:
             assert module in settings.risk.section_breakers, module
+
+    def test_every_live_section_is_measurable_by_this_script(self) -> None:
+        """`dryrun-live.cmd 180` DIED ON THIS, and the guard that killed it was
+        right: section eleven went on the live allowlist and was never added to
+        this script's table, so the run that was supposed to judge it before
+        Jarvis starts could not run at all.
+
+        The guard exists and did its job. This test is what stops the same
+        promotion from reaching the VPS in that state again -- a live section
+        this script cannot see is a live section the "what would the account
+        have done" report answers about in silence.
+        """
+        import re
+
+        live = set(self._settings().analysis.confluence.live_enabled_modules)
+        table = re.search(r"module_config = \{(.+?)\n        \}", SOURCE, re.S)
+        assert table is not None, "module_config is no longer a literal dict"
+        known = set(re.findall(r'"([a-z0-9_]+)":', table.group(1)))
+        book = re.search(r"book = \{(.+?)\n            \}", SOURCE, re.S)
+        assert book is not None, "the --sections-five-to-ten book is no longer a literal set"
+        booked = set(re.findall(r'"([a-z0-9_]+)"', book.group(1)))
+
+        assert not live - known, sorted(live - known)
+        assert not live - booked, sorted(live - booked)
+
+    def test_a_live_section_walks_the_markets_it_can_trade(self) -> None:
+        """The quieter half of the same failure, and it hit TWO live sections.
+
+        `--core` is sixteen markets. Section ten's `allowed_symbols` is five
+        metals, section eleven's is four crosses, and only XAUUSD of those nine
+        is in core -- so this run would have replayed section ten on one of its
+        five markets and section eleven on NONE of its four, then reported the
+        result as the book. Section eleven's zero row would have read as "the
+        strategy found nothing".
+        """
+        assert 'getattr(getattr(settings.analysis, name), "allowed_symbols", ())' in SOURCE
+        assert "symbols = symbols + absent" in SOURCE
+        assert "markets the universe missed" in SOURCE
 
     def test_the_launcher_passes_both_flags(self) -> None:
         launcher = (ROOT / "dryrun-live.cmd").read_text()

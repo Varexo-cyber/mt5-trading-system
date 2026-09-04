@@ -1653,6 +1653,30 @@ analysis:
   # omdat de eigenaar er expliciet om vroeg, en elk modelbestand draagt
   # `cleared_the_bar: false` met de sigma die het wel haalde.
   #
+  # EN TOEN KWAM DE HOLDOUT, en die is erger dan het missen van de lat.
+  # `train11.cmd 720 forceer` op de VPS, 4 september, de nieuwste 20% van de
+  # historie waar de fit nooit in heeft gekeken:
+  #
+  #     XAUAUD   3.685 trades   -193,22 R   -0,052 per trade
+  #     XAUEUR   3.621 trades   -189,77 R   -0,052 per trade
+  #     XAUGBP   3.643 trades   -148,93 R   -0,041 per trade
+  #     XAUJPY   3.783 trades   -115,53 R   -0,031 per trade
+  #
+  # VIER VAN DE VIER NEGATIEF, en niet nipt: de walk-forward las +0,005 tot
+  # +0,030 per trade en de holdout leest -0,031 tot -0,052. Dat is een
+  # tekenomslag, geen ruis eromheen, op bijna vijftienduizend trades.
+  #
+  # Wat dat betekent, zonder verzachting: de enige meting hier waar geen enkele
+  # keuze in zit -- geen drempel, geen markt, geen straf -- zegt dat dit geld
+  # verliest. De zestien positieve cellen hierboven zijn daarmee het beste
+  # bewijs dat de walk-forward zelf nog optimistisch was, niet dat er iets zit.
+  #
+  # DEZE SECTIE HOORT DAAROM NIET MET GELD TE HANDELEN. Hij staat op de
+  # allowlist om door `dryrun-live.cmd 180` te worden gemeten -- die replay
+  # kost niets en is een derde onafhankelijke stem -- maar het advies bij dit
+  # cijfer is hem eraf te halen voordat Jarvis start, en dat advies verandert
+  # niet als de dry-run toevallig positief uitkomt op een kortere periode.
+  #
   # WAT ER WEL STAAT. Alle zestien cellen positief, en alle zestien versloegen
   # een muntworp op dezelfde bars bij hetzelfde vuurtempo -- die controle las
   # -0,009 tot -0,029 per trade. Kosten zijn hier niet de rem: 0,4% tot 0,8%
@@ -4760,7 +4784,18 @@ trade_management:
   # uitkomst van -53,23R naar +36,42R. Dat cijfer stond nog op de kapotte
   # offset, dus het moet opnieuw; wat vaststaat is dat het beheer hier een
   # groot effect heeft en dat het tot nu toe uitstond.
-  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S10-AU-M1]
+  #
+  # SECTIE 11 STAAT HIER OMDAT ZIJN FIT HEM ZO GEMETEN HEEFT, en om geen
+  # andere reden. De trainer laat elke trade beslissen tussen een 1,0 ATR stop
+  # en een 1,5 R target, zonder break-even en zonder enige tussenkomst. Elk
+  # cijfer in `docs/hypotheses/section_eleven_metals.md` -- ook het negatieve
+  # holdout -- is op precies die route gemeten.
+  #
+  # Er break-evenbeheer overheen leggen zou de dry-run een ANDERE strategie
+  # laten meten dan degene die gefit is, en dan zegt de uitkomst niets over dit
+  # model. Sectie tien zag hier ongeveer 15 R verschil van; dat is geen detail
+  # dat je er ongemeten bij zet.
+  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S10-AU-M1, JARVIS-S11-XAU-M5]
   # S6 is exact op deze ene managementregel gemeten. Geen partial, trailing,
   # giveback, health- of time-exit mag die gemeten route stilletjes veranderen.
   break_even_only_comments: [JARVIS-S6-AU-M5]
@@ -4782,7 +4817,15 @@ trade_management:
   # SECTIE 6 STAAT HIER MET OPZET NIET BIJ. Zijn +43,90 R is gemeten terwijl
   # hij zijn posities dwars door de avond droeg, en dat cijfer draagt deze
   # rekening. Ongemoeid, zoals gevraagd.
-  pre_close_flatten_comments: [JARVIS-S10-AU-M1]
+  #
+  # SECTIE 11 STAAT ER WEL BIJ, en om exact het argument hierboven: hij heeft
+  # net een vaste exit gekregen, dus hij heeft ook geen tijd-exit meer, en een
+  # trade die noch stop noch target haalt blijft anders staan. Zijn markten
+  # ZIJN goud -- XAUEUR, XAUGBP, XAUAUD en XAUJPY gaan door dezelfde pauze van
+  # 21:00-22:00 UTC -- en ze dragen daarbovenop een FX-poot die 's avonds dun
+  # wordt. Dat is de spreadverbreding waar de geblokkeerde uren 16 en 17 al
+  # over gaan, alleen dan een paar uur later en zonder enige poort ertegen.
+  pre_close_flatten_comments: [JARVIS-S10-AU-M1, JARVIS-S11-XAU-M5]
   # Still needs the position path plus an independent chart family. Alleen het
   # moment schuift op: bevestigd falen mag nu ingrijpen op -0,15R in plaats van
   # -0,25R. De broker-SL blijft de onvoorwaardelijke achtervang.

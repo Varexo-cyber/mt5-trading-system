@@ -21,6 +21,20 @@ class TradeOrigin:
 # Specific aliases must precede their parent family.  Setup-family names carry
 # the module alias plus the clock (for example ``order_block_fast_m1``).
 _ORIGINS: tuple[tuple[str, TradeOrigin], ...] = (
+    # SECTION ELEVEN WENT LIVE WITHOUT ONE OF THESE, and the omission is the
+    # same defect this project keeps shipping: a section wired into the
+    # allowlist, the weights, the breakers and the guards, whose TRADES were
+    # still unlabelled. Three things broke at once, all silently.
+    #
+    #   - MT5 mobile showed `jarvis` for them, so the owner could not tell an
+    #     S11 ticket from anything else on his phone.
+    #   - The journal could not attribute them, so its per-section report would
+    #     have had no S11 row -- an absent row, again, reading as a zero row.
+    #   - `section_of_comment` returned "" for them, so the shared-symbol rule
+    #     treated an open S11 position as UNIDENTIFIED and refused to let any
+    #     other section join that symbol. The rule the owner asked for on
+    #     4 September would have been switched back off by its own labels.
+    ("section_eleven_metals", TradeOrigin(11, "metal_cross_model", "M5", "JARVIS-S11-XAU-M5")),
     ("section_ten_gold_m1", TradeOrigin(10, "large_break_retest", "M1", "JARVIS-S10-AU-M1")),
     ("section_eight_trend_day_h1", TradeOrigin(8, "trend_day", "H1", "JARVIS-S8-TD-H1")),
     ("section_nine_vwap_m30", TradeOrigin(9, "session_vwap", "M30", "JARVIS-S9-VW-M30")),
