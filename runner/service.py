@@ -102,8 +102,7 @@ from analysis.playbooks import (
     ScalpConfig,
     TrendPullback,
 )
-from analysis.section_eleven_metals import SectionElevenMetals
-from analysis.section_eleven_metals import load_models as load_section_eleven_models
+from analysis.section_xaujpy import SectionXauJpy
 from analysis.target_reach import measure as measure_target_reach
 from analysis.target_reach import measure_first_touch
 from brain import SelectionEvidence, build_brain
@@ -114,7 +113,6 @@ from core.clock import Clock, LiveClock
 from core.data_manager import DataManager, atr
 from core.data_quarantine import DataQuarantine
 from core.errors import (
-    ConfigError,
     DataIntegrityError,
     InsufficientDataError,
     TradingSystemError,
@@ -178,6 +176,16 @@ from risk.section_breaker import BreakerVerdict, tripped_modules
 from scanner.universe import ScanBatch, UniverseScanner
 
 log = get_logger(__name__)
+
+#: The three XAUJPY sections, in the order they were numbered. Named ONCE and
+#: iterated everywhere, because the alternative is three near-identical blocks
+#: in which the M15 one keeps the M5 one's config attribute and nothing
+#: downstream can tell.
+XAUJPY_SECTIONS: tuple[str, ...] = (
+    "section_eleven_xaujpy_m1",
+    "section_twelve_xaujpy_m5",
+    "section_thirteen_xaujpy_m15",
+)
 
 #: What is reported for a position the fast layer has not read yet — one opened
 #: seconds ago, or one whose bars could not be fetched. Deliberately not
@@ -497,46 +505,33 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # it is asked by `unfitted_live_sections` at startup and by the dry
         # run. Refusing here made every other test that builds the module list
         # fail for a reason none of them is about.
-        SectionElevenMetals(
-            analysis.section_eleven_metals,
-            models=load_section_eleven_models(analysis.section_eleven_metals.model_dir),
-        ),
+        # THREE CLOCKS, BUILT FROM ONE CLASS AND ONE LOOP. Writing them out
+        # three times is how the M15 one ends up with a copy-pasted M5 config
+        # name, and nothing downstream would say so.
+        *(SectionXauJpy(name, getattr(analysis, name)) for name in XAUJPY_SECTIONS),
     ]
 
 
-def unfitted_live_sections(settings: Settings) -> list[str]:
-    """Markets a live section eleven is allowed to trade and has no model for.
+def unsearched_live_sections(settings: Settings) -> list[str]:
+    """Live XAUJPY sections that have no mechanism named for them.
 
-    A live section with no model files is not dangerous -- it simply trades
+    A live section with no mechanism is not dangerous -- it simply trades
     nothing. It is worse than dangerous: it is SILENT. The config says live,
     the replay shows zero trades, and the empty result reads as "the strategy
-    found nothing" rather than "nothing was ever fitted". This repository has
+    found nothing" rather than "nothing was ever searched". This repository has
     produced that confusion in half a dozen other forms, and it is the reason
     most of its comments exist.
 
     Returned rather than raised, so the caller decides whether this is a
     startup abort or a line in a report.
     """
-    config = settings.analysis.section_eleven_metals
-    if not config.enabled:
-        return []
-    if "section_eleven_metals" not in settings.analysis.confluence.live_enabled_modules:
-        return []
-    models = load_section_eleven_models(config.model_dir)
-    return [symbol for symbol in config.allowed_symbols if symbol not in models]
-    live = settings.analysis.confluence.live_enabled_modules
-    if "section_eleven_metals" not in live:
-        return models
-    missing = [symbol for symbol in config.allowed_symbols if symbol not in models]
-    if missing:
-        raise ConfigError(
-            f"section_eleven_metals is on the live allowlist but has no fitted model "
-            f"for {', '.join(missing)} in {config.model_dir}. Run "
-            f"`train11.cmd 720 forceer` to write them, or take the section off "
-            f"`live_enabled_modules`. A live section that cannot trade produces an "
-            f"empty result that reads as a strategy finding nothing."
-        )
-    return models
+    live = set(settings.analysis.confluence.live_enabled_modules)
+    unsearched = []
+    for name in XAUJPY_SECTIONS:
+        config = getattr(settings.analysis, name)
+        if config.enabled and name in live and not config.mechanism:
+            unsearched.append(name)
+    return unsearched
 
 
 class JarvisRunner:

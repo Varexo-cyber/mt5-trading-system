@@ -146,21 +146,21 @@ def run_startup_guard(
 
     # -- a live section with nothing fitted to trade -----------------------
     #
-    # A section on the live allowlist whose models are missing is not
+    # A section on the live allowlist with no mechanism named is not
     # dangerous: it simply trades nothing. It is worse than dangerous, it is
     # SILENT. The config says live, the replay shows zero trades, and the
     # empty result reads as "the strategy found nothing" rather than "nothing
-    # was ever fitted". Refused here so it is loud at the one moment somebody
+    # was ever searched". Refused here so it is loud at the one moment somebody
     # is looking.
-    from runner.service import unfitted_live_sections
+    from runner.service import unsearched_live_sections
 
-    unfitted = unfitted_live_sections(settings)
-    if unfitted:
+    unsearched = unsearched_live_sections(settings)
+    if unsearched:
         errors.append(
-            f"section_eleven_metals is on the live allowlist with no fitted model for "
-            f"{', '.join(unfitted)}. Run `train11.cmd 720 forceer` to write them, or "
-            f"take the section off `live_enabled_modules`. A live section that cannot "
-            f"trade produces an empty result that reads as a strategy finding nothing."
+            f"{', '.join(unsearched)} on the live allowlist with no mechanism named. "
+            f"Run `zoekjpy.cmd 720` to search for one, or take the section off "
+            f"`live_enabled_modules`. A live section that cannot trade produces an "
+            f"empty result that reads as a strategy finding nothing."
         )
 
     # -- equity band -------------------------------------------------------

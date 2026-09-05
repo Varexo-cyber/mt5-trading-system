@@ -1675,85 +1675,80 @@ analysis:
     blocked_start_hour_utc: 7
     blocked_end_hour_utc: 13
 
-  # SECTIE ELF. Sectie zes' mechanisme, een eigen getraind model per metaal,
-  # op de vier goudkruisen die sectie zes niet kan zien.
+  # SECTIES ELF, TWAALF EN DERTIEN -- XAUJPY, DRIE KLOKKEN, NOG GEEN MECHANISME.
   #
-  # WAT DE FIT ZEI, 4 september, 720 dagen M5, walk-forward met een holdout
-  # waar niet in gezocht is. Zestien cellen, Bonferroni-lat 2,96 sigma:
+  # WAT HIER STOND EN WAAROM HET WEG IS. Sectie elf was een gefit model per
+  # metaal op de vier goudkruisen. Het haalde de Bonferroni-lat niet (+2,56
+  # sigma tegen 2,96) en zijn ONAANGERAAKTE HOLDOUT stond negatief in vier
+  # markten van de vier: XAUAUD -193,22 R, XAUEUR -189,77, XAUGBP -148,93,
+  # XAUJPY -115,53. Walk-forward +0,005 tot +0,030 per trade, holdout -0,031
+  # tot -0,052. Een tekenomslag op bijna vijftienduizend trades.
   #
-  #     XAUJPY  drempel 0,30  12.714 trades  +375,48 R  +0,030/trade  +2,56 sigma
-  #     XAUGBP  drempel 0,30  13.875 trades  +217,20 R  +0,016/trade  +1,44 sigma
-  #     XAUAUD  drempel 0,30  13.996 trades   +89,28 R  +0,006/trade  +0,63 sigma
-  #     XAUEUR  drempel 0,30  13.529 trades   +65,31 R  +0,005/trade  +0,43 sigma
+  # WAT ERVOOR IN DE PLAATS KOMT, op verzoek van de eigenaar: een MECHANISME in
+  # plaats van een model, op XAUJPY, op de drie intraday-klokken. Een regel met
+  # een naam die je hardop kunt zeggen, gekozen door een zoektocht in plaats van
+  # gefit door een lineaire kop over achtenveertig verborgen eenheden.
   #
-  # NIETS HAALDE DE LAT. Dat staat hier bovenaan omdat het de belangrijkste
-  # zin is. De trainer schreef uit zichzelf niets weg; deze modellen bestaan
-  # omdat de eigenaar er expliciet om vroeg, en elk modelbestand draagt
-  # `cleared_the_bar: false` met de sigma die het wel haalde.
+  # ALLE DRIE STAAN LEEG EN DAT IS DE TOESTAND, GEEN VERGETELHEID. Een sectie
+  # zonder `mechanism` is STIL -- hij geeft helemaal geen read af in plaats van
+  # een nul -- zodat een klok waar nog niemand voor gezocht heeft niet te
+  # verwarren is met een klok die gezocht heeft en niets vond. Dat onderscheid
+  # is precies wat er bij de oude sectie elf misging.
   #
-  # EN TOEN KWAM DE HOLDOUT, en die is erger dan het missen van de lat.
-  # `train11.cmd 720 forceer` op de VPS, 4 september, de nieuwste 20% van de
-  # historie waar de fit nooit in heeft gekeken:
+  # WAT DE LAT WORDT. `zoekjpy.cmd` doorzoekt 28 mechanismen x 3 klokken x 2
+  # R:R-verhoudingen = 168 cellen, dus de Bonferroni-lat staat op 3,62 sigma.
+  # Selecteert hij ook nog een sessie, dan gaat hij naar 4,01. Dat is fors
+  # strenger dan de 2,96 die de oude sectie elf niet haalde, en dat hoort zo:
+  # er wordt meer gezocht, dus is er meer te vinden dat er niet is.
   #
-  #     XAUAUD   3.685 trades   -193,22 R   -0,052 per trade
-  #     XAUEUR   3.621 trades   -189,77 R   -0,052 per trade
-  #     XAUGBP   3.643 trades   -148,93 R   -0,041 per trade
-  #     XAUJPY   3.783 trades   -115,53 R   -0,031 per trade
+  # EEN EERSTE LEZING, en het is nadrukkelijk GEEN resultaat. Op synthetische
+  # XAUJPY (XAUUSD x USDJPY, 2012-2022, ZONDER spread) zijn de twaalf beste
+  # cellen alle twaalf FADES en geen enkele een continuation. Beste cel
+  # quiet_stretch_fade +2,79 sigma tegen een lat van 3,30 -- niets haalde het.
+  # Verder: de mechanismen die de 3-5 trades per dag geven die de eigenaar
+  # vroeg (streak_reversal 3,9/dag, stretch_fade 2,4/dag) hebben juist de
+  # kleinste edge per trade en NEGATIEVE holdouts, terwijl de beste cel maar
+  # 0,5 trades per dag doet. Meer trades was daar strikt slechter.
   #
-  # VIER VAN DE VIER NEGATIEF, en niet nipt: de walk-forward las +0,005 tot
-  # +0,030 per trade en de holdout leest -0,031 tot -0,052. Dat is een
-  # tekenomslag, geen ruis eromheen, op bijna vijftienduizend trades.
-  #
-  # Wat dat betekent, zonder verzachting: de enige meting hier waar geen enkele
-  # keuze in zit -- geen drempel, geen markt, geen straf -- zegt dat dit geld
-  # verliest. De zestien positieve cellen hierboven zijn daarmee het beste
-  # bewijs dat de walk-forward zelf nog optimistisch was, niet dat er iets zit.
-  #
-  # DEZE SECTIE HOORT DAAROM NIET MET GELD TE HANDELEN. Hij staat op de
-  # allowlist om door `dryrun-live.cmd 180` te worden gemeten -- die replay
-  # kost niets en is een derde onafhankelijke stem -- maar het advies bij dit
-  # cijfer is hem eraf te halen voordat Jarvis start, en dat advies verandert
-  # niet als de dry-run toevallig positief uitkomt op een kortere periode.
-  #
-  # WAT ER WEL STAAT. Alle zestien cellen positief, en alle zestien versloegen
-  # een muntworp op dezelfde bars bij hetzelfde vuurtempo -- die controle las
-  # -0,009 tot -0,029 per trade. Kosten zijn hier niet de rem: 0,4% tot 0,8%
-  # van de stop, tegen de 12% die goud M1 betaalt. Vier drempels op een markt
-  # zijn niet onafhankelijk en vier goudkruisen ook niet, dus lees het als
-  # ongeveer vier waarnemingen die alle vier de goede kant op wijzen.
-  #
-  # EEN DREMPEL VOOR ALLE VIER, en niet de beste per markt. De beste van vier
-  # kiezen per markt is vier keuzes en vier kansen om te fitten; 0,30 voor
-  # allemaal is er een. Op 0,30 is elke markt positief en neemt hij de minste
-  # trades, wat de voorkeur verdient zolang je het niet zeker weet.
-  #
-  # WAT ER NU MOET GEBEUREN, en waarom deze regels hier staan in plaats van
-  # in een shadowhoek: de eigenaar draait `dryrun-live.cmd 180` voordat Jarvis
-  # start. Die replay is een ONAFHANKELIJKE meting -- andere resolver, de
-  # echte positielimiet, de acht live poorten benoemd -- en die mag het met de
-  # trainer oneens zijn. Komt sectie elf daar niet positief uit, dan gaat deze
-  # sectie van de allowlist af en dat is het einde ervan.
-  #
-  # De sectiebreaker eronder is wat hem begrenst als hij toch live gaat.
-  section_eleven_metals:
-    enabled: true
-    timeframe: M5
-    allowed_symbols: [XAUEUR, XAUGBP, XAUAUD, XAUJPY]
-    model_dir: models/section_eleven
-    polarity: 1
+  # Dat is vooraf opgeschreven zodat de echte zoektocht op Eightcap-data het
+  # kan tegenspreken in plaats van het achteraf te bevestigen.
+  section_eleven_xaujpy_m1:
+    enabled: false
+    symbol: XAUJPY
+    timeframe: M1
+    mechanism: ""
     stop_atr: 1.0
-    long_only: false
+    target_ratio: 1.5
     confidence: 0.55
-    # Dezelfde uren dicht als sectie tien op deze kruisen, en om dezelfde
-    # reden: een XAU-kruis heeft een FX-poot, en tussen 16:00 en 18:00 UTC is
-    # Londen weg terwijl goud nog handelt, dus de valutahelft van de quote
-    # wordt dun en de spread op het kruis loopt uit. Gemeten op sectie tien:
-    # 16:00 negatief in beide helften in vier kruisen van de vier.
-    blocked_hours_by_symbol:
-      XAUEUR: [16, 17]
-      XAUGBP: [16, 17]
-      XAUAUD: [16, 17]
-      XAUJPY: [16, 17]
+    allowed_hours: []
+    # 07:00-13:00 UTC kostte sectie tien -0,101 R per trade op deze kruisen
+    # over 1.664 trades, tegen +0,064 in elk ander uur. Die uren staan dicht
+    # voordat er ook maar iets gezocht is, want dat is een bevinding van een
+    # ANDERE sectie op DEZELFDE markten en die hoeft niet opnieuw betaald te
+    # worden met zoekruimte.
+    blocked_hours: [7, 8, 9, 10, 11, 12]
+
+  section_twelve_xaujpy_m5:
+    enabled: false
+    symbol: XAUJPY
+    timeframe: M5
+    mechanism: ""
+    stop_atr: 1.0
+    target_ratio: 1.5
+    confidence: 0.55
+    allowed_hours: []
+    blocked_hours: [7, 8, 9, 10, 11, 12]
+
+  section_thirteen_xaujpy_m15:
+    enabled: false
+    symbol: XAUJPY
+    timeframe: M15
+    mechanism: ""
+    stop_atr: 1.0
+    target_ratio: 1.5
+    confidence: 0.55
+    allowed_hours: []
+    blocked_hours: [7, 8, 9, 10, 11, 12]
 
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.
@@ -2501,7 +2496,9 @@ analysis:
       # SECTIE ELF is op 1,5 gefit en moet op 1,5 handelen. De trainer maakte
       # elke trade op stop 1,0 ATR en doel 1,5 R; een ander doel hier maakt
       # van deze modellen een meting van iets anders dan wat ze gaan doen.
-      section_eleven_metals: 1.5
+      section_eleven_xaujpy_m1: 1.5
+      section_twelve_xaujpy_m5: 1.5
+      section_thirteen_xaujpy_m15: 1.5
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2528,7 +2525,7 @@ analysis:
     # rest: de instaptiming-poort weigert een instap waar prijs de laatste
     # drie M5-bars tegenin liep, en dat IS het mechanisme van een model dat
     # precies die bar afleest. De poort zou zijn eigen these weigeren.
-    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_metals]
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_m1, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15]
     # Sectie 6 is als complete closed-barstrategie gemeten. Een geldig
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
@@ -3005,13 +3002,15 @@ analysis:
       #     -115,53. Walk-forward +0,005 tot +0,030 per trade, holdout -0,031
       #     tot -0,052. Een tekenomslag op bijna vijftienduizend trades.
       #
-      # De module blijft bestaan, blijft `enabled` en houdt zijn gewicht, dus
-      # `sectie11.cmd 90` kan hem nog steeds meten. Wat hij niet meer heeft is
-      # toestemming om geld uit te geven, en dat is precies het verschil dat
-      # deze lijst maakt. `effective_weights` zet zijn gewicht live op 0,0.
+      # De module is daarna helemaal verwijderd, op instructie van de eigenaar,
+      # en vervangen door secties ELF, TWAALF en DERTIEN: een gezocht
+      # MECHANISME op XAUJPY, op M1, M5 en M15. Geen van drieen staat hier,
+      # want geen van drieen heeft een mechanisme -- `zoekjpy.cmd` moet er
+      # eerst een vinden dat 3,62 sigma haalt, zijn eigen muntworp verslaat en
+      # een POSITIEVE onaangeraakte holdout heeft. Die laatste eis is precies
+      # waar de oude sectie elf op stukliep.
       #
-      # Zie het blok bij `section_eleven_metals` hierboven voor de volledige
-      # onderbouwing.
+      # Zie het blok bij `section_eleven_xaujpy_m1` hierboven.
 
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
@@ -3160,7 +3159,9 @@ analysis:
       section_ten_gold_m1: 0.58
       # Sectie elf mag alleen handelen, net als tien: hij IS de these, en een
       # generieke lone-modulepoort zou elk geldig signaal weigeren.
-      section_eleven_metals: 0.55
+      section_eleven_xaujpy_m1: 0.55
+      section_twelve_xaujpy_m5: 0.55
+      section_thirteen_xaujpy_m15: 0.55
 
     # All three are closed M1/M5 entry events. `fast_ema_cross` used to be
     # documented as a quick entry but classified as intraday, so a fresh M5
@@ -3305,7 +3306,9 @@ analysis:
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.0
       section_ten_gold_m1: 1.0
-      section_eleven_metals: 1.0
+      section_eleven_xaujpy_m1: 1.0
+      section_twelve_xaujpy_m5: 1.0
+      section_thirteen_xaujpy_m15: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -4405,7 +4408,26 @@ risk:
     # Veertig trades is hier bovendien snel bereikt: de fit nam er achttien
     # per dag per markt, dus dit oordeelt binnen dagen in plaats van maanden.
     # Zes op rij en niet acht, om dezelfde reden.
-    section_eleven_metals:
+    # SECTIES ELF, TWAALF EN DERTIEN krijgen alle drie dezelfde breaker en de
+    # getallen zijn opzettelijk streng, want het mechanisme is nog niet gekozen
+    # en een breaker die op de gemeten verwachting is afgesteld kan niet vooraf
+    # bestaan. Dit is dus de generieke versie: 40 trades, meer dan 65%
+    # verliezers of zes op rij, en de sectie gaat uit.
+    #
+    # Zodra `zoekjpy.cmd` een cel aanwijst hoort dit blok bijgesteld te worden
+    # op HAAR verwachte winrate. Een breaker die 65% verliezers toestaat op een
+    # mechanisme dat er 45 verwacht, grijpt nooit in.
+    section_eleven_xaujpy_m1:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 6
+    section_twelve_xaujpy_m5:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 6
+    section_thirteen_xaujpy_m15:
       window: 40
       minimum_trades: 40
       maximum_loss_share: 0.65
@@ -4826,17 +4848,13 @@ trade_management:
   # offset, dus het moet opnieuw; wat vaststaat is dat het beheer hier een
   # groot effect heeft en dat het tot nu toe uitstond.
   #
-  # SECTIE 11 STAAT HIER OMDAT ZIJN FIT HEM ZO GEMETEN HEEFT, en om geen
-  # andere reden. De trainer laat elke trade beslissen tussen een 1,0 ATR stop
-  # en een 1,5 R target, zonder break-even en zonder enige tussenkomst. Elk
-  # cijfer in `docs/hypotheses/section_eleven_metals.md` -- ook het negatieve
-  # holdout -- is op precies die route gemeten.
-  #
-  # Er break-evenbeheer overheen leggen zou de dry-run een ANDERE strategie
-  # laten meten dan degene die gefit is, en dan zegt de uitkomst niets over dit
-  # model. Sectie tien zag hier ongeveer 15 R verschil van; dat is geen detail
-  # dat je er ongemeten bij zet.
-  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S10-AU-M1, JARVIS-S11-XAU-M5]
+  # SECTIES 11, 12 EN 13 STAAN HIER MET OPZET NIET, en dat is een keuze die
+  # pas gemaakt kan worden als hun mechanisme bekend is. `zoekjpy.cmd` meet met
+  # een vaste stop tegen een vast target en zonder tussenkomst, dus dat is de
+  # route waarop elk cijfer daar geldt. Wordt zo'n cel gekozen, dan hoort haar
+  # comment hier ERBIJ te komen -- anders meet de dry-run een andere strategie
+  # dan degene die gezocht is. Sectie tien zag daar ongeveer 15 R verschil van.
+  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S10-AU-M1]
   # S6 is exact op deze ene managementregel gemeten. Geen partial, trailing,
   # giveback, health- of time-exit mag die gemeten route stilletjes veranderen.
   break_even_only_comments: [JARVIS-S6-AU-M5]
@@ -4866,7 +4884,7 @@ trade_management:
   # 21:00-22:00 UTC -- en ze dragen daarbovenop een FX-poot die 's avonds dun
   # wordt. Dat is de spreadverbreding waar de geblokkeerde uren 16 en 17 al
   # over gaan, alleen dan een paar uur later en zonder enige poort ertegen.
-  pre_close_flatten_comments: [JARVIS-S10-AU-M1, JARVIS-S11-XAU-M5]
+  pre_close_flatten_comments: [JARVIS-S10-AU-M1]
   # Still needs the position path plus an independent chart family. Alleen het
   # moment schuift op: bevestigd falen mag nu ingrijpen op -0,15R in plaats van
   # -0,25R. De broker-SL blijft de onvoorwaardelijke achtervang.

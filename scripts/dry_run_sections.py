@@ -1494,7 +1494,9 @@ def main(argv: list[str] | None = None) -> None:
             "section_eight_trend_day_h1": "section_eight_trend_day_h1",
             "section_nine_vwap_m30": "section_nine_vwap_m30",
             "section_ten_gold_m1": "section_ten_gold_m1",
-            "section_eleven_metals": "section_eleven_metals",
+            "section_eleven_xaujpy_m1": "section_eleven_xaujpy_m1",
+            "section_twelve_xaujpy_m5": "section_twelve_xaujpy_m5",
+            "section_thirteen_xaujpy_m15": "section_thirteen_xaujpy_m15",
         }
         measured = set(module_config)
         if args.sections_five_to_ten:
@@ -1524,7 +1526,9 @@ def main(argv: list[str] | None = None) -> None:
                 "section_eight_trend_day_h1",
                 "section_nine_vwap_m30",
                 "section_ten_gold_m1",
-                "section_eleven_metals",
+                "section_eleven_xaujpy_m1",
+                "section_twelve_xaujpy_m5",
+                "section_thirteen_xaujpy_m15",
             }
             missing = (book & live) - measured
             if missing:
