@@ -1769,6 +1769,7 @@ analysis:
     target_r: 2.0
     session_start_hour_utc: 0
     session_end_hour_utc: 7
+    shadow_break_even_at_r: 1.5
   section_sixteen_btc_m5:
     enabled: true
     timeframe: M5
@@ -1781,6 +1782,7 @@ analysis:
     session_start_hour_utc: 0
     session_end_hour_utc: 24
     weekday_only: true
+    shadow_break_even_at_r: 0.0
   section_seventeen_btc_m15:
     enabled: true
     timeframe: M15
@@ -1792,6 +1794,7 @@ analysis:
     session_start_hour_utc: 0
     session_end_hour_utc: 24
     weekday_only: false
+    shadow_break_even_at_r: 1.0
 
   entry_quality:
     # DERDE RONDE, 17 augustus, en deze keer terug omlaag.

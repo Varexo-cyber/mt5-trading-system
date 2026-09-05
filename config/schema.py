@@ -4252,6 +4252,9 @@ class GoldCrossDiscoveryConfig(Base):
     score: float = Field(default=70.0, ge=0.0, le=100.0)
     confidence: float = Field(default=0.55, ge=0.0, le=1.0)
     weekday_only: bool = False
+    # Shadow-replay exit only: 0 keeps broker SL/TP, positive moves to entry
+    # after that many R, and None inherits ordinary account management.
+    shadow_break_even_at_r: float | None = Field(default=None, ge=0.0, le=5.0)
 
     @model_validator(mode="after")
     def _complete_market_and_window(self) -> GoldCrossDiscoveryConfig:

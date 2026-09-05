@@ -114,3 +114,6 @@ def test_three_btc_discoveries_are_separate_and_shadow_only() -> None:
         assert name not in settings.analysis.confluence.live_enabled_modules
 
     assert not settings.analysis.section_seventeen_btc_m15.weekday_only
+    assert settings.analysis.section_fifteen_btc_m1.shadow_break_even_at_r == 1.5
+    assert settings.analysis.section_sixteen_btc_m5.shadow_break_even_at_r == 0.0
+    assert settings.analysis.section_seventeen_btc_m15.shadow_break_even_at_r == 1.0
