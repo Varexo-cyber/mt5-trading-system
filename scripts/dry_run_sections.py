@@ -294,6 +294,16 @@ def _context(
     return MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))
 
 
+def _horizon_window(index, start, horizon_bars: int) -> tuple[int, int]:
+    """`(first, last)` bar a trade opened at `start` is walked over.
+
+    ONE DEFINITION, because the caller needs the same boundary `_resolve` uses
+    and computing it twice is how the two drift. `last` is exclusive.
+    """
+    first = int(index.searchsorted(start, side="left"))
+    return first, min(first + horizon_bars, len(index))
+
+
 def _resolve(
     frame: pd.DataFrame,
     start: datetime,
@@ -367,10 +377,8 @@ def _resolve(
         closes = frame["close"].to_numpy()
     else:
         index, highs, lows, closes = arrays
-    first = int(index.searchsorted(start, side="left"))
-    if force_close_at is None:
-        last = min(first + horizon_bars, len(index))
-    else:
+    first, last = _horizon_window(index, start, horizon_bars)
+    if force_close_at is not None:
         last = min(int(index.searchsorted(force_close_at, side="left")) + 1, len(index))
     if first >= last:
         return None, None, None, None
@@ -627,6 +635,10 @@ def _one_clock(
     """
     out: dict = {row[0]: [] for row in sections}
     busy: dict = {row[0]: None for row in sections}
+    #: Per section, trades that reached neither barrier inside their horizon.
+    #: Counted and PRINTED, because a timeout used to silently take the
+    #: section out of the run and nothing anywhere said so.
+    timed_out: dict = {}
     bars = frames[clock]
     window = bars[(bars.index >= start) & (bars.index <= end)]
     horizon = int(96 * clock.duration / resolve_on.duration)
@@ -832,6 +844,27 @@ def _one_clock(
             # fixed stop is freed by the fixed exit; one running break-even is
             # freed by whichever exit it actually took.
             freed = managed_at if resolved_manage is not None else exit_at
+            if freed is None:
+                # A TRADE THAT REACHED NEITHER BARRIER IS A TIMEOUT, NOT AN
+                # ETERNAL POSITION, and this line was the difference between a
+                # measurement and a fiction.
+                #
+                # `busy[name] = end + clock.duration` blocked the section for
+                # the WHOLE REMAINING RUN. Section eleven took one trade on
+                # day two of a ninety-day replay, that trade reached neither
+                # its stop nor its target inside its horizon, and the section
+                # was dead for the other eighty-eight days -- while the same
+                # section over thirty days took sixteen. Two runs of the same
+                # config disagreeing by a factor of sixteen, and the cause was
+                # here rather than in the market.
+                #
+                # `_resolve` stops following a trade at the end of its horizon,
+                # so that is when the harness stops knowing anything about it
+                # and therefore when the section has to be free again.
+                _first, _last = _horizon_window(resolve_frame.index, upto, horizon)
+                if _last > _first:
+                    freed = resolve_frame.index[_last - 1]
+                timed_out[name] = timed_out.get(name, 0) + 1
             busy[name] = freed if freed is not None else end + clock.duration
             risk_money = sized.actual_risk_money
 
@@ -915,6 +948,18 @@ def _one_clock(
                     grid_r=grid_rows,
                 )
             )
+    # SAID OUT LOUD, PER CLOCK. A timeout is a trade the harness stopped
+    # following, and until 5 September it also took the section out of the run
+    # without a word. Even now that the section is freed correctly, a section
+    # timing out often is a section whose horizon is too short for its target,
+    # and that is worth seeing rather than inferring from a low trade count.
+    for name, count in sorted(timed_out.items()):
+        taken = sum(1 for row in out[name] if row.outcome == "TRADE")
+        share = count / taken if taken else 0.0
+        print(
+            f"  {name} {clock.value}: {count} of {taken} trades reached neither "
+            f"barrier inside the horizon ({share:.0%})"
+        )
     return out
 
 

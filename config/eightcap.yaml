@@ -1753,7 +1753,24 @@ analysis:
     blocked_hours: []
 
   section_twelve_xaujpy_m5:
-    enabled: true
+    # UITGEZET NA DE 90-DAAGSE REPLAY, en niet omdat hij verliest maar
+    # omdat hij de meting van de andere twee ONMOGELIJK maakte.
+    #
+    #     S12  393 trades  -28,74 R  -110,77 EUR   95%% van alle trades
+    #     S11    1 trade    -1,07 R    -4,88 EUR   in NEGENTIG dagen
+    #     S13   19 trades   +7,24 R   +29,46 EUR
+    #
+    # Alle drie handelen XAUJPY, dus wie er zit houdt de plek bezet. S12
+    # vuurt zo vaak dat S11 in negentig dagen EEN keer binnenkwam. Die
+    # sectie is dus niet gemeten, die is verdrongen -- en het verschil
+    # tussen die twee dingen is precies wat dit project blijft verwarren.
+    #
+    # Dat verklaart ook waarom 30 dagen +17,2%% gaf en 90 dagen -34,2%%: in
+    # dat korte venster kreeg S11 toevallig 16 trades voor +60 EUR.
+    #
+    # Terugzetten is een regel. Doe dat pas als S11 en S13 op eigen kracht
+    # gemeten zijn, anders meet je opnieuw alleen S12.
+    enabled: false
     symbol: XAUJPY
     timeframe: M5
     # De sterkste M5-cel met een echte trade-count:
