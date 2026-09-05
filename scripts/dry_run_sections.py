@@ -405,6 +405,13 @@ def _resolve(
     arrays=None,
     force_close_at: datetime | None = None,
     close_at_horizon: bool = False,
+    full_management=None,
+    management_atr: float = 0.0,
+    management_spread: float = 0.0,
+    risk_money: float = 0.0,
+    equity: float = 0.0,
+    planned_minutes: float | None = None,
+    partial_possible: bool = False,
 ):
     """First touch of stop or target on the bars after entry.
 
@@ -481,7 +488,7 @@ def _resolve(
 
     # The managed run walks the same bars with a stop that is allowed to move.
     # `armed` is one-way: a stop that has been pulled up is never pushed back.
-    managed_open = manage is not None and risk > 0
+    managed_open = (manage is not None or full_management is not None) and risk > 0
     managed_r: float | None = None
     managed_stop = idea.stop_loss
     armed = False
@@ -492,6 +499,10 @@ def _resolve(
     # clock -- see `_break_even_rule`.
     trigger_r, offset_price = manage or (0.0, 0.0)
     direction_sign = 1.0 if long else -1.0
+    peak_r = 0.0
+    peak_at = start
+    remaining = 1.0
+    realised_r = 0.0
 
     fixed_r: float | None = None
     exit_at: datetime | None = None
@@ -513,16 +524,148 @@ def _resolve(
             managed_hit = bar_low <= managed_stop if long else bar_high >= managed_stop
             if managed_hit and hit_target:
                 # Both in one bar: the order is unknowable, so take the stop.
-                managed_r = (managed_stop - idea.entry) / risk * direction_sign
+                managed_r = realised_r + remaining * (
+                    (managed_stop - idea.entry) / risk * direction_sign
+                )
             elif managed_hit:
-                managed_r = (managed_stop - idea.entry) / risk * direction_sign
+                managed_r = realised_r + remaining * (
+                    (managed_stop - idea.entry) / risk * direction_sign
+                )
             elif hit_target:
-                managed_r = reward_r
+                managed_r = realised_r + remaining * reward_r
             if managed_r is not None:
                 managed_open = False
                 managed_at = index[position]
             else:
                 excursion = (bar_high - idea.entry) if long else (idea.entry - bar_low)
+                excursion_r = excursion / risk
+                close_r = (float(closes[position]) - idea.entry) / risk * direction_sign
+                if excursion_r > peak_r + 1e-9:
+                    peak_r, peak_at = excursion_r, index[position]
+
+                if full_management is not None:
+                    age_minutes = (index[position] - start).total_seconds() / 60.0
+                    # A soft give-back depends on the live health reader.  In
+                    # OHLC replay we conservatively assume HEALTHY, exactly the
+                    # branch that holds longest, and apply only the mechanical
+                    # hard backstop.
+                    if (
+                        age_minutes >= full_management.min_discretionary_exit_minutes
+                        and full_management.giveback_arm_r > 0
+                        and full_management.giveback_hard_fraction > 0
+                        and peak_r >= full_management.giveback_arm_r
+                        and peak_r > 0
+                        and (peak_r - close_r) / peak_r
+                        >= full_management.giveback_hard_fraction
+                    ):
+                        managed_r = realised_r + remaining * close_r
+                        managed_open = False
+                        managed_at = index[position]
+                    # Healthy positions get the same doubled peak-stall wait
+                    # as the real manager.  No invented AI verdict is used.
+                    stall_wait = max(
+                        full_management.peak_stall_minutes,
+                        (planned_minutes or 0.0)
+                        * full_management.peak_stall_share_of_horizon,
+                    ) * 2.0
+                    if (
+                        managed_open
+                        and stall_wait > 0
+                        and age_minutes >= full_management.min_discretionary_exit_minutes
+                        and peak_r >= full_management.peak_stall_arm_r
+                        and close_r >= peak_r * full_management.peak_stall_near_peak
+                        and (index[position] - peak_at).total_seconds() / 60.0 >= stall_wait
+                    ):
+                        managed_r = realised_r + remaining * close_r
+                        managed_open = False
+                        managed_at = index[position]
+
+                    deadline_hours = full_management.time_exit_hours
+                    if deadline_hours is not None and full_management.time_exit_uses_plan_horizon:
+                        plan_hours = max(
+                            full_management.time_exit_minimum_hours,
+                            (planned_minutes or deadline_hours * 60.0)
+                            / 60.0
+                            * full_management.time_exit_horizon_multiple,
+                        )
+                        deadline_hours = min(deadline_hours, plan_hours)
+                    if managed_open and deadline_hours is not None and age_minutes >= deadline_hours * 60:
+                        if abs(close_r) < full_management.time_exit_min_abs_r or (
+                            close_r > 0 and peak_r < full_management.time_exit_stale_peak_r
+                        ):
+                            managed_r = realised_r + remaining * close_r
+                            managed_open = False
+                            managed_at = index[position]
+
+                    # Partial close is only possible when both halves satisfy
+                    # the broker's minimum lot.  Most 0.01-lot BTC trades do
+                    # not, which is why pretending every trade halves at 1.5R
+                    # would overstate Jarvis rather than reproduce it.
+                    if (
+                        managed_open
+                        and partial_possible
+                        and remaining == 1.0
+                        and excursion_r >= full_management.partial_close_at_r
+                    ):
+                        fraction = full_management.partial_close_fraction
+                        realised_r += fraction * full_management.partial_close_at_r
+                        remaining -= fraction
+
+                    # Same broker-resident profit lock: retain a fraction of
+                    # the peak, but leave at least the configured spread gap.
+                    meaningful_r = (
+                        equity * full_management.capital_protection_at_equity_pct / 100.0
+                        / risk_money
+                        if equity > 0
+                        and risk_money > 0
+                        and full_management.capital_protection_at_equity_pct > 0
+                        else float("inf")
+                    )
+                    if peak_r >= min(full_management.profit_lock_from_r, meaningful_r):
+                        secured_r = peak_r * full_management.profit_lock_fraction
+                        if management_spread > 0:
+                            secured_r = min(
+                                secured_r,
+                                peak_r
+                                - full_management.profit_lock_minimum_spreads
+                                * management_spread
+                                / risk,
+                            )
+                        if secured_r > 0:
+                            candidate = idea.entry + secured_r * risk * direction_sign
+                            if (long and candidate > managed_stop) or (
+                                not long and candidate < managed_stop
+                            ):
+                                managed_stop = candidate
+
+                    # The real ATR trail starts at the partial-close threshold
+                    # even when minimum lot makes the partial itself inert.
+                    if (
+                        managed_open
+                        and full_management.trailing_mode == "atr"
+                        and excursion_r >= full_management.partial_close_at_r
+                        and management_atr > 0
+                    ):
+                        candidate = float(closes[position]) - (
+                            direction_sign
+                            * management_atr
+                            * full_management.trailing_atr_multiple
+                        )
+                        if (long and candidate > managed_stop) or (
+                            not long and candidate < managed_stop
+                        ):
+                            managed_stop = candidate
+
+                    # Break-even follows the profit rules in the live manager.
+                    trigger = min(full_management.break_even_at_r, meaningful_r)
+                    offset = management_atr * full_management.break_even_offset_atr
+                    if managed_open and excursion_r >= max(trigger, offset / risk):
+                        candidate = idea.entry + offset * direction_sign
+                        if (long and candidate > managed_stop) or (
+                            not long and candidate < managed_stop
+                        ):
+                            managed_stop = candidate
+
                 # A PROTECTIVE STOP CANNOT BE PLACED BEYOND THE PRICE. Live the
                 # broker refuses it and `_worth_moving` never gets there; the
                 # simulator happily armed a stop above the market and then
@@ -530,7 +673,7 @@ def _resolve(
                 # could have taken. So the move needs the excursion to cover
                 # the offset as well as the trigger.
                 reach = max(trigger_r * risk, offset_price)
-                if not armed and excursion >= reach:
+                if full_management is None and not armed and excursion >= reach:
                     armed = True
                     managed_stop = idea.entry + offset_price * direction_sign
 
@@ -547,7 +690,7 @@ def _resolve(
             if fixed_r is None:
                 fixed_r, exit_at = close_r, index[position]
             if managed_open:
-                managed_r, managed_at = close_r, index[position]
+                managed_r, managed_at = realised_r + remaining * close_r, index[position]
                 managed_open = False
         if fixed_r is not None and not managed_open:
             break
@@ -564,7 +707,7 @@ def _resolve(
         if fixed_r is None:
             fixed_r, exit_at = close_r, horizon_at
         if managed_open:
-            managed_r, managed_at = close_r, horizon_at
+            managed_r, managed_at = realised_r + remaining * close_r, horizon_at
             managed_open = False
     if managed_open:
         managed_r = None
@@ -942,6 +1085,10 @@ def _one_clock(
                             rejected_manage = (
                                 (trigger_r, offset_price) if offset_price > 0.0 else None
                             )
+                    commission = sizer.settings.risk.commission_per_lot(spec.asset_class.value)
+                    rejected_risk_money = (
+                        spec.money_per_lot(abs(idea.entry - idea.stop_loss)) + commission
+                    ) * float(spec.volume_min)
                     fixed_r, rejected_at, managed_r, _managed_at = _resolve(
                         resolve_frame,
                         upto,
@@ -950,18 +1097,19 @@ def _one_clock(
                         manage=rejected_manage,
                         arrays=resolve_arrays,
                         close_at_horizon=True,
+                        full_management=sizer.settings.trade_management,
+                        management_atr=_hourly_atr(upto),
+                        management_spread=entry_spread_price,
+                        risk_money=rejected_risk_money,
+                        equity=equity,
+                        planned_minutes=raw_horizon * clock.duration.total_seconds() / 60.0,
+                        partial_possible=False,
                     )
                     rejected_cost = RAW_BTC_EXECUTION_ALLOWANCE_R + (
                         entry_spread_price / abs(idea.entry - idea.stop_loss)
                     )
                     fixed_r = None if fixed_r is None else fixed_r - rejected_cost
                     managed_r = None if managed_r is None else managed_r - rejected_cost
-                    if rejected_manage is None:
-                        managed_r = fixed_r
-                    commission = sizer.settings.risk.commission_per_lot(spec.asset_class.value)
-                    rejected_risk_money = (
-                        spec.money_per_lot(abs(idea.entry - idea.stop_loss)) + commission
-                    ) * float(spec.volume_min)
                     out[name].append(
                         Decision(
                             upto,
@@ -1059,6 +1207,29 @@ def _one_clock(
                 arrays=resolve_arrays,
                 force_close_at=force_close_at,
                 close_at_horizon=raw_shadow,
+                full_management=(sizer.settings.trade_management if jarvis_replay else None),
+                management_atr=_hourly_atr(upto),
+                management_spread=entry_spread_price if raw_shadow else spread_price,
+                risk_money=sized.actual_risk_money,
+                equity=equity,
+                planned_minutes=(
+                    raw_horizon * clock.duration.total_seconds() / 60.0
+                    if raw_horizon
+                    else None
+                ),
+                partial_possible=(
+                    spec.round_volume_down(
+                        sized.volume * sizer.settings.trade_management.partial_close_fraction
+                    )
+                    >= spec.volume_min
+                    and spec.round_volume_down(
+                        sized.volume
+                        - spec.round_volume_down(
+                            sized.volume * sizer.settings.trade_management.partial_close_fraction
+                        )
+                    )
+                    >= spec.volume_min
+                ),
             )
             # FREED AT THE EXIT THE ACCOUNT ACTUALLY TAKES.
             #
@@ -1074,7 +1245,7 @@ def _one_clock(
             # PER SECTION, because the break-even rule is. A section running a
             # fixed stop is freed by the fixed exit; one running break-even is
             # freed by whichever exit it actually took.
-            freed = managed_at if resolved_manage is not None else exit_at
+            freed = managed_at if (resolved_manage is not None or jarvis_replay) else exit_at
             if freed is None:
                 # A TRADE THAT REACHED NEITHER BARRIER IS A TIMEOUT, NOT AN
                 # ETERNAL POSITION, and this line was the difference between a
@@ -3325,7 +3496,10 @@ def _btc_jarvis_replay_contract(settings, equity: float, offered: int, allowed: 
     print("    historical BTCUSD spread plus the configured execution allowance")
     print("    live spread/stop ceiling, target-reach and direction-advantage gates")
     print("    market-liveliness and M1 volume-spike gates on causal bar history")
-    print("    strategy stop/target, horizon and configured section break-even")
+    print("    strategy stop/target and horizon")
+    print("    full OHLC-reproducible management in live order: profit lock,")
+    print("      break-even, broker-feasible partial close, ATR trail, hard giveback,")
+    print("      healthy-branch peak stall and plan-derived time exit")
     print(
         f"    shared Jarvis position book: max {settings.effective_max_positions(equity)} "
         f"positions at EUR {equity:.2f} ({offered - allowed} of {offered} entries blocked)"
@@ -3338,7 +3512,8 @@ def _btc_jarvis_replay_contract(settings, equity: float, offered: int, allowed: 
     print("    historical news blackout")
     print("  NOT RECONSTRUCTIBLE FROM OHLC BARS")
     print("    tick-by-tick fill slippage, AI review answers, margin changes and outages")
-    print("    intrabar partial/trailing/health/peak-stall ordering")
+    print("    AI health/thesis verdicts, persistent tick spread-squeeze state")
+    print("    exact intrabar ordering when one M1 candle crosses multiple actions")
     print("  The total below is therefore the deterministic S15-S17 account replay,")
     print("  not a promise or an exact reconstruction of fills the broker never made.")
 
@@ -3379,6 +3554,8 @@ def _gates_this_run_does_not_apply(
     if btc_jarvis_replay:
         print("  This is the second S15-S17 account replay described in the contract above.")
         print("  Target reach, spread/stop, market quiet and volume spike WERE applied.")
+        print("  Mechanical profit-lock, break-even, broker-feasible partial close,")
+        print("  ATR trailing, hard giveback, peak-stall and time-exit WERE applied.")
         print("  No unrelated live-day counters are mixed into this replay.\n")
     elif btc_research_parity:
         print("  This S15-S17 run reproduces the frozen research detector, next-bar entry,")
@@ -3405,16 +3582,22 @@ def _gates_this_run_does_not_apply(
             f"  is actually spending the setups on any given day."
         )
 
-    print("\n  AND THE EXITS. This replay simulates the break-even move for managed")
-    print("  families, fixed broker SL/TP for fixed-exit families, and their configured")
-    print("  pre-close flatten before a daily market pause. It does NOT simulate:\n")
-    for name, what in EXITS_NOT_MODELLED:
-        print(f"    {name:<30}{what}")
-    print(
-        "\n  A managed-family +1.00R here is still not a complete live forecast:"
-        "\n  partials, trailing and the other exits above can change it. A fixed-exit"
-        "\n  family is judged on its broker barriers and configured pause flatten."
-    )
+    if btc_jarvis_replay:
+        print("\n  EXIT LIMITS STILL NOT RECONSTRUCTIBLE FROM OHLC:")
+        print("    AI health/thesis actions, tick-persistent spread squeeze, exact fills")
+        print("    and ambiguous within-M1 ordering. The replay uses the conservative")
+        print("    HEALTHY branch and stop-first ordering; it does not invent AI answers.")
+    else:
+        print("\n  AND THE EXITS. This replay simulates the break-even move for managed")
+        print("  families, fixed broker SL/TP for fixed-exit families, and their configured")
+        print("  pre-close flatten before a daily market pause. It does NOT simulate:\n")
+        for name, what in EXITS_NOT_MODELLED:
+            print(f"    {name:<30}{what}")
+        print(
+            "\n  A managed-family +1.00R here is still not a complete live forecast:"
+            "\n  partials, trailing and the other exits above can change it. A fixed-exit"
+            "\n  family is judged on its broker barriers and configured pause flatten."
+        )
     print(f"{'=' * 78}")
 
 
