@@ -3185,6 +3185,30 @@ class TestTheLauncherEchoesSurviveCmd:
         )
 
 
+class TestRawBtcShadowIsExplicitlyContained:
+    def test_launcher_requests_the_raw_shadow_lane(self) -> None:
+        from pathlib import Path
+
+        launcher = Path("sectie151617.cmd").read_text(errors="replace")
+        assert "--raw-btc-shadow" in launcher
+        assert "section_fifteen_btc_m1,section_sixteen_btc_m5,section_seventeen_btc_m15" in launcher
+
+    def test_flag_exists_and_is_off_by_default(self) -> None:
+        from scripts.dry_run_sections import build_parser
+
+        assert build_parser().parse_args([]).raw_btc_shadow is False
+        assert build_parser().parse_args(["--raw-btc-shadow"]).raw_btc_shadow is True
+
+    def test_raw_lane_is_hard_limited_to_the_three_btc_sections(self) -> None:
+        from scripts.dry_run_sections import RAW_BTC_SHADOW_SECTIONS
+
+        assert RAW_BTC_SHADOW_SECTIONS == {
+            "section_fifteen_btc_m1",
+            "section_sixteen_btc_m5",
+            "section_seventeen_btc_m15",
+        }
+
+
 class TestTheHeartbeatFiresOnEveryWindowLength:
     """The progress line must not have a window length baked into it.
 
