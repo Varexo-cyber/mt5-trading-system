@@ -124,15 +124,24 @@ class _FakeConnector:
 
 
 def _bars(count: int, minutes: int) -> pd.DataFrame:
+    """Bars whose volatility SCALES WITH THE BAR LENGTH, as real ones do.
+
+    The first version drew the same per-bar noise whatever `minutes` was, so an
+    M1 frame and an M15 frame had identical ATR -- which is exactly the
+    assumption the cost bug rested on, reproduced in the fixture that was meant
+    to catch it. A fake that cannot tell two clocks apart cannot test a
+    per-clock stop width.
+    """
     rng = np.random.default_rng(4)
+    scale = 250.0 * (minutes**0.5)
     index = pd.date_range("2024-01-01", periods=count, freq=f"{minutes}min", tz="UTC")
-    step = rng.normal(0.0, 250.0, size=count).cumsum() + 724_000.0
+    step = rng.normal(0.0, scale, size=count).cumsum() + 724_000.0
     frame = pd.DataFrame(
         {
             "open": step,
-            "high": step + np.abs(rng.normal(0.0, 200.0, size=count)),
-            "low": step - np.abs(rng.normal(0.0, 200.0, size=count)),
-            "close": step + rng.normal(0.0, 100.0, size=count),
+            "high": step + np.abs(rng.normal(0.0, scale * 0.8, size=count)),
+            "low": step - np.abs(rng.normal(0.0, scale * 0.8, size=count)),
+            "close": step + rng.normal(0.0, scale * 0.4, size=count),
             "volume": rng.integers(10, 400, size=count),
         },
         index=index,
@@ -218,3 +227,128 @@ class TestTheReportNamesWhatItDoesNotModel:
 
         assert "from scripts.search_section_four import" in inspect.getsource(jpy)
         assert "_cost_share(sizer, spec" in inspect.getsource(jpy)
+
+
+class TestTheBlockedHoursAreActuallyApplied:
+    """DOCUMENTED AND NOT IMPLEMENTED, found in the first real run's output.
+
+    The module docstring said the configured blocked hours were applied. No
+    line applied them. `london_drive` came third on +0.091 R per trade earned
+    ENTIRELY inside 07:00-12:00 UTC -- the window the section refuses -- so the
+    ranking was ordering cells by an edge the account may not take.
+    """
+
+    def test_the_muter_zeroes_exactly_the_blocked_hours(self) -> None:
+        import scripts.search_xaujpy as jpy
+
+        frame = _bars(600, 5)
+        signals = np.ones(len(frame), dtype=int)
+        blocked = {7, 8, 9, 10, 11, 12}
+
+        muted = jpy._mute_blocked_hours(signals, frame, blocked)
+        hours = frame.index.hour.to_numpy()
+
+        assert (muted[np.isin(hours, list(blocked))] == 0).all()
+        assert (muted[~np.isin(hours, list(blocked))] == 1).all()
+        assert (signals == 1).all(), "the caller's array was mutated"
+
+    def test_no_blocked_hours_leaves_every_signal_alone(self) -> None:
+        import scripts.search_xaujpy as jpy
+
+        frame = _bars(200, 5)
+        signals = np.ones(len(frame), dtype=int)
+
+        assert (jpy._mute_blocked_hours(signals, frame, set()) == 1).all()
+
+    def test_the_hours_come_from_the_section_config_not_a_second_list(self) -> None:
+        """Two lists that must agree are two lists that will disagree."""
+        import inspect
+
+        import scripts.search_xaujpy as jpy
+
+        source = inspect.getsource(jpy)
+        assert "getattr(settings.analysis, name).blocked_hours" in source
+
+    def test_a_cell_whose_edge_is_blocked_scores_nothing(self, tmp_path, monkeypatch) -> None:
+        """The end-to-end proof: a mechanism that only ever fires inside the
+        blocked window must come back with no trades at all."""
+        import scripts.search_xaujpy as jpy
+
+        frame = _bars(3_000, 5)
+        hours = frame.index.hour.to_numpy()
+        only_london = np.where(np.isin(hours, [7, 8, 9, 10, 11, 12]), 1, 0)
+
+        muted = jpy._mute_blocked_hours(only_london, frame, {7, 8, 9, 10, 11, 12})
+
+        assert only_london.sum() > 0, "the fixture never fired in London"
+        assert muted.sum() == 0
+
+
+class TestTheCostIsChargedAgainstTheStopTheCellUses:
+    """THE 720-DAY RUN CAME BACK WITH NINE WINNERS AND EVERY ONE WAS FAKE.
+
+    The cost share was computed against a flat `close * 0.004` -- 0.4% of price
+    as the stop width, the same number on M1, M5 and M15. The stop a cell
+    actually resolves against is `stop_atr x ATR of that clock`, and an M1 ATR
+    on a gold cross is far smaller than 0.4% of price. So M1 was charged a
+    fraction of what it pays, and nine M1 cells at 74 to 252 trades a day came
+    out at +4.4 to +8.1 sigma with large positive holdouts.
+
+    That is not an edge, it is free trading. The same shape as the bug the
+    `_cost_share` docstring already records one level up.
+    """
+
+    def test_the_stop_width_comes_from_the_clocks_own_atr(self) -> None:
+        import inspect
+
+        import scripts.search_xaujpy as jpy
+
+        source = inspect.getsource(jpy)
+
+        assert "stop_price = args.stop_atr * float(np.nanmedian(_atr(searched)))" in source
+        # Only outside the comment that records the broken line, so the
+        # explanation cannot trip the check it exists to explain.
+        code = [
+            line.split("#", 1)[0]
+            for line in source.splitlines()
+            if not line.strip().startswith("#")
+        ]
+        assert not [line for line in code if "0.004" in line], "a hand-rolled stop width is back"
+
+    def test_a_faster_clock_is_charged_more_not_less(self) -> None:
+        """The property the bug violated: cost is a share OF THE STOP, so a
+        narrower stop on a faster clock must cost a LARGER share, never a
+        smaller one. The broken version had it constant across clocks, which
+        is what made M1 look free."""
+        from analysis.mechanisms import _atr
+
+        m1 = _bars(4_000, 1)
+        m15 = _bars(4_000, 15)
+
+        assert float(np.nanmedian(_atr(m1))) < float(np.nanmedian(_atr(m15)))
+
+    def test_an_unaffordable_cell_cannot_be_a_survivor(self) -> None:
+        """`SL_TOO_TIGHT_FOR_COSTS` is a live refusal, so a cell above the
+        account's cap is not a cell the account can trade however good its
+        sigma is. It is named in the report rather than dropped."""
+        import inspect
+
+        import scripts.search_xaujpy as jpy
+
+        source = " ".join(inspect.getsource(jpy).split())
+
+        assert "and c.cost_share <= cap" in source
+        assert "SL_TOO_TIGHT_FOR_COSTS" in source
+        assert "priced_out" in source
+
+    def test_the_cost_share_is_printed_for_every_cell(self) -> None:
+        """Its absence is what let a twenty-fold error rank nine cells at the
+        top for a whole run without anybody being able to see it."""
+        import inspect
+
+        import scripts.search_xaujpy as jpy
+
+        source = inspect.getsource(jpy)
+
+        assert "{'cost':>7}" in source
+        assert "cell.cost_share:>6.1%" in source
