@@ -712,8 +712,11 @@ def _one_clock(
             resolved_manage = section_manage
             if section_manage is not None:
                 trigger_r, offset_atr = section_manage
-                offset_price = offset_atr * _hourly_atr(upto)
-                resolved_manage = (trigger_r, offset_price) if offset_price > 0.0 else None
+                if offset_atr == 0.0:
+                    resolved_manage = (trigger_r, 0.0)
+                else:
+                    offset_price = offset_atr * _hourly_atr(upto)
+                    resolved_manage = (trigger_r, offset_price) if offset_price > 0.0 else None
 
             force_close_at = None
             if flatten_time is not None:
@@ -1853,6 +1856,14 @@ def main(argv: list[str] | None = None) -> None:
                 for name in names:
                     tuned = _retimed(settings, name, tf_name)
                     only = [m for m in build_analysis_modules(tuned) if m.name == name]
+                    section_manage = manage
+                    shadow_trigger = getattr(
+                        getattr(tuned.analysis, name), "shadow_break_even_at_r", None
+                    )
+                    if shadow_trigger is not None:
+                        section_manage = (
+                            None if shadow_trigger <= 0.0 else (float(shadow_trigger), 0.0)
+                        )
                     comment = broker_comment(name, is_addon=False, experimental_live=True)
                     fixed = {
                         item.casefold() for item in settings.trade_management.fixed_exit_comments
@@ -1867,7 +1878,7 @@ def main(argv: list[str] | None = None) -> None:
                             name,
                             ConfluenceEngine(only, tuned.analysis.confluence),
                             PositionSizer(tuned),
-                            None if comment.casefold() in fixed else manage,
+                            None if comment.casefold() in fixed else section_manage,
                             flatten_time,
                         )
                     )
