@@ -2682,7 +2682,16 @@ analysis:
     # eigen entries. De generieke rolling reach-test blijft in het reviewpakket
     # staan, maar mag die gemeten setup niet vóór de reviewer vervangen door
     # een ander, ongemeten selectiebeleid.
-    target_reach_advisory_families: [impulse_retest, order_block, section_six_gold_m5]
+    # BTC gate study, 180 broker days: for S15 this generic unconditional
+    # statistic removed 61 otherwise eligible trades worth +20.50R. S16/S17
+    # kept it: there it saved respectively 42.35R and 15.75R of losses.
+    target_reach_advisory_families: [impulse_retest, order_block, section_six_gold_m5, section_fifteen_btc_m1]
+    # The global 8% stop-share remains intact. S16/S17 use the same ceilings
+    # their frozen broker research used. Re-testing the already screened band
+    # at 8% removed +20.52R and +13.68R respectively over 180 days.
+    max_spread_share_of_stop_by_family:
+      section_sixteen_btc_m5: 0.12
+      section_seventeen_btc_m15: 0.10
     target_reach_margin_pct: 0.0
     # Van 20% naar 25% van de stop. Quick/intraday-plannen hebben kleinere
     # stops en raakten hierdoor eerder de grens, zelfs wanneer de spread binnen

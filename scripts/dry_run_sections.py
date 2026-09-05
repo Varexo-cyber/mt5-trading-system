@@ -85,7 +85,12 @@ def _historical_jarvis_gate(ctx, idea, spec, settings, clock: Timeframe) -> tupl
         return "SPREAD_EATS_THE_STOP", "zero stop distance"
 
     spread_share = (ctx.tick.spread / risk) if ctx.tick is not None else float("inf")
-    spread_limit = settings.analysis.confluence.max_spread_share_of_stop
+    confluence = settings.analysis.confluence
+    spread_limit = confluence.max_spread_share_of_stop
+    for family, family_limit in confluence.max_spread_share_of_stop_by_family.items():
+        if family in idea.setup_family:
+            spread_limit = family_limit
+            break
     if spread_share > spread_limit:
         return (
             "SPREAD_EATS_THE_STOP",
@@ -132,6 +137,9 @@ def _historical_jarvis_gate(ctx, idea, spec, settings, clock: Timeframe) -> tupl
         reward_risk=reward / risk,
     )
     config = settings.analysis.confluence
+    reach_is_advisory = any(
+        family in idea.setup_family for family in config.target_reach_advisory_families
+    )
     if reach.measured:
         required = min(100.0, reach.required_pct + config.target_reach_margin_pct)
         hard_floor = required * config.quick_reach_hard_floor_ratio
@@ -139,13 +147,14 @@ def _historical_jarvis_gate(ctx, idea, spec, settings, clock: Timeframe) -> tupl
             config.direction_advantage_tolerance_pct,
             reach.standard_error_pct,
         )
-        if reach.forward_pct < hard_floor:
+        if not reach_is_advisory and reach.forward_pct < hard_floor:
             return (
                 "TARGET_RARELY_REACHED",
                 f"target reach {reach.forward_pct:.1f}% below quick hard floor {hard_floor:.1f}%",
             )
         if (
-            config.require_direction_advantage
+            not reach_is_advisory
+            and config.require_direction_advantage
             and reach.opposite_pct - reach.forward_pct > direction_margin
         ):
             return (
@@ -918,6 +927,41 @@ def _one_clock(
                 blocked = _historical_jarvis_gate(ctx, idea, spec, sizer.settings, clock)
                 if blocked is not None:
                     reason, detail = blocked
+                    # Keep the untouched trade as a counterfactual. This is
+                    # what lets the report answer whether a gate removed
+                    # winners or losers instead of merely counting refusals.
+                    raw_horizon = RAW_BTC_HORIZONS[clock]
+                    resolved_horizon = int(
+                        raw_horizon * clock.duration / resolve_on.duration
+                    )
+                    rejected_manage = section_manage
+                    if section_manage is not None:
+                        trigger_r, offset_atr = section_manage
+                        if offset_atr:
+                            offset_price = offset_atr * _hourly_atr(upto)
+                            rejected_manage = (
+                                (trigger_r, offset_price) if offset_price > 0.0 else None
+                            )
+                    fixed_r, rejected_at, managed_r, _managed_at = _resolve(
+                        resolve_frame,
+                        upto,
+                        idea,
+                        horizon_bars=resolved_horizon,
+                        manage=rejected_manage,
+                        arrays=resolve_arrays,
+                        close_at_horizon=True,
+                    )
+                    rejected_cost = RAW_BTC_EXECUTION_ALLOWANCE_R + (
+                        entry_spread_price / abs(idea.entry - idea.stop_loss)
+                    )
+                    fixed_r = None if fixed_r is None else fixed_r - rejected_cost
+                    managed_r = None if managed_r is None else managed_r - rejected_cost
+                    if rejected_manage is None:
+                        managed_r = fixed_r
+                    commission = sizer.settings.risk.commission_per_lot(spec.asset_class.value)
+                    rejected_risk_money = (
+                        spec.money_per_lot(abs(idea.entry - idea.stop_loss)) + commission
+                    ) * float(spec.volume_min)
                     out[name].append(
                         Decision(
                             upto,
@@ -925,7 +969,23 @@ def _one_clock(
                             module,
                             reason,
                             direction=idea.direction.name,
-                            note=detail[:90],
+                            entry=idea.entry,
+                            stop=idea.stop_loss,
+                            target=idea.take_profit,
+                            lots=float(spec.volume_min),
+                            risk_money=rejected_risk_money,
+                            risk_pct=(rejected_risk_money / equity * 100.0 if equity else 0.0),
+                            result_r=fixed_r,
+                            pnl_money=(
+                                None if fixed_r is None else fixed_r * rejected_risk_money
+                            ),
+                            managed_r=managed_r,
+                            managed_money=(
+                                None if managed_r is None else managed_r * rejected_risk_money
+                            ),
+                            cost_r=rejected_cost,
+                            exit_at=rejected_at,
+                            note=("COUNTERFACTUAL if gate were off: " + detail)[:90],
                             pass_key=(name, clock.value),
                         )
                     )
@@ -2348,6 +2408,7 @@ def main(argv: list[str] | None = None) -> None:
                 row.outcome = "ACCOUNT_POSITION_LIMIT"
                 row.note = "Jarvis account/same-symbol position limit was already occupied"
         _btc_jarvis_replay_contract(settings, equity, len(offered), len(allowed))
+        _btc_gate_counterfactual_report(decisions)
 
     _report(
         decisions,
@@ -3280,6 +3341,31 @@ def _btc_jarvis_replay_contract(settings, equity: float, offered: int, allowed: 
     print("    intrabar partial/trailing/health/peak-stall ordering")
     print("  The total below is therefore the deterministic S15-S17 account replay,")
     print("  not a promise or an exact reconstruction of fills the broker never made.")
+
+
+def _btc_gate_counterfactual_report(decisions: list[Decision]) -> None:
+    """Show whether each historical gate removed profit or loss."""
+    names = {
+        "TARGET_RARELY_REACHED",
+        "SPREAD_EATS_THE_STOP",
+        "MARKET_TOO_QUIET",
+        "VOLUME_SPIKE",
+    }
+    rows = [row for row in decisions if row.outcome in names and row.managed_r is not None]
+    if not rows:
+        return
+    print("\n  GATE COUNTERFACTUALS -- what refused setups did with that gate OFF")
+    print("  (positive R means the gate removed profit; negative R means it saved loss)")
+    grouped: dict[tuple[str, str], list[Decision]] = {}
+    for row in rows:
+        grouped.setdefault((row.module, row.outcome), []).append(row)
+    for (module, reason), rejected in sorted(grouped.items()):
+        total = sum(row.managed_r or 0.0 for row in rejected)
+        wins = sum(1 for row in rejected if (row.managed_r or 0.0) > 0.0)
+        print(
+            f"    {module:<28} {reason:<24} {len(rejected):>5} setups  "
+            f"{wins / len(rejected):>5.1%} won  {total:>+9.2f} R"
+        )
 
 
 def _gates_this_run_does_not_apply(

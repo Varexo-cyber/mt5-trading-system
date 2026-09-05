@@ -3331,7 +3331,9 @@ class JarvisRunner:
         # gate refuses the trade a few lines further down, on the merits.
         idea = self._widen_stop_for_costs(idea, spec)
 
-        affordable, share = self._spread_is_affordable(context, idea.entry, idea.stop_loss)
+        affordable, share = self._spread_is_affordable(
+            context, idea.entry, idea.stop_loss, idea.setup_family
+        )
         if not affordable:
             cycle_pk = self._record_skip(
                 cycle_id,
@@ -6346,7 +6348,10 @@ class JarvisRunner:
 
         fresh_idea = self._widen_stop_for_costs(fresh_idea, spec)
         affordable, share = self._spread_is_affordable(
-            fresh_context, fresh_idea.entry, fresh_idea.stop_loss
+            fresh_context,
+            fresh_idea.entry,
+            fresh_idea.stop_loss,
+            fresh_idea.setup_family,
         )
         if not affordable:
             return fail(
@@ -6929,7 +6934,7 @@ class JarvisRunner:
         return replace(idea, stop_loss=spec.normalize_price(widened))
 
     def _spread_is_affordable(
-        self, context: MarketContext, entry: float, stop: float
+        self, context: MarketContext, entry: float, stop: float, setup_family: str = ""
     ) -> tuple[bool, float]:
         """Is the current spread a tolerable share of this trade's stop?
 
@@ -6941,7 +6946,15 @@ class JarvisRunner:
         if context.tick is None or risk <= 0:
             return False, 1.0
         share = context.tick.spread / risk
-        return share <= self.settings.analysis.confluence.max_spread_share_of_stop, share
+        config = self.settings.analysis.confluence
+        limit = config.max_spread_share_of_stop
+        for family, family_limit in getattr(
+            config, "max_spread_share_of_stop_by_family", {}
+        ).items():
+            if family in setup_family:
+                limit = family_limit
+                break
+        return share <= limit, share
 
     def _target_is_reachable_in_time(
         self, context: MarketContext, idea: TradeIdea, asset_class: str
