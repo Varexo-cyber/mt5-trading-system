@@ -101,9 +101,9 @@ def test_the_shadow_wiring_holds_for_every_discovery_section() -> None:
 def test_three_btc_discoveries_are_separate_and_shadow_only() -> None:
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
     sections = {
-        "section_fifteen_btc_m1": ("M1", "channel_breakout", 4.0, 2.0),
-        "section_sixteen_btc_m5": ("M5", "channel_breakout", 4.0, 2.0),
-        "section_seventeen_btc_m15": ("M15", "trend_rejection", 6.0, 0.75),
+        "section_fifteen_btc_m1": ("M1", "adaptive_channel_100", 3.0, 2.0),
+        "section_sixteen_btc_m5": ("M5", "adaptive_channel_25", 6.0, 2.0),
+        "section_seventeen_btc_m15": ("M15", "trend_pullback", 4.0, 4.0),
     }
 
     for name, expected in sections.items():
@@ -113,4 +113,4 @@ def test_three_btc_discoveries_are_separate_and_shadow_only() -> None:
         assert settings.analysis.confluence.weights[name] == 0.0
         assert name not in settings.analysis.confluence.live_enabled_modules
 
-    assert settings.analysis.section_seventeen_btc_m15.weekday_only
+    assert not settings.analysis.section_seventeen_btc_m15.weekday_only

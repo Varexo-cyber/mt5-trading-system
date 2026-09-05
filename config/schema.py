@@ -4235,7 +4235,10 @@ class GoldCrossDiscoveryConfig(Base):
     enabled: bool = False
     allowed_symbols: tuple[str, ...] = ()
     timeframe: str = "M5"
-    mechanism: Literal["channel_breakout", "aligned_momentum", "trend_rejection"] = (
+    mechanism: Literal[
+        "channel_breakout", "aligned_momentum", "trend_rejection",
+        "adaptive_channel_25", "adaptive_channel_100", "trend_pullback",
+    ] = (
         "channel_breakout"
     )
     polarity: Literal[-1, 1] = 1

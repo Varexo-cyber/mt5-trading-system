@@ -1173,6 +1173,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv", default="", help="write every decision to this file")
     parser.add_argument("--equity", type=float, default=0.0, help="override account equity")
     parser.add_argument(
+        "--risk-percent",
+        type=float,
+        default=0.0,
+        help=(
+            "shadow-only sizing override for this replay (0 keeps configured risk); "
+            "never changes YAML or live Jarvis"
+        ),
+    )
+    parser.add_argument(
         "--manage-grid",
         action="store_true",
         help=(
@@ -1294,6 +1303,28 @@ def main(argv: list[str] | None = None) -> None:
     settings = settings.model_copy(
         update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
     )
+    if args.risk_percent:
+        if not 0.0 < args.risk_percent <= 20.0:
+            raise SystemExit("--risk-percent must be above 0 and at most 20")
+        modes = dict(settings.modes)
+        modes[TradingMode.MICRO_LIVE.value] = modes[TradingMode.MICRO_LIVE.value].model_copy(
+            update={"max_risk_per_trade_pct": args.risk_percent}
+        )
+        settings = settings.model_copy(
+            update={
+                "risk": settings.risk.model_copy(
+                    update={
+                        "risk_per_trade_pct": args.risk_percent,
+                        "max_risk_per_trade_pct": args.risk_percent,
+                    }
+                ),
+                "modes": modes,
+            }
+        )
+        print(
+            f"SHADOW RISK STRESS: {args.risk_percent:.1f}% per trade; "
+            "this does NOT alter live configuration or grant real-money permission"
+        )
     # Two positional arguments, `settings.mt5` first -- the same shape `main.py`
     # uses. Passing only the credentials made the connector read
     # `credentials.terminal_path`, which does not exist, and the run died

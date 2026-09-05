@@ -67,6 +67,35 @@ class GoldCrossDiscovery:
                 natural = 1
             elif fast.iloc[-1] < slow.iloc[-1] and close.iloc[-1] < floor:
                 natural = -1
+        elif cfg.mechanism.startswith("adaptive_channel_"):
+            unit = float(_atr(frame).iloc[-1])
+            if not np.isfinite(unit) or unit <= 0:
+                return quiet
+            threshold = float(cfg.mechanism.rsplit("_", 1)[1]) / 100.0
+            ceiling = float(frame["high"].shift(1).rolling(20).max().iloc[-1])
+            floor = float(frame["low"].shift(1).rolling(20).min().iloc[-1])
+            breakout_long = close.iloc[-1] > ceiling
+            breakout_short = close.iloc[-1] < floor
+            strong = abs(float(fast.iloc[-1] - slow.iloc[-1])) / unit > threshold
+            if (strong and breakout_long) or (not strong and breakout_short):
+                natural = 1
+            elif (strong and breakout_short) or (not strong and breakout_long):
+                natural = -1
+        elif cfg.mechanism == "trend_pullback":
+            if (
+                fast.iloc[-1] > slow.iloc[-1]
+                and frame["low"].iloc[-1] <= fast.iloc[-1]
+                and close.iloc[-1] > fast.iloc[-1]
+                and close.iloc[-1] > open_.iloc[-1]
+            ):
+                natural = 1
+            elif (
+                fast.iloc[-1] < slow.iloc[-1]
+                and frame["high"].iloc[-1] >= fast.iloc[-1]
+                and close.iloc[-1] < fast.iloc[-1]
+                and close.iloc[-1] < open_.iloc[-1]
+            ):
+                natural = -1
         elif cfg.mechanism == "aligned_momentum":
             unit = float(_atr(frame).iloc[-1])
             if not np.isfinite(unit) or unit <= 0:
