@@ -465,11 +465,13 @@ def _resolve(
 
     if close_at_horizon and first < last:
         horizon_at = index[last - 1]
-        close_r = float(np.clip(
-            (float(closes[last - 1]) - idea.entry) / risk * direction_sign,
-            -1.0,
-            reward_r,
-        ))
+        close_r = float(
+            np.clip(
+                (float(closes[last - 1]) - idea.entry) / risk * direction_sign,
+                -1.0,
+                reward_r,
+            )
+        )
         if fixed_r is None:
             fixed_r, exit_at = close_r, horizon_at
         if managed_open:
