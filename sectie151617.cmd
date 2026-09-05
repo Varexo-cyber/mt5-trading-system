@@ -8,7 +8,8 @@ if not "%~1"=="" set DAGEN=%~1
 echo.
 echo  S15-S17 BTCUSD BROKER-REPLAY -- GEEN ECHT GELD
 echo  S15 M1, S16 M5, S17 M15; alleen BTCUSD.
-echo  %DAGEN% dagen met live sizing, globale poorten en positiebeheer waar toepasbaar.
+echo  %DAGEN% dagen, SHADOW risk-stress op 8%% per trade en positiebeheer-grid.
+echo  Dit wijzigt Jarvis live-risico NIET en plaatst S15-S17 NIET live.
 echo  MT5 moet draaien en ingelogd zijn.
 echo.
 
@@ -23,6 +24,8 @@ if not exist "runtime" mkdir runtime
   --days %DAGEN% ^
   --only section_fifteen_btc_m1,section_sixteen_btc_m5,section_seventeen_btc_m15 ^
   --symbols BTCUSD ^
+  --risk-percent 8 ^
+  --manage-grid ^
   --csv runtime\secties15-17.csv
 
 if errorlevel 1 (
