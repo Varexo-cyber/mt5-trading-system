@@ -43,7 +43,7 @@ import sys
 # nothing and is gone.
 import time as _time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,6 +70,9 @@ RAW_BTC_SHADOW_SECTIONS = {
     "section_sixteen_btc_m5",
     "section_seventeen_btc_m15",
 }
+RAW_BTC_HORIZONS = {Timeframe.M1: 120, Timeframe.M5: 48, Timeframe.M15: 24}
+RAW_BTC_MAX_SPREAD_R = {Timeframe.M1: 0.15, Timeframe.M5: 0.12, Timeframe.M15: 0.10}
+RAW_BTC_EXECUTION_ALLOWANCE_R = 0.02
 
 
 class _RawShadowEngine:
@@ -312,6 +315,7 @@ def _resolve(
     manage=None,
     arrays=None,
     force_close_at: datetime | None = None,
+    close_at_horizon: bool = False,
 ):
     """First touch of stop or target on the bars after entry.
 
@@ -459,6 +463,18 @@ def _resolve(
         if fixed_r is not None and not managed_open:
             break
 
+    if close_at_horizon and first < last:
+        horizon_at = index[last - 1]
+        close_r = float(np.clip(
+            (float(closes[last - 1]) - idea.entry) / risk * direction_sign,
+            -1.0,
+            reward_r,
+        ))
+        if fixed_r is None:
+            fixed_r, exit_at = close_r, horizon_at
+        if managed_open:
+            managed_r, managed_at = close_r, horizon_at
+            managed_open = False
     if managed_open:
         managed_r = None
         managed_at = None
@@ -767,6 +783,55 @@ def _one_clock(
                 )
                 continue
             if raw_shadow:
+                # Match the discovery replay: signal on this closed clock bar,
+                # fill at the NEXT clock bar's open, with the ATR-sized risk
+                # frozen from the signal bar.  Using the signal close here was
+                # a different strategy and double-counted the entry spread.
+                next_bar = int(bars.index.searchsorted(upto, side="left"))
+                if next_bar >= len(bars):
+                    continue
+                signal_close = float(ctx.series[clock].df["close"].iloc[-1])
+                risk_price = abs(signal_close - idea.stop_loss)
+                sign = 1.0 if idea.direction is Direction.LONG else -1.0
+                entry = float(bars["open"].iloc[next_bar])
+                idea = replace(
+                    idea,
+                    entry=entry,
+                    stop_loss=entry - sign * risk_price,
+                    take_profit=entry + sign * float(engine.config.target_r) * risk_price,
+                )
+                entry_spread_price = (
+                    float(bars["spread"].iloc[next_bar]) * spec.point
+                    if "spread" in bars.columns
+                    else 0.0
+                )
+                minimum_lot_stop_money = spec.money_per_lot(risk_price) * spec.volume_min
+                spread_share = entry_spread_price / risk_price if risk_price > 0.0 else float("inf")
+                if (
+                    minimum_lot_stop_money > equity * 0.02
+                    or spread_share > RAW_BTC_MAX_SPREAD_R[clock]
+                ):
+                    reasons = []
+                    if minimum_lot_stop_money > equity * 0.02:
+                        reasons.append("minimum-lot stop exceeds 2% research envelope")
+                    if spread_share > RAW_BTC_MAX_SPREAD_R[clock]:
+                        reasons.append(
+                            f"spread {spread_share:.1%} exceeds "
+                            f"{RAW_BTC_MAX_SPREAD_R[clock]:.0%} research envelope"
+                        )
+                    out[name].append(
+                        Decision(
+                            upto,
+                            symbol,
+                            module,
+                            "OUTSIDE_RESEARCH_ENVELOPE",
+                            direction=idea.direction.name,
+                            note="; ".join(reasons)[:90],
+                            pass_key=(name, clock.value),
+                        )
+                    )
+                    continue
+            if raw_shadow:
                 volume = float(spec.volume_min)
                 commission = sizer.settings.risk.commission_per_lot(spec.asset_class.value)
                 actual_risk_money = (
@@ -820,14 +885,21 @@ def _one_clock(
                 force_close_at = upto.replace(hour=hour, minute=minute, second=0, microsecond=0)
                 if force_close_at <= upto:
                     force_close_at += timedelta(days=1)
+            raw_horizon = RAW_BTC_HORIZONS.get(clock, 0)
+            resolved_horizon = (
+                int(raw_horizon * clock.duration / resolve_on.duration)
+                if raw_shadow and raw_horizon
+                else horizon
+            )
             r, exit_at, managed_r, managed_at = _resolve(
                 resolve_frame,
                 upto,
                 idea,
-                horizon_bars=horizon,
+                horizon_bars=resolved_horizon,
                 manage=resolved_manage,
                 arrays=resolve_arrays,
                 force_close_at=force_close_at,
+                close_at_horizon=raw_shadow,
             )
             # FREED AT THE EXIT THE ACCOUNT ACTUALLY TAKES.
             #
@@ -890,7 +962,12 @@ def _one_clock(
             # Subtracted ONCE, which is what `cost_share` already is: the
             # sizer's own refusal says a stop-out costs "about 1+cost_share R
             # rather than 1.00R". One definition, one subtraction.
-            cost = sizer.cost_share(spec, abs(idea.entry - idea.stop_loss), spread_price)
+            if raw_shadow:
+                cost = RAW_BTC_EXECUTION_ALLOWANCE_R + (
+                    entry_spread_price / abs(idea.entry - idea.stop_loss)
+                )
+            else:
+                cost = sizer.cost_share(spec, abs(idea.entry - idea.stop_loss), spread_price)
             r = None if r is None else r - cost
             managed_r = None if managed_r is None else managed_r - cost
             if resolved_manage is None:
@@ -918,10 +995,11 @@ def _one_clock(
                         resolve_frame,
                         upto,
                         idea,
-                        horizon_bars=horizon,
+                        horizon_bars=resolved_horizon,
                         manage=(trigger_r, lock_r * risk_price),
                         arrays=resolve_arrays,
                         force_close_at=force_close_at,
+                        close_at_horizon=raw_shadow,
                     )
                     measured.append((label, None if grid_result is None else grid_result - cost))
                 grid_rows = tuple(measured)
@@ -1323,11 +1401,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--btc-research-parity",
         "--raw-btc-shadow",
+        dest="btc_research_parity",
         action="store_true",
         help=(
-            "S15-S17 shadow replay only: take every detector firing without "
-            "confluence, cost-wall or capitalization refusal; never affects live Jarvis"
+            "S15-S17 shadow replay only: reproduce the frozen research entry, "
+            "horizon, cost and eligibility envelope; never affects live Jarvis"
         ),
     )
     parser.add_argument(
@@ -1437,17 +1517,17 @@ def main(argv: list[str] | None = None) -> None:
     selected_only = {
         item.strip() for item in args.only.replace(" ", ",").split(",") if item.strip()
     }
-    if args.raw_btc_shadow and (
+    if args.btc_research_parity and (
         not selected_only or not selected_only.issubset(RAW_BTC_SHADOW_SECTIONS)
     ):
         raise SystemExit(
-            "--raw-btc-shadow is restricted to --only section_fifteen_btc_m1,"
+            "--btc-research-parity is restricted to --only section_fifteen_btc_m1,"
             "section_sixteen_btc_m5,section_seventeen_btc_m15"
         )
-    if args.raw_btc_shadow:
+    if args.btc_research_parity:
         print(
-            "RAW BTC SHADOW: detector firings bypass confluence/cost/sizing refusals; "
-            "minimum-lot actual risk is reported; live Jarvis is unchanged"
+            "BTC RESEARCH PARITY: frozen next-bar entries, horizons, cost allowance and "
+            "spread/risk envelope; live Jarvis is unchanged"
         )
 
     # THE OVERLAY, or there are no live modules at all. The base config ships
@@ -1931,7 +2011,7 @@ def main(argv: list[str] | None = None) -> None:
             # watch every setup be refused one at a time.
             hopeless = (
                 None
-                if args.raw_btc_shadow
+                if args.btc_research_parity
                 else _hopeless_on_cost(
                     PositionSizer(settings),
                     spec,
@@ -2035,13 +2115,13 @@ def main(argv: list[str] | None = None) -> None:
                             name,
                             (
                                 _RawShadowEngine(only[0], getattr(tuned.analysis, name))
-                                if args.raw_btc_shadow
+                                if args.btc_research_parity
                                 else ConfluenceEngine(only, tuned.analysis.confluence)
                             ),
                             PositionSizer(tuned),
                             None if comment.casefold() in fixed else section_manage,
                             flatten_time,
-                            args.raw_btc_shadow,
+                            args.btc_research_parity,
                         )
                     )
                 produced = _one_clock(
@@ -2150,7 +2230,7 @@ def main(argv: list[str] | None = None) -> None:
         _break_even_rule(settings) is not None,
         sections=tuple(sorted({name for name, _tf in passes})),
     )
-    _gates_this_run_does_not_apply()
+    _gates_this_run_does_not_apply(btc_research_parity=args.btc_research_parity)
     if args.csv:
         path = Path(args.csv)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -3038,14 +3118,19 @@ EXITS_NOT_MODELLED: tuple[tuple[str, str], ...] = (
 )
 
 
-def _gates_this_run_does_not_apply() -> None:
+def _gates_this_run_does_not_apply(*, btc_research_parity: bool = False) -> None:
     """What stands between this number and the account's behaviour."""
     blocked = sum(count for _name, count, _why in NOT_MODELLED)
     print(f"\n{'=' * 78}")
     print("WHAT THIS RUN DID NOT MODEL")
     print(f"{'=' * 78}")
-    print("  This script is ConfluenceEngine.evaluate + PositionSizer.size. The live")
-    print("  runner wraps those in eight more gates. None of them are applied here:\n")
+    if btc_research_parity:
+        print("  This S15-S17 run reproduces the frozen research detector, next-bar entry,")
+        print("  horizon, spread envelope, 2% minimum-lot envelope and execution allowance.")
+        print("  It deliberately does NOT apply these later live-runner gates:\n")
+    else:
+        print("  This script is ConfluenceEngine.evaluate + PositionSizer.size. The live")
+        print("  runner wraps those in eight more gates. None of them are applied here:\n")
     for name, count, why in NOT_MODELLED:
         print(f"    {name:<24}{count:>5}   {why}")
     print(
