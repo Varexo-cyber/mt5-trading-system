@@ -337,7 +337,10 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         # trade now, and it comes back None when the H1 ATR is unknown -- live
         # refuses to move a stop in that case too. Reading the CONFIGURED rule
         # here would free the symbol on a managed exit that never happened.
-        assert "freed = managed_at if resolved_manage is not None else exit_at" in source
+        assert (
+            "freed = managed_at if (resolved_manage is not None or jarvis_replay) else exit_at"
+            in source
+        )
 
     def test_the_resolver_reports_both_exit_times(self) -> None:
         """Measured, not grepped. Break-even scratches this trade on the first
