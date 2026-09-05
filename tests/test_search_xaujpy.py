@@ -411,3 +411,63 @@ class TestAPatternIsNotASetup:
         # pattern rather than an event.
         assert rate > 0.05, "the fixture is not random enough to make the point"
         assert rate * 1440 > 50, "this would not be 50+ signals a day on M1"
+
+
+class TestEveryScriptThatTalksToTheBrokerLoadsTheAccountOverlay:
+    """`benen.cmd` DIED ON `USDJPY` AND PRINTED THE SAME NAME TWICE:
+
+        this broker lists neither 'USDJPY' nor 'USDJPY'
+
+    Two identical names is what an empty `symbol_suffix` looks like from the
+    outside. The suffix lives in `config/eightcap.yaml`, and the script called
+    `load_settings(env_overrides=False)` -- the base config, no overlay. So
+    `broker_symbol` had nothing to append and handed back the canonical name it
+    was given.
+
+    THE SUFFIX IS THE HALF THAT FAILED LOUDLY. The overlay is also where the
+    commission, the slippage, the risk percentage and the cost cap live. A
+    research run without it prices a DIFFERENT ACCOUNT than the one that
+    trades, silently, and in whichever direction the base defaults happen to
+    point -- which is the same class of error as the flat 0.4% stop width that
+    made nine M1 cells look free.
+
+    So this is a property over every script that opens a connector, not a
+    check on the two that were wrong.
+    """
+
+    def _connector_scripts(self) -> list[Path]:
+        return [
+            path
+            for path in sorted((ROOT / "scripts").glob("*.py"))
+            if "MT5Connector(" in path.read_text()
+        ]
+
+    def test_there_are_scripts_to_check(self) -> None:
+        assert self._connector_scripts(), "this test has gone blind"
+
+    def test_none_of_them_loads_the_base_config_alone(self) -> None:
+        offenders: list[str] = []
+        for path in self._connector_scripts():
+            text = path.read_text()
+            if "load_settings(" not in text:
+                continue
+            if "eightcap.yaml" not in text:
+                offenders.append(
+                    f"{path.name}: opens a broker connection and never loads the overlay"
+                )
+        assert not offenders, "a script prices an account it is not measuring:\n" + "\n".join(
+            offenders
+        )
+
+    def test_the_overlay_is_what_carries_the_suffix(self) -> None:
+        """The fact the fix rests on, checked rather than remembered."""
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        base = load_settings(env_overrides=False)
+        account = load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+        assert base.instruments.broker_symbol("USDJPY") == "USDJPY"
+        assert account.instruments.broker_symbol("USDJPY") != "USDJPY"
+        assert account.instruments.symbol_suffix

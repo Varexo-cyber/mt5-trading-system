@@ -278,7 +278,20 @@ def main() -> None:
         for piece in str(chunk).split(",")
         if piece.strip()
     ]
-    settings = load_settings(env_overrides=False)
+    # THE ACCOUNT'S OWN OVERLAY, exactly as `dry_run_sections` and
+    # `search_section_four` load it.
+    #
+    # This was `load_settings(env_overrides=False)` -- the BASE config, with no
+    # overlay. `instruments.symbol_suffix` lives in the overlay, so it came back
+    # empty, `broker_symbol("USDJPY")` returned `USDJPY`, and the run died on a
+    # symbol this broker calls `USDJPY.i`. The error even printed the same name
+    # twice, which is what an empty suffix looks like from the outside.
+    #
+    # The suffix is the visible half. The overlay is also where the commission,
+    # the slippage, the risk percentage and the cost cap live, so a research run
+    # without it prices a different account than the one that trades -- silently,
+    # and in whichever direction the base defaults happen to point.
+    settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=True)
     mechanisms = FAMILIES["all"]
 
     print("=" * 78)
