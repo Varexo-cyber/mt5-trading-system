@@ -35,10 +35,10 @@ _ORIGINS: tuple[tuple[str, TradeOrigin], ...] = (
     #     other section join that symbol. The rule the owner asked for on
     #     4 September would have been switched back off by its own labels.
     # Longest name first: `origin_for_setup_family` matches by substring, and
-    # "section_eleven_xaujpy_m1" must not be reached by a shorter prefix.
+    # "section_eleven_xaujpy_legs_m5" must not be reached by a shorter prefix.
     ("section_thirteen_xaujpy_m15", TradeOrigin(13, "xaujpy_searched", "M15", "JARVIS-S13-XJ-M15")),
     ("section_twelve_xaujpy_m5", TradeOrigin(12, "xaujpy_searched", "M5", "JARVIS-S12-XJ-M5")),
-    ("section_eleven_xaujpy_m1", TradeOrigin(11, "xaujpy_searched", "M1", "JARVIS-S11-XJ-M1")),
+    ("section_eleven_xaujpy_legs_m5", TradeOrigin(11, "xaujpy_legs", "M5", "JARVIS-S11-LEG-M5")),
     ("section_ten_gold_m1", TradeOrigin(10, "large_break_retest", "M1", "JARVIS-S10-AU-M1")),
     ("section_eight_trend_day_h1", TradeOrigin(8, "trend_day", "H1", "JARVIS-S8-TD-H1")),
     ("section_nine_vwap_m30", TradeOrigin(9, "session_vwap", "M30", "JARVIS-S9-VW-M30")),

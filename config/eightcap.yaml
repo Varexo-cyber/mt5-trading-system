@@ -1712,57 +1712,81 @@ analysis:
   #
   # Dat is vooraf opgeschreven zodat de echte zoektocht op Eightcap-data het
   # kan tegenspreken in plaats van het achteraf te bevestigen.
-  section_eleven_xaujpy_m1:
-    # UITGEZET NA DE 90-DAAGSE REPLAY MET HET ECHTE KOSTENMODEL.
-    #
-    #     855 trades   -150,90 R   -615,64 EUR   -0,18 per trade
-    #
-    # De zoeker gaf +0,047 per trade en +8,14 sigma. Dat cijfer stond op
-    # een kostenmodel dat M1 ongeveer een twintigste van zijn kosten in
-    # rekening bracht -- een vaste 0,4%% van de prijs als stopbreedte in
-    # plaats van 1,0 x de ATR van de klok. Met de echte kosten slaat
-    # +0,047 om naar -0,18, en dat verschil IS de spread van een
-    # goudkruis over 74 trades per dag.
-    #
-    # Deze meting is betrouwbaar: dezelfde run bewees dat de vorige
-    # kapot was, want na de timeout-reparatie ging deze sectie van EEN
-    # trade naar 855. Wat er nu staat is wat het mechanisme werkelijk doet.
-    enabled: false
+  # SECTIE ELF, DERDE VERSIE, EN DE EERSTE MET EEN TEGENPARTIJ DIE EEN NAAM
+  # HEEFT.
+  #
+  #     XAUJPY = XAUUSD x USDJPY
+  #
+  # Goud beweegt, de yen niet, en het kruis moet volgen. Wie het kruis quote
+  # doet dat met vertraging. De trade is dat die quote bijtrekt, en aan de
+  # andere kant zit de market maker wiens kruis nog niet gelijk staat met zijn
+  # eigen twee boeken. Dat is een zin die je hardop kunt zeggen; "vier
+  # minuutkaarsen op rij omhoog" was dat niet.
+  #
+  # WAT ERVOOR STOND. Versie een was een gefit model per metaal op vier
+  # goudkruisen: holdout negatief in vier markten van de vier. Versie twee was
+  # `streak_reversal` op M1: -0,18 R per trade over 855 trades zodra het
+  # kostenmodel M1 in rekening bracht wat M1 werkelijk kost.
+  #
+  # WAT DIT GEMETEN HEEFT, EN HET HAALDE ZIJN LAT NIET. `benen.cmd 720`,
+  # 720 dagen Eightcap-bars, zestien cellen, Bonferroni-lat 2,96 sigma:
+  #
+  #     M5  gap 0,50 ATR  R:R 1,5   152 trades  +54,80 R  +0,361/trade
+  #                                 +2,93 sigma   holdout +1,47 R   0,3/dag
+  #
+  # +2,93 tegen 2,96. MIS, met 0,03, en die lat gaat niet omlaag -- een lat
+  # achteraf verzetten is precies wat een vooraf opgeschreven lat moet
+  # voorkomen. Alle twaalf overlevende cellen waren positief en dit was de
+  # beste; wat hier staat is dus "het sterkste dat de zoektocht vond", niet
+  # "een bewezen edge". Daarom staat hij AAN voor replay en journal, en staat
+  # hij NIET op `live_enabled_modules`.
+  #
+  # DRIE DINGEN DIE JE MOET WETEN VOORDAT JE HEM LIVE ZET.
+  #
+  # EEN: 0,3 trades per dag. Er is om 3-5 gevraagd. Dit is een zestiende
+  # daarvan, en dat is niet met een drempel op te lossen -- gap 0,25 handelde
+  # drie keer zo vaak voor minder dan de helft van de edge per trade.
+  #
+  # TWEE: de benen worden op GESLOTEN M5-bars gelezen. Een vertraging die
+  # binnen vijf minuten ontstaat en weer weg is, is voor de meting onzichtbaar
+  # en hier dus ook. Als de echte lag sneller is dan M5 vangt dit er een
+  # fractie van. Benen op M1 of op ticks is het volgende experiment.
+  #
+  # DRIE: de mediane |gap| op Eightcap M5 is 0,015 ATR. Dat is BOVEN de vloer
+  # van 0,005 waaronder het kruis synthetisch uit zijn benen gerekend wordt --
+  # maar niet ruim. Verandert Eightcap zijn prijsvorming, dan valt dit
+  # mechanisme weg en `minimum_gap_atr` is wat het dan hardop zegt in plaats
+  # van ruis te blijven handelen.
+  section_eleven_xaujpy_legs_m5:
+    # AAN voor replay en journal; live geld is `live_enabled_modules` en daar
+    # staat hij niet op. Zie de 2,93-tegen-2,96 hierboven.
+    enabled: true
     symbol: XAUJPY
-    timeframe: M1
-    # `zoekjpy.cmd 720`, 720 dagen, de hoogste sigma van de hele grid van 168:
-    #     43.192 trades  74,5/dag  +2035,50 R  +0,047/trade  +8,14 sigma
-    #     holdout +347,00 R over 10.463 trades, vroeg +1249,50 / laat +786,00
-    #     per sessie ALLE VIJF positief: tokyo +0,053  london +0,043
-    #     overlap +0,029  ny_late +0,050  close +0,059
-    #
-    # TWEE DINGEN DIE JE MOET WETEN VOORDAT JE DIT GELOOFT.
-    #
-    # EEN: dat cijfer is gemeten met een KAPOT kostenmodel. De zoeker rekende
-    # de kosten af tegen een vaste 0,4% van de prijs als stopbreedte, op elke
-    # klok dezelfde, terwijl de stop 1,0 x ATR van die klok is. Op M1 is die
-    # ATR een orde kleiner, dus M1 kreeg ongeveer een twintigste van zijn
-    # echte kosten in rekening gebracht. Dat is gerepareerd, maar deze regels
-    # dragen nog het oude cijfer. De replay hieronder rekent wel goed.
-    #
-    # TWEE: 74,5 trades per dag is vijftien keer wat gevraagd is, en op M1 is
-    # de spread van een goudkruis groot ten opzichte van de stop. Als er iets
-    # sneuvelt op kosten, is dit het.
-    mechanism: streak_reversal
+    base_leg: XAUUSD
+    quote_leg: USDJPY
+    # M5 is gemeten, niet gekozen. Van de drie klokken was dit de enige
+    # waarvan de beste cel binnen een afronding van de lat kwam: M15 was
+    # dunner en M1 verdronk in kosten.
+    timeframe: M5
+    # De gezwaaide winnaar van (0,25 / 0,50 / 0,75 / 1,00).
+    gap_atr: 0.50
+    # Onder deze mediane |gap| rekent de broker het kruis uit zijn benen en is
+    # er geen vertraging om te handelen. Eightcap meet 0,015 op M5.
+    minimum_gap_atr: 0.005
     stop_atr: 1.0
     target_ratio: 1.5
-    # score x confidence moet BOVEN score_threshold (35,0) uitkomen,
-    # want een losse module scoort precies |score| x confidence. Dit
-    # stond op 60 x 0,55 = 33,0 en dat is twee punten tekort, altijd.
-    # 32.407 setups over 180 dagen, nul trades, allemaal geweigerd.
-    # 70 x 0,58 = 40,6, exact wat sectie tien uitstuurt.
+    # Twee M5-bars speling. Een been dat ouder is telt als AFWEZIG en dan is
+    # er geen trade -- een bevroren been is exact wat een nepgap maakt. Goud
+    # pauzeert dagelijks terwijl de yen doorloopt, en voordat die pauze eruit
+    # gefilterd werd zat tweederde van de gemeten winst erin.
+    max_leg_age_seconds: 600.0
+    # 70 x 0,58 = 40,6, boven de score_threshold van 35,0. De voorganger stond
+    # op 60 x 0,55 = 33,0 en vormde 32.407 setups zonder een enkele trade.
     score: 70.0
     confidence: 0.58
-    # OPEN, en dat is een wijziging met een reden. Het blok 07:00-13:00 komt
-    # van sectie tien's break-retest op deze kruisen. Dit is een ander
-    # mechanisme en de sessietabel hierboven zegt dat London hier POSITIEF is
-    # (+0,043 over 11.445 trades). Een blok van een andere strategie
-    # overnemen zonder het te meten is precies wat hier niet hoort.
+    # LEEG, en dat is hier een besluit. De goudpauze wordt weggehaald door de
+    # range-guard in `analysis/legs_gap.py`, die werkt op welke uren deze
+    # broker ook pauzeert. Een opgeschreven uur doet dat niet.
     allowed_hours: []
     blocked_hours: []
 
@@ -2640,7 +2664,7 @@ analysis:
       # SECTIE ELF is op 1,5 gefit en moet op 1,5 handelen. De trainer maakte
       # elke trade op stop 1,0 ATR en doel 1,5 R; een ander doel hier maakt
       # van deze modellen een meting van iets anders dan wat ze gaan doen.
-      section_eleven_xaujpy_m1: 1.5
+      section_eleven_xaujpy_legs_m5: 1.5
       section_twelve_xaujpy_m5: 1.5
       section_thirteen_xaujpy_m15: 1.5
       section_fifteen_btc_m1: 2.0
@@ -2672,7 +2696,7 @@ analysis:
     # rest: de instaptiming-poort weigert een instap waar prijs de laatste
     # drie M5-bars tegenin liep, en dat IS het mechanisme van een model dat
     # precies die bar afleest. De poort zou zijn eigen these weigeren.
-    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_m1, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15]
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_legs_m5, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15]
     # Sectie 6 is als complete closed-barstrategie gemeten. Een geldig
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
@@ -3157,7 +3181,7 @@ analysis:
       # een POSITIEVE onaangeraakte holdout heeft. Die laatste eis is precies
       # waar de oude sectie elf op stukliep.
       #
-      # Zie het blok bij `section_eleven_xaujpy_m1` hierboven.
+      # Zie het blok bij `section_eleven_xaujpy_legs_m5` hierboven.
       # S11 is removed. Its forced model missed the multiplicity bar and then
       # lost on every untouched market holdout. That comment refers to the
       # retired pooled `section_eleven_metals`, not the new XAUEUR-only S11.
@@ -3309,7 +3333,7 @@ analysis:
       section_ten_gold_m1: 0.58
       # Sectie elf mag alleen handelen, net als tien: hij IS de these, en een
       # generieke lone-modulepoort zou elk geldig signaal weigeren.
-      section_eleven_xaujpy_m1: 0.55
+      section_eleven_xaujpy_legs_m5: 0.55
       section_twelve_xaujpy_m5: 0.55
       section_thirteen_xaujpy_m15: 0.55
       # S11-S14 are each one complete, independently measured detector. Their
@@ -3464,7 +3488,7 @@ analysis:
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.0
       section_ten_gold_m1: 1.0
-      section_eleven_xaujpy_m1: 1.0
+      section_eleven_xaujpy_legs_m5: 1.0
       section_twelve_xaujpy_m5: 1.0
       section_thirteen_xaujpy_m15: 1.0
       section_fifteen_btc_m1: 0.0
@@ -4578,7 +4602,7 @@ risk:
     # Zodra `zoekjpy.cmd` een cel aanwijst hoort dit blok bijgesteld te worden
     # op HAAR verwachte winrate. Een breaker die 65% verliezers toestaat op een
     # mechanisme dat er 45 verwacht, grijpt nooit in.
-    section_eleven_xaujpy_m1:
+    section_eleven_xaujpy_legs_m5:
       window: 40
       minimum_trades: 40
       maximum_loss_share: 0.65

@@ -44,7 +44,7 @@ if not defined DAGEN set DAGEN=180
 
 echo.
 echo  ==================================================================
-echo   XAUJPY ALLEEN -- SECTIE 11 (M1), 12 (M5) EN 13 (M15)
+echo   XAUJPY ALLEEN -- SECTIE 11 (BENEN, M5), 12 (M5) EN 13 (M15)
 echo  ==================================================================
 echo.
 echo  DE ECHTE REPLAY, met het ECHTE kostenmodel. `zoekjpy.cmd` zocht deze
@@ -54,14 +54,28 @@ echo  M1 is die ATR een orde kleiner, dus M1 kreeg ongeveer een twintigste van
 echo  zijn echte kosten. Deze replay rekent wel goed, en dat is precies waarom
 echo  hij het cijfer is dat beslist.
 echo.
-echo  WAT ER IN DE CONFIG STAAT, met de cijfers uit die kapotte zoektocht:
-echo    S11  M1   streak_reversal      74,5/dag  +0,047/trade  +8,14 sigma
+echo  SECTIE 11 IS IETS ANDERS GEWORDEN. `streak_reversal` op M1 deed -0,18 R
+echo  per trade over 855 trades zodra de kosten klopten, en die is weg. Wat er
+echo  nu staat is het benen-mechanisme op M5:
+echo.
+echo    XAUJPY = XAUUSD x USDJPY
+echo.
+echo  Goud beweegt, de yen niet, het kruis moet volgen, en wie het kruis quote
+echo  doet dat met vertraging. De tegenpartij heeft een naam. `benen.cmd 720`
+echo  mat op M5 met gap 0,50 ATR en R:R 1,5: 152 trades, +54,80 R, +0,361 per
+echo  trade, +2,93 sigma tegen een lat van 2,96. HIJ HAALDE DIE LAT NIET, met
+echo  0,03, en die lat gaat niet omlaag.
+echo.
+echo  WAT ER IN DE CONFIG STAAT:
+echo    S11  M5   benen-gap 0,50        0,3/dag  +0,361/trade  +2,93 sigma
 echo    S12  M5   stretch_fade         20,6/dag  +0,018/trade  +1,61 sigma
 echo    S13  M15  close_position_fade   7,6/dag  +0,041/trade  +2,25 sigma
 echo.
-echo  MIJN VERWACHTING, zodat je me erop kunt pakken: M15 houdt stand, M1
-echo  klapt in elkaar op kosten. 74 trades per dag op M1 met de spread van een
-echo  goudkruis gaat pijn doen.
+echo  MIJN VERWACHTING, zodat je me erop kunt pakken: S11 doet weinig trades en
+echo  betaalt per trade het meest; S12 staat uit omdat hij de andere twee
+echo  verdrong. Als S11 hier onder +0,20 per trade uitkomt is het mechanisme
+echo  in de praktijk kleiner dan de zoektocht zei, en dan is de reden bijna
+echo  zeker dat de lag korter is dan vijf minuten.
 echo.
 echo  DE DRIE KLOKKEN IN EEN RUN. Ze delen de positielimiet, dus ze los meten
 echo  en de uitkomsten optellen geeft een ander getal dan ze samen draaien --
@@ -78,8 +92,7 @@ echo    sectie11.cmd 180 grof   sneller, uitgelopen op M5-bars in plaats van M1
 echo.
 echo  WAT `grof` KOST. Een bar die stop en target allebei raakt is onbeslisbaar
 echo  en telt als VERLIES. Op M5-bars gebeurt dat vaker dan op M1, dus `grof`
-echo  leest pessimistischer. Sectie 11 is een M1-sectie, dus zonder `grof` is
-echo  het eerlijke getal.
+echo  leest pessimistischer. Zonder `grof` is het eerlijke getal.
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (
@@ -88,18 +101,20 @@ if not exist ".venv-live\Scripts\python.exe" (
   exit /b 1
 )
 
-rem GEEN MECHANISME IS GEEN RUN. Een lege `mechanism` maakt de sectie stil, en
-rem een stille sectie komt terug met een nulregel die leest als een strategie
-rem die niets vond.
-.venv-live\Scripts\python.exe -c "import sys; from config.loader import DEFAULT_CONFIG_PATH, load_settings; s=load_settings(DEFAULT_CONFIG_PATH, overlay='config/eightcap.yaml', env_overrides=False); n=[m for m in ('section_eleven_xaujpy_m1','section_twelve_xaujpy_m5','section_thirteen_xaujpy_m15') if getattr(s.analysis,m).mechanism]; print('mechanismen:', ', '.join(n) if n else 'GEEN'); sys.exit(0 if n else 1)"
+rem GEEN MECHANISME IS GEEN RUN. Een sectie zonder mechanisme is stil, en een
+rem stille sectie komt terug met een nulregel die leest als een strategie die
+rem niets vond. Sectie 11 heeft geen `mechanism`-veld meer -- die draait het
+rem benen-mechanisme en telt mee zodra hij `enabled` is.
+.venv-live\Scripts\python.exe -c "import sys; from config.loader import DEFAULT_CONFIG_PATH, load_settings; s=load_settings(DEFAULT_CONFIG_PATH, overlay='config/eightcap.yaml', env_overrides=False); a=s.analysis; n=[m for m in ('section_twelve_xaujpy_m5','section_thirteen_xaujpy_m15') if getattr(a,m).mechanism]; n=(['section_eleven_xaujpy_legs_m5 (benen)'] if a.section_eleven_xaujpy_legs_m5.enabled else [])+n; print('actief:', ', '.join(n) if n else 'GEEN'); sys.exit(0 if n else 1)"
 if errorlevel 1 (
   echo.
-  echo  GEEN VAN DE DRIE SECTIES HEEFT EEN MECHANISME.
+  echo  GEEN VAN DE DRIE SECTIES KAN IETS DOEN.
   echo.
   echo  Deze run zou nul trades opleveren en dat leest als "niets gevonden"
   echo  terwijl er nooit iets gezocht is. Draai eerst:
   echo.
-  echo      zoekjpy.cmd 720
+  echo      benen.cmd 720        (sectie 11)
+  echo      zoekjpy.cmd 720      (sectie 12 en 13)
   echo.
   pause
   exit /b 1
@@ -113,7 +128,7 @@ echo.
 
 .venv-live\Scripts\python.exe -m scripts.dry_run_sections ^
   --days %DAGEN% %GROF% --symbols XAUJPY %BEHEER% ^
-  --only section_eleven_xaujpy_m1,section_twelve_xaujpy_m5,section_thirteen_xaujpy_m15 ^
+  --only section_eleven_xaujpy_legs_m5,section_twelve_xaujpy_m5,section_thirteen_xaujpy_m15 ^
   --csv runtime\sectie11.csv
 
 if errorlevel 1 (

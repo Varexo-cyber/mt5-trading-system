@@ -333,11 +333,13 @@ def main() -> None:
     # that will disagree.
     blocked: set[int] = set()
     if not args.all_hours:
-        for name in (
-            "section_eleven_xaujpy_m1",
-            "section_twelve_xaujpy_m5",
-            "section_thirteen_xaujpy_m15",
-        ):
+        # THE SECTIONS THIS SCRIPT ACTUALLY FEEDS, imported rather than typed.
+        # Section eleven used to be on this list and is not any more -- it runs
+        # the legs mechanism, which this searcher cannot produce -- and a
+        # hand-written copy of the list would still be muting its hours here.
+        from runner.service import XAUJPY_SECTIONS
+
+        for name in XAUJPY_SECTIONS:
             blocked |= set(getattr(settings.analysis, name).blocked_hours)
         if blocked:
             print(

@@ -3466,7 +3466,7 @@ class ConfluenceConfig(Base):
         # whose whole input is the last few intraday bars. The test that
         # catches this exists because it has now happened to every section
         # that went live without being named here.
-        "section_eleven_xaujpy_m1",
+        "section_eleven_xaujpy_legs_m5",
         "section_twelve_xaujpy_m5",
         "section_thirteen_xaujpy_m15",
         # SECTION ELEVEN, for the sixth and seventh time in this list's short
@@ -4240,6 +4240,96 @@ class SectionXauJpyConfig(Base):
         return self
 
 
+class SectionElevenLegsConfig(Base):
+    """SECTION ELEVEN: the XAUJPY quote faded back toward its own two legs.
+
+    THE ONE NUMBER THAT MATTERS BEFORE ANY OF THE OTHERS. This measured +2.93
+    sigma against a pre-registered Bonferroni bar of 2.96 over 720 days --
+    152 trades, +54.80 R, +0.361 a trade, holdout +1.47 R. It MISSED, by 0.03,
+    and the bar does not move afterwards; that is the entire point of writing
+    one down first. Every field below therefore describes the strongest thing
+    the search found, not something proven. `enabled` here buys a replay and a
+    journal, and `live_enabled_modules` -- a separate list this section is not
+    on -- is what would buy real money.
+    """
+
+    enabled: bool = False
+    #: The quoted cross. `base_leg x quote_leg` is what it is checked against.
+    symbol: str = "XAUJPY"
+    base_leg: str = "XAUUSD"
+    quote_leg: str = "USDJPY"
+    #: M5, and that is a measured choice rather than a preference: of the three
+    #: clocks searched, M5 was the only one whose best cell came within a
+    #: rounding error of the bar. M15 was thinner and M1 drowned in cost.
+    timeframe: str = "M5"
+    #: How far the gap must sit from its own rolling normal, in ATR of the
+    #: cross, before it is a lag worth trading. 0.50 is the swept winner of
+    #: (0.25, 0.50, 0.75, 1.00); 0.25 traded three times as often for less
+    #: than half the edge a trade.
+    gap_atr: float = Field(default=0.50, gt=0.0, le=5.0)
+    #: THE BROKER-SYNTHESISES-THE-CROSS GUARD. Below this median absolute gap
+    #: the cross is being computed from its legs rather than quoted against
+    #: them, there is no lag and no counterparty, and every reading is the
+    #: rounding error of the multiplication. Eightcap measured 0.015 ATR
+    #: median on M5, which is ABOVE this floor -- barely, and that margin is
+    #: why the floor is a live check rather than a note in a document.
+    minimum_gap_atr: float = Field(default=0.005, ge=0.0, le=1.0)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    target_ratio: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: A leg whose newest bar is older than this is treated as ABSENT, and an
+    #: absent leg is no trade. Not a tidiness setting: a frozen leg is exactly
+    #: what manufactures a fake gap -- gold pauses daily while the yen trades
+    #: on, and before that pause was excluded two thirds of this mechanism's
+    #: measured profit came out of it. Two M5 bars of slack, so an ordinary
+    #: scan-order delay is tolerated and a stopped quote is not.
+    max_leg_age_seconds: float = Field(default=600.0, gt=0.0, le=3600.0)
+    #: A lone module scores exactly `|score| x confidence` and the confluence
+    #: `score_threshold` is 35.0. This pair is 40.6, the same figure section
+    #: ten sends. The predecessor shipped a hardcoded 60 x 0.55 = 33.0, formed
+    #: 32,407 setups over 180 days and took ZERO trades, every one refused two
+    #: points short. It is config here so that arithmetic is visible and
+    #: testable rather than buried in a module.
+    score: float = Field(default=70.0, gt=0.0, le=100.0)
+    confidence: float = Field(default=0.58, ge=0.0, le=1.0)
+    #: UTC hours this section may enter on; empty means every hour. The gold
+    #: pause is excluded by the range guard in `analysis/legs_gap.py` rather
+    #: than by a clock, because that guard works on whatever hours this broker
+    #: happens to pause and a written-down hour does not.
+    allowed_hours: tuple[int, ...] = ()
+    blocked_hours: tuple[int, ...] = ()
+
+    @field_validator("allowed_hours", "blocked_hours")
+    @classmethod
+    def _are_real_hours(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        for hour in value:
+            if not 0 <= int(hour) <= 23:
+                raise ValueError(f"{hour} is not a UTC hour")
+        return tuple(sorted({int(hour) for hour in value}))
+
+    @model_validator(mode="after")
+    def _three_distinct_instruments(self) -> SectionElevenLegsConfig:
+        """A leg equal to the cross compares an instrument against itself.
+
+        The gap is then zero on every bar forever and the section is silent
+        with nothing anywhere saying why -- the exact failure this repository
+        keeps re-finding, so it is refused at load instead.
+        """
+
+        names = (self.symbol, self.base_leg, self.quote_leg)
+        if len({name.upper() for name in names}) != 3:
+            raise ValueError(f"cross and legs must be three different instruments, got {names}")
+        return self
+
+    @model_validator(mode="after")
+    def _the_hour_lists_do_not_cancel_out(self) -> SectionElevenLegsConfig:
+        if self.allowed_hours and set(self.allowed_hours) <= set(self.blocked_hours):
+            raise ValueError(
+                "every allowed hour is also blocked, so this section can never "
+                "enter. Say so with `enabled: false` instead."
+            )
+        return self
+
+
 class GoldCrossDiscoveryConfig(Base):
     """One frozen gold-cross discovery; real-money permission is separate."""
 
@@ -4335,7 +4425,11 @@ class AnalysisConfig(Base):
     #: timeframe -- weights, allowlist and breakers are all keyed by module
     #: name -- so XAUJPY on M1, M5 and M15 is three modules. Each is silent
     #: until `scripts/search_xaujpy.py` names a mechanism for it.
-    section_eleven_xaujpy_m1: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M1")
+    #: SECTION ELEVEN IS NOT ONE OF THE THREE ANY MORE. It is the only
+    #: mechanism on this account with a counterparty you can name -- a
+    #: market maker whose XAUJPY quote has not caught up with XAUUSD x
+    #: USDJPY -- so it needs three instruments and a different config.
+    section_eleven_xaujpy_legs_m5: SectionElevenLegsConfig = SectionElevenLegsConfig()
     section_twelve_xaujpy_m5: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M5")
     section_thirteen_xaujpy_m15: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M15")
     section_fifteen_btc_m1: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
