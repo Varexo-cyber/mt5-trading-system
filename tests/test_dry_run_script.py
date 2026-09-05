@@ -3323,3 +3323,100 @@ class TestEveryLauncherSetsWhatItReads:
         assert "--days %DAGEN%" in launcher
         # `--days 90` is not a number, so the loop skips it and reads the 90.
         assert 'findstr /r "^[0-9][0-9]*$"' in launcher
+
+
+class TestATimeoutDoesNotKillTheSectionForTheRestOfTheRun:
+    """SIXTEEN TRADES IN THIRTY DAYS, ONE IN NINETY. SAME CONFIG.
+
+    Section eleven on M1 took 16 trades over a 30-day replay and 1 over a
+    90-day replay of the same instrument with the same settings. A longer
+    window contains the shorter one, so more days cannot mean fewer trades --
+    the cause was in the harness.
+
+    `_resolve` stops following a trade after `horizon_bars`. A trade that
+    reached neither its stop nor its target by then returned no exit time, and
+    the caller read that as "still open" and wrote
+
+        busy[name] = end + clock.duration
+
+    which is the end of the WHOLE RUN. One timeout on day two took the section
+    out for the other eighty-eight days, silently, and the low trade count read
+    as "the mechanism rarely fires".
+
+    A timeout is the harness losing track of a trade, not a position held
+    forever. The section is freed at the end of the horizon, and the count is
+    printed per clock.
+    """
+
+    def test_the_freeing_uses_the_horizon_and_not_the_end_of_the_run(self) -> None:
+        import inspect
+
+        from scripts import dry_run_sections
+
+        source = " ".join(inspect.getsource(dry_run_sections).split())
+
+        assert "_first, _last = _horizon_window(resolve_frame.index, upto, horizon)" in source
+        assert "freed = resolve_frame.index[_last - 1]" in source
+        assert "timed_out[name] = timed_out.get(name, 0) + 1" in source
+
+    def test_the_horizon_window_has_one_definition(self) -> None:
+        """The caller needs the same boundary `_resolve` uses. Computing it a
+        second time beside it is how the two drift, which is the defect this
+        repository produces more reliably than any other."""
+        import inspect
+
+        from scripts.dry_run_sections import _horizon_window, _resolve
+
+        assert "_horizon_window(index, start, horizon_bars)" in inspect.getsource(_resolve)
+        assert _horizon_window.__doc__
+
+    def test_the_window_stops_at_the_horizon_and_at_the_data(self) -> None:
+        import pandas as pd
+
+        from scripts.dry_run_sections import _horizon_window
+
+        index = pd.date_range("2026-01-01", periods=100, freq="1min", tz="UTC")
+
+        first, last = _horizon_window(index, index[10], 20)
+        assert (first, last) == (10, 30)
+
+        # Never past the end of the data.
+        first, last = _horizon_window(index, index[90], 50)
+        assert (first, last) == (90, 100)
+
+        # A start after the last bar leaves nothing to walk.
+        first, last = _horizon_window(index, index[-1] + pd.Timedelta("1min"), 20)
+        assert first >= last
+
+    def test_a_timed_out_trade_frees_the_section_within_the_window(self) -> None:
+        """The property, end to end on the resolver itself: a trade whose bars
+        never touch either barrier returns no exit, and the horizon boundary
+        the caller then uses sits INSIDE the data rather than past it."""
+        import numpy as np
+        import pandas as pd
+
+        from core.types import Direction
+        from scripts.dry_run_sections import _horizon_window, _resolve
+
+        index = pd.date_range("2026-01-01", periods=400, freq="1min", tz="UTC")
+        flat = pd.DataFrame(
+            {
+                "open": np.full(400, 100.0),
+                "high": np.full(400, 100.1),
+                "low": np.full(400, 99.9),
+                "close": np.full(400, 100.0),
+            },
+            index=index,
+        )
+
+        class _Wide:
+            direction = Direction.LONG
+            entry = 100.0
+            stop_loss = 90.0
+            take_profit = 110.0
+
+        fixed, exit_at, _managed, managed_at = _resolve(flat, index[0], _Wide(), horizon_bars=60)
+
+        assert fixed is None and exit_at is None and managed_at is None
+        _first, last = _horizon_window(index, index[0], 60)
+        assert index[last - 1] < index[-1], "the section would be freed past the data"
