@@ -115,6 +115,14 @@ def test_live_overlay_keeps_the_measured_gold_exit_and_rejects_spx() -> None:
     assert settings.analysis.confluence.target_r_multiple_by_family["section_six_gold_m5"] == 3.0
     assert "section_six_gold_m5" in settings.analysis.confluence.strategy_owned_entry_families
     assert "section_six_gold_m5" in settings.analysis.confluence.target_reach_advisory_families
+    assert (
+        "section_fifteen_btc_m1"
+        in settings.analysis.confluence.target_reach_advisory_families
+    )
+    assert settings.analysis.confluence.max_spread_share_of_stop_by_family == {
+        "section_sixteen_btc_m5": 0.12,
+        "section_seventeen_btc_m15": 0.10,
+    }
     # OFF THE FIXED-EXIT LIST ON 3 SEPTEMBER, and that is the whole change the
     # owner asked for. While the label sat there the manager returned early and
     # this route received NO position management -- not live and not in the dry
