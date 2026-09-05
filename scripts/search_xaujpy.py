@@ -249,11 +249,17 @@ def main() -> None:
     )
     print("=" * 78)
 
-    credentials = load_credentials()
+    # EXACTLY AS `search_section_four` BUILDS IT, and this is the second time
+    # this file has had to learn that. The first version passed
+    # `login=`/`password=`/`server=` because that is what the constructor looks
+    # like it should take; `MT5Connector.__init__` takes the CONFIG OBJECT and
+    # a credentials object, and the run died on the VPS after printing its
+    # whole banner. A signature invented from the outside is the same defect
+    # class as everything else in this repository: correct-looking, and not on
+    # the path the code actually walks.
     connector = MT5Connector(
-        login=credentials.login,
-        password=credentials.password,
-        server=credentials.server,
+        settings.mt5,
+        load_credentials(required=True),
         terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
     )
     connector.connect()
