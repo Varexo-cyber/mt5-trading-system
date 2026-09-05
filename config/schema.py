@@ -3459,13 +3459,16 @@ class ConfluenceConfig(Base):
         "walkforward_index",
         "section_eight_trend_day_h1",
         "section_nine_vwap_m30",
-        # SECTION ELEVEN, for the sixth and seventh time in this list's short
-        # history. It reads M5 and would otherwise fall through to "swing":
-        # H1 planning authority, a 24-bar target horizon and the D1/W1 veto at
-        # one conflict, on a model whose whole input is the last M5 bar. The
-        # test that caught it exists because this has now happened to every
-        # section that went live without being named here.
-        "section_eleven_metals",
+        # SECTIONS ELEVEN THROUGH THIRTEEN, for the sixth, seventh and eighth
+        # time in this list's short history. They read M1/M5/M15 and would
+        # otherwise fall through to "swing": H1 planning authority, a 24-bar
+        # target horizon and the D1/W1 veto at one conflict, on a mechanism
+        # whose whole input is the last few intraday bars. The test that
+        # catches this exists because it has now happened to every section
+        # that went live without being named here.
+        "section_eleven_xaujpy_m1",
+        "section_twelve_xaujpy_m5",
+        "section_thirteen_xaujpy_m15",
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
@@ -4147,35 +4150,77 @@ class SectionTenGoldM1Config(Base):
         return self
 
 
-class SectionElevenMetalsConfig(Base):
-    """SECTION ELEVEN: section six's mechanism, one trained model per metal.
+class SectionXauJpyConfig(Base):
+    """SECTIONS ELEVEN / TWELVE / THIRTEEN: one searched mechanism on XAUJPY.
 
-    ENABLED IS NOT THE SWITCH THAT MATTERS. This section is silent on any
-    market it has no fitted model file for, and there are none until
-    `scripts/train_section_eleven.py` writes one -- which it does only for a
-    market that clears a walk-forward fit, a random control, a Bonferroni bar
-    and an untouched holdout. Turning `enabled` on without model files trades
-    nothing, which is the intended failure mode.
+    ENABLED IS NOT THE SWITCH THAT MATTERS, exactly as it was not for the
+    fitted section eleven this replaces. A section with no `mechanism` named is
+    SILENT -- it emits no read at all rather than a zero -- so a clock nobody
+    has searched yet cannot be mistaken for a clock that was searched and came
+    back empty. `scripts/search_xaujpy.py` is what fills the name in.
+
+    The name has to be one the shared registry knows. A typo is refused here
+    rather than becoming a section that quietly never fires, which is the
+    failure mode this project produces more reliably than any other.
     """
 
     enabled: bool = False
+    symbol: str = "XAUJPY"
     timeframe: str = "M5"
-    allowed_symbols: tuple[str, ...] = ()
-    model_dir: str = "models/section_eleven"
-    #: Section six ships `polarity: -1`; whether that holds per metal is one of
-    #: the things the fit decides, so it stays configurable and defaults to the
-    #: plain reading.
-    polarity: int = Field(default=1, ge=-1, le=1)
+    #: A key of `analysis.mechanisms.FAMILIES["all"]`, or empty for silent.
+    mechanism: str = ""
     stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+    #: Reward per unit of risk. The searcher reports per ratio, so this is a
+    #: measured number rather than a preference.
+    target_ratio: float = Field(default=1.5, gt=0.0, le=10.0)
     long_only: bool = False
     confidence: float = Field(default=0.55, ge=0.0, le=1.0)
-    #: Per-symbol UTC hours this section may not enter on. Same shape and same
-    #: reason as section ten's: the crosses lose money at London's close and
-    #: gold does not, so one window cannot serve both.
-    blocked_hours_by_symbol: dict[str, tuple[int, ...]] = Field(default_factory=dict)
+    #: UTC hours this section may enter on. EMPTY MEANS EVERY HOUR, and that is
+    #: a decision rather than a default: every measurement on gold and its
+    #: crosses so far has found the hour of day to matter as much as the
+    #: mechanism, so a section shipping with this empty is one nobody has
+    #: looked at yet.
+    allowed_hours: tuple[int, ...] = ()
+    #: Hours refused even when `allowed_hours` would admit them. Two knobs
+    #: because they answer different questions: the allow list is "when does
+    #: this work", the block list is "when is this instrument untradeable" --
+    #: 07:00-13:00 UTC cost section ten -0.101 R per trade on these crosses.
+    blocked_hours: tuple[int, ...] = ()
 
-    def hour_is_blocked(self, symbol: str, hour: int) -> bool:
-        return int(hour) in self.blocked_hours_by_symbol.get(symbol, ())
+    @field_validator("allowed_hours", "blocked_hours")
+    @classmethod
+    def _are_real_hours(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        for hour in value:
+            if not 0 <= int(hour) <= 23:
+                raise ValueError(f"{hour} is not a UTC hour")
+        return tuple(sorted({int(hour) for hour in value}))
+
+    @model_validator(mode="after")
+    def _the_mechanism_exists(self) -> SectionXauJpyConfig:
+        """A named mechanism nothing implements is a section that never fires.
+
+        Silence is indistinguishable from failure here, so a typo is refused at
+        load rather than discovered months later in a report with no rows.
+        """
+        if not self.mechanism:
+            return self
+        from analysis.mechanisms import FAMILIES
+
+        known = FAMILIES["all"]
+        if self.mechanism not in known:
+            raise ValueError(f"{self.mechanism!r} is not a known mechanism: {sorted(known)}")
+        return self
+
+    @model_validator(mode="after")
+    def _the_hour_lists_do_not_cancel_out(self) -> SectionXauJpyConfig:
+        """An allow list wholly inside the block list is a section switched off
+        by two settings that each look reasonable on their own."""
+        if self.allowed_hours and set(self.allowed_hours) <= set(self.blocked_hours):
+            raise ValueError(
+                "every allowed hour is also blocked, so this section can never "
+                "enter. Say so with `enabled: false` instead."
+            )
+        return self
 
 
 class AnalysisConfig(Base):
@@ -4228,7 +4273,13 @@ class AnalysisConfig(Base):
     section_eight_trend_day_h1: SectionEightTrendDayConfig = SectionEightTrendDayConfig()
     section_nine_vwap_m30: SectionNineSessionVwapConfig = SectionNineSessionVwapConfig()
     section_ten_gold_m1: SectionTenGoldM1Config = SectionTenGoldM1Config()
-    section_eleven_metals: SectionElevenMetalsConfig = SectionElevenMetalsConfig()
+    #: THREE CLOCKS, ONE CLASS. A module is one instance reading one
+    #: timeframe -- weights, allowlist and breakers are all keyed by module
+    #: name -- so XAUJPY on M1, M5 and M15 is three modules. Each is silent
+    #: until `scripts/search_xaujpy.py` names a mechanism for it.
+    section_eleven_xaujpy_m1: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M1")
+    section_twelve_xaujpy_m5: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M5")
+    section_thirteen_xaujpy_m15: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M15")
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()

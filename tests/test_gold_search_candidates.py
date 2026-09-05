@@ -18,19 +18,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scripts.search_section_four import (
+from analysis.mechanisms import (
     FAMILIES,
     GOLD_CANDIDATES,
     WARMUP,
     _session_anchor,
-    bonferroni_sigma,
     day_range_exhaustion_fade,
     opening_range_break,
-    resolve,
     round_number_fade,
-    stats,
     stretch_fade,
 )
+from scripts.search_section_four import bonferroni_sigma, resolve, stats
 
 
 def _gold_bars(days: int = 90, minutes: int = 5, seed: int = 11) -> pd.DataFrame:

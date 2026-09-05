@@ -174,7 +174,9 @@ class TestTheShippedAccountAgrees:
             # Section eleven is fitted at stop 1.0 ATR and target 1.5 R, so it
             # has to trade 1.5. A different target here makes these models a
             # measurement of something other than what they will do.
-            "section_eleven_metals": 1.5,
+            "section_eleven_xaujpy_m1": 1.5,
+            "section_twelve_xaujpy_m5": 1.5,
+            "section_thirteen_xaujpy_m15": 1.5,
         }
 
         live = set(confluence.live_enabled_modules)

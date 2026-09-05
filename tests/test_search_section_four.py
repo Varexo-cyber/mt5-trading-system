@@ -17,10 +17,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from analysis.mechanisms import CANDIDATES, HORIZON, WARMUP
 from scripts.search_section_four import (
-    CANDIDATES,
-    HORIZON,
-    WARMUP,
     Cell,
     Trades,
     bonferroni_sigma,
@@ -353,7 +351,7 @@ class TestEveryCandidateCanActuallyFire:
         generator built the gap back out twice: setting the fresh-day open to
         `close - step` reproduces the previous close exactly, so the gap was
         zero and the detector looked broken."""
-        from scripts.search_section_four import gap_continuation
+        from analysis.mechanisms import gap_continuation
 
         index = pd.date_range("2025-01-01", periods=60, freq="30min", tz="UTC")
         close = np.full(60, 100.0)
@@ -475,7 +473,8 @@ class TestOppositeDirectionsCannotBothPay:
     """
 
     def test_the_pair_sums_to_minus_twice_the_cost_on_the_same_bars(self) -> None:
-        from scripts.search_section_four import CANDIDATES, resolve
+        from analysis.mechanisms import CANDIDATES
+        from scripts.search_section_four import resolve
 
         frame = _realistic(6000)
         cost = 0.05
