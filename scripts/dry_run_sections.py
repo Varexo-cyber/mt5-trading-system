@@ -57,11 +57,14 @@ import pandas as pd
 
 from analysis import ConfluenceEngine
 from analysis.confluence import TradeIdea
+from analysis.target_reach import measure as measure_target_reach
 from backtesting.replay import fetch_mt5_history
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
 from core.trade_origin import broker_comment
 from core.types import Direction, MarketContext, Series, Tick, Timeframe, TradingMode
+from filters.base import FilterContext
+from filters.liveliness_filter import LivelinessFilter
 from risk.position_sizer import PositionSizer
 from runner.service import build_analysis_modules
 
@@ -73,6 +76,83 @@ RAW_BTC_SHADOW_SECTIONS = {
 RAW_BTC_HORIZONS = {Timeframe.M1: 120, Timeframe.M5: 48, Timeframe.M15: 24}
 RAW_BTC_MAX_SPREAD_R = {Timeframe.M1: 0.15, Timeframe.M5: 0.12, Timeframe.M15: 0.10}
 RAW_BTC_EXECUTION_ALLOWANCE_R = 0.02
+
+
+def _historical_jarvis_gate(ctx, idea, spec, settings, clock: Timeframe) -> tuple[str, str] | None:
+    """Reproduce the live gates whose inputs exist in the historical bars."""
+    risk = abs(idea.entry - idea.stop_loss)
+    if risk <= 0.0:
+        return "SPREAD_EATS_THE_STOP", "zero stop distance"
+
+    spread_share = (ctx.tick.spread / risk) if ctx.tick is not None else float("inf")
+    spread_limit = settings.analysis.confluence.max_spread_share_of_stop
+    if spread_share > spread_limit:
+        return (
+            "SPREAD_EATS_THE_STOP",
+            f"spread {spread_share:.1%} of stop exceeds live {spread_limit:.1%} limit",
+        )
+
+    lively = LivelinessFilter(
+        settings.filters.liveliness,
+        lambda _symbol, timeframe: ctx.series[timeframe],
+    ).check(
+        FilterContext(
+            symbol=ctx.symbol,
+            spec=spec,
+            now=ctx.now,
+            direction=idea.direction,
+            tick=ctx.tick,
+            open_positions=(),
+        )
+    )
+    if not lively.passed:
+        return lively.reason.name, lively.detail
+
+    volume = settings.filters.volume_spike
+    minute = ctx.series.get(Timeframe.M1)
+    if volume.enabled and minute is not None and "tick_volume" in minute.df.columns:
+        values = minute.df["tick_volume"]
+        if len(values) >= volume.lookback_bars + 1:
+            baseline = float(values.iloc[-(volume.lookback_bars + 1) : -1].median())
+            ratio = float(values.iloc[-1]) / baseline if baseline > 0 else 0.0
+            if ratio >= volume.extreme_multiple:
+                return (
+                    "VOLUME_SPIKE",
+                    f"last M1 volume {ratio:.1f}x median exceeds {volume.extreme_multiple:.1f}x",
+                )
+
+    frame = ctx.series[clock].df
+    reward = abs(idea.take_profit - idea.entry)
+    horizon = RAW_BTC_HORIZONS[clock]
+    reach = measure_target_reach(
+        frame.tail(400),
+        distance=reward,
+        bars_ahead=horizon,
+        long=idea.direction is Direction.LONG,
+        reward_risk=reward / risk,
+    )
+    config = settings.analysis.confluence
+    if reach.measured:
+        required = min(100.0, reach.required_pct + config.target_reach_margin_pct)
+        hard_floor = required * config.quick_reach_hard_floor_ratio
+        direction_margin = max(
+            config.direction_advantage_tolerance_pct,
+            reach.standard_error_pct,
+        )
+        if reach.forward_pct < hard_floor:
+            return (
+                "TARGET_RARELY_REACHED",
+                f"target reach {reach.forward_pct:.1f}% below quick hard floor {hard_floor:.1f}%",
+            )
+        if (
+            config.require_direction_advantage
+            and reach.opposite_pct - reach.forward_pct > direction_margin
+        ):
+            return (
+                "TARGET_RARELY_REACHED",
+                f"target reach {reach.forward_pct:.1f}% versus {reach.opposite_pct:.1f}% opposite",
+            )
+    return None
 
 
 class _RawShadowEngine:
@@ -766,6 +846,7 @@ def _one_clock(
             name, engine, sizer, section_manage = row[:4]
             flatten_time = row[4] if len(row) > 4 else None
             raw_shadow = bool(row[5]) if len(row) > 5 else False
+            jarvis_replay = bool(row[6]) if len(row) > 6 else False
             idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
             module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
             if not idea.approved:
@@ -829,6 +910,22 @@ def _one_clock(
                             "OUTSIDE_RESEARCH_ENVELOPE",
                             direction=idea.direction.name,
                             note="; ".join(reasons)[:90],
+                            pass_key=(name, clock.value),
+                        )
+                    )
+                    continue
+            if jarvis_replay:
+                blocked = _historical_jarvis_gate(ctx, idea, spec, sizer.settings, clock)
+                if blocked is not None:
+                    reason, detail = blocked
+                    out[name].append(
+                        Decision(
+                            upto,
+                            symbol,
+                            module,
+                            reason,
+                            direction=idea.direction.name,
+                            note=detail[:90],
                             pass_key=(name, clock.value),
                         )
                     )
@@ -2138,6 +2235,7 @@ def main(argv: list[str] | None = None) -> None:
                             None if comment.casefold() in fixed else section_manage,
                             flatten_time,
                             btc_shadow,
+                            args.btc_jarvis_replay,
                         )
                     )
                 produced = _one_clock(
@@ -3166,6 +3264,8 @@ def _btc_jarvis_replay_contract(settings, equity: float, offered: int, allowed: 
     print("  APPLIED")
     print("    frozen S15/S16/S17 detector and next-bar entry")
     print("    historical BTCUSD spread plus the configured execution allowance")
+    print("    live spread/stop ceiling, target-reach and direction-advantage gates")
+    print("    market-liveliness and M1 volume-spike gates on causal bar history")
     print("    strategy stop/target, horizon and configured section break-even")
     print(
         f"    shared Jarvis position book: max {settings.effective_max_positions(equity)} "
@@ -3194,8 +3294,8 @@ def _gates_this_run_does_not_apply(
     print(f"{'=' * 78}")
     if btc_jarvis_replay:
         print("  This is the second S15-S17 account replay described in the contract above.")
-        print("  The following dynamic gates cannot be reconstructed as historical live")
-        print("  decisions from OHLC alone; the counts shown are diagnostic live-day counts:\n")
+        print("  Target reach, spread/stop, market quiet and volume spike WERE applied.")
+        print("  No unrelated live-day counters are mixed into this replay.\n")
     elif btc_research_parity:
         print("  This S15-S17 run reproduces the frozen research detector, next-bar entry,")
         print("  horizon, spread envelope, 2% minimum-lot envelope and execution allowance.")
@@ -3205,22 +3305,11 @@ def _gates_this_run_does_not_apply(
         print("  runner wraps those in eight more gates. None of them are applied here:\n")
     omitted = NOT_MODELLED
     if btc_jarvis_replay:
-        # These are not omissions in this lane. The three standalone BTC
-        # sections carry their own closed-bar confirmation and entry, while
-        # news was explicitly excluded by the operator.
-        omitted = tuple(
-            row
-            for row in NOT_MODELLED
-            if row[0] not in {"AWAITING_CONFIRMATION", "AWAITING_PULLBACK", "ENTRY_OVEREXTENDED", "NEWS_BLACKOUT"}
-        )
+        omitted = ()
     for name, count, why in omitted:
         print(f"    {name:<24}{count:>5}   {why}")
     if btc_jarvis_replay:
-        print(
-            "\n  These counts came from a different live day and are context only. The"
-            "\n  replay result must be read with the contract above; it is not an exact"
-            "\n  tick-for-tick broker or AI reconstruction."
-        )
+        print("  Remaining limits are the missing tick/AI/intrabar state named above.")
     else:
         print(
             f"\n  Those counts are one real day on the live account, 31 August: 414 setups\n"
