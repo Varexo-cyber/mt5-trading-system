@@ -352,3 +352,62 @@ class TestTheCostIsChargedAgainstTheStopTheCellUses:
 
         assert "{'cost':>7}" in source
         assert "cell.cost_share:>6.1%" in source
+
+
+class TestAPatternIsNotASetup:
+    """`streak_reversal` ON M1 WAS PROMOTED AND IT IS A COIN FLIP.
+
+    "Four closes the same way, then trade against it." Four coin flips landing
+    the same way is 12.5% of bars in a random walk; measured on real XAUJPY it
+    fires on 10.3%, which is 149 signals a day on M1. There is no counterparty:
+    nobody loses money because four one-minute candles went up. The replay
+    agreed -- 855 trades at -0.18 R apiece, about the round-trip cost.
+
+    The search ranked it FIRST, at +8.14 sigma, because nothing in it knew the
+    difference between an event and a pattern.
+    """
+
+    def test_a_cell_firing_far_above_the_ask_cannot_be_promoted(self) -> None:
+        import inspect
+
+        import scripts.search_xaujpy as jpy
+
+        source = " ".join(inspect.getsource(jpy).split())
+
+        assert "and c.per_day <= MAX_TRADES_PER_DAY" in source
+        assert "too_busy" in source
+        assert jpy.MAX_TRADES_PER_DAY <= 10.0, "the bound has drifted away from the ask"
+
+    def test_the_bound_leaves_room_over_what_was_asked_for(self) -> None:
+        """Generous on purpose. It is there to refuse 74 trades a day, not to
+        shave a cell that comes in at six."""
+        import scripts.search_xaujpy as jpy
+
+        _low, high = jpy.WANTED_TRADES_PER_DAY
+
+        assert high < jpy.MAX_TRADES_PER_DAY
+        assert high * 3 > jpy.MAX_TRADES_PER_DAY
+
+    def test_the_firing_rate_is_measured_and_printed(self) -> None:
+        """Its absence is what let a 10%-of-all-bars pattern top the table."""
+        import inspect
+
+        import scripts.search_xaujpy as jpy
+
+        source = inspect.getsource(jpy)
+
+        assert "cell.fire_rate = float(np.mean(signals != 0))" in source
+        assert "{'fires':>7}" in source
+        assert "cell.fire_rate:>6.1%" in source
+
+    def test_the_coin_flip_mechanism_really_does_fire_that_often(self) -> None:
+        """The number in the docstring above, checked rather than remembered."""
+        from analysis.mechanisms import FAMILIES
+
+        frame = _bars(20_000, 1)
+        rate = float(np.mean(FAMILIES["all"]["streak_reversal"](frame) != 0))
+
+        # A random walk gives 2 x (1/2)^4 = 12.5%; anything in that region is a
+        # pattern rather than an event.
+        assert rate > 0.05, "the fixture is not random enough to make the point"
+        assert rate * 1440 > 50, "this would not be 50+ signals a day on M1"
