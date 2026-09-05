@@ -137,3 +137,66 @@ class TestTheAlignmentHappensOnce:
 
         assert len(frame) == len(thin)
         assert frame.index.isin(thin.index).all()
+
+
+class TestAFrozenQuoteDoesNotCountAsALag:
+    """THE FIRST REAL RUN PUT TWO THIRDS OF ITS PROFIT IN 21:00-23:00 UTC.
+
+    That is where gold's daily pause sits. While XAUUSD stands still and the yen
+    leg trades on, the implied cross walks away from a frozen quote and the gap
+    explodes -- and none of it is tradeable, because the thing you would trade
+    is not being priced at all.
+
+    A bar with no range is the signature, and it needs no calendar: it works on
+    every instrument, on every clock, and on whatever hours this broker happens
+    to pause.
+    """
+
+    def _frozen(self, frame: pd.DataFrame, rows: slice) -> pd.DataFrame:
+        stalled = frame.copy()
+        held = stalled["close"].iloc[rows.start]
+        for column in ("open", "high", "low", "close"):
+            stalled.iloc[rows, stalled.columns.get_loc(column)] = held
+        return stalled
+
+    def test_a_frozen_cross_produces_no_reading(self) -> None:
+        gold, yen = _legs()
+        cross = _product(gold, yen).shift(1).dropna()
+        paused = self._frozen(cross, slice(500, 560))
+
+        _frame, reading, _raw = gap_reading(paused, implied_cross(gold, yen))
+
+        assert not np.isfinite(reading[500:560]).any()
+
+    def test_a_frozen_leg_produces_no_reading(self) -> None:
+        """Either side standing still is enough to invent a gap."""
+        gold, yen = _legs()
+        cross = _product(gold, yen).shift(1).dropna()
+        paused_gold = self._frozen(gold, slice(500, 560))
+
+        _frame, reading, _raw = gap_reading(cross, implied_cross(paused_gold, yen))
+
+        assert not np.isfinite(reading[501:559]).any()
+
+    def test_a_live_bar_is_untouched(self) -> None:
+        """The guard must remove the artefact and nothing else."""
+        gold, yen = _legs()
+        cross = _product(gold, yen).shift(1).dropna()
+
+        _frame, reading, _raw = gap_reading(cross, implied_cross(gold, yen))
+        finite = reading[np.isfinite(reading)]
+
+        assert len(finite) > len(reading) * 0.8
+        assert float(np.median(np.abs(finite))) > DEAD_GAP_ATR * 5
+
+    def test_the_report_breaks_the_winner_down_by_hour(self) -> None:
+        """A session table cannot tell a three-hour block from the one hour
+        inside it that carries everything."""
+        import inspect
+
+        from scripts import search_xaujpy_legs
+
+        source = inspect.getsource(search_xaujpy_legs)
+
+        assert "cell.by_hour.setdefault(int(when.hour), []).append(value)" in source
+        assert "One hour is not a mechanism." in source

@@ -102,6 +102,9 @@ class Cell:
     early_r: float = 0.0
     late_r: float = 0.0
     by_session: dict = field(default_factory=dict)
+    #: Per UTC hour. A session table can hide an edge that lives in one
+    #: hour of it -- gold's daily pause is a single hour inside `close`.
+    by_hour: dict = field(default_factory=dict)
 
     @property
     def beats_its_coin(self) -> bool:
@@ -116,8 +119,37 @@ def implied_cross(gold: pd.DataFrame, yen: pd.DataFrame) -> pd.Series:
     present in one and missing in the other is a bar one of them did not trade,
     and inventing it would invent the gap this script is looking for.
     """
-    joined = gold[["close"]].join(yen[["close"]], how="inner", lsuffix="_au", rsuffix="_jp")
-    return joined["close_au"] * joined["close_jp"]
+    joined = gold.join(yen, how="inner", lsuffix="_au", rsuffix="_jp")
+    # EITHER LEG STANDING STILL IS ENOUGH TO INVENT A GAP. Gold pauses daily
+    # while the yen trades on; the implied cross then moves on one leg alone and
+    # the difference against the quote is an artefact of the pause.
+    alive = _alive(joined.rename(columns={c: c.replace("_au", "") for c in joined.columns})) & (
+        joined["high_jp"].to_numpy() > joined["low_jp"].to_numpy()
+    )
+    product = joined["close_au"] * joined["close_jp"]
+    return product.where(pd.Series(alive, index=joined.index))
+
+
+def _alive(frame: pd.DataFrame) -> np.ndarray:
+    """Bars this instrument actually traded on.
+
+    A BAR WITH NO RANGE IS A QUOTE THAT DID NOT MOVE, and on a gold cross that
+    is not a quiet market, it is a CLOSED one. Gold pauses daily around
+    21:00-22:00 UTC while the yen leg keeps trading, so the implied cross walks
+    away from a frozen quote and the gap explodes -- and none of it is
+    tradeable, because the thing you would trade is not being priced.
+
+    The first run of this script put two thirds of its profit in the `close`
+    session, which is exactly that window. Without this the mechanism is not a
+    lag, it is a screenshot of one leg against a live one.
+
+    A range of zero is the signature and it needs no calendar: it works on every
+    instrument, on every clock, and on whatever hours this broker happens to
+    pause.
+    """
+    return (frame["high"].to_numpy() > frame["low"].to_numpy()) & np.isfinite(
+        frame["close"].to_numpy()
+    )
 
 
 def gap_reading(
@@ -140,6 +172,8 @@ def gap_reading(
     aligned = cross.join(implied.rename("implied"), how="inner")
     frame = aligned[["open", "high", "low", "close"]]
     raw = (aligned["close"] - aligned["implied"]).to_numpy()
+    # A frozen cross quote makes the gap, it does not reveal one.
+    raw = np.where(_alive(frame), raw, np.nan)
     normal = pd.Series(raw).rolling(NORMAL_BARS, min_periods=NORMAL_BARS // 2).mean().to_numpy()
     unit = _atr(frame)
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -307,6 +341,7 @@ def main() -> None:
                 cell.per_trade, cell.sigma, cell.per_day = per_trade, sigma, n / span
                 for value, when in zip(found.r, found.when, strict=True):
                     cell.by_session.setdefault(session_of(int(when.hour)), []).append(value)
+                    cell.by_hour.setdefault(int(when.hour), []).append(value)
                     if when < split:
                         cell.early_r += value
                     else:
@@ -439,6 +474,28 @@ def _report(cells: list[Cell], bar: float, tested: int, settings) -> None:
                     f"    {name:<10}{len(values):>8}{sum(values):>+10.2f}"
                     f"{sum(values) / len(values):>+12.3f}"
                 )
+            # PER HOUR AS WELL, because a session can hide an edge that lives
+            # in one hour of it. The first run put two thirds of its profit in
+            # `close`, and gold's daily pause is a single hour inside that
+            # block. One number for three hours could not tell the two apart.
+            busiest = sorted(cell.by_hour.items(), key=lambda item: -abs(sum(item[1])))[:6]
+            if busiest:
+                print(
+                    f"    {'hour':<10}{'trades':>8}{'total R':>10}{'per trade':>12}"
+                    f"   (the six that move the number most)"
+                )
+                for hour, values in sorted(busiest):
+                    print(
+                        f"    {hour:02d}:00     {len(values):>8}{sum(values):>+10.2f}"
+                        f"{sum(values) / len(values):>+12.3f}"
+                    )
+                top = max(cell.by_hour.items(), key=lambda item: sum(item[1]))
+                share = sum(top[1]) / cell.total_r if cell.total_r else 0.0
+                if share > 0.5:
+                    print(
+                        f"    WARNING: {top[0]:02d}:00 alone is {share:.0%} of this cell. "
+                        f"One hour is not a mechanism."
+                    )
 
     print("\n" + "-" * 78)
     print("WHAT THIS RUN DID NOT MODEL")
@@ -482,6 +539,10 @@ def _write_csv(cells: list[Cell], path: Path) -> None:
             values = cell.by_session.get(name, [])
             row[f"{name}_trades"] = len(values)
             row[f"{name}_r"] = round(float(np.sum(values)), 3) if values else 0.0
+        for hour in range(24):
+            values = cell.by_hour.get(hour, [])
+            row[f"h{hour:02d}_trades"] = len(values)
+            row[f"h{hour:02d}_r"] = round(float(np.sum(values)), 3) if values else 0.0
         rows.append(row)
     path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(path, index=False)
