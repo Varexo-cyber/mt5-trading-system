@@ -279,3 +279,84 @@ class TestTheSearchPaysForWhatItSearches:
         source = " ".join(inspect.getsource(search_xaujpy).split())
 
         assert "c.sigma >= bar and c.beats_its_coin and c.holdout_r > 0 and c.total_r > 0" in source
+
+
+class TestASectionCanActuallyClearTheGateItMustPass:
+    """32,407 SETUPS, ZERO TRADES, AND NOT ONE OF THEM COULD EVER HAVE PASSED.
+
+    The first 180-day replay of sections eleven, twelve and thirteen formed
+    32,407 setups on XAUJPY and took nothing. Every single refusal read:
+
+        confluence score 33.0 below threshold
+
+    A lone module scores exactly `|score| x confidence`. The module emitted a
+    hardcoded 60.0 at 0.55 confidence, so 33.0, against a `score_threshold` of
+    35.0. Two points short, by construction, on every bar that will ever exist.
+    Every other section carries its score as a CONFIG field around 70; this one
+    had a number written into the module and nothing compared the two.
+
+    An hour of the owner's time went into a run whose answer was arithmetic.
+    These tests are the arithmetic, run every time.
+    """
+
+    def _settings(self):
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+    def test_every_section_with_a_score_can_clear_the_score_threshold(self) -> None:
+        """The general property, over every section this config carries.
+
+        Written for all of them rather than for the three that broke, because
+        the next section to be added will have the same chance of landing two
+        points under the bar.
+        """
+        settings = self._settings()
+        threshold = settings.analysis.confluence.score_threshold
+
+        checked = 0
+        for name in type(settings.analysis).model_fields:
+            section = getattr(settings.analysis, name, None)
+            score = getattr(section, "score", None)
+            confidence = getattr(section, "confidence", None)
+            if score is None or confidence is None or not isinstance(score, int | float):
+                continue
+            checked += 1
+            assert score * confidence >= threshold, (
+                f"{name} emits {score} x {confidence} = {score * confidence:.1f}, under the "
+                f"{threshold} score threshold. It can form setups and never take a trade."
+            )
+        assert checked >= 5, "this test has gone blind; no section exposes score + confidence"
+
+    def test_every_section_clears_its_own_lone_module_floor(self) -> None:
+        """The second gate on the same path. A section trading alone -- which
+        is exactly what a `--only` replay does -- has to clear its lone floor
+        as well, and a floor set above the confidence the module sends is the
+        same silent refusal one gate along."""
+        settings = self._settings()
+        confluence = settings.analysis.confluence
+
+        for name in type(settings.analysis).model_fields:
+            section = getattr(settings.analysis, name, None)
+            confidence = getattr(section, "confidence", None)
+            if confidence is None or not isinstance(confidence, int | float):
+                continue
+            floor = confluence.lone_floor_for(name)
+            assert confidence >= floor, (
+                f"{name} sends {confidence} confidence against a lone floor of {floor}, "
+                f"so every signal it makes alone is refused."
+            )
+
+    def test_the_three_xaujpy_sections_take_their_score_from_config(self) -> None:
+        """Not a number in the module. That is how the 60.0 got there and how
+        nothing noticed it disagreed with every other section in the book."""
+        import inspect
+
+        from analysis import section_xaujpy
+
+        source = inspect.getsource(section_xaujpy)
+
+        assert "score = cfg.score if direction is Direction.LONG else -cfg.score" in source
+        assert "60.0" not in source, "a hardcoded score is back"

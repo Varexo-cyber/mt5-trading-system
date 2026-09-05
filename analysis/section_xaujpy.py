@@ -104,7 +104,10 @@ class SectionXauJpy:
         risk = cfg.stop_atr * unit
         stop = close - risk if direction is Direction.LONG else close + risk
 
-        score = 60.0 if direction is Direction.LONG else -60.0
+        # `cfg.score`, not a number written here. See the field's comment: a
+        # hardcoded 60 against a 35.0 threshold at 0.55 confidence is 33.0, and
+        # 33.0 never clears anything.
+        score = cfg.score if direction is Direction.LONG else -cfg.score
         return Signal(
             module=self.name,
             score=score,
