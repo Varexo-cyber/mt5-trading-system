@@ -1625,9 +1625,7 @@ def main(argv: list[str] | None = None) -> None:
         item.strip() for item in args.only.replace(" ", ",").split(",") if item.strip()
     }
     btc_shadow = args.btc_research_parity or args.btc_jarvis_replay
-    if btc_shadow and (
-        not selected_only or not selected_only.issubset(RAW_BTC_SHADOW_SECTIONS)
-    ):
+    if btc_shadow and (not selected_only or not selected_only.issubset(RAW_BTC_SHADOW_SECTIONS)):
         raise SystemExit(
             "BTC replay modes are restricted to --only section_fifteen_btc_m1,"
             "section_sixteen_btc_m5,section_seventeen_btc_m15"
