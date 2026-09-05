@@ -87,6 +87,7 @@ from analysis import (
     world_state as build_world_state,
 )
 from analysis.confluence import TradeIdea
+from analysis.gold_cross_discoveries import GoldCrossDiscovery
 from analysis.playbooks import (
     BreakConfig,
     FadeConfig,
@@ -509,6 +510,18 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # three times is how the M15 one ends up with a copy-pasted M5 config
         # name, and nothing downstream would say so.
         *(SectionXauJpy(name, getattr(analysis, name)) for name in XAUJPY_SECTIONS),
+        GoldCrossDiscovery(
+            analysis.section_fifteen_btc_m1,
+            name="section_fifteen_btc_m1",
+        ),
+        GoldCrossDiscovery(
+            analysis.section_sixteen_btc_m5,
+            name="section_sixteen_btc_m5",
+        ),
+        GoldCrossDiscovery(
+            analysis.section_seventeen_btc_m15,
+            name="section_seventeen_btc_m15",
+        ),
     ]
 
 

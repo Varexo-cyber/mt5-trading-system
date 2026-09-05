@@ -220,8 +220,10 @@ def search(
         symbols = data.every_symbol()
         candidates: list[tuple[Choice, tuple[int, float, float, float, int], object]] = []
         cached: dict[tuple[str, str, int], tuple[pd.DataFrame, np.ndarray, np.ndarray]] = {}
-        for timeframe in ((only_timeframe,) if only_timeframe else ("M5", "M15", "M30", "H1")):
-            for asset in ((only_asset,) if only_asset else ("fx", "index", "metal")):
+        for timeframe in (
+            (only_timeframe,) if only_timeframe else ("M1", "M5", "M15", "M30", "H1")
+        ):
+            for asset in ((only_asset,) if only_asset else ("fx", "index", "metal", "crypto")):
                 members = [
                     symbol
                     for symbol in symbols
@@ -368,8 +370,8 @@ def main() -> None:
         action="store_true",
         help="search for a second family, excluding the shipped H1 index model",
     )
-    parser.add_argument("--only-asset", choices=("fx", "index", "metal"))
-    parser.add_argument("--only-timeframe", choices=("M5", "M15", "M30", "H1"))
+    parser.add_argument("--only-asset", choices=("fx", "index", "metal", "crypto"))
+    parser.add_argument("--only-timeframe", choices=("M1", "M5", "M15", "M30", "H1"))
     args = parser.parse_args()
     raise SystemExit(
         search(

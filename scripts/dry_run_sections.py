@@ -439,6 +439,11 @@ def _frames_read(
     confluence = settings.analysis.confluence
     wanted: set[Timeframe] = {clock, finest, Timeframe.M5}
     for name in sections:
+        if any(family in name for family in confluence.strategy_owned_entry_families):
+            # A standalone section owns its trigger and stop. Loading an H4
+            # frame for it would silently reintroduce the generic trend veto
+            # that strategy ownership explicitly disables.
+            continue
         if name in confluence.quick_modules:
             horizon = "quick"
         elif name in confluence.intraday_modules:
@@ -1088,12 +1093,20 @@ def _retimed(settings, module_name: str, timeframe: str):
     section = getattr(analysis, module_name)
     confluence = analysis.confluence
     allowed = tuple(dict.fromkeys((*confluence.live_enabled_modules, module_name)))
+    measurement_weights = dict(confluence.weights)
+    if measurement_weights.get(module_name, 0.0) <= 0.0:
+        measurement_weights[module_name] = 1.0
     return settings.model_copy(
         update={
             "analysis": analysis.model_copy(
                 update={
                     module_name: section.model_copy(update={"timeframe": timeframe}),
-                    "confluence": confluence.model_copy(update={"live_enabled_modules": allowed}),
+                    "confluence": confluence.model_copy(
+                        update={
+                            "live_enabled_modules": allowed,
+                            "weights": measurement_weights,
+                        }
+                    ),
                 }
             )
         }
@@ -1497,6 +1510,9 @@ def main(argv: list[str] | None = None) -> None:
             "section_eleven_xaujpy_m1": "section_eleven_xaujpy_m1",
             "section_twelve_xaujpy_m5": "section_twelve_xaujpy_m5",
             "section_thirteen_xaujpy_m15": "section_thirteen_xaujpy_m15",
+            "section_fifteen_btc_m1": "section_fifteen_btc_m1",
+            "section_sixteen_btc_m5": "section_sixteen_btc_m5",
+            "section_seventeen_btc_m15": "section_seventeen_btc_m15",
         }
         measured = set(module_config)
         if args.sections_five_to_ten:
@@ -1668,7 +1684,19 @@ def main(argv: list[str] | None = None) -> None:
             )
             args.no_m1 = False
             finest = Timeframe.M1
-        fetch_these = tuple(tf for tf in NEEDED if not (args.no_m1 and tf is Timeframe.M1))
+        if args.sweep:
+            required_frames = set(NEEDED)
+        else:
+            required_frames = {
+                timeframe
+                for name, tf_name in passes
+                for timeframe in _frames_read(settings, Timeframe.parse(tf_name), finest, (name,))
+            }
+        fetch_these = tuple(
+            tf
+            for tf in sorted(required_frames, key=lambda item: item.duration)
+            if not (args.no_m1 and tf is Timeframe.M1)
+        )
         results: dict[tuple[str, str], list[Decision]] = {key: [] for key in passes}
         skipped_symbols = 0
         unresolvable: dict[str, str] = {}
