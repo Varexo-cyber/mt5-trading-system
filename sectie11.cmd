@@ -1,5 +1,6 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 
 rem Draait uit een kopie in %TEMP%: cmd leest een batchbestand van schijf
 rem TERWIJL het draait, dus een git pull halverwege laat het hervatten midden
@@ -15,58 +16,9 @@ shift
 cd /d "%S11_ROOT%"
 
 echo.
-echo  ==================================================================
-echo   XAUJPY ALLEEN -- SECTIE 11 (M1), 12 (M5) EN 13 (M15)
-echo  ==================================================================
-echo.
-echo  DE ECHTE REPLAY, met de poorten AAN. `zoekjpy.cmd` zoekt een mechanisme
-echo  met de poorten uit; dit draait het door dezelfde resolver als de rest van
-echo  het boek, met de positielimiet, het positiebeheer en de kostenpoorten.
-echo  Dit is het cijfer dat beslist, niet dat van de zoeker.
-echo.
-echo  EERST ZOEKEN, DAN METEN. Zonder mechanisme in de config zijn deze drie
-echo  secties STIL en komt deze run terug met nul trades -- wat eruitziet als
-echo  "de strategie vond niets" terwijl er nooit iets gezocht is. Deze launcher
-echo  weigert daarom te starten tot er een mechanisme staat.
-echo.
-echo  Draai eerst:  zoekjpy.cmd 720
-echo.
-echo  DE DRIE KLOKKEN IN EEN RUN. Ze delen de positielimiet, dus ze los meten
-echo  en de uitkomsten optellen geeft een ander getal dan ze samen draaien --
-echo  precies zoals sectie tien 260 trades van sectie zes opat.
-echo.
-echo  MT5 moet draaien en ingelogd zijn, met XAUJPY zichtbaar in Market Watch.
-echo.
-echo  GEBRUIK -- HET GETAL IS HET AANTAL DAGEN
-echo    sectie11.cmd 180        180 dagen  ^<-- DEZE
-echo    sectie11.cmd 90         korter
-echo    sectie11.cmd 180 beheer 180 dagen, EN het break-evenrooster erbij,
-echo                            zodat je ziet wat positiebeheer eraan doet
-echo    sectie11.cmd 180 grof   sneller, uitgelopen op M5-bars in plaats van M1
-echo.
-echo  WAT `grof` KOST. Een bar die stop en target allebei raakt is onbeslisbaar
-echo  en telt als VERLIES. Op M5-bars gebeurt dat vaker dan op M1, dus `grof`
-echo  leest pessimistischer. Sectie 11 is een M1-sectie, dus zonder `grof` is
-echo  het eerlijke getal.
-echo.
-
-rem VORMHERKENNING, geen positie. Een getal is dagen, `beheer` zet het
-rem break-evenrooster aan, `grof` laat M1 vallen.
-set DAGEN=180
-set BEHEER=
-set GROF=
-
-:lees
-if "%~1"=="" goto klaar
-echo %~1| findstr /r "^[0-9][0-9]*$" >nul && set DAGEN=%~1
-if /i "%~1"=="beheer" set BEHEER=--manage-grid
-if /i "%~1"=="grof" set GROF=--no-m1
-shift
-goto lees
-:klaar
-
+echo  ===========================================================
 if not exist ".venv-live\Scripts\python.exe" (
-  echo  FOUT: .venv-live\Scripts\python.exe bestaat niet. Draai eerst update.cmd.
+  echo FOUT: draai eerst update.cmd
   pause
   exit /b 1
 )

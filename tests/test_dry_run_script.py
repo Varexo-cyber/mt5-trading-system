@@ -1566,6 +1566,14 @@ class TestASwitchedOffSectionIsStillMeasured:
 
         assert parsed.only == "impulse_retest"
 
+    def test_btc_replay_sections_are_known(self) -> None:
+        for section in (
+            "section_fifteen_btc_m1",
+            "section_sixteen_btc_m5",
+            "section_seventeen_btc_m15",
+        ):
+            assert f'"{section}": "{section}"' in SOURCE
+
     def test_only_rejects_a_section_it_does_not_know(self) -> None:
         """A typo must stop the run rather than silently measure nothing --
         an empty result reads as "no setups", which is this script's signature
@@ -2535,9 +2543,7 @@ class TestALiveSectionOnM1DoesNotVanishFromItsOwnReport:
 
         source = inspect.getsource(dry_run_sections)
 
-        assert source.index("args.no_m1 = False") < source.index(
-            "fetch_these = tuple(tf for tf in NEEDED"
-        )
+        assert source.index("args.no_m1 = False") < source.index("required_frames =")
 
     def test_the_m1_section_is_measurable_at_all(self) -> None:
         """`module_config` is the list of sections this script knows. A live

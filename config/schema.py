@@ -3469,6 +3469,12 @@ class ConfluenceConfig(Base):
         "section_eleven_xaujpy_m1",
         "section_twelve_xaujpy_m5",
         "section_thirteen_xaujpy_m15",
+        # SECTION ELEVEN, for the sixth and seventh time in this list's short
+        # history. It reads M5 and would otherwise fall through to "swing":
+        # H1 planning authority, a 24-bar target horizon and the D1/W1 veto at
+        # one conflict, on a model whose whole input is the last M5 bar. The
+        # test that caught it exists because this has now happened to every
+        # section that went live without being named here.
     )
     #: Complete M5/M1 theses. These receive a genuinely quick planning horizon
     #: instead of being stretched into the three-hour intraday profile.
@@ -4223,6 +4229,39 @@ class SectionXauJpyConfig(Base):
         return self
 
 
+class GoldCrossDiscoveryConfig(Base):
+    """One frozen gold-cross discovery; real-money permission is separate."""
+
+    enabled: bool = False
+    allowed_symbols: tuple[str, ...] = ()
+    timeframe: str = "M5"
+    mechanism: Literal["channel_breakout", "aligned_momentum", "trend_rejection"] = (
+        "channel_breakout"
+    )
+    polarity: Literal[-1, 1] = 1
+    channel_period: int = Field(default=20, ge=10, le=200)
+    momentum_bars: int = Field(default=6, ge=1, le=100)
+    minimum_momentum_atr: float = Field(default=0.75, gt=0.0, le=5.0)
+    stop_atr: float = Field(default=1.0, gt=0.0, le=10.0)
+    target_r: float = Field(default=1.0, gt=0.0, le=5.0)
+    session_start_hour_utc: int = Field(default=7, ge=0, le=23)
+    session_end_hour_utc: int = Field(default=13, ge=1, le=24)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    weekday_only: bool = False
+
+    @model_validator(mode="after")
+    def _complete_market_and_window(self) -> GoldCrossDiscoveryConfig:
+        if len(self.allowed_symbols) != 1:
+            raise ValueError("gold-cross discovery needs exactly one symbol")
+        if self.session_start_hour_utc >= self.session_end_hour_utc:
+            raise ValueError("gold-cross discovery session must be ordered inside one UTC day")
+        return self
+
+    def hour_is_open(self, hour: int) -> bool:
+        return self.session_start_hour_utc <= int(hour) < self.session_end_hour_utc
+
+
 class AnalysisConfig(Base):
     market_structure: MarketStructureConfig = MarketStructureConfig()
     trend_momentum: TrendMomentumConfig = TrendMomentumConfig()
@@ -4280,6 +4319,15 @@ class AnalysisConfig(Base):
     section_eleven_xaujpy_m1: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M1")
     section_twelve_xaujpy_m5: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M5")
     section_thirteen_xaujpy_m15: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M15")
+    section_fifteen_btc_m1: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("BTCUSD",), timeframe="M1"
+    )
+    section_sixteen_btc_m5: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("BTCUSD",), timeframe="M5"
+    )
+    section_seventeen_btc_m15: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
+        allowed_symbols=("BTCUSD",), timeframe="M15"
+    )
     confluence: ConfluenceConfig = ConfluenceConfig()
     entry_quality: EntryQualityConfig = EntryQualityConfig()
     playbooks: PlaybooksConfig = PlaybooksConfig()
