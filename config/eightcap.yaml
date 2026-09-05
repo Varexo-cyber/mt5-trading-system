@@ -1737,7 +1737,13 @@ analysis:
     mechanism: streak_reversal
     stop_atr: 1.0
     target_ratio: 1.5
-    confidence: 0.55
+    # score x confidence moet BOVEN score_threshold (35,0) uitkomen,
+    # want een losse module scoort precies |score| x confidence. Dit
+    # stond op 60 x 0,55 = 33,0 en dat is twee punten tekort, altijd.
+    # 32.407 setups over 180 dagen, nul trades, allemaal geweigerd.
+    # 70 x 0,58 = 40,6, exact wat sectie tien uitstuurt.
+    score: 70.0
+    confidence: 0.58
     # OPEN, en dat is een wijziging met een reden. Het blok 07:00-13:00 komt
     # van sectie tien's break-retest op deze kruisen. Dit is een ander
     # mechanisme en de sessietabel hierboven zegt dat London hier POSITIEF is
@@ -1764,7 +1770,13 @@ analysis:
     mechanism: stretch_fade
     stop_atr: 1.0
     target_ratio: 1.5
-    confidence: 0.55
+    # score x confidence moet BOVEN score_threshold (35,0) uitkomen,
+    # want een losse module scoort precies |score| x confidence. Dit
+    # stond op 60 x 0,55 = 33,0 en dat is twee punten tekort, altijd.
+    # 32.407 setups over 180 dagen, nul trades, allemaal geweigerd.
+    # 70 x 0,58 = 40,6, exact wat sectie tien uitstuurt.
+    score: 70.0
+    confidence: 0.58
     allowed_hours: []
     blocked_hours: []
 
@@ -1783,7 +1795,13 @@ analysis:
     mechanism: close_position_fade
     stop_atr: 1.0
     target_ratio: 1.5
-    confidence: 0.55
+    # score x confidence moet BOVEN score_threshold (35,0) uitkomen,
+    # want een losse module scoort precies |score| x confidence. Dit
+    # stond op 60 x 0,55 = 33,0 en dat is twee punten tekort, altijd.
+    # 32.407 setups over 180 dagen, nul trades, allemaal geweigerd.
+    # 70 x 0,58 = 40,6, exact wat sectie tien uitstuurt.
+    score: 70.0
+    confidence: 0.58
     allowed_hours: []
     blocked_hours: []
 

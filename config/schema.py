@@ -4180,7 +4180,18 @@ class SectionXauJpyConfig(Base):
     #: measured number rather than a preference.
     target_ratio: float = Field(default=1.5, gt=0.0, le=10.0)
     long_only: bool = False
-    confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    #: THE STRENGTH THIS SECTION SENDS INTO THE CONFLUENCE, and it is a config
+    #: field for the same reason every other section's is.
+    #:
+    #: It was hardcoded at 60.0 in the module. A lone module scores
+    #: `|score| x confidence`, so 60 x 0.55 = 33.0 against a `score_threshold`
+    #: of 35.0 -- two points short, by construction, on every bar forever. The
+    #: first 180-day replay formed 32,407 setups and took ZERO trades, and
+    #: every one of them was refused with "confluence score 33.0 below
+    #: threshold". A detector that fires and can never produce a trade is the
+    #: purest form of the defect this repository keeps finding.
+    score: float = Field(default=70.0, gt=0.0, le=100.0)
+    confidence: float = Field(default=0.58, ge=0.0, le=1.0)
     #: UTC hours this section may enter on. EMPTY MEANS EVERY HOUR, and that is
     #: a decision rather than a default: every measurement on gold and its
     #: crosses so far has found the hour of day to matter as much as the
