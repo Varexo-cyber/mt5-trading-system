@@ -1413,6 +1413,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--btc-jarvis-replay",
+        action="store_true",
+        help=(
+            "S15-S17 second measurement: keep their frozen measured entries, then "
+            "apply the reproducible Jarvis portfolio/account rules; news is skipped"
+        ),
+    )
+    parser.add_argument(
         "--section-ten-only",
         action="store_true",
         help=(
@@ -1519,17 +1527,23 @@ def main(argv: list[str] | None = None) -> None:
     selected_only = {
         item.strip() for item in args.only.replace(" ", ",").split(",") if item.strip()
     }
-    if args.btc_research_parity and (
+    btc_shadow = args.btc_research_parity or args.btc_jarvis_replay
+    if btc_shadow and (
         not selected_only or not selected_only.issubset(RAW_BTC_SHADOW_SECTIONS)
     ):
         raise SystemExit(
-            "--btc-research-parity is restricted to --only section_fifteen_btc_m1,"
+            "BTC replay modes are restricted to --only section_fifteen_btc_m1,"
             "section_sixteen_btc_m5,section_seventeen_btc_m15"
         )
     if args.btc_research_parity:
         print(
             "BTC RESEARCH PARITY: frozen next-bar entries, horizons, cost allowance and "
             "spread/risk envelope; live Jarvis is unchanged"
+        )
+    if args.btc_jarvis_replay:
+        print(
+            "BTC JARVIS REPLAY: frozen S15-S17 entries followed chronologically under "
+            "the account position limits; news skipped by operator request"
         )
 
     # THE OVERLAY, or there are no live modules at all. The base config ships
@@ -2013,7 +2027,7 @@ def main(argv: list[str] | None = None) -> None:
             # watch every setup be refused one at a time.
             hopeless = (
                 None
-                if args.btc_research_parity
+                if btc_shadow
                 else _hopeless_on_cost(
                     PositionSizer(settings),
                     spec,
@@ -2117,13 +2131,13 @@ def main(argv: list[str] | None = None) -> None:
                             name,
                             (
                                 _RawShadowEngine(only[0], getattr(tuned.analysis, name))
-                                if args.btc_research_parity
+                                if btc_shadow
                                 else ConfluenceEngine(only, tuned.analysis.confluence)
                             ),
                             PositionSizer(tuned),
                             None if comment.casefold() in fixed else section_manage,
                             flatten_time,
-                            args.btc_research_parity,
+                            btc_shadow,
                         )
                     )
                 produced = _one_clock(
@@ -2224,6 +2238,21 @@ def main(argv: list[str] | None = None) -> None:
         _sweep_report(results, equity, args.days, _break_even_rule(settings) is not None)
         _clock_overlap(results, args.days)
     _live_config_report(results, settings, equity, args.days)
+    if args.btc_jarvis_replay:
+        offered = [d for d in decisions if d.outcome == "TRADE"]
+        allowed = _under_the_slot_cap(
+            offered,
+            settings.effective_max_positions(equity),
+            share_between_sections=settings.risk.sections_may_share_a_symbol,
+            refuse_opposite=settings.risk.refuse_opposite_direction_across_sections,
+        )
+        allowed_ids = {id(row) for row in allowed}
+        for row in offered:
+            if id(row) not in allowed_ids:
+                row.outcome = "ACCOUNT_POSITION_LIMIT"
+                row.note = "Jarvis account/same-symbol position limit was already occupied"
+        _btc_jarvis_replay_contract(settings, equity, len(offered), len(allowed))
+
     _report(
         decisions,
         equity,
@@ -2232,7 +2261,10 @@ def main(argv: list[str] | None = None) -> None:
         _break_even_rule(settings) is not None,
         sections=tuple(sorted({name for name, _tf in passes})),
     )
-    _gates_this_run_does_not_apply(btc_research_parity=args.btc_research_parity)
+    _gates_this_run_does_not_apply(
+        btc_research_parity=args.btc_research_parity,
+        btc_jarvis_replay=args.btc_jarvis_replay,
+    )
     if args.csv:
         path = Path(args.csv)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -3120,30 +3152,85 @@ EXITS_NOT_MODELLED: tuple[tuple[str, str], ...] = (
 )
 
 
-def _gates_this_run_does_not_apply(*, btc_research_parity: bool = False) -> None:
+def _btc_jarvis_replay_contract(settings, equity: float, offered: int, allowed: int) -> None:
+    """Print exactly what the second S15-S17 measurement can substantiate.
+
+    A historical OHLC archive can replay deterministic chart and portfolio
+    rules.  It cannot recreate tick-order, an unavailable news archive, or a
+    review response that was never made.  Naming that boundary in the result
+    prevents this command from being mistaken for a broker statement.
+    """
+    print(f"\n{'=' * 78}")
+    print("S15-S17 JARVIS REPLAY CONTRACT")
+    print(f"{'=' * 78}")
+    print("  APPLIED")
+    print("    frozen S15/S16/S17 detector and next-bar entry")
+    print("    historical BTCUSD spread plus the configured execution allowance")
+    print("    strategy stop/target, horizon and configured section break-even")
+    print(
+        f"    shared Jarvis position book: max {settings.effective_max_positions(equity)} "
+        f"positions at EUR {equity:.2f} ({offered - allowed} of {offered} entries blocked)"
+    )
+    print("    minimum-lot 2% eligibility envelope used to approve these shadow sections")
+    print("  INCLUDED, PASS-THROUGH BY THE LIVE CONFIG")
+    print("    entry confirmation: each section has its own closed-bar confirmation")
+    print("    pullback lifecycle/entry quality: each section owns its measured entry")
+    print("  SKIPPED BY OPERATOR REQUEST")
+    print("    historical news blackout")
+    print("  NOT RECONSTRUCTIBLE FROM OHLC BARS")
+    print("    tick-by-tick fill slippage, AI review answers, margin changes and outages")
+    print("    intrabar partial/trailing/health/peak-stall ordering")
+    print("  The total below is therefore the deterministic S15-S17 account replay,")
+    print("  not a promise or an exact reconstruction of fills the broker never made.")
+
+
+def _gates_this_run_does_not_apply(
+    *, btc_research_parity: bool = False, btc_jarvis_replay: bool = False
+) -> None:
     """What stands between this number and the account's behaviour."""
     blocked = sum(count for _name, count, _why in NOT_MODELLED)
     print(f"\n{'=' * 78}")
     print("WHAT THIS RUN DID NOT MODEL")
     print(f"{'=' * 78}")
-    if btc_research_parity:
+    if btc_jarvis_replay:
+        print("  This is the second S15-S17 account replay described in the contract above.")
+        print("  The following dynamic gates cannot be reconstructed as historical live")
+        print("  decisions from OHLC alone; the counts shown are diagnostic live-day counts:\n")
+    elif btc_research_parity:
         print("  This S15-S17 run reproduces the frozen research detector, next-bar entry,")
         print("  horizon, spread envelope, 2% minimum-lot envelope and execution allowance.")
         print("  It deliberately does NOT apply these later live-runner gates:\n")
     else:
         print("  This script is ConfluenceEngine.evaluate + PositionSizer.size. The live")
         print("  runner wraps those in eight more gates. None of them are applied here:\n")
-    for name, count, why in NOT_MODELLED:
+    omitted = NOT_MODELLED
+    if btc_jarvis_replay:
+        # These are not omissions in this lane. The three standalone BTC
+        # sections carry their own closed-bar confirmation and entry, while
+        # news was explicitly excluded by the operator.
+        omitted = tuple(
+            row
+            for row in NOT_MODELLED
+            if row[0] not in {"AWAITING_CONFIRMATION", "AWAITING_PULLBACK", "ENTRY_OVEREXTENDED", "NEWS_BLACKOUT"}
+        )
+    for name, count, why in omitted:
         print(f"    {name:<24}{count:>5}   {why}")
-    print(
-        f"\n  Those counts are one real day on the live account, 31 August: 414 setups\n"
-        f"  formed, {blocked} died at the gates above, 11 at gates this script does have\n"
-        f"  (SL_TOO_TIGHT_FOR_COSTS, RISK_EXCEEDS_CAP), and 0 trades were taken.\n"
-        f"\n  So read every R and EUR above as WHAT THE STRATEGY DOES WITH THOSE EIGHT\n"
-        f"  GATES OFF. It is the right number for choosing a clock or an exit rule,\n"
-        f"  and it is not a forecast of the account. `waarom.cmd 24` says which gate\n"
-        f"  is actually spending the setups on any given day."
-    )
+    if btc_jarvis_replay:
+        print(
+            "\n  These counts came from a different live day and are context only. The"
+            "\n  replay result must be read with the contract above; it is not an exact"
+            "\n  tick-for-tick broker or AI reconstruction."
+        )
+    else:
+        print(
+            f"\n  Those counts are one real day on the live account, 31 August: 414 setups\n"
+            f"  formed, {blocked} died at the gates above, 11 at gates this script does have\n"
+            f"  (SL_TOO_TIGHT_FOR_COSTS, RISK_EXCEEDS_CAP), and 0 trades were taken.\n"
+            f"\n  So read every R and EUR above as WHAT THE STRATEGY DOES WITH THOSE EIGHT\n"
+            f"  GATES OFF. It is the right number for choosing a clock or an exit rule,\n"
+            f"  and it is not a forecast of the account. `waarom.cmd 24` says which gate\n"
+            f"  is actually spending the setups on any given day."
+        )
 
     print("\n  AND THE EXITS. This replay simulates the break-even move for managed")
     print("  families, fixed broker SL/TP for fixed-exit families, and their configured")

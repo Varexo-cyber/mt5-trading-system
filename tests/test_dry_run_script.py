@@ -3201,6 +3201,18 @@ class TestRawBtcShadowIsExplicitlyContained:
         assert build_parser().parse_args(["--btc-research-parity"]).btc_research_parity is True
         assert build_parser().parse_args(["--raw-btc-shadow"]).btc_research_parity is True
 
+    def test_second_launcher_requests_the_jarvis_account_lane(self) -> None:
+        from pathlib import Path
+
+        from scripts.dry_run_sections import build_parser
+
+        launcher = Path("sectie151617-jarvis.cmd").read_text(errors="replace")
+        assert "--btc-jarvis-replay" in launcher
+        assert "runtime\\secties15-17-jarvis.csv" in launcher
+        parsed = build_parser().parse_args(["--btc-jarvis-replay"])
+        assert parsed.btc_jarvis_replay is True
+        assert parsed.btc_research_parity is False
+
     def test_raw_lane_is_hard_limited_to_the_three_btc_sections(self) -> None:
         from scripts.dry_run_sections import RAW_BTC_SHADOW_SECTIONS
 
