@@ -49,6 +49,8 @@ MECHANISMS = (
     "volume_momentum_confirm",
     "ema_reclaim",
     "donchian_retest",
+    "semivariance_regime",
+    "liquid_session_breakout",
 )
 SESSIONS = {
     "all": tuple(range(24)),
@@ -233,6 +235,45 @@ def main() -> int:
             print(f"  floor R/trade {floor:+.3f}")
             for part in parts:
                 print_result(part)
+
+        # Position management is selected on train only, then frozen before
+        # validation and holdout are inspected. Testing it after seeing the
+        # later periods would merely add another hidden overfit dimension.
+        managed = []
+        for _, parts in discoveries[:10]:
+            base = parts[0].cell
+            mechanism, timeframe, direction, stop_label, target_label, session = base.split("/")
+            polarity = 1 if direction == "follow" else -1
+            stop_atr = float(stop_label.removesuffix("ATR"))
+            target_r = float(target_label.removesuffix("R"))
+            for trigger in (0.5, 1.0, 1.5):
+                candidate = replay(
+                    frame,
+                    polarity * signal_cache[(mechanism, timeframe)],
+                    HORIZONS[timeframe],
+                    stop_atr,
+                    target_r,
+                    MAX_SPREAD_R[timeframe],
+                    max_stop_price,
+                    break_even_at_r=trigger,
+                )
+                candidate["market"] = "BTCUSD"
+                candidate = candidate.loc[clock_filter(candidate, session)].copy()
+                label = f"{base}/BE@{trigger:g}R"
+                train = summarise(label, "train", split_trades(candidate, frame, 0.0, 0.5))
+                managed.append((train.sigma, train, candidate))
+        if managed:
+            _, train, candidate = max(managed, key=lambda item: item[0])
+            validation = summarise(
+                train.cell, "validation", split_trades(candidate, frame, 0.5, 0.75)
+            )
+            holdout = summarise(
+                train.cell, "holdout", split_trades(candidate, frame, 0.75, 1.01)
+            )
+            print(f"{wanted_timeframe} FROZEN POSITION-MANAGEMENT WINNER")
+            print_result(train)
+            print_result(validation)
+            print_result(holdout)
     return 0 if all_passed else 2
 
 
