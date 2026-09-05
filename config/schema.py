@@ -4235,9 +4235,14 @@ class GoldCrossDiscoveryConfig(Base):
     enabled: bool = False
     allowed_symbols: tuple[str, ...] = ()
     timeframe: str = "M5"
-    mechanism: Literal["channel_breakout", "aligned_momentum", "trend_rejection"] = (
-        "channel_breakout"
-    )
+    mechanism: Literal[
+        "channel_breakout",
+        "aligned_momentum",
+        "trend_rejection",
+        "adaptive_channel_25",
+        "adaptive_channel_100",
+        "trend_pullback",
+    ] = "channel_breakout"
     polarity: Literal[-1, 1] = 1
     channel_period: int = Field(default=20, ge=10, le=200)
     momentum_bars: int = Field(default=6, ge=1, le=100)
@@ -4249,6 +4254,9 @@ class GoldCrossDiscoveryConfig(Base):
     score: float = Field(default=70.0, ge=0.0, le=100.0)
     confidence: float = Field(default=0.55, ge=0.0, le=1.0)
     weekday_only: bool = False
+    # Shadow-replay exit only: 0 keeps broker SL/TP, positive moves to entry
+    # after that many R, and None inherits ordinary account management.
+    shadow_break_even_at_r: float | None = Field(default=None, ge=0.0, le=5.0)
 
     @model_validator(mode="after")
     def _complete_market_and_window(self) -> GoldCrossDiscoveryConfig:

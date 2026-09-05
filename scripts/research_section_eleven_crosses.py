@@ -200,6 +200,50 @@ def signals(frame: pd.DataFrame, mechanism: str) -> np.ndarray:
         vwap = (typical * frame.volume).rolling(48).sum() / rolling_volume
         long = (trend > 0) & (low <= vwap) & (close > vwap) & (close > open_)
         short = (trend < 0) & (high >= vwap) & (close < vwap) & (close < open_)
+    elif mechanism == "rsi_trend_reclaim":
+        change = close.diff()
+        gain = change.clip(lower=0.0).rolling(14).mean()
+        loss = (-change.clip(upper=0.0)).rolling(14).mean().replace(0.0, np.nan)
+        rsi = 100.0 - 100.0 / (1.0 + gain / loss)
+        long = (trend > 0) & (rsi.shift(1) <= 45.0) & (rsi > 45.0) & (close > open_)
+        short = (trend < 0) & (rsi.shift(1) >= 55.0) & (rsi < 55.0) & (close < open_)
+    elif mechanism == "squeeze_release":
+        width = close.rolling(20).std(ddof=0) / close.rolling(20).mean()
+        squeezed = width.shift(1) <= width.shift(1).rolling(96).quantile(0.20)
+        ceiling = high.shift(1).rolling(20).max()
+        floor = low.shift(1).rolling(20).min()
+        long = squeezed & (close > ceiling) & (trend > 0)
+        short = squeezed & (close < floor) & (trend < 0)
+    elif mechanism == "volume_momentum_confirm":
+        move = close.diff(6) / unit
+        liquid = frame.volume > 1.5 * frame.volume.rolling(48).median()
+        long = liquid & (trend > 0) & (move > 0.75) & (close > open_)
+        short = liquid & (trend < 0) & (move < -0.75) & (close < open_)
+    elif mechanism == "ema_reclaim":
+        long = (trend > 0) & (close.shift(1) <= fast.shift(1)) & (close > fast) & (close > open_)
+        short = (trend < 0) & (close.shift(1) >= fast.shift(1)) & (close < fast) & (close < open_)
+    elif mechanism == "donchian_retest":
+        ceiling = high.shift(2).rolling(20).max()
+        floor = low.shift(2).rolling(20).min()
+        broke_up = close.shift(1) > ceiling
+        broke_down = close.shift(1) < floor
+        long = broke_up & (low <= ceiling) & (close > ceiling) & (close > open_)
+        short = broke_down & (high >= floor) & (close < floor) & (close < open_)
+    elif mechanism == "semivariance_regime":
+        returns = close.pct_change()
+        upside = returns.clip(lower=0.0).pow(2).rolling(24).sum()
+        downside = returns.clip(upper=0.0).pow(2).rolling(24).sum()
+        move = close.diff(6) / unit
+        long = (trend > 0) & (upside > downside) & (move > 0.75) & (close > open_)
+        short = (trend < 0) & (downside > upside) & (move < -0.75) & (close < open_)
+    elif mechanism == "liquid_session_breakout":
+        ceiling = high.shift(1).rolling(20).max()
+        floor = low.shift(1).rolling(20).min()
+        liquid = frame.volume > frame.volume.rolling(48).median()
+        if "spread_price" in frame:
+            liquid &= frame.spread_price <= frame.spread_price.rolling(96).quantile(0.40)
+        long = liquid & (trend > 0) & (close > ceiling)
+        short = liquid & (trend < 0) & (close < floor)
     elif mechanism == "two_leg_trend":
         gold_trend = np.sign(
             frame.gold_close.ewm(span=20, adjust=False).mean()
@@ -266,6 +310,7 @@ def replay(
     target_r: float,
     max_spread_r: float | None = None,
     max_stop_price: float | None = None,
+    break_even_at_r: float | None = None,
 ) -> pd.DataFrame:
     unit = atr(frame).to_numpy()
     open_, high, low, close = (frame[name].to_numpy() for name in ("open", "high", "low", "close"))
@@ -297,15 +342,24 @@ def replay(
         final_bar = min(entry_bar + horizon - 1, len(frame) - 1)
         result: float | None = None
         exit_bar = final_bar
+        break_even_armed = False
         for bar in range(entry_bar, final_bar + 1):
-            stop_hit = low[bar] <= stop if direction > 0 else high[bar] >= stop
+            active_stop = entry if break_even_armed else stop
+            stop_hit = low[bar] <= active_stop if direction > 0 else high[bar] >= active_stop
             target_hit = high[bar] >= target if direction > 0 else low[bar] <= target
             if stop_hit:  # pessimistic when both barriers occur in one bar
-                result, exit_bar = -1.0, bar
+                result, exit_bar = (0.0 if break_even_armed else -1.0), bar
                 break
             if target_hit:
                 result, exit_bar = target_r, bar
                 break
+            if break_even_at_r is not None:
+                trigger = entry + direction * break_even_at_r * risk
+                trigger_hit = high[bar] >= trigger if direction > 0 else low[bar] <= trigger
+                if trigger_hit:
+                    # Arm only for the next bar: intrabar ordering is unknown,
+                    # so same-bar protection would make the replay optimistic.
+                    break_even_armed = True
         if result is None:
             result = float(np.clip(direction * (close[final_bar] - entry) / risk, -1.0, target_r))
         records.append((frame.index[entry_bar], result - COST_R - spread_cost_r))

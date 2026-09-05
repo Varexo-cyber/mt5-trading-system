@@ -46,6 +46,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -55,6 +56,7 @@ import numpy as np
 import pandas as pd
 
 from analysis import ConfluenceEngine
+from analysis.confluence import TradeIdea
 from backtesting.replay import fetch_mt5_history
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
@@ -62,6 +64,74 @@ from core.trade_origin import broker_comment
 from core.types import Direction, MarketContext, Series, Tick, Timeframe, TradingMode
 from risk.position_sizer import PositionSizer
 from runner.service import build_analysis_modules
+
+RAW_BTC_SHADOW_SECTIONS = {
+    "section_fifteen_btc_m1",
+    "section_sixteen_btc_m5",
+    "section_seventeen_btc_m15",
+}
+
+
+class _RawShadowEngine:
+    """Convert one BTC detector firing directly into a replay-only idea."""
+
+    def __init__(self, module, config) -> None:
+        self.module = module
+        self.config = config
+
+    def evaluate(self, ctx: MarketContext, _mode: TradingMode) -> TradeIdea:
+        signal = self.module.analyze(ctx)
+        if not signal.score or signal.invalidation_price is None or ctx.tick is None:
+            return TradeIdea(
+                ctx.symbol,
+                False,
+                None,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                signal.reasoning or "no section signal",
+                (signal,),
+                setup_family=self.module.name,
+                planning_timeframe=self.config.timeframe,
+            )
+        direction = Direction.LONG if signal.score > 0 else Direction.SHORT
+        entry = float(ctx.tick.ask if direction is Direction.LONG else ctx.tick.bid)
+        stop = float(signal.invalidation_price)
+        risk = abs(entry - stop)
+        if risk <= 0.0:
+            return TradeIdea(
+                ctx.symbol,
+                False,
+                None,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                "detector produced no usable stop",
+                (signal,),
+                setup_family=self.module.name,
+                planning_timeframe=self.config.timeframe,
+            )
+        sign = 1.0 if direction is Direction.LONG else -1.0
+        target = entry + sign * float(self.config.target_r) * risk
+        return TradeIdea(
+            ctx.symbol,
+            True,
+            direction,
+            abs(float(signal.score)),
+            float(signal.confidence),
+            entry,
+            stop,
+            target,
+            "raw BTC shadow detector firing",
+            (signal,),
+            setup_family=self.module.name,
+            planning_timeframe=self.config.timeframe,
+        )
+
 
 #: Every timeframe a sweep may put a section on.
 #:
@@ -528,7 +598,7 @@ def _one_clock(
 ) -> dict:
     """Every section that reads one clock, walked ONCE.
 
-    `sections` is a list of `(name, engine, sizer)`. Returns `name -> decisions`.
+    `sections` is `(name, engine, sizer, management, flatten, raw_shadow)` rows.
 
     WHY ONE WALK INSTEAD OF ONE PER SECTION. A `MarketContext` depends on the
     symbol, the instant and the bars -- not on which module is about to read
@@ -665,6 +735,7 @@ def _one_clock(
         for row in awake:
             name, engine, sizer, section_manage = row[:4]
             flatten_time = row[4] if len(row) > 4 else None
+            raw_shadow = bool(row[5]) if len(row) > 5 else False
             idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
             module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
             if not idea.approved:
@@ -673,7 +744,7 @@ def _one_clock(
                         upto,
                         symbol,
                         module,
-                        "REFUSED_CONFLUENCE",
+                        "NO_SIGNAL" if raw_shadow else "REFUSED_CONFLUENCE",
                         note=idea.reason[:90],
                         # THE SECTION THAT WAS REFUSED, not just the detector
                         # that voted. Without it a section which took no trades
@@ -683,15 +754,28 @@ def _one_clock(
                     )
                 )
                 continue
-            sized = sizer.size(
-                spec=spec,
-                equity=equity,
-                direction=idea.direction,
-                entry=idea.entry,
-                sl=idea.stop_loss,
-                tp=idea.take_profit,
-                spread_price=spread_price,
-            )
+            if raw_shadow:
+                volume = float(spec.volume_min)
+                commission = sizer.settings.risk.commission_per_lot(spec.asset_class.value)
+                actual_risk_money = (
+                    spec.money_per_lot(abs(idea.entry - idea.stop_loss)) + commission
+                ) * volume
+                sized = SimpleNamespace(
+                    decision=SimpleNamespace(approved=True),
+                    volume=volume,
+                    actual_risk_money=actual_risk_money,
+                    actual_risk_pct=(actual_risk_money / equity * 100.0 if equity else 0.0),
+                )
+            else:
+                sized = sizer.size(
+                    spec=spec,
+                    equity=equity,
+                    direction=idea.direction,
+                    entry=idea.entry,
+                    sl=idea.stop_loss,
+                    tp=idea.take_profit,
+                    spread_price=spread_price,
+                )
             if not sized.decision.approved:
                 out[name].append(
                     Decision(
@@ -712,8 +796,11 @@ def _one_clock(
             resolved_manage = section_manage
             if section_manage is not None:
                 trigger_r, offset_atr = section_manage
-                offset_price = offset_atr * _hourly_atr(upto)
-                resolved_manage = (trigger_r, offset_price) if offset_price > 0.0 else None
+                if offset_atr == 0.0:
+                    resolved_manage = (trigger_r, 0.0)
+                else:
+                    offset_price = offset_atr * _hourly_atr(upto)
+                    resolved_manage = (trigger_r, offset_price) if offset_price > 0.0 else None
 
             force_close_at = None
             if flatten_time is not None:
@@ -1173,12 +1260,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv", default="", help="write every decision to this file")
     parser.add_argument("--equity", type=float, default=0.0, help="override account equity")
     parser.add_argument(
+        "--risk-percent",
+        type=float,
+        default=0.0,
+        help=(
+            "shadow-only sizing override for this replay (0 keeps configured risk); "
+            "never changes YAML or live Jarvis"
+        ),
+    )
+    parser.add_argument(
         "--manage-grid",
         action="store_true",
         help=(
             "resolve every taken trade again at each break-even trigger in "
             "MANAGE_GRID and print what each one would have kept, on the same "
             "entries as the fixed exit"
+        ),
+    )
+    parser.add_argument(
+        "--raw-btc-shadow",
+        action="store_true",
+        help=(
+            "S15-S17 shadow replay only: take every detector firing without "
+            "confluence, cost-wall or capitalization refusal; never affects live Jarvis"
         ),
     )
     parser.add_argument(
@@ -1285,6 +1389,22 @@ def main(argv: list[str] | None = None) -> None:
     # never tested and two of them did not work.
     args = build_parser().parse_args(argv)
 
+    selected_only = {
+        item.strip() for item in args.only.replace(" ", ",").split(",") if item.strip()
+    }
+    if args.raw_btc_shadow and (
+        not selected_only or not selected_only.issubset(RAW_BTC_SHADOW_SECTIONS)
+    ):
+        raise SystemExit(
+            "--raw-btc-shadow is restricted to --only section_fifteen_btc_m1,"
+            "section_sixteen_btc_m5,section_seventeen_btc_m15"
+        )
+    if args.raw_btc_shadow:
+        print(
+            "RAW BTC SHADOW: detector firings bypass confluence/cost/sizing refusals; "
+            "minimum-lot actual risk is reported; live Jarvis is unchanged"
+        )
+
     # THE OVERLAY, or there are no live modules at all. The base config ships
     # `live_enabled_modules` empty on purpose -- permission to trade real money
     # is an account-level decision, and it lives in the Eightcap overlay. Load
@@ -1294,6 +1414,28 @@ def main(argv: list[str] | None = None) -> None:
     settings = settings.model_copy(
         update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
     )
+    if args.risk_percent:
+        if not 0.0 < args.risk_percent <= 20.0:
+            raise SystemExit("--risk-percent must be above 0 and at most 20")
+        modes = dict(settings.modes)
+        modes[TradingMode.MICRO_LIVE.value] = modes[TradingMode.MICRO_LIVE.value].model_copy(
+            update={"max_risk_per_trade_pct": args.risk_percent}
+        )
+        settings = settings.model_copy(
+            update={
+                "risk": settings.risk.model_copy(
+                    update={
+                        "risk_per_trade_pct": args.risk_percent,
+                        "max_risk_per_trade_pct": args.risk_percent,
+                    }
+                ),
+                "modes": modes,
+            }
+        )
+        print(
+            f"SHADOW RISK STRESS: {args.risk_percent:.1f}% per trade; "
+            "this does NOT alter live configuration or grant real-money permission"
+        )
     # Two positional arguments, `settings.mt5` first -- the same shape `main.py`
     # uses. Passing only the credentials made the connector read
     # `credentials.terminal_path`, which does not exist, and the run died
@@ -1742,11 +1884,15 @@ def main(argv: list[str] | None = None) -> None:
 
             # SKIP WHAT CANNOT TRADE, before walking twelve thousand bars to
             # watch every setup be refused one at a time.
-            hopeless = _hopeless_on_cost(
-                PositionSizer(settings),
-                spec,
-                frames,
-                tuple(Timeframe.parse(tf) for _n, tf in passes),
+            hopeless = (
+                None
+                if args.raw_btc_shadow
+                else _hopeless_on_cost(
+                    PositionSizer(settings),
+                    spec,
+                    frames,
+                    tuple(Timeframe.parse(tf) for _n, tf in passes),
+                )
             )
             if hopeless is not None:
                 unaffordable.append((symbol, hopeless))
@@ -1822,6 +1968,14 @@ def main(argv: list[str] | None = None) -> None:
                 for name in names:
                     tuned = _retimed(settings, name, tf_name)
                     only = [m for m in build_analysis_modules(tuned) if m.name == name]
+                    section_manage = manage
+                    shadow_trigger = getattr(
+                        getattr(tuned.analysis, name), "shadow_break_even_at_r", None
+                    )
+                    if shadow_trigger is not None:
+                        section_manage = (
+                            None if shadow_trigger <= 0.0 else (float(shadow_trigger), 0.0)
+                        )
                     comment = broker_comment(name, is_addon=False, experimental_live=True)
                     fixed = {
                         item.casefold() for item in settings.trade_management.fixed_exit_comments
@@ -1834,10 +1988,15 @@ def main(argv: list[str] | None = None) -> None:
                     group.append(
                         (
                             name,
-                            ConfluenceEngine(only, tuned.analysis.confluence),
+                            (
+                                _RawShadowEngine(only[0], getattr(tuned.analysis, name))
+                                if args.raw_btc_shadow
+                                else ConfluenceEngine(only, tuned.analysis.confluence)
+                            ),
                             PositionSizer(tuned),
-                            None if comment.casefold() in fixed else manage,
+                            None if comment.casefold() in fixed else section_manage,
                             flatten_time,
+                            args.raw_btc_shadow,
                         )
                     )
                 produced = _one_clock(
