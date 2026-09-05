@@ -1316,6 +1316,9 @@ class TestTheScanUniverseIsTheLiveOne:
                 # and then narrows to the markets that section may trade, so it
                 # has to know the flag in order to hand it over.
                 "sectie10.cmd",
+                # The account replay: "start it N days ago, what is it now".
+                # Same universe as dryrun-live, with the live gates applied.
+                "hoeveel.cmd",
             }, f"{path} is not a measurement file and must not know about --core"
 
     def test_the_scanner_covers_every_class_except_stocks(self) -> None:
@@ -2663,9 +2666,45 @@ class TestTheLiveDryRunMeasuresOnlyWhatRuns:
         result as the book. Section eleven's zero row would have read as "the
         strategy found nothing".
         """
-        assert 'getattr(getattr(settings.analysis, name), "allowed_symbols", ())' in SOURCE
         assert "symbols = symbols + absent" in SOURCE
         assert "markets the universe missed" in SOURCE
+
+    def test_every_section_declares_its_markets_in_a_way_the_widening_reads(self) -> None:
+        """A PROPERTY, NOT THE LINE THAT IMPLEMENTS IT.
+
+        The previous version of this asserted the literal source string
+        `getattr(getattr(settings.analysis, name), "allowed_symbols", ())`.
+        That pinned a DECISION rather than a property, and it did the damage
+        such a test always does: sections five to ten and the BTC three carry
+        `allowed_symbols`, but the XAUJPY sections carry a single `symbol`, so
+        the pinned line returned an empty tuple for all three of them. The
+        widening the test was guarding did not happen for the sections it was
+        written to guard, and the test passed the whole time.
+
+        So this asks the question the widening asks -- "which markets does this
+        section need" -- of every section the dry run can measure, and fails
+        when one of them answers with nothing.
+        """
+        import re
+
+        settings = self._settings()
+        table = re.search(r"module_config = \{(.+?)\n        \}", SOURCE, re.S)
+        assert table is not None
+        for name in sorted(set(re.findall(r'"([a-z0-9_]+)":', table.group(1)))):
+            config = getattr(settings.analysis, name, None)
+            if config is None:
+                continue
+            allowed = tuple(getattr(config, "allowed_symbols", ()) or ())
+            one = getattr(config, "symbol", "")
+            declared = allowed or ((one,) if one else ())
+            if not declared and not hasattr(config, "allowed_symbols"):
+                # A section with neither field trades the whole universe on
+                # purpose; there is nothing to widen for it.
+                continue
+            assert declared, (
+                f"{name} declares no market the dry run can add to the walk, so a "
+                f"--core run replays it on nothing and reports the empty result as a zero"
+            )
 
     def test_the_launcher_passes_both_flags(self) -> None:
         launcher = (ROOT / "dryrun-live.cmd").read_text()
@@ -3433,3 +3472,430 @@ class TestATimeoutDoesNotKillTheSectionForTheRestOfTheRun:
         assert fixed is None and exit_at is None and managed_at is None
         _first, last = _horizon_window(index, index[0], 60)
         assert index[last - 1] < index[-1], "the section would be freed past the data"
+
+
+class TestTheAccountReplayClaimsOnlyWhatItApplies:
+    """`--jarvis-replay` says four gates ran. Four gates have to have run.
+
+    THE DEFECT THIS GUARDS IS THE ONE THIS FILE IS MOSTLY MADE OF: a claim in
+    a report that outlives the code behind it. The run prints "APPLIED" over a
+    list of gate names and then prints the REMAINING gates by subtracting that
+    list from `NOT_MODELLED`. If a name in the applied set is not in the table,
+    the subtraction silently removes nothing and the report says a gate was
+    applied while also listing it as missing; if a gate is implemented but not
+    named, the report understates itself. Both are wrong in the direction that
+    gets read wrong.
+    """
+
+    def test_every_gate_claimed_as_applied_exists_in_the_table(self) -> None:
+        from scripts.dry_run_sections import JARVIS_REPLAY_APPLIES, NOT_MODELLED
+
+        named = {name for name, _count, _why in NOT_MODELLED}
+        missing = JARVIS_REPLAY_APPLIES - named
+        assert not missing, (
+            f"the replay claims to apply {sorted(missing)}, which is not in NOT_MODELLED, "
+            f"so subtracting it removes nothing and the same gate is printed as both "
+            f"applied and missing"
+        )
+
+    def test_every_gate_the_code_can_return_is_claimed(self) -> None:
+        """The other direction: a reason `_historical_jarvis_gate` can emit
+        and the report does not claim is a gate whose work is invisible."""
+        import re
+
+        body = SOURCE[
+            SOURCE.index("def _historical_jarvis_gate(") : SOURCE.index("class _RawShadowEngine")
+        ]
+        from filters.base import Reason
+        from scripts.dry_run_sections import JARVIS_REPLAY_APPLIES
+
+        emitted = set(re.findall(r'"([A-Z_]{4,})"', body))
+        # `lively.reason.name` is returned dynamically rather than as a
+        # literal, so the liveliness reasons are added from the enum itself
+        # instead of being read out of the source.
+        assert "MARKET_TOO_QUIET" in {reason.name for reason in Reason}
+        emitted.add("MARKET_TOO_QUIET")
+        unclaimed = emitted - JARVIS_REPLAY_APPLIES
+        assert not unclaimed, (
+            f"the gate can refuse with {sorted(unclaimed)} and the contract does not "
+            f"say so, so those refusals appear in the run with nothing explaining them"
+        )
+
+    def test_the_launcher_asks_for_the_replay_and_keeps_m1(self) -> None:
+        launcher = (ROOT / "hoeveel.cmd").read_text()
+
+        assert "--jarvis-replay" in launcher
+        # THE VOLUME GATE READS M1 AND ONLY M1. A launcher that passes
+        # --no-m1 would produce a run claiming a gate that never fires.
+        assert "--no-m1" not in launcher
+
+    def test_no_m1_and_the_replay_are_refused_together(self) -> None:
+        assert "--jarvis-replay needs M1 bars" in SOURCE
+
+
+class TestTheEuroAnswerIsActuallyComputed:
+    """`_what_the_account_would_be_worth` runs once, at the end of a run that
+    takes an hour. That is precisely the code that ships broken: nothing calls
+    it until the owner has waited sixty minutes for it.
+
+    So these call it directly, on decisions with known results, and assert on
+    what lands on stdout.
+    """
+
+    def _settings(self):
+        from pathlib import Path
+
+        from config.loader import load_settings
+
+        return load_settings(
+            overlay=Path(__file__).resolve().parents[1] / "config" / "eightcap.yaml",
+            env_overrides=False,
+        )
+
+    def _trades(self, results):
+        from datetime import datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 3, 2, 9, 0, tzinfo=UTC)
+        return [
+            Decision(
+                base + timedelta(hours=i),
+                "XAUUSD",
+                "section_six_gold_m5",
+                "TRADE",
+                direction="LONG",
+                risk_money=4.0,
+                result_r=r,
+                pnl_money=r * 4.0,
+                exit_at=base + timedelta(hours=i, minutes=20),
+                pass_key=("section_six_gold_m5", "M5"),
+                managed_r=r,
+                managed_money=r * 4.0,
+            )
+            for i, r in enumerate(results)
+        ]
+
+    def test_the_flat_total_is_the_sum_of_the_trades(self, capsys) -> None:
+        from scripts.dry_run_sections import _what_the_account_would_be_worth
+
+        _what_the_account_would_be_worth(
+            self._trades([1.0, -1.0, 1.5, -1.0]), self._settings(), 200.0, 180
+        )
+        out = capsys.readouterr().out
+
+        # 4.0 - 4.0 + 6.0 - 4.0 = +2.00
+        assert "+2.00" in out
+        assert "IF THIS HAD BEEN RUNNING FOR 180 DAYS" in out
+
+    def test_compounding_beats_a_flat_stake_on_a_rising_curve(self, capsys) -> None:
+        """Not a tautology: it is the property that makes the second number
+        worth printing at all, and a sign error in the rescale inverts it."""
+        from scripts.dry_run_sections import _what_the_account_would_be_worth
+
+        _what_the_account_would_be_worth(self._trades([1.0] * 12), self._settings(), 200.0, 180)
+        out = capsys.readouterr().out
+        numbers = [
+            float(line.split("EUR")[1].split()[0].replace("+", ""))
+            for line in out.splitlines()
+            if "result " in line and "EUR" in line
+        ]
+        assert len(numbers) == 2
+        assert numbers[1] > numbers[0]
+
+    def test_a_run_with_no_trades_says_so_instead_of_printing_nothing(self, capsys) -> None:
+        """An absent block reads as a zero block. That confusion is the single
+        most-repeated defect in this file's history."""
+        from scripts.dry_run_sections import _what_the_account_would_be_worth
+
+        _what_the_account_would_be_worth([], self._settings(), 200.0, 180)
+        out = capsys.readouterr().out
+
+        assert "zero observations" in out
+
+    def test_a_shadow_section_is_named_as_hypothetical(self, capsys) -> None:
+        from scripts.dry_run_sections import _what_the_account_would_be_worth
+
+        rows = self._trades([1.0, -1.0])
+        for row in rows:
+            row.pass_key = ("section_eleven_xaujpy_legs_m5", "M5")
+        _what_the_account_would_be_worth(rows, self._settings(), 200.0, 180)
+        out = capsys.readouterr().out
+
+        assert "NOT on the real-money allowlist" in out
+        assert "section_eleven_xaujpy_legs_m5" in out
+
+    def test_the_contract_prints_and_names_the_position_cap(self, capsys) -> None:
+        from scripts.dry_run_sections import _jarvis_replay_contract
+
+        settings = self._settings()
+        _jarvis_replay_contract(settings, 215.0, offered=40, allowed=25)
+        out = capsys.readouterr().out
+
+        assert "15 of 40 entries arrived with no slot free" in out
+        assert str(settings.effective_max_positions(215.0)) in out
+        assert "news blackout" in out
+
+
+class TestTheReplayHandsTheSectionItsLegs:
+    """`_context` grew a second instrument. If it hands the module nothing, or
+    hands it a bar the cross has not reached yet, section eleven is either
+    permanently silent or permanently looking ahead -- and both are invisible
+    from the outcome column.
+    """
+
+    def _frames(self):
+        from datetime import datetime, timedelta
+
+        import numpy as np
+        import pandas as pd
+
+        from analysis.section_eleven_legs import MIN_LEG_BARS
+
+        count = MIN_LEG_BARS + 400
+        start = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+        index = pd.DatetimeIndex([start + timedelta(minutes=5 * i) for i in range(count)])
+        steps = np.arange(count, dtype=float)
+        values = 2000.0 + np.sin(steps / 9.0) * 5.0
+        return pd.DataFrame(
+            {
+                "open": values,
+                "high": values + 1.0,
+                "low": values - 1.0,
+                "close": values,
+                "tick_volume": np.full(count, 100.0),
+            },
+            index=index,
+        )
+
+    def test_the_legs_reach_the_context_under_the_agreed_key(self) -> None:
+        from analysis.section_eleven_legs import LEGS_META_KEY, LegBars
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _context
+
+        frame = self._frames()
+        upto = frame.index[-1].to_pydatetime() + Timeframe.M5.duration
+        ctx = _context(
+            "XAUJPY",
+            {Timeframe.M5: frame},
+            upto,
+            0.5,
+            legs={
+                "XAUUSD": (Timeframe.M5, frame),
+                "USDJPY": (Timeframe.M5, frame),
+            },
+        )
+        assert ctx is not None
+        payload = ctx.meta[LEGS_META_KEY]
+        assert set(payload) == {"XAUUSD", "USDJPY"}
+        assert all(isinstance(leg, LegBars) for leg in payload.values())
+
+    def test_a_leg_is_cut_at_the_same_instant_as_the_cross(self) -> None:
+        """A leg one bar ahead is a look-ahead of exactly the size of the lag
+        this section trades, and it flatters the result."""
+        from analysis.section_eleven_legs import LEGS_META_KEY
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _context
+
+        frame = self._frames()
+        # Mid-history, so there are unseen bars on both sides.
+        upto = frame.index[450].to_pydatetime() + Timeframe.M5.duration
+        ctx = _context(
+            "XAUJPY",
+            {Timeframe.M5: frame},
+            upto,
+            0.5,
+            legs={"XAUUSD": (Timeframe.M5, frame), "USDJPY": (Timeframe.M5, frame)},
+        )
+        assert ctx is not None
+        leg = ctx.meta[LEGS_META_KEY]["XAUUSD"]
+        cross_last = ctx.series[Timeframe.M5].df.index[-1]
+        assert leg.frame.index[-1] == cross_last
+        assert leg.frame.index[-1] + Timeframe.M5.duration <= upto
+
+    def test_a_leg_with_too_little_history_attaches_nothing(self) -> None:
+        """Not a truncated payload: NOTHING. Half the legs is not half a read."""
+        from analysis.section_eleven_legs import LEGS_META_KEY
+        from core.types import Timeframe
+        from scripts.dry_run_sections import _context
+
+        frame = self._frames()
+        upto = frame.index[-1].to_pydatetime() + Timeframe.M5.duration
+        ctx = _context(
+            "XAUJPY",
+            {Timeframe.M5: frame},
+            upto,
+            0.5,
+            legs={
+                "XAUUSD": (Timeframe.M5, frame),
+                "USDJPY": (Timeframe.M5, frame.iloc[:20]),
+            },
+        )
+        assert ctx is not None
+        assert LEGS_META_KEY not in ctx.meta
+
+
+class TestEachClaimedGateIsActuallyReachable:
+    """Four gates are claimed. Four gates have to be able to fire, AND a clean
+    setup has to be able to pass all four.
+
+    THIS IS THE DEFECT THIS REPOSITORY PRODUCES MORE RELIABLY THAN ANY OTHER: a
+    check that exists, is correct, is documented, is tested against its own
+    inputs -- and is never reached by the path the code takes. The previous
+    tests around this asserted that the gate function contains the right
+    strings. That is not the same claim.
+
+    A gate that never fires makes the replay optimistic and silent about it; a
+    gate that always fires makes it empty and equally silent. Both directions
+    are asserted here.
+    """
+
+    def _settings(self):
+        from pathlib import Path
+
+        from config.loader import load_settings
+
+        return load_settings(
+            overlay=Path(__file__).resolve().parents[1] / "config" / "eightcap.yaml",
+            env_overrides=False,
+        )
+
+    def _tradeable_market(self):
+        """Bars a real instrument could have printed.
+
+        The jump-to-range ratio matters: the liveliness filter refuses a market
+        that opens past its own stops, so a random walk with tiny bar ranges is
+        refused for a reason that has nothing to do with the gate under test.
+        """
+        from datetime import datetime, timedelta
+
+        import numpy as np
+        import pandas as pd
+
+        n = 400
+        rng = np.random.default_rng(3)
+        step = rng.normal(0, 0.6, n)
+        close = 2000.0 + np.cumsum(step)
+        opens = np.concatenate(([close[0]], close[:-1]))
+        spans = np.abs(step) + rng.uniform(1.5, 3.0, n)
+        frame = pd.DataFrame(
+            {
+                "open": opens,
+                "high": np.maximum(opens, close) + spans / 2,
+                "low": np.minimum(opens, close) - spans / 2,
+                "close": close,
+                "tick_volume": np.full(n, 100.0),
+            },
+            index=pd.DatetimeIndex(
+                [datetime(2026, 1, 5, tzinfo=UTC) + timedelta(minutes=5 * i) for i in range(n)]
+            ),
+        )
+        minute = frame.copy()
+        minute.index = pd.DatetimeIndex(
+            [datetime(2026, 1, 5, tzinfo=UTC) + timedelta(minutes=i) for i in range(n)]
+        )
+        return frame, minute
+
+    def _context(self, frame, minute, *, spread: float, last_volume: float = 100.0):
+        from core.types import MarketContext, Series, Tick, Timeframe
+
+        minute = minute.copy()
+        minute.loc[minute.index[-1], "tick_volume"] = last_volume
+        now = frame.index[-1].to_pydatetime() + Timeframe.M5.duration
+        price = float(frame["close"].iloc[-1])
+        return MarketContext(
+            "XAUJPY",
+            now,
+            {
+                Timeframe.M5: Series("XAUJPY", Timeframe.M5, frame, now),
+                Timeframe.M1: Series("XAUJPY", Timeframe.M1, minute, now),
+            },
+            Tick("XAUJPY", now, price - spread / 2, price + spread / 2),
+        )
+
+    def _idea(self, frame, *, width: float, ratio: float):
+        from types import SimpleNamespace
+
+        from core.types import Direction
+
+        entry = float(frame["close"].iloc[-1])
+        return SimpleNamespace(
+            direction=Direction.LONG,
+            entry=entry,
+            stop_loss=entry - width,
+            take_profit=entry + width * ratio,
+        )
+
+    def _spec(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            asset_class=SimpleNamespace(value="metal"),
+            point=0.01,
+            volume_min=0.01,
+            digits=2,
+        )
+
+    def _gate(self, ctx, idea):
+        from core.types import Timeframe
+        from scripts.dry_run_sections import REACH_HORIZON, _historical_jarvis_gate
+
+        return _historical_jarvis_gate(
+            ctx, idea, self._spec(), self._settings(), Timeframe.M5, horizon=REACH_HORIZON
+        )
+
+    def test_a_clean_setup_passes_every_gate(self) -> None:
+        """Without this the three below pass on a run that takes no trades at
+        all, which is the same silence one level up."""
+        frame, minute = self._tradeable_market()
+        ctx = self._context(frame, minute, spread=0.1)
+        assert self._gate(ctx, self._idea(frame, width=6.0, ratio=1.5)) is None
+
+    def test_a_wide_spread_against_a_narrow_stop_is_refused(self) -> None:
+        frame, minute = self._tradeable_market()
+        ctx = self._context(frame, minute, spread=1.0)
+        blocked = self._gate(ctx, self._idea(frame, width=6.0, ratio=1.5))
+        assert blocked is not None and blocked[0] == "SPREAD_EATS_THE_STOP"
+
+    def test_a_volume_spike_is_refused(self) -> None:
+        frame, minute = self._tradeable_market()
+        ctx = self._context(frame, minute, spread=0.1, last_volume=900.0)
+        blocked = self._gate(ctx, self._idea(frame, width=6.0, ratio=1.5))
+        assert blocked is not None and blocked[0] == "VOLUME_SPIKE"
+
+    def test_a_target_this_market_does_not_reach_is_refused(self) -> None:
+        frame, minute = self._tradeable_market()
+        ctx = self._context(frame, minute, spread=0.1)
+        blocked = self._gate(ctx, self._idea(frame, width=6.0, ratio=4.0))
+        assert blocked is not None and blocked[0] == "TARGET_RARELY_REACHED"
+
+    def test_a_market_that_gaps_past_its_own_stops_is_refused(self) -> None:
+        """MARKET_TOO_QUIET is the enum name; what it actually refuses here is
+        a market whose bar-to-bar jump swamps its own range."""
+        from datetime import datetime, timedelta
+
+        import numpy as np
+        import pandas as pd
+
+        n = 400
+        rng = np.random.default_rng(11)
+        close = 2000.0 + np.cumsum(rng.normal(0, 1.5, n))
+        frame = pd.DataFrame(
+            {
+                "open": close,
+                "high": close + 0.05,
+                "low": close - 0.05,
+                "close": close,
+                "tick_volume": np.full(n, 100.0),
+            },
+            index=pd.DatetimeIndex(
+                [datetime(2026, 1, 5, tzinfo=UTC) + timedelta(minutes=5 * i) for i in range(n)]
+            ),
+        )
+        minute = frame.copy()
+        minute.index = pd.DatetimeIndex(
+            [datetime(2026, 1, 5, tzinfo=UTC) + timedelta(minutes=i) for i in range(n)]
+        )
+        ctx = self._context(frame, minute, spread=0.01)
+        blocked = self._gate(ctx, self._idea(frame, width=6.0, ratio=1.5))
+        assert blocked is not None and blocked[0] == "MARKET_TOO_QUIET"

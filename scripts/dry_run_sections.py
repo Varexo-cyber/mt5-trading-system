@@ -57,6 +57,7 @@ import pandas as pd
 
 from analysis import ConfluenceEngine
 from analysis.confluence import TradeIdea
+from analysis.section_eleven_legs import LEGS_META_KEY, MIN_LEG_BARS, leg_bars
 from analysis.target_reach import measure as measure_target_reach
 from backtesting.replay import fetch_mt5_history
 from config.loader import load_credentials, load_settings, terminal_path_from_env
@@ -78,8 +79,27 @@ RAW_BTC_MAX_SPREAD_R = {Timeframe.M1: 0.15, Timeframe.M5: 0.12, Timeframe.M15: 0
 RAW_BTC_EXECUTION_ALLOWANCE_R = 0.02
 
 
-def _historical_jarvis_gate(ctx, idea, spec, settings, clock: Timeframe) -> tuple[str, str] | None:
-    """Reproduce the live gates whose inputs exist in the historical bars."""
+#: Bars of a section's OWN clock a trade is followed over. `_one_clock` uses
+#: exactly this many, so the reach question the gate asks is the question the
+#: trade actually faces: "does the target get hit inside the life this replay
+#: gives the trade". A different horizon here would refuse entries on grounds
+#: the resolution never applies, or admit ones it silently times out.
+REACH_HORIZON = 96
+
+
+def _historical_jarvis_gate(
+    ctx, idea, spec, settings, clock: Timeframe, horizon: int | None = None
+) -> tuple[str, str] | None:
+    """Reproduce the live gates whose inputs exist in the historical bars.
+
+    FIVE OF THE EIGHT GATES THE ACCOUNT RUNS, and the five is not a shortcut:
+    they are exactly the ones whose inputs are IN the bars. Spread against stop
+    width, market liveliness, the M1 volume spike, target reach and direction
+    advantage all read price and volume history and nothing else. The news
+    blackout needs a calendar archive nobody kept, and the AI review needs an
+    answer that was never given -- and inventing either would be worse than
+    saying they are missing.
+    """
     risk = abs(idea.entry - idea.stop_loss)
     if risk <= 0.0:
         return "SPREAD_EATS_THE_STOP", "zero stop distance"
@@ -123,11 +143,11 @@ def _historical_jarvis_gate(ctx, idea, spec, settings, clock: Timeframe) -> tupl
 
     frame = ctx.series[clock].df
     reward = abs(idea.take_profit - idea.entry)
-    horizon = RAW_BTC_HORIZONS[clock]
+    bars_ahead = horizon if horizon is not None else RAW_BTC_HORIZONS.get(clock, REACH_HORIZON)
     reach = measure_target_reach(
         frame.tail(400),
         distance=reward,
-        bars_ahead=horizon,
+        bars_ahead=bars_ahead,
         long=idea.direction is Direction.LONG,
         reward_risk=reward / risk,
     )
@@ -313,7 +333,12 @@ class Decision:
 
 
 def _context(
-    symbol: str, frames: dict, upto: datetime, spread: float, slices: dict | None = None
+    symbol: str,
+    frames: dict,
+    upto: datetime,
+    spread: float,
+    slices: dict | None = None,
+    legs: dict | None = None,
 ) -> MarketContext | None:
     """Everything knowable at `upto`, and nothing that closed after it.
 
@@ -374,7 +399,28 @@ def _context(
     finest = min(series, key=lambda item: item.duration)
     price = float(series[finest].df["close"].iloc[-1])
     half = spread / 2.0
-    return MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))
+    ctx = MarketContext(symbol, upto, series, Tick(symbol, upto, price - half, price + half))
+    if legs:
+        # SECTION ELEVEN'S TWO LEGS, cut to the same instant as everything
+        # else here. Live they arrive through `context.meta` because a
+        # module may not reach a second instrument; the replay honours the
+        # same constraint rather than handing the module a shortcut that
+        # does not exist on the account.
+        #
+        # CLOSED BARS ONLY, on the identical `open + duration <= upto`
+        # rule the loop above uses. A leg cut one bar later than the cross
+        # is a look-ahead of exactly the size of the lag being traded, and
+        # it would flatter the result in the one direction that matters.
+        payload: dict = {}
+        for canonical, (timeframe, frame) in legs.items():
+            cut = int(frame.index.searchsorted(upto - timeframe.duration, side="right"))
+            if cut < MIN_LEG_BARS:
+                payload = {}
+                break
+            payload[canonical] = leg_bars(canonical, frame.iloc[cut - WARMUP : cut], upto)
+        if payload:
+            ctx.meta[LEGS_META_KEY] = payload
+    return ctx
 
 
 def _horizon_window(index, start, horizon_bars: int) -> tuple[int, int]:
@@ -701,6 +747,7 @@ def _one_clock(
     resolve_on: Timeframe,
     needed: tuple[Timeframe, ...] | None = None,
     manage_grid: bool = False,
+    legs: dict | None = None,
 ) -> dict:
     """Every section that reads one clock, walked ONCE.
 
@@ -838,7 +885,7 @@ def _one_clock(
         if not awake:
             continue
         spread_price = float(spreads[step]) * spec.point
-        ctx = _context(symbol, reading, upto, spread_price, slices)
+        ctx = _context(symbol, reading, upto, spread_price, slices, legs=legs)
         if ctx is None:
             continue
 
@@ -915,7 +962,14 @@ def _one_clock(
                     )
                     continue
             if jarvis_replay:
-                blocked = _historical_jarvis_gate(ctx, idea, spec, sizer.settings, clock)
+                blocked = _historical_jarvis_gate(
+                    ctx,
+                    idea,
+                    spec,
+                    sizer.settings,
+                    clock,
+                    horizon=None if raw_shadow else REACH_HORIZON,
+                )
                 if blocked is not None:
                     reason, detail = blocked
                     out[name].append(
@@ -1596,6 +1650,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--jarvis-replay",
+        action="store_true",
+        help=(
+            "answer 'if I had started this on day one, where would the account "
+            "be now'. Applies the live gates whose inputs exist in historical "
+            "bars -- spread against stop width, market liveliness, the M1 "
+            "volume spike, target reach and direction advantage -- and then "
+            "walks the surviving entries in time order under the SHARED Jarvis "
+            "position limit. Slower, and much closer to the account."
+        ),
+    )
+    parser.add_argument(
         "--live-only",
         action="store_true",
         help=(
@@ -1625,6 +1691,22 @@ def main(argv: list[str] | None = None) -> None:
         item.strip() for item in args.only.replace(" ", ",").split(",") if item.strip()
     }
     btc_shadow = args.btc_research_parity or args.btc_jarvis_replay
+    if args.jarvis_replay and args.no_m1:
+        # THE VOLUME GATE READS M1 AND NOTHING ELSE. Without M1 history it
+        # would simply never fire, the run would still print "VOLUME_SPIKE
+        # applied", and the claim would be false in the quietest possible way
+        # -- a gate that exists, is correct, is tested, and is not on the path
+        # the code takes. That is this repository's most-repeated defect, so
+        # the combination is refused instead of silently degraded.
+        raise SystemExit(
+            "--jarvis-replay needs M1 bars: the volume-spike gate reads M1 and only M1, "
+            "and --no-m1 would leave it claimed but never applied. Drop --no-m1."
+        )
+    if args.jarvis_replay and btc_shadow:
+        raise SystemExit(
+            "--jarvis-replay covers every measured section and the BTC modes are a"
+            " separate, narrower replay. Choose one."
+        )
     if btc_shadow and (not selected_only or not selected_only.issubset(RAW_BTC_SHADOW_SECTIONS)):
         raise SystemExit(
             "BTC replay modes are restricted to --only section_fifteen_btc_m1,"
@@ -1639,6 +1721,12 @@ def main(argv: list[str] | None = None) -> None:
         print(
             "BTC JARVIS REPLAY: frozen S15-S17 entries followed chronologically under "
             "the account position limits; news skipped by operator request"
+        )
+    if args.jarvis_replay:
+        print(
+            "JARVIS REPLAY: every measured section under the live spread/stop, "
+            "liveliness, volume-spike and target-reach gates, walked in time order "
+            "under one shared position book. News is not replayable and is skipped."
         )
 
     # THE OVERLAY, or there are no live modules at all. The base config ships
@@ -1885,7 +1973,7 @@ def main(argv: list[str] | None = None) -> None:
             "section_eight_trend_day_h1": "section_eight_trend_day_h1",
             "section_nine_vwap_m30": "section_nine_vwap_m30",
             "section_ten_gold_m1": "section_ten_gold_m1",
-            "section_eleven_xaujpy_m1": "section_eleven_xaujpy_m1",
+            "section_eleven_xaujpy_legs_m5": "section_eleven_xaujpy_legs_m5",
             "section_twelve_xaujpy_m5": "section_twelve_xaujpy_m5",
             "section_thirteen_xaujpy_m15": "section_thirteen_xaujpy_m15",
             "section_fifteen_btc_m1": "section_fifteen_btc_m1",
@@ -1920,7 +2008,7 @@ def main(argv: list[str] | None = None) -> None:
                 "section_eight_trend_day_h1",
                 "section_nine_vwap_m30",
                 "section_ten_gold_m1",
-                "section_eleven_xaujpy_m1",
+                "section_eleven_xaujpy_legs_m5",
                 "section_twelve_xaujpy_m5",
                 "section_thirteen_xaujpy_m15",
             }
@@ -1947,6 +2035,42 @@ def main(argv: list[str] | None = None) -> None:
                     f"live modules are missing from the dry-run implementation: {sorted(missing)}"
                 )
             measured = measured & live
+        if args.jarvis_replay and not args.only and not args.live_only:
+            # THE ACCOUNT REPLAY MEASURES WHAT THE ACCOUNT COULD RUN, and a
+            # section switched off in the config could not run. Including the
+            # retired research modules would add ten full bar walks that can
+            # only ever produce refusals, and would mix modules that cannot
+            # trade into a total headed "what would I have made".
+            #
+            # A PROPERTY, NOT A LIST. `enabled` is asked of each config rather
+            # than a second copy of the book being written down here -- a copy
+            # that must agree with the config is a copy that disagrees with it
+            # the first time one changes, which has already happened twice in
+            # this file.
+            def _could_have_run(name: str) -> bool:
+                config = getattr(settings.analysis, name, None)
+                if not getattr(config, "enabled", True):
+                    return False
+                # A NUMBERED SECTION, or a module the allowlist lets spend
+                # money. Everything else in `module_config` is a section-one
+                # detector -- impulse/retest, the order-block clocks -- which
+                # cannot open a position of its own on this account, so its
+                # euros do not belong in a total headed "what would I have
+                # made". They are still measurable with `--only`.
+                return name in live or name.startswith("section_")
+
+            dropped = sorted(name for name in measured if not _could_have_run(name))
+            measured = measured - set(dropped)
+            if dropped:
+                print(
+                    "  not measured, because the account could not have traded them: "
+                    f"{', '.join(dropped)}"
+                )
+            if not measured:
+                raise SystemExit(
+                    "every known section is disabled, so there is nothing for the account "
+                    "replay to measure. That is not EUR 0.00; it is no observations."
+                )
         if args.only:
             wanted_sections = {
                 piece.strip()
@@ -2008,7 +2132,20 @@ def main(argv: list[str] | None = None) -> None:
         section_markets: dict[str, list[str]] = {}
         widen = not args.symbols and not args.section_ten_only
         for name in sorted({name for name, _tf in passes}) if widen else ():
-            allowed = tuple(getattr(getattr(settings.analysis, name), "allowed_symbols", ()) or ())
+            config = getattr(settings.analysis, name)
+            # TWO SPELLINGS OF "THE MARKETS THIS SECTION TRADES", and only one
+            # of them was read. Sections five to ten and the BTC three carry
+            # `allowed_symbols`; the XAUJPY sections carry a single `symbol`,
+            # and `getattr(..., "allowed_symbols", ())` returned an empty tuple
+            # for every one of them. So the widening this whole block exists to
+            # do did not happen for section eleven, twelve or thirteen, and
+            # XAUJPY was walked only if it happened to be in the universe
+            # already -- producing exactly the zero row the comment above
+            # describes, for the sections it was written to protect.
+            allowed = tuple(getattr(config, "allowed_symbols", ()) or ())
+            if not allowed:
+                one = getattr(config, "symbol", "")
+                allowed = (one,) if one else ()
             absent = [market for market in allowed if market not in symbols]
             if absent:
                 section_markets[name] = absent
@@ -2092,6 +2229,56 @@ def main(argv: list[str] | None = None) -> None:
         fetch_seconds = 0.0
         compute_seconds = 0.0
         unaffordable: list[tuple[str, float]] = []
+
+        # SECTION ELEVEN'S TWO LEGS, FETCHED ONCE FOR THE WHOLE RUN.
+        #
+        # XAUJPY = XAUUSD x USDJPY, and the section is silent without both. The
+        # runner attaches them from its own scan; here they are two extra
+        # symbol fetches on the section's clock, done before the walk so a
+        # failure is one line at the top instead of a section that produces no
+        # rows and reads as "found nothing".
+        #
+        # NAMED BY THE CANONICAL SYMBOL, resolved to the broker's suffixed one
+        # for the fetch. The config says USDJPY, Eightcap lists USDJPY.i, and a
+        # dict keyed the wrong way is a section that is silent forever with
+        # nothing saying why -- that suffix has now caused exactly that failure
+        # three times in this project.
+        leg_frames: dict = {}
+        legs_name = "section_eleven_xaujpy_legs_m5"
+        if legs_name in {name for name, _tf in passes}:
+            legs_cfg = settings.analysis.section_eleven_xaujpy_legs_m5
+            legs_clock = Timeframe.parse(legs_cfg.timeframe)
+            for canonical in (legs_cfg.base_leg, legs_cfg.quote_leg):
+                broker = settings.instruments.broker_symbol(canonical)
+                frame = None
+                for candidate in dict.fromkeys((broker, canonical)):
+                    try:
+                        frame = (
+                            store.frame(candidate, legs_clock, _fetch_from(legs_clock), end)
+                            if store is not None
+                            else fetch_mt5_history(
+                                connector, candidate, legs_clock, _fetch_from(legs_clock), end
+                            )
+                        )
+                    except Exception:  # noqa: BLE001 - try the unsuffixed name too
+                        continue
+                    break
+                if frame is None or len(frame) < MIN_LEG_BARS:
+                    print(
+                        f"  {legs_name}: leg {canonical} unavailable, so this section"
+                        " takes no trades in this run (no data is no trade)"
+                    )
+                    leg_frames = {}
+                    break
+                leg_frames[canonical] = (legs_clock, frame)
+            if leg_frames:
+                print(
+                    f"  {legs_name}: legs "
+                    + " x ".join(
+                        f"{name} ({len(frame):,} {clock.value} bars)"
+                        for name, (clock, frame) in leg_frames.items()
+                    )
+                )
 
         for index, symbol in enumerate(symbols, 1):
             began = _time.perf_counter()
@@ -2233,7 +2420,7 @@ def main(argv: list[str] | None = None) -> None:
                             None if comment.casefold() in fixed else section_manage,
                             flatten_time,
                             btc_shadow,
-                            args.btc_jarvis_replay,
+                            args.btc_jarvis_replay or args.jarvis_replay,
                         )
                     )
                 produced = _one_clock(
@@ -2248,6 +2435,7 @@ def main(argv: list[str] | None = None) -> None:
                     resolve_on=finest,
                     needed=_frames_read(settings, clock, finest, tuple(names)),
                     manage_grid=args.manage_grid,
+                    legs=(leg_frames if legs_name in names else None),
                 )
                 for name, rows in produced.items():
                     results[(name, tf_name)].extend(rows)
@@ -2334,7 +2522,14 @@ def main(argv: list[str] | None = None) -> None:
         _sweep_report(results, equity, args.days, _break_even_rule(settings) is not None)
         _clock_overlap(results, args.days)
     _live_config_report(results, settings, equity, args.days)
-    if args.btc_jarvis_replay:
+    if args.btc_jarvis_replay or args.jarvis_replay:
+        # ONE SHARED POSITION BOOK ACROSS EVERY SECTION, applied to the whole
+        # run rather than per section. Until now the cap was REPORTED and not
+        # enforced -- "how often would five have been open at once" -- and the
+        # reason given was that enforcing it needs an ordering rule. There is
+        # one, and it is not invented: chronological. The account opens the
+        # trade that comes first and refuses the one that arrives with no slot
+        # left, and `_under_the_slot_cap` walks exactly that.
         offered = [d for d in decisions if d.outcome == "TRADE"]
         allowed = _under_the_slot_cap(
             offered,
@@ -2347,7 +2542,11 @@ def main(argv: list[str] | None = None) -> None:
             if id(row) not in allowed_ids:
                 row.outcome = "ACCOUNT_POSITION_LIMIT"
                 row.note = "Jarvis account/same-symbol position limit was already occupied"
-        _btc_jarvis_replay_contract(settings, equity, len(offered), len(allowed))
+        if args.btc_jarvis_replay:
+            _btc_jarvis_replay_contract(settings, equity, len(offered), len(allowed))
+        else:
+            _jarvis_replay_contract(settings, equity, len(offered), len(allowed))
+            _what_the_account_would_be_worth(allowed, settings, equity, args.days)
 
     _report(
         decisions,
@@ -2360,6 +2559,7 @@ def main(argv: list[str] | None = None) -> None:
     _gates_this_run_does_not_apply(
         btc_research_parity=args.btc_research_parity,
         btc_jarvis_replay=args.btc_jarvis_replay,
+        jarvis_replay=args.jarvis_replay,
     )
     if args.csv:
         path = Path(args.csv)
@@ -3248,6 +3448,152 @@ EXITS_NOT_MODELLED: tuple[tuple[str, str], ...] = (
 )
 
 
+def _jarvis_replay_contract(settings, equity: float, offered: int, allowed: int) -> None:
+    """Exactly what the account replay can and cannot substantiate.
+
+    Printed before the money, not after it, because the number underneath is
+    the part that gets screenshotted and the boundary is the part that gets
+    forgotten.
+    """
+
+    print(f"\n{'=' * 78}")
+    print("JARVIS ACCOUNT REPLAY — WHAT IS IN IT")
+    print(f"{'=' * 78}")
+    print("  APPLIED, on top of everything the ordinary dry run already does")
+    print(
+        "    live spread against stop width, refused above "
+        f"{settings.analysis.confluence.max_spread_share_of_stop:.0%} (SPREAD_EATS_THE_STOP)"
+    )
+    # A GATE THAT IS SWITCHED OFF IN THE CONFIG IS NOT A GATE THIS RUN APPLIED.
+    # Printing the line either way is how a claim outlives the setting behind
+    # it, and every reader of this block would then believe a filter ran that
+    # returns immediately.
+    lively = settings.filters.liveliness.enabled
+    print(
+        "    market liveliness (MARKET_TOO_QUIET), on causal bar history"
+        if lively
+        else "    market liveliness: NOT APPLIED, filters.liveliness.enabled is false"
+    )
+    spike = settings.filters.volume_spike
+    print(
+        f"    M1 volume spike above {spike.extreme_multiple:.1f}x the "
+        f"{spike.lookback_bars}-bar median (VOLUME_SPIKE)"
+        if spike.enabled
+        else "    M1 volume spike: NOT APPLIED, filters.volume_spike.enabled is false"
+    )
+    print(
+        "    target reach and direction advantage (TARGET_RARELY_REACHED)"
+        if settings.analysis.confluence.require_direction_advantage
+        else "    target reach applied; direction advantage OFF in config"
+    )
+    print(
+        f"    one shared position book: max {settings.effective_max_positions(equity)} open at "
+        f"EUR {equity:.2f}, sections "
+        f"{'may' if settings.risk.sections_may_share_a_symbol else 'may not'} share a symbol"
+    )
+    print(f"      {offered - allowed} of {offered} entries arrived with no slot free")
+    print("    the real Eightcap spread per bar, the real minimum lot, the real sizer")
+    print("    the configured break-even move and pre-close flatten")
+    print("  NOT APPLIED, AND EACH ONE ONLY EVER REMOVES TRADES")
+    print("    the news blackout: no calendar archive of the window exists, and")
+    print("      guessing one is the opposite of the fail-safe this account runs")
+    print("    the AI review: `ai.provider` is local_history and the answers it")
+    print("      would have given were never given")
+    print("  NOT RECONSTRUCTIBLE FROM BARS AT ALL")
+    print("    tick-level fill slippage beyond the recorded spread")
+    print("    intrabar ordering of partial / trailing / health / peak-stall exits")
+    print("    margin changes, requotes and outages")
+    print("  So this is an UPPER BOUND on the entries and an approximation of the")
+    print("  exits. It is much closer to the account than the plain dry run, and it")
+    print("  is still not a broker statement.")
+
+
+def _what_the_account_would_be_worth(
+    trades: list[Decision], settings, equity: float, days: int
+) -> None:
+    """The question in the owner's words: start it N days ago, what is it now.
+
+    TWO NUMBERS, AND THEY ARE NOT THE SAME QUESTION.
+
+    FLAT STAKE is the arithmetic the rest of this file already does: every
+    trade sized off the SAME starting equity. It is exact, in the sense that
+    each trade's euro figure is the one the sizer produced, and it answers
+    "what did the edge pay" without the account's own growth flattering it.
+
+    COMPOUNDED is what percentage-of-equity sizing actually does: the stake
+    walks with the balance. It is the honest answer to "what would I have",
+    and it carries an approximation that has to be said out loud -- each trade
+    is rescaled by `balance_then / balance_start` rather than re-sized, so the
+    minimum lot and the lot step are NOT re-checked at the new balance. On a
+    growing account that is optimistic (a real 0.01-lot floor rounds up), and
+    on a shrinking one it is optimistic in the other direction (trades the
+    account could no longer afford are still taken). Both are named rather
+    than buried, and the flat number beside it is the one with no such hole.
+    """
+
+    print(f"\n{'=' * 78}")
+    print(f"IF THIS HAD BEEN RUNNING FOR {days} DAYS")
+    print(f"{'=' * 78}")
+    booked = sorted(
+        (row for row in trades if row.managed_money is not None), key=lambda row: row.when
+    )
+    if not booked:
+        # AN EMPTY RUN SAYS SO. A missing block reads as a zero block, and
+        # this file has shipped that confusion more times than any other.
+        print("  No trade survived to a result. That is not EUR 0.00 of edge; it is")
+        print("  zero observations, and the BY SECTION table above says where they went.")
+        return
+
+    flat = sum(float(row.managed_money or 0.0) for row in booked)
+    balance = equity
+    peak = equity
+    trough_share = 0.0
+    for row in booked:
+        # The stake walks with the balance, which is what a percentage-risk
+        # sizer does. Never below zero: a wiped account stops trading.
+        if balance <= 0.0:
+            break
+        balance += float(row.managed_money or 0.0) * (balance / equity)
+        peak = max(peak, balance)
+        trough_share = max(trough_share, (peak - balance) / peak if peak > 0 else 0.0)
+
+    wins = sum(1 for row in booked if (row.managed_money or 0.0) > 0)
+    total_r = sum(float(row.managed_r or 0.0) for row in booked)
+    print(f"  started with            EUR {equity:>10.2f}")
+    print("  flat stake, every trade sized off that same balance")
+    print(f"    {len(booked)} trades, {wins} winners ({wins / len(booked):.0%}), {total_r:+.2f} R")
+    print(f"    result              EUR {flat:>+10.2f}   ->  EUR {equity + flat:>10.2f}")
+    print("  compounded, the stake walking with the balance")
+    print(
+        f"    result              EUR {balance - equity:>+10.2f}   ->  EUR {balance:>10.2f}"
+        f"   ({(balance / equity - 1.0) * 100:+.1f}%)"
+    )
+    print(f"    worst drawdown from a peak            {trough_share * 100:>5.1f}%")
+    print("    (rescaled, not re-sized: the minimum lot is not re-checked at the")
+    print("     new balance, so read the flat line as the one with no hole in it)")
+
+    by_section: dict[str, list[Decision]] = {}
+    for row in booked:
+        by_section.setdefault(row.pass_key[0] or row.module, []).append(row)
+    print(f"\n  {'section':<34}{'trades':>7}{'R':>10}{'EUR':>11}{'per trade':>11}")
+    for name, rows in sorted(
+        by_section.items(), key=lambda item: -sum(float(r.managed_money or 0.0) for r in item[1])
+    ):
+        money = sum(float(r.managed_money or 0.0) for r in rows)
+        r_total = sum(float(r.managed_r or 0.0) for r in rows)
+        print(
+            f"  {name:<34}{len(rows):>7}{r_total:>+10.2f}{money:>+11.2f}"
+            f"{r_total / len(rows):>+11.3f}"
+        )
+    live = set(settings.analysis.confluence.live_enabled_modules)
+    shadow = sorted(set(by_section) - live)
+    if shadow:
+        print(
+            "\n  Sections NOT on the real-money allowlist, whose euros above are"
+            f" hypothetical:\n    {', '.join(shadow)}"
+        )
+
+
 def _btc_jarvis_replay_contract(settings, equity: float, offered: int, allowed: int) -> None:
     """Print exactly what the second S15-S17 measurement can substantiate.
 
@@ -3282,8 +3628,25 @@ def _btc_jarvis_replay_contract(settings, equity: float, offered: int, allowed: 
     print("  not a promise or an exact reconstruction of fills the broker never made.")
 
 
+#: Which of `NOT_MODELLED` the account replay actually applies. Named against
+#: the same strings the table uses, so a gate that is implemented and a gate
+#: that is claimed cannot drift apart -- `test_dry_run_script` asserts every
+#: name here exists in the table.
+JARVIS_REPLAY_APPLIES: frozenset[str] = frozenset(
+    {
+        "TARGET_RARELY_REACHED",
+        "SPREAD_EATS_THE_STOP",
+        "MARKET_TOO_QUIET",
+        "VOLUME_SPIKE",
+    }
+)
+
+
 def _gates_this_run_does_not_apply(
-    *, btc_research_parity: bool = False, btc_jarvis_replay: bool = False
+    *,
+    btc_research_parity: bool = False,
+    btc_jarvis_replay: bool = False,
+    jarvis_replay: bool = False,
 ) -> None:
     """What stands between this number and the account's behaviour."""
     blocked = sum(count for _name, count, _why in NOT_MODELLED)
@@ -3294,6 +3657,10 @@ def _gates_this_run_does_not_apply(
         print("  This is the second S15-S17 account replay described in the contract above.")
         print("  Target reach, spread/stop, market quiet and volume spike WERE applied.")
         print("  No unrelated live-day counters are mixed into this replay.\n")
+    elif jarvis_replay:
+        print("  This is the account replay described in the contract above. Four of the")
+        print("  eight gates WERE applied to every section, and so was the shared position")
+        print("  book. What is left is what no bar archive contains:\n")
     elif btc_research_parity:
         print("  This S15-S17 run reproduces the frozen research detector, next-bar entry,")
         print("  horizon, spread envelope, 2% minimum-lot envelope and execution allowance.")
@@ -3304,10 +3671,20 @@ def _gates_this_run_does_not_apply(
     omitted = NOT_MODELLED
     if btc_jarvis_replay:
         omitted = ()
+    elif jarvis_replay:
+        # ONLY THE ONES STILL MISSING. Leaving the whole table up under a run
+        # that applies half of it says the opposite of what happened, and the
+        # table is what gets read.
+        omitted = tuple(row for row in NOT_MODELLED if row[0] not in JARVIS_REPLAY_APPLIES)
     for name, count, why in omitted:
         print(f"    {name:<24}{count:>5}   {why}")
     if btc_jarvis_replay:
         print("  Remaining limits are the missing tick/AI/intrabar state named above.")
+    elif jarvis_replay:
+        applied = ", ".join(sorted(JARVIS_REPLAY_APPLIES))
+        print(f"\n  APPLIED IN THIS RUN, so absent from the list above: {applied}.")
+        print("  The counts beside the remaining names are one real live day (31 August)")
+        print("  and are there for scale, not as a prediction of this window.")
     else:
         print(
             f"\n  Those counts are one real day on the live account, 31 August: 414 setups\n"

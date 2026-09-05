@@ -1,4 +1,4 @@
-# Sections 11 / 12 / 13 — XAUJPY, one searched mechanism, three clocks
+# Sections 12 / 13 — XAUJPY, one searched mechanism, two clocks
 
 > Written **before** the search runs. That is the only order in which this
 > document is worth anything: an explanation written after seeing the result is

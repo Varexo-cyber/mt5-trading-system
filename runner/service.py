@@ -103,6 +103,12 @@ from analysis.playbooks import (
     ScalpConfig,
     TrendPullback,
 )
+from analysis.section_eleven_legs import (
+    LEGS_META_KEY,
+    MIN_LEG_BARS,
+    SectionElevenLegs,
+    leg_bars,
+)
 from analysis.section_xaujpy import SectionXauJpy
 from analysis.target_reach import measure as measure_target_reach
 from analysis.target_reach import measure_first_touch
@@ -178,15 +184,22 @@ from scanner.universe import ScanBatch, UniverseScanner
 
 log = get_logger(__name__)
 
-#: The three XAUJPY sections, in the order they were numbered. Named ONCE and
-#: iterated everywhere, because the alternative is three near-identical blocks
-#: in which the M15 one keeps the M5 one's config attribute and nothing
-#: downstream can tell.
+#: The searched-mechanism XAUJPY sections, in the order they were numbered.
+#: Named ONCE and iterated everywhere, because the alternative is two
+#: near-identical blocks in which the M15 one keeps the M5 one's config
+#: attribute and nothing downstream can tell.
+#:
+#: SECTION ELEVEN IS NOT HERE. It was `streak_reversal` on M1 until that
+#: lost -0.18 R a trade over 855 trades; it is now the legs mechanism on
+#: M5, which reads three instruments instead of one and therefore is a
+#: different class with a different config.
 XAUJPY_SECTIONS: tuple[str, ...] = (
-    "section_eleven_xaujpy_m1",
     "section_twelve_xaujpy_m5",
     "section_thirteen_xaujpy_m15",
 )
+
+#: The legs section, named once for the same reason.
+LEGS_SECTION = "section_eleven_xaujpy_legs_m5"
 
 #: What is reported for a position the fast layer has not read yet — one opened
 #: seconds ago, or one whose bars could not be fetched. Deliberately not
@@ -506,9 +519,9 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # it is asked by `unfitted_live_sections` at startup and by the dry
         # run. Refusing here made every other test that builds the module list
         # fail for a reason none of them is about.
-        # THREE CLOCKS, BUILT FROM ONE CLASS AND ONE LOOP. Writing them out
-        # three times is how the M15 one ends up with a copy-pasted M5 config
-        # name, and nothing downstream would say so.
+        # TWO CLOCKS, BUILT FROM ONE CLASS AND ONE LOOP. Writing them out twice
+        # is how the M15 one ends up with a copy-pasted M5 config name, and
+        # nothing downstream would say so.
         *(
             SectionXauJpy(
                 name,
@@ -516,6 +529,19 @@ def build_analysis_modules(settings: Settings) -> list[object]:
                 broker_symbol=settings.instruments.broker_symbol(getattr(analysis, name).symbol),
             )
             for name in XAUJPY_SECTIONS
+        ),
+        # SECTION ELEVEN, the only reader on this account whose counterparty
+        # has a name. Built unconditionally like every other section: whether
+        # its legs are reachable is answered per bar by the module, not by
+        # leaving it out of the list, because a module absent from the registry
+        # has no weight row, no breaker and no journal line -- and an absent
+        # row reads as a zero row.
+        SectionElevenLegs(
+            LEGS_SECTION,
+            analysis.section_eleven_xaujpy_legs_m5,
+            broker_symbol=settings.instruments.broker_symbol(
+                analysis.section_eleven_xaujpy_legs_m5.symbol
+            ),
         ),
         GoldCrossDiscovery(
             analysis.section_fifteen_btc_m1,
@@ -601,6 +627,9 @@ class JarvisRunner:
         #: Section five's peer readings, kept across the scan so comparing
         #: indices costs one pass over bars already fetched.
         self._basket_moves: dict[str, tuple[str, float, datetime]] = {}
+        #: Leg symbols already complained about, so an unreachable feed is
+        #: said once rather than on every scan of every cycle.
+        self._legs_warned: set[str] = set()
         #: Section breakers, recomputed once per cycle rather than per candidate.
         self._breaker_cache: dict[str, BreakerVerdict] = {}
         self._breaker_cache_cycle = -1
@@ -2903,6 +2932,7 @@ class JarvisRunner:
             # target and the reach measurement are now about that trade.
             self._attach_cost_floor(symbol, context)
             self._attach_basket_peers(symbol, asset_class, context)
+            self._attach_xaujpy_legs(symbol, context)
             idea = self.engine.evaluate(context, self.settings.mode)
             self._cycle_contexts[symbol] = context
             # The scan reads every symbol anyway, including the ones we are
@@ -6781,6 +6811,78 @@ class JarvisRunner:
         ]
         if peers:
             context.meta[BASKET_META_KEY] = peers
+
+    def _attach_xaujpy_legs(self, symbol: str, context: MarketContext) -> None:
+        """Put XAUUSD and USDJPY where section eleven can see them.
+
+        Same route as `_attach_basket_peers` and for the same reason: a module
+        gets one MarketContext and cannot reach a second instrument, and that
+        constraint is what makes every module replayable without a terminal. It
+        is not relaxed here; the runner, which does have the connector, does
+        the fetching and hands the bars over through `context.meta`.
+
+        ONLY ON THE CROSS'S OWN SCAN. Fetching two extra symbols on all 845
+        markets would be 1,690 pointless fetches a cycle; the legs are only
+        meaningful on the one context that is going to be compared against
+        them.
+
+        NOTHING IS INVENTED WHEN A LEG IS MISSING. A failed fetch attaches
+        nothing, the section reads nothing and takes no trade -- the same
+        fail-safe the calendar has. The alternative, carrying a last-known leg
+        forward, is precisely how a frozen quote manufactures a gap that is not
+        there, which is the single largest error this mechanism can make.
+        """
+
+        config = self.settings.analysis.section_eleven_xaujpy_legs_m5
+        if not config.enabled:
+            return
+        cross = self.settings.instruments.broker_symbol(config.symbol)
+        if symbol not in (cross, config.symbol):
+            return
+        clock = Timeframe.parse(config.timeframe)
+        # Enough bars for the rolling normal plus its ATR warmup, and the same
+        # count for both legs so neither can be the short one.
+        wanted = max(MIN_LEG_BARS + 8, self.settings.data.minimum_bars_for(clock.value))
+        legs: dict[str, object] = {}
+        for canonical in (config.base_leg, config.quote_leg):
+            broker = self.settings.instruments.broker_symbol(canonical)
+            try:
+                series = self.data.get_series(broker, clock, count=wanted)
+            except Exception as exc:  # noqa: BLE001 - a missing leg is a no-trade
+                self._warn_once_about_leg(broker, str(exc))
+                return
+            if series is None or len(series.df) < MIN_LEG_BARS:
+                held = 0 if series is None else len(series.df)
+                self._warn_once_about_leg(broker, f"only {held} bars, need {MIN_LEG_BARS}")
+                return
+            # KEYED BY THE CANONICAL NAME THE CONFIG USES, not by the broker's
+            # suffixed one. The section looks the leg up by `config.base_leg`,
+            # and a dict keyed `USDJPY.i` against a lookup of `USDJPY` is a
+            # section that is silent forever with nothing saying why -- the
+            # suffix has now caused that failure three times in this project.
+            legs[canonical] = leg_bars(canonical, series.df, context.now)
+        context.meta[LEGS_META_KEY] = legs
+
+    def _warn_once_about_leg(self, symbol: str, why: str) -> None:
+        """SAID OUT LOUD THE FIRST TIME, then quiet.
+
+        A leg that cannot be fetched makes section eleven silent on every
+        single bar. At debug level that is invisible, and an invisible cause
+        for a section that takes no trades is exactly the confusion this
+        project keeps producing: the owner reads "the strategy found nothing"
+        where the truth is "it never got to look". Once per symbol per
+        process, so a broken feed does not fill the log either.
+        """
+
+        if symbol in self._legs_warned:
+            return
+        self._legs_warned.add(symbol)
+        log.warning(
+            "section eleven cannot read its %s leg (%s), so it will take NO trades "
+            "until this is fixed. XAUJPY must be priced against XAUUSD x USDJPY.",
+            symbol,
+            why,
+        )
 
     def _attach_cost_floor(self, symbol: str, context: MarketContext) -> None:
         """Put what a round trip costs where the analysis can see it.

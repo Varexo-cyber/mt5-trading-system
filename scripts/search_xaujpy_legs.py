@@ -51,6 +51,13 @@ if str(ROOT) not in sys.path:
 import numpy as np
 import pandas as pd
 
+from analysis.legs_gap import (
+    DEAD_GAP_ATR,
+    NORMAL_BARS,
+    gap_reading,
+    implied_cross,
+    signals_from_gap,
+)
 from analysis.mechanisms import HORIZON, WARMUP, _atr
 from backtesting.replay import fetch_mt5_history
 from config.loader import load_credentials, load_settings, terminal_path_from_env
@@ -66,22 +73,17 @@ from scripts.search_section_four import (
 )
 from scripts.search_xaujpy import MAX_TRADES_PER_DAY, SESSIONS, session_of
 
-#: Bars the gap is compared against to remove the structural offset. Long
-#: enough that a real lag is an outlier against it, short enough that a slow
-#: drift in the offset does not become a permanent signal.
-NORMAL_BARS = 96
-
-#: How far the gap must sit from its own normal, in ATR of the cross, before
-#: it counts as a lag worth trading. Swept rather than chosen.
+#: Swept, not chosen: how far the gap must sit from its own normal, in ATR
+#: of the cross, before it counts as a lag worth trading.
 THRESHOLDS: tuple[float, ...] = (0.25, 0.50, 0.75, 1.00)
 
 #: Reward per unit of risk, swept alongside.
 RATIOS: tuple[float, ...] = (1.0, 1.5)
 
-#: Below this the cross is being computed from its legs rather than quoted
-#: independently, and there is no lag to trade. Expressed in ATR of the cross,
-#: so it is scale-free.
-DEAD_GAP_ATR = 0.02
+#: THE ARITHMETIC ITSELF LIVES IN `analysis/legs_gap.py`, imported above and
+#: imported by the live section too. What was measured here is what trades
+#: there, rather than a second implementation nothing compares against.
+_SHARED = (NORMAL_BARS, DEAD_GAP_ATR, gap_reading, implied_cross, signals_from_gap)
 
 
 @dataclass
@@ -109,91 +111,6 @@ class Cell:
     @property
     def beats_its_coin(self) -> bool:
         return self.per_trade > self.control_per_trade
-
-
-def implied_cross(gold: pd.DataFrame, yen: pd.DataFrame) -> pd.Series:
-    """What XAUJPY has to be, from the two books that actually price it.
-
-    Closes only, and on the shared timestamps only. An inner join is the whole
-    alignment: MT5 puts every symbol on the same bar grid, so a timestamp
-    present in one and missing in the other is a bar one of them did not trade,
-    and inventing it would invent the gap this script is looking for.
-    """
-    joined = gold.join(yen, how="inner", lsuffix="_au", rsuffix="_jp")
-    # EITHER LEG STANDING STILL IS ENOUGH TO INVENT A GAP. Gold pauses daily
-    # while the yen trades on; the implied cross then moves on one leg alone and
-    # the difference against the quote is an artefact of the pause.
-    alive = _alive(joined.rename(columns={c: c.replace("_au", "") for c in joined.columns})) & (
-        joined["high_jp"].to_numpy() > joined["low_jp"].to_numpy()
-    )
-    product = joined["close_au"] * joined["close_jp"]
-    return product.where(pd.Series(alive, index=joined.index))
-
-
-def _alive(frame: pd.DataFrame) -> np.ndarray:
-    """Bars this instrument actually traded on.
-
-    A BAR WITH NO RANGE IS A QUOTE THAT DID NOT MOVE, and on a gold cross that
-    is not a quiet market, it is a CLOSED one. Gold pauses daily around
-    21:00-22:00 UTC while the yen leg keeps trading, so the implied cross walks
-    away from a frozen quote and the gap explodes -- and none of it is
-    tradeable, because the thing you would trade is not being priced.
-
-    The first run of this script put two thirds of its profit in the `close`
-    session, which is exactly that window. Without this the mechanism is not a
-    lag, it is a screenshot of one leg against a live one.
-
-    A range of zero is the signature and it needs no calendar: it works on every
-    instrument, on every clock, and on whatever hours this broker happens to
-    pause.
-    """
-    return (frame["high"].to_numpy() > frame["low"].to_numpy()) & np.isfinite(
-        frame["close"].to_numpy()
-    )
-
-
-def gap_reading(
-    cross: pd.DataFrame, implied: pd.Series
-) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
-    """`(the shared bars, gap in ATR, raw gap in price)`.
-
-    RETURNS THE FRAME IT ALIGNED, and that is not tidiness. The first version
-    handed back only the readings and left the caller to rebuild the shared
-    index itself with a second intersection. Two alignments of one thing is how
-    a reading ends up one bar out of step with the bar it labels -- silently,
-    and in the direction that flatters, because a gap read against the NEXT
-    bar's price is a look-ahead. One alignment, returned.
-
-    THE DEVIATION FROM ITS OWN NORMAL, not the raw difference. Contract size, a
-    broker markup and the financing leg all put a constant between the cross and
-    the product of its legs, and none of it is tradeable. Subtracting the
-    rolling normal removes exactly that and leaves the lag.
-    """
-    aligned = cross.join(implied.rename("implied"), how="inner")
-    frame = aligned[["open", "high", "low", "close"]]
-    raw = (aligned["close"] - aligned["implied"]).to_numpy()
-    # A frozen cross quote makes the gap, it does not reveal one.
-    raw = np.where(_alive(frame), raw, np.nan)
-    normal = pd.Series(raw).rolling(NORMAL_BARS, min_periods=NORMAL_BARS // 2).mean().to_numpy()
-    unit = _atr(frame)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        reading = (raw - normal) / np.where(unit > 0, unit, np.nan)
-    return frame, reading, raw
-
-
-def signals_from_gap(reading: np.ndarray, threshold: float) -> np.ndarray:
-    """Rich cross is sold, cheap cross is bought.
-
-    A cross above its legs is a quote that has not come down yet; the trade is
-    that it does. Direction comes from the gap and not from the market, which
-    is why this can be right about the trade while being wrong about where gold
-    goes -- the same property that makes `basket_divergence` worth having.
-    """
-    out = np.zeros(len(reading), dtype=int)
-    with np.errstate(invalid="ignore"):
-        out[reading >= threshold] = -1
-        out[reading <= -threshold] = 1
-    return out
 
 
 def build_parser() -> argparse.ArgumentParser:
