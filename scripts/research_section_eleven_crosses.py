@@ -200,6 +200,35 @@ def signals(frame: pd.DataFrame, mechanism: str) -> np.ndarray:
         vwap = (typical * frame.volume).rolling(48).sum() / rolling_volume
         long = (trend > 0) & (low <= vwap) & (close > vwap) & (close > open_)
         short = (trend < 0) & (high >= vwap) & (close < vwap) & (close < open_)
+    elif mechanism == "rsi_trend_reclaim":
+        change = close.diff()
+        gain = change.clip(lower=0.0).rolling(14).mean()
+        loss = (-change.clip(upper=0.0)).rolling(14).mean().replace(0.0, np.nan)
+        rsi = 100.0 - 100.0 / (1.0 + gain / loss)
+        long = (trend > 0) & (rsi.shift(1) <= 45.0) & (rsi > 45.0) & (close > open_)
+        short = (trend < 0) & (rsi.shift(1) >= 55.0) & (rsi < 55.0) & (close < open_)
+    elif mechanism == "squeeze_release":
+        width = close.rolling(20).std(ddof=0) / close.rolling(20).mean()
+        squeezed = width.shift(1) <= width.shift(1).rolling(96).quantile(0.20)
+        ceiling = high.shift(1).rolling(20).max()
+        floor = low.shift(1).rolling(20).min()
+        long = squeezed & (close > ceiling) & (trend > 0)
+        short = squeezed & (close < floor) & (trend < 0)
+    elif mechanism == "volume_momentum_confirm":
+        move = close.diff(6) / unit
+        liquid = frame.volume > 1.5 * frame.volume.rolling(48).median()
+        long = liquid & (trend > 0) & (move > 0.75) & (close > open_)
+        short = liquid & (trend < 0) & (move < -0.75) & (close < open_)
+    elif mechanism == "ema_reclaim":
+        long = (trend > 0) & (close.shift(1) <= fast.shift(1)) & (close > fast) & (close > open_)
+        short = (trend < 0) & (close.shift(1) >= fast.shift(1)) & (close < fast) & (close < open_)
+    elif mechanism == "donchian_retest":
+        ceiling = high.shift(2).rolling(20).max()
+        floor = low.shift(2).rolling(20).min()
+        broke_up = close.shift(1) > ceiling
+        broke_down = close.shift(1) < floor
+        long = broke_up & (low <= ceiling) & (close > ceiling) & (close > open_)
+        short = broke_down & (high >= floor) & (close < floor) & (close < open_)
     elif mechanism == "two_leg_trend":
         gold_trend = np.sign(
             frame.gold_close.ewm(span=20, adjust=False).mean()

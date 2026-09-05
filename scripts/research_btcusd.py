@@ -44,6 +44,11 @@ MECHANISMS = (
     "adaptive_channel_100",
     "jump_regime",
     "vwap_trend_resume",
+    "rsi_trend_reclaim",
+    "squeeze_release",
+    "volume_momentum_confirm",
+    "ema_reclaim",
+    "donchian_retest",
 )
 SESSIONS = {
     "all": tuple(range(24)),
