@@ -44,7 +44,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hold-seconds", type=float, default=5.0)
     args = parser.parse_args(argv)
 
-    settings = load_settings()
+    # THE ACCOUNT'S OWN OVERLAY, and this one PLACES AN ORDER.
+    #
+    # It read the base config, where `instruments.symbol_suffix` is empty. This
+    # broker calls its FX pairs `EURUSD.i`, so the default `--symbol EURUSD`
+    # named an instrument the account does not have -- and the risk percentage,
+    # the commission and the lot bounds all came from the base defaults rather
+    # than from the account the order lands on.
+    #
+    # Found by the test that asks the same of every script opening a connector,
+    # after the same empty suffix killed the XAUJPY legs research.
+    settings = load_settings(overlay=PACKAGE_ROOT / "config" / "eightcap.yaml")
     setup_logging(
         level="DEBUG",
         log_dir=PACKAGE_ROOT / settings.logging.directory,
