@@ -176,6 +176,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _broker_name(connector, settings, canonical: str) -> str:
+    """The name THIS broker uses, asked of the config that already knows.
+
+    `USDJPY` fetched nothing and the run died three symbols in, while XAUUSD
+    and XAUJPY had just worked. Eightcap puts `.i` on its FX pairs and not on
+    its metals, `instruments.broker_symbol` has encoded exactly that since long
+    before this script existed, and this script asked for the raw name instead.
+    Resolving a symbol a second way is the same defect as computing a cost a
+    second way -- one of the two is wrong and nothing says which.
+
+    The fallback is not decoration: this broker lists a plain `XAUJPY` as well
+    as the suffixed FX, so the suffixed name is tried FIRST (it is what the rest
+    of the account trades) and the canonical name second. Which one answered is
+    printed, because a silent fallback is how two runs end up on two different
+    instruments.
+    """
+    suffixed = settings.instruments.broker_symbol(canonical)
+    for candidate in dict.fromkeys((suffixed, canonical)):
+        try:
+            connector.spec(candidate)
+        except Exception:  # noqa: BLE001 -- any refusal means "not this name"
+            continue
+        if candidate != canonical:
+            print(f"  {canonical} is {candidate} at this broker")
+        return candidate
+    raise SystemExit(
+        f"{canonical}: this broker lists neither {suffixed!r} nor {canonical!r}. "
+        f"Check the exact name in Market Watch and set instruments.symbol_overrides."
+    )
+
+
 def _fetch(connector, symbol: str, clock: str, days: int) -> pd.DataFrame | None:
     tf = Timeframe.parse(clock)
     end = datetime.now(UTC)
@@ -210,13 +241,16 @@ def main() -> None:
     )
     connector.connect()
     try:
-        spec = connector.spec(args.cross)
+        cross_name = _broker_name(connector, settings, args.cross)
+        gold_name = _broker_name(connector, settings, args.gold)
+        yen_name = _broker_name(connector, settings, args.yen)
+        spec = connector.spec(cross_name)
         sizer = PositionSizer(settings)
         frames: dict[str, tuple[pd.DataFrame, np.ndarray, np.ndarray]] = {}
         for clock in args.clocks:
-            cross = _fetch(connector, args.cross, clock, args.days)
-            gold = _fetch(connector, args.gold, clock, args.days)
-            yen = _fetch(connector, args.yen, clock, args.days)
+            cross = _fetch(connector, cross_name, clock, args.days)
+            gold = _fetch(connector, gold_name, clock, args.days)
+            yen = _fetch(connector, yen_name, clock, args.days)
             if cross is None or gold is None or yen is None:
                 continue
             frames[clock] = gap_reading(cross, implied_cross(gold, yen))

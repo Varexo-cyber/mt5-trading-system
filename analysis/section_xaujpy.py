@@ -62,9 +62,19 @@ class SectionXauJpy:
     untouched holdout to hand it over.
     """
 
-    def __init__(self, name: str, config) -> None:
+    def __init__(self, name: str, config, broker_symbol: str | None = None) -> None:
         self.name = name
         self.config = config
+        # THE NAME THIS BROKER USES, resolved once by the caller that has the
+        # config to resolve it with.
+        #
+        # `ctx.symbol` carries the BROKER's name -- the core universe prints
+        # `USDJPY.i`, not `USDJPY` -- and this compared it against the plain
+        # `XAUJPY` in its own config. Eightcap happens to list a plain XAUJPY
+        # as well, so it worked; on a broker that only lists `XAUJPY.i` this
+        # section would have been silent forever with nothing anywhere saying
+        # why. The same suffix killed the legs research three symbols in.
+        self.broker_symbol = broker_symbol or config.symbol
 
     def analyze(self, ctx: MarketContext) -> Signal:
         cfg = self.config
@@ -75,7 +85,7 @@ class SectionXauJpy:
             # section that was never fitted comes to look like a section that
             # found nothing.
             return quiet
-        if ctx.symbol != cfg.symbol:
+        if ctx.symbol not in (self.broker_symbol, cfg.symbol):
             return quiet
 
         series = ctx.series.get(Timeframe.parse(cfg.timeframe))

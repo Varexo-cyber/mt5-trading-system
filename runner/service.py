@@ -509,7 +509,14 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # THREE CLOCKS, BUILT FROM ONE CLASS AND ONE LOOP. Writing them out
         # three times is how the M15 one ends up with a copy-pasted M5 config
         # name, and nothing downstream would say so.
-        *(SectionXauJpy(name, getattr(analysis, name)) for name in XAUJPY_SECTIONS),
+        *(
+            SectionXauJpy(
+                name,
+                getattr(analysis, name),
+                broker_symbol=settings.instruments.broker_symbol(getattr(analysis, name).symbol),
+            )
+            for name in XAUJPY_SECTIONS
+        ),
         GoldCrossDiscovery(
             analysis.section_fifteen_btc_m1,
             name="section_fifteen_btc_m1",

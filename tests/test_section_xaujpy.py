@@ -360,3 +360,69 @@ class TestASectionCanActuallyClearTheGateItMustPass:
 
         assert "score = cfg.score if direction is Direction.LONG else -cfg.score" in source
         assert "60.0" not in source, "a hardcoded score is back"
+
+
+class TestTheBrokersOwnSymbolNameIsUsed:
+    """A SUFFIX KILLED A RESEARCH RUN AND WOULD HAVE SILENCED A LIVE SECTION.
+
+    Eightcap puts `.i` on its FX pairs and not on its metals. The legs research
+    asked MT5 for `USDJPY` and died three symbols in, while XAUUSD and XAUJPY
+    had just worked -- and `instruments.broker_symbol` had encoded that rule
+    since long before either script existed.
+
+    The live section had the same hole one layer up: `ctx.symbol` carries the
+    BROKER's name (the core universe prints `USDJPY.i`) and the section compared
+    it against the plain `XAUJPY` in its own config. This broker happens to list
+    a plain XAUJPY too, so it worked by luck; on a broker that lists only
+    `XAUJPY.i` the section would have been silent forever with nothing saying
+    why.
+    """
+
+    def _settings(self):
+        from config.loader import DEFAULT_CONFIG_PATH, load_settings
+
+        return load_settings(
+            DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
+        )
+
+    def test_the_builder_resolves_the_symbol_through_the_config(self) -> None:
+        from runner.service import XAUJPY_SECTIONS, build_analysis_modules
+
+        settings = self._settings()
+        built = {m.name: m for m in build_analysis_modules(settings) if m.name in XAUJPY_SECTIONS}
+
+        assert built
+        for name, module in built.items():
+            expected = settings.instruments.broker_symbol(module.config.symbol)
+            assert module.broker_symbol == expected, name
+
+    def test_the_section_answers_to_the_suffixed_name(self) -> None:
+        frame = _bars()
+        config = SectionXauJpyConfig(enabled=True, mechanism="stretch_fade", symbol="XAUJPY")
+        section = SectionXauJpy("section_twelve_xaujpy_m5", config, broker_symbol="XAUJPY.i")
+
+        # Whichever the scanner hands it, both are this instrument.
+        for name in ("XAUJPY.i", "XAUJPY"):
+            section.analyze(_context(frame, Timeframe.M5, symbol=name))
+
+        assert section.analyze(_context(frame, Timeframe.M5, symbol="XAUUSD")).score == 0.0
+        assert section.analyze(_context(frame, Timeframe.M5, symbol="XAUEUR.i")).score == 0.0
+
+    def test_it_still_answers_when_no_broker_name_is_given(self) -> None:
+        """Every test and script that builds one directly passes two arguments,
+        so the third has to default to the config's own symbol rather than to
+        None -- a None here would refuse every bar."""
+        config = SectionXauJpyConfig(enabled=True, mechanism="stretch_fade")
+        section = SectionXauJpy("section_twelve_xaujpy_m5", config)
+
+        assert section.broker_symbol == config.symbol
+
+    def test_the_legs_research_asks_the_config_for_the_name(self) -> None:
+        import inspect
+
+        from scripts import search_xaujpy_legs
+
+        source = inspect.getsource(search_xaujpy_legs)
+
+        assert "settings.instruments.broker_symbol(canonical)" in source
+        assert "_broker_name(connector, settings, args.yen)" in source
