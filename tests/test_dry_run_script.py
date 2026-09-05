@@ -25,6 +25,7 @@ import inspect
 import re
 from datetime import UTC
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
@@ -3240,3 +3241,85 @@ class TestTheHeartbeatFiresOnEveryWindowLength:
         three thousand is worse than silence."""
         total = 3_000
         assert total // self._beat(total) <= 1
+
+
+class TestEveryLauncherSetsWhatItReads:
+    """A MERGE ATE `sectie11.cmd`'S ARGUMENT BLOCK AND GIT REPORTED NO CONFLICT.
+
+    Two sessions rewrote the same launcher. The hunks did not overlap, so git
+    spliced them together: the banner and the python call survived, the
+    `set DAGEN=180` / `:lees` block did not. The run printed its whole banner
+    and then died on
+
+        argument --days: expected one argument
+
+    because an undefined `%DAGEN%` in cmd is SILENT -- it expands to nothing
+    and vanishes out of the command line rather than raising. That is the
+    house defect in yet another form: a value that is correct where it is
+    written and absent where it is read.
+
+    So: every `%VAR%` a launcher expands must be set, or inherited, before the
+    line that reads it.
+    """
+
+    #: Set by cmd itself, or by the enclosing shell, and never by the script.
+    _AMBIENT: ClassVar[set[str]] = {
+        "TEMP",
+        "TMP",
+        "PATH",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "COMPUTERNAME",
+        "USERNAME",
+        "WINDIR",
+        "SYSTEMROOT",
+        "PROGRAMFILES",
+        "CD",
+        "DATE",
+        "TIME",
+        "RANDOM",
+        "ERRORLEVEL",
+    }
+
+    def test_no_launcher_reads_a_variable_it_never_sets(self) -> None:
+        import re
+        from pathlib import Path
+
+        offenders: list[str] = []
+        for path in sorted(Path().glob("*.cmd")):
+            lines = path.read_text(errors="replace").splitlines()
+            assigned: set[str] = set()
+            for number, line in enumerate(lines, 1):
+                # `set NAME=`, `set /a NAME=`, and `for %%x in (...) do set NAME=`
+                for match in re.finditer(
+                    r"\bset\s+(?:/a\s+)?\"?([A-Za-z_][A-Za-z0-9_]*)\s*=", line
+                ):
+                    assigned.add(match.group(1).upper())
+                # A `rem` line explains the code, it does not run it -- and the
+                # comment recording THIS bug names %DAGEN% before it is set.
+                if line.strip().lower().startswith("rem"):
+                    continue
+                # `%%` is an escaped literal percent inside a for loop or a
+                # format string, not a variable. `%%Y%%m%%d` is a strftime
+                # pattern and reading it as %Y% is how a checker cries wolf.
+                scanned = line.replace("%%", "\x00")
+                for name in re.findall(r"%([A-Za-z_][A-Za-z0-9_]*)%", scanned):
+                    upper = name.upper()
+                    if upper in self._AMBIENT or upper in assigned:
+                        continue
+                    offenders.append(f"{path.name}:{number}: %{name}% is read before any set")
+        assert not offenders, "a launcher expands a variable nothing sets:\n" + "\n".join(offenders)
+
+    def test_the_section_eleven_launcher_still_parses_its_arguments(self) -> None:
+        """The exact block the merge removed, asserted by name so a future
+        merge that drops it again fails here instead of on the VPS."""
+        from pathlib import Path
+
+        launcher = Path("sectie11.cmd").read_text()
+
+        assert "set DAGEN=180" in launcher
+        assert ":lees" in launcher and "goto lees" in launcher
+        assert "--days %DAGEN%" in launcher
+        # `--days 90` is not a number, so the loop skips it and reads the 90.
+        assert 'findstr /r "^[0-9][0-9]*$"' in launcher
