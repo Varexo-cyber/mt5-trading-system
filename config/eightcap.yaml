@@ -1713,7 +1713,21 @@ analysis:
   # Dat is vooraf opgeschreven zodat de echte zoektocht op Eightcap-data het
   # kan tegenspreken in plaats van het achteraf te bevestigen.
   section_eleven_xaujpy_m1:
-    enabled: true
+    # UITGEZET NA DE 90-DAAGSE REPLAY MET HET ECHTE KOSTENMODEL.
+    #
+    #     855 trades   -150,90 R   -615,64 EUR   -0,18 per trade
+    #
+    # De zoeker gaf +0,047 per trade en +8,14 sigma. Dat cijfer stond op
+    # een kostenmodel dat M1 ongeveer een twintigste van zijn kosten in
+    # rekening bracht -- een vaste 0,4%% van de prijs als stopbreedte in
+    # plaats van 1,0 x de ATR van de klok. Met de echte kosten slaat
+    # +0,047 om naar -0,18, en dat verschil IS de spread van een
+    # goudkruis over 74 trades per dag.
+    #
+    # Deze meting is betrouwbaar: dezelfde run bewees dat de vorige
+    # kapot was, want na de timeout-reparatie ging deze sectie van EEN
+    # trade naar 855. Wat er nu staat is wat het mechanisme werkelijk doet.
+    enabled: false
     symbol: XAUJPY
     timeframe: M1
     # `zoekjpy.cmd 720`, 720 dagen, de hoogste sigma van de hele grid van 168:
@@ -1799,6 +1813,18 @@ analysis:
 
   section_thirteen_xaujpy_m15:
     enabled: true
+    # DE ENIGE VAN DE DRIE DIE BETAALT, 90-daagse replay met echte kosten:
+    #
+    #     19 trades   +7,24 R   +29,46 EUR   +0,38 per trade
+    #
+    # +0,38 R per trade is het hoogste dat dit account ergens gemeten
+    # heeft. Het is ook maar 19 trades in negentig dagen -- 0,2 per dag,
+    # tegen de 3-5 die gevraagd was. Dat is de ruil die XAUJPY aanbiedt en
+    # drie onafhankelijke metingen zeggen nu hetzelfde: veel trades
+    # verliezen, en wat wint doet bijna niets.
+    #
+    # Negentien trades is te weinig om iets van te vinden. 180 dagen is de
+    # volgende meting, niet een promotie.
     symbol: XAUJPY
     timeframe: M15
     # De beste M15-cel, en de enige van de drie met een gezonde trade-rate:

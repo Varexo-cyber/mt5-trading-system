@@ -105,6 +105,12 @@ RATIOS: tuple[float, ...] = (1.0, 1.5)
 #: filtering on it would be one more free parameter nobody paid for.
 WANTED_TRADES_PER_DAY = (3.0, 5.0)
 
+#: Hard bound on what may be PROMOTED, at generous slack over the ask.
+#: Above this a mechanism is firing on a large share of all bars, which
+#: is a pattern rather than an event, and on a gold cross it pays a
+#: spread every time.
+MAX_TRADES_PER_DAY = 8.0
+
 
 @dataclass
 class Cell:
@@ -121,6 +127,9 @@ class Cell:
     control_r: float = 0.0
     control_per_trade: float = 0.0
     cost_share: float = 0.0
+    #: Share of BARS the mechanism produced a direction on. A setup that
+    #: fires on a tenth of every bar is not a setup.
+    fire_rate: float = 0.0
     holdout_trades: int = 0
     holdout_r: float = 0.0
     by_hour: dict[int, list[float]] = field(default_factory=lambda: defaultdict(list))
@@ -343,6 +352,7 @@ def main() -> None:
             signals = raw if args.all_hours else _mute_blocked_hours(raw, searched, blocked)
             for ratio in RATIOS:
                 cell = Cell(mechanism=name, clock=clock, ratio=ratio)
+                cell.fire_rate = float(np.mean(signals != 0))
                 # THE STOP THIS CELL ACTUALLY USES, per clock.
                 #
                 # THIS LINE WAS `close * 0.004` -- a flat 0.4% of price as the
@@ -406,14 +416,14 @@ def _report(cells: list[Cell], bar: float, tested: int, args, cap: float) -> Non
     ranked = sorted(cells, key=lambda c: c.sigma, reverse=True)
     print(
         f"\n  {'mechanism':<28}{'clk':>5}{'R:R':>6}{'trades':>8}{'/day':>7}"
-        f"{'total R':>10}{'per':>8}{'cost':>7}{'sigma':>7}{'holdout':>10}"
+        f"{'total R':>10}{'per':>8}{'cost':>7}{'fires':>7}{'sigma':>7}{'holdout':>10}"
     )
     for cell in ranked[:20]:
         flag = "" if cell.beats_its_coin else "  <- loses to its own coin flip"
         print(
             f"  {cell.mechanism:<28}{cell.clock:>5}{cell.ratio:>6.1f}{cell.trades:>8}"
             f"{cell.per_day:>7.1f}{cell.total_r:>+10.2f}{cell.per_trade:>+8.3f}"
-            f"{cell.cost_share:>6.1%}{cell.sigma:>+7.2f}{cell.holdout_r:>+10.2f}{flag}"
+            f"{cell.cost_share:>6.1%}{cell.fire_rate:>6.1%}{cell.sigma:>+7.2f}{cell.holdout_r:>+10.2f}{flag}"
         )
 
     # THE ACCOUNT'S OWN COST GATE, applied here because it CAN be. A setup
@@ -423,6 +433,19 @@ def _report(cells: list[Cell], bar: float, tested: int, args, cap: float) -> Non
     # not a formality -- an M1 ATR is small and the spread on a gold cross is
     # not, and that ratio is the whole reason the first 720-day run put nine
     # unaffordable M1 cells at the top.
+    # A MECHANISM THAT FIRES ON A TENTH OF EVERY BAR IS A COIN FLIP WITH A
+    # SPREAD ATTACHED, and this is the rule that stops one being promoted.
+    #
+    # Section eleven ran `streak_reversal` on M1 -- "four closes the same way,
+    # then trade against it". Four coin flips landing the same way is 12.5% of
+    # bars in a random walk; it measured 10.3%, which is 149 signals a day on
+    # M1. There is no counterparty: nobody loses money because four one-minute
+    # candles went up. The replay agreed -- 855 trades at -0.18 R apiece, which
+    # is roughly the round trip.
+    #
+    # The owner asked for THREE TO FIVE trades a day. That is a specification,
+    # not a fitted parameter, so it is allowed to be a hard bound here in a way
+    # that a threshold chosen from the results never would be.
     survivors = [
         c
         for c in ranked
@@ -431,6 +454,10 @@ def _report(cells: list[Cell], bar: float, tested: int, args, cap: float) -> Non
         and c.holdout_r > 0
         and c.total_r > 0
         and c.cost_share <= cap
+        and c.per_day <= MAX_TRADES_PER_DAY
+    ]
+    too_busy = [
+        c for c in ranked if c.per_day > MAX_TRADES_PER_DAY and c.sigma >= bar and c.holdout_r > 0
     ]
     priced_out = [
         c
@@ -440,6 +467,17 @@ def _report(cells: list[Cell], bar: float, tested: int, args, cap: float) -> Non
     print("\n" + "-" * 78)
     print("WHICH CELLS EARNED A SECTION")
     print("-" * 78)
+    if too_busy:
+        print(f"\n  {len(too_busy)} cell(s) cleared the statistics and fire TOO OFTEN:")
+        for cell in too_busy[:6]:
+            print(
+                f"    {cell.mechanism} {cell.clock} R:R {cell.ratio:.1f} -- "
+                f"{cell.per_day:.0f} trades a day, fires on {cell.fire_rate:.1%} of bars"
+            )
+        print(
+            f"  The ask was {WANTED_TRADES_PER_DAY[0]:.0f}-{WANTED_TRADES_PER_DAY[1]:.0f} a "
+            f"day. A mechanism at ten times that is a pattern, not an event."
+        )
     if priced_out:
         print(f"\n  {len(priced_out)} cell(s) cleared the statistics and are REFUSED on cost:")
         for cell in priced_out[:6]:
