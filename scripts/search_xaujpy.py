@@ -61,7 +61,7 @@ if str(ROOT) not in sys.path:
 import numpy as np
 import pandas as pd
 
-from analysis.mechanisms import FAMILIES, HORIZON, WARMUP
+from analysis.mechanisms import FAMILIES, HORIZON, WARMUP, _atr
 from backtesting.replay import fetch_mt5_history
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
@@ -165,6 +165,27 @@ def _split_r(cell: Cell, found, split: datetime) -> None:
             cell.late_r += value
 
 
+def _mute_blocked_hours(signals: np.ndarray, frame: pd.DataFrame, blocked: set[int]) -> np.ndarray:
+    """Zero every signal the live section would refuse on the clock.
+
+    THIS WAS DOCUMENTED AND NOT IMPLEMENTED, which is the defect this whole
+    repository is a monument to. The module docstring said the configured
+    blocked hours were applied; no line applied them, and the first real run
+    put `london_drive` third on +0.091 R per trade earned ENTIRELY inside
+    07:00-12:00 UTC -- the window the section refuses. A search that ranks
+    cells by an edge the section may not take is not measuring the section.
+
+    Reported as well as applied: `_blocked_report` prints what was muted, so
+    a block that is costing real money is visible rather than silently gone.
+    """
+    if not blocked:
+        return signals
+    hours = frame.index.hour.to_numpy()
+    muted = signals.copy()
+    muted[np.isin(hours, list(blocked))] = 0
+    return muted
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=720)
@@ -199,6 +220,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="cells searched in EARLIER runs, added before the bar is computed",
+    )
+    parser.add_argument(
+        "--all-hours",
+        action="store_true",
+        help=(
+            "measure the hours the section BLOCKS as well. Off by default: a "
+            "cell whose edge sits inside a blocked window is not a cell the "
+            "section can trade, and ranking it there measures nothing."
+        ),
     )
     parser.add_argument("--csv", default="", help="write every cell's numbers here")
     parser.add_argument(
@@ -276,6 +306,24 @@ def main() -> None:
             f"and the symbol visible in Market Watch."
         )
 
+    # THE SECTION'S OWN BLOCKED HOURS, read from the config rather than
+    # written down a second time here. Two lists that must agree are two lists
+    # that will disagree.
+    blocked: set[int] = set()
+    if not args.all_hours:
+        for name in (
+            "section_eleven_xaujpy_m1",
+            "section_twelve_xaujpy_m5",
+            "section_thirteen_xaujpy_m15",
+        ):
+            blocked |= set(getattr(settings.analysis, name).blocked_hours)
+        if blocked:
+            print(
+                f"\n  hours the sections refuse, muted here too: "
+                f"{', '.join(f'{h:02d}:00' for h in sorted(blocked))}"
+            )
+            print("  (--all-hours measures them anyway, for diagnosis)")
+
     cells: list[Cell] = []
     for clock, frame in frames.items():
         # THE HOLDOUT IS CUT BEFORE ANYTHING IS MEASURED, so no decision below
@@ -291,11 +339,27 @@ def main() -> None:
         )
 
         for name, mechanism in sorted(mechanisms.items()):
-            signals = mechanism(searched)
+            raw = mechanism(searched)
+            signals = raw if args.all_hours else _mute_blocked_hours(raw, searched, blocked)
             for ratio in RATIOS:
                 cell = Cell(mechanism=name, clock=clock, ratio=ratio)
-                risk_price = float(frame["close"].iloc[-1]) * 0.004
-                cell.cost_share = _cost_share(sizer, spec, risk_price)
+                # THE STOP THIS CELL ACTUALLY USES, per clock.
+                #
+                # THIS LINE WAS `close * 0.004` -- a flat 0.4% of price as the
+                # stop width, the same number on M1, M5 and M15. The stop is
+                # `stop_atr x ATR of that clock`, and on M1 that ATR is an
+                # order of magnitude smaller than 0.4% of price, so M1 was
+                # charged roughly a twentieth of the cost it pays.
+                #
+                # The first 720-day run came back with NINE cells clearing the
+                # bar, all of them M1, at 74 to 252 trades a day. That was not
+                # an edge, it was free trading. It is the same defect the
+                # `_cost_share` docstring already describes one level up --
+                # "a number that moves 300x the wrong way is not a property of
+                # gold" -- and I reproduced it by hand-rolling the stop width
+                # instead of taking the one the cell resolves against.
+                stop_price = args.stop_atr * float(np.nanmedian(_atr(searched)))
+                cell.cost_share = _cost_share(sizer, spec, stop_price)
                 cost_r = cell.cost_share
                 found = resolve(
                     searched, signals, stop_atr=args.stop_atr, ratio=ratio, cost_r=cost_r
@@ -325,13 +389,13 @@ def main() -> None:
     tested = _cell_count(len(mechanisms), len(frames), len(RATIOS), hours=args.hours)
     tested += args.cells_already_tried
     bar = bonferroni_sigma(tested)
-    _report(cells, bar, tested, args)
+    _report(cells, bar, tested, args, settings.risk.max_cost_share_of_risk)
     if args.csv:
         _write_csv(cells, Path(args.csv))
         print(f"\nevery cell written to {args.csv}")
 
 
-def _report(cells: list[Cell], bar: float, tested: int, args) -> None:
+def _report(cells: list[Cell], bar: float, tested: int, args, cap: float) -> None:
     print("\n" + "=" * 78)
     print(f"RESULT — Bonferroni bar at {tested} cells: {bar:.2f} sigma")
     print("=" * 78)
@@ -342,24 +406,48 @@ def _report(cells: list[Cell], bar: float, tested: int, args) -> None:
     ranked = sorted(cells, key=lambda c: c.sigma, reverse=True)
     print(
         f"\n  {'mechanism':<28}{'clk':>5}{'R:R':>6}{'trades':>8}{'/day':>7}"
-        f"{'total R':>10}{'per':>8}{'sigma':>7}{'holdout':>10}"
+        f"{'total R':>10}{'per':>8}{'cost':>7}{'sigma':>7}{'holdout':>10}"
     )
     for cell in ranked[:20]:
         flag = "" if cell.beats_its_coin else "  <- loses to its own coin flip"
         print(
             f"  {cell.mechanism:<28}{cell.clock:>5}{cell.ratio:>6.1f}{cell.trades:>8}"
             f"{cell.per_day:>7.1f}{cell.total_r:>+10.2f}{cell.per_trade:>+8.3f}"
-            f"{cell.sigma:>+7.2f}{cell.holdout_r:>+10.2f}{flag}"
+            f"{cell.cost_share:>6.1%}{cell.sigma:>+7.2f}{cell.holdout_r:>+10.2f}{flag}"
         )
 
+    # THE ACCOUNT'S OWN COST GATE, applied here because it CAN be. A setup
+    # whose round trip eats more than `max_cost_share_of_risk` of the stop is
+    # refused live with SL_TOO_TIGHT_FOR_COSTS, so a cell above the cap is not
+    # a cell the account can trade however good its sigma looks. On M1 this is
+    # not a formality -- an M1 ATR is small and the spread on a gold cross is
+    # not, and that ratio is the whole reason the first 720-day run put nine
+    # unaffordable M1 cells at the top.
     survivors = [
         c
         for c in ranked
-        if c.sigma >= bar and c.beats_its_coin and c.holdout_r > 0 and c.total_r > 0
+        if c.sigma >= bar
+        and c.beats_its_coin
+        and c.holdout_r > 0
+        and c.total_r > 0
+        and c.cost_share <= cap
+    ]
+    priced_out = [
+        c
+        for c in ranked
+        if c.cost_share > cap and c.sigma >= bar and c.holdout_r > 0 and c.total_r > 0
     ]
     print("\n" + "-" * 78)
     print("WHICH CELLS EARNED A SECTION")
     print("-" * 78)
+    if priced_out:
+        print(f"\n  {len(priced_out)} cell(s) cleared the statistics and are REFUSED on cost:")
+        for cell in priced_out[:6]:
+            print(
+                f"    {cell.mechanism} {cell.clock} R:R {cell.ratio:.1f} -- round trip is "
+                f"{cell.cost_share:.1%} of the stop against a {cap:.0%} cap"
+            )
+        print("  The account would answer SL_TOO_TIGHT_FOR_COSTS to every one of them.")
     if not survivors:
         print("\n  NONE. A cell has to clear all four at once:")
         print("    sigma at or above the bar, positive total, beats its own coin")

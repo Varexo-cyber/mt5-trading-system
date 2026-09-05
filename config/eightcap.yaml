@@ -1713,42 +1713,79 @@ analysis:
   # Dat is vooraf opgeschreven zodat de echte zoektocht op Eightcap-data het
   # kan tegenspreken in plaats van het achteraf te bevestigen.
   section_eleven_xaujpy_m1:
-    enabled: false
+    enabled: true
     symbol: XAUJPY
     timeframe: M1
-    mechanism: ""
+    # `zoekjpy.cmd 720`, 720 dagen, de hoogste sigma van de hele grid van 168:
+    #     43.192 trades  74,5/dag  +2035,50 R  +0,047/trade  +8,14 sigma
+    #     holdout +347,00 R over 10.463 trades, vroeg +1249,50 / laat +786,00
+    #     per sessie ALLE VIJF positief: tokyo +0,053  london +0,043
+    #     overlap +0,029  ny_late +0,050  close +0,059
+    #
+    # TWEE DINGEN DIE JE MOET WETEN VOORDAT JE DIT GELOOFT.
+    #
+    # EEN: dat cijfer is gemeten met een KAPOT kostenmodel. De zoeker rekende
+    # de kosten af tegen een vaste 0,4% van de prijs als stopbreedte, op elke
+    # klok dezelfde, terwijl de stop 1,0 x ATR van die klok is. Op M1 is die
+    # ATR een orde kleiner, dus M1 kreeg ongeveer een twintigste van zijn
+    # echte kosten in rekening gebracht. Dat is gerepareerd, maar deze regels
+    # dragen nog het oude cijfer. De replay hieronder rekent wel goed.
+    #
+    # TWEE: 74,5 trades per dag is vijftien keer wat gevraagd is, en op M1 is
+    # de spread van een goudkruis groot ten opzichte van de stop. Als er iets
+    # sneuvelt op kosten, is dit het.
+    mechanism: streak_reversal
     stop_atr: 1.0
     target_ratio: 1.5
     confidence: 0.55
+    # OPEN, en dat is een wijziging met een reden. Het blok 07:00-13:00 komt
+    # van sectie tien's break-retest op deze kruisen. Dit is een ander
+    # mechanisme en de sessietabel hierboven zegt dat London hier POSITIEF is
+    # (+0,043 over 11.445 trades). Een blok van een andere strategie
+    # overnemen zonder het te meten is precies wat hier niet hoort.
     allowed_hours: []
-    # 07:00-13:00 UTC kostte sectie tien -0,101 R per trade op deze kruisen
-    # over 1.664 trades, tegen +0,064 in elk ander uur. Die uren staan dicht
-    # voordat er ook maar iets gezocht is, want dat is een bevinding van een
-    # ANDERE sectie op DEZELFDE markten en die hoeft niet opnieuw betaald te
-    # worden met zoekruimte.
-    blocked_hours: [7, 8, 9, 10, 11, 12]
+    blocked_hours: []
 
   section_twelve_xaujpy_m5:
-    enabled: false
+    enabled: true
     symbol: XAUJPY
     timeframe: M5
-    mechanism: ""
+    # De sterkste M5-cel met een echte trade-count:
+    #     11.932 trades  20,6/dag  +218,00 R  +0,018/trade  +1,61 sigma
+    #     holdout -11,00 R   <-- NEGATIEF, en dat staat hier omdat het telt
+    #
+    # Hij haalde de lat van 3,62 bij lange na niet en zijn holdout is negatief.
+    # Hij staat er omdat de eigenaar de drie klokken wil backtesten en omdat
+    # de replay een onafhankelijke stem is, niet omdat dit bewijs is.
+    #
+    # De andere M5-kandidaat was gap_fade (+2,93 sigma, holdout +6,50) en die
+    # doet 0,3 trades per dag -- 199 trades in twee jaar. Te weinig om iets
+    # over te zeggen en te weinig om iets aan te verdienen.
+    mechanism: stretch_fade
     stop_atr: 1.0
     target_ratio: 1.5
     confidence: 0.55
     allowed_hours: []
-    blocked_hours: [7, 8, 9, 10, 11, 12]
+    blocked_hours: []
 
   section_thirteen_xaujpy_m15:
-    enabled: false
+    enabled: true
     symbol: XAUJPY
     timeframe: M15
-    mechanism: ""
+    # De beste M15-cel, en de enige van de drie met een gezonde trade-rate:
+    #     4.436 trades  7,6/dag  +181,50 R  +0,041/trade  +2,25 sigma
+    #     holdout +40,00 R -- positief
+    #
+    # 7,6 trades per dag ligt het dichtst bij de 3-5 die gevraagd is, en op
+    # M15 is de stop breed genoeg dat de spread hem niet opeet. Van de drie
+    # klokken is dit degene waar ik het meeste van verwacht, ondanks dat M1
+    # bovenaan de tabel staat.
+    mechanism: close_position_fade
     stop_atr: 1.0
     target_ratio: 1.5
     confidence: 0.55
     allowed_hours: []
-    blocked_hours: [7, 8, 9, 10, 11, 12]
+    blocked_hours: []
 
   # Four separate discoveries, retained for measurement but shadow-only. S11
   # was briefly promoted on +11.51R over 30 days, then immediately retired
