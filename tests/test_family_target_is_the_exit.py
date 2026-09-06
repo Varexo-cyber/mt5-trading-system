@@ -177,6 +177,13 @@ class TestTheShippedAccountAgrees:
             "section_eleven_xaujpy_legs_m5": 1.5,
             "section_twelve_xaujpy_m5": 1.5,
             "section_thirteen_xaujpy_m15": 1.5,
+            # The three BTC discoveries, promoted 6 September. Each number is
+            # that section's own `target_r` -- what the detector was frozen and
+            # measured on -- and section seventeen's 4.0 is deliberate: a wide
+            # target with break-even at 1 R, so most trades scratch by design.
+            "section_fifteen_btc_m1": 2.0,
+            "section_sixteen_btc_m5": 2.0,
+            "section_seventeen_btc_m15": 4.0,
         }
 
         live = set(confluence.live_enabled_modules)

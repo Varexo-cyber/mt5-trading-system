@@ -70,11 +70,19 @@ def test_the_shadow_wiring_holds_for_every_discovery_section() -> None:
     3.217 trades against XAUUSD's +79,12 over 595, and the position cap cost
     section six a further 260 trades worth +40,48 R.
 
-    The PROPERTY the deleted test was really about survives and is asserted
-    here instead: every discovery section this config carries is weighted zero,
-    is off the live allowlist, and gets its weight back only on the settings
-    COPY a measurement pass uses. An earlier version pinned the four names, so
-    removing them failed here with nothing wrong.
+    THE PROPERTY, NOT THE DECISION, and this test has now been rewritten for
+    that reason twice. It first pinned the four section NAMES, so deleting
+    them failed here with nothing wrong. It then pinned `weight == 0.0` for
+    every discovery section, which is a DECISION about permission, not a
+    property of the wiring -- and on 6 September the owner promoted the three
+    BTC sections to real money, so that assertion failed while the wiring it
+    was written to protect was perfectly intact.
+
+    What is actually invariant is the RELATIONSHIP: a discovery section
+    carries weight exactly when it is on the live allowlist, it always has its
+    lone-module floor and its target multiple, and a measurement pass gets its
+    weight on a COPY without that leaking into the account. That holds whether
+    the owner has promoted none of them or all of them.
     """
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
     confluence = settings.analysis.confluence
@@ -87,18 +95,42 @@ def test_the_shadow_wiring_holds_for_every_discovery_section() -> None:
 
     assert names, "no discovery section left; if that was deliberate, delete this test"
     for name in names:
-        assert confluence.weights[name] == 0.0, name
-        assert name not in confluence.live_enabled_modules, name
+        live = name in confluence.live_enabled_modules
+        weight = confluence.weights[name]
+        # A SECTION ON THE ALLOWLIST AT WEIGHT ZERO IS THE WORST OF BOTH: the
+        # engine tests `if weight > 0`, so it is permitted to trade and counted
+        # by nothing, and it takes zero trades forever with nothing saying why.
+        # A section OFF the allowlist carrying weight is the mirror error --
+        # `effective_weights` zeroes it live, but every research run and the
+        # journal read the raw table.
+        assert (weight > 0.0) == live, (
+            f"{name}: weight {weight} against live={live}. On the allowlist it must "
+            f"carry weight or it can never trade; off it, weight is misleading."
+        )
         assert confluence.lone_floor_for(name) == 0.55, name
         assert name in confluence.target_r_multiple_by_family, name
 
-    measured = _retimed(settings, names[0], settings.analysis.__getattribute__(names[0]).timeframe)
-    assert measured.analysis.confluence.weights[names[0]] == 1.0
-    assert names[0] in measured.analysis.confluence.live_enabled_modules
-    assert confluence.weights[names[0]] == 0.0, "the measurement pass leaked into the account"
+    shadow = [name for name in names if name not in confluence.live_enabled_modules]
+    if shadow:
+        before = confluence.weights[shadow[0]]
+        measured = _retimed(settings, shadow[0], getattr(settings.analysis, shadow[0]).timeframe)
+        assert measured.analysis.confluence.weights[shadow[0]] == 1.0
+        assert shadow[0] in measured.analysis.confluence.live_enabled_modules
+        assert (
+            confluence.weights[shadow[0]] == before
+        ), "the measurement pass leaked into the account"
 
 
-def test_three_btc_discoveries_are_separate_and_shadow_only() -> None:
+def test_three_btc_discoveries_are_separate_and_frozen() -> None:
+    """The three parameter sets, asserted so a later edit cannot drift them.
+
+    NOT their permission. This used to assert weight 0.0 and absence from
+    the allowlist -- both of which the owner changed on 6 September, and
+    neither of which is a property of the discovery. Permission lives in
+    `test_the_shadow_wiring_holds_for_every_discovery_section`, as the
+    relationship between weight and allowlist rather than a frozen value.
+    """
+
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
     sections = {
         "section_fifteen_btc_m1": ("M1", "adaptive_channel_100", 3.0, 2.0),
@@ -110,8 +142,6 @@ def test_three_btc_discoveries_are_separate_and_shadow_only() -> None:
         config = getattr(settings.analysis, name)
         assert (config.timeframe, config.mechanism, config.stop_atr, config.target_r) == expected
         assert config.allowed_symbols == ("BTCUSD",)
-        assert settings.analysis.confluence.weights[name] == 0.0
-        assert name not in settings.analysis.confluence.live_enabled_modules
 
     assert not settings.analysis.section_seventeen_btc_m15.weekday_only
     assert settings.analysis.section_fifteen_btc_m1.shadow_break_even_at_r == 1.5

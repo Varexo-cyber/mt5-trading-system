@@ -546,14 +546,23 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         GoldCrossDiscovery(
             analysis.section_fifteen_btc_m1,
             name="section_fifteen_btc_m1",
+            broker_symbol=settings.instruments.broker_symbol(
+                analysis.section_fifteen_btc_m1.allowed_symbols[0]
+            ),
         ),
         GoldCrossDiscovery(
             analysis.section_sixteen_btc_m5,
             name="section_sixteen_btc_m5",
+            broker_symbol=settings.instruments.broker_symbol(
+                analysis.section_sixteen_btc_m5.allowed_symbols[0]
+            ),
         ),
         GoldCrossDiscovery(
             analysis.section_seventeen_btc_m15,
             name="section_seventeen_btc_m15",
+            broker_symbol=settings.instruments.broker_symbol(
+                analysis.section_seventeen_btc_m15.allowed_symbols[0]
+            ),
         ),
     ]
 

@@ -2264,6 +2264,15 @@ def main(argv: list[str] | None = None) -> None:
                 "section_eleven_xaujpy_legs_m5",
                 "section_twelve_xaujpy_m5",
                 "section_thirteen_xaujpy_m15",
+                # The three BTC discoveries, live since 6 September. The flag
+                # is still called `--sections-five-to-ten` because that is what
+                # the launcher passes; the set is "the book", not a range of
+                # numbers, and a section belongs here the day it can spend
+                # money -- otherwise `dryrun-live.cmd` reports on an account
+                # that is not the one running.
+                "section_fifteen_btc_m1",
+                "section_sixteen_btc_m5",
+                "section_seventeen_btc_m15",
             }
             missing = (book & live) - measured
             if missing:
