@@ -63,6 +63,21 @@ class Reason(StrEnum):
     #: share of the risk. A live AUDNZD stop-out on a 5-pip stop returned
     #: -1.48R, of which 0.56R was pure cost.
     SL_TOO_TIGHT_FOR_COSTS = "SL_TOO_TIGHT_FOR_COSTS"
+    #: THE SECOND LOCK, and it exists because the first one carries too much.
+    #:
+    #: Section fifteen made +EUR 15.62 over 180 days and its spread gate
+    #: refused 7,414 setups worth -2,241.89 R in the same window. That is not
+    #: a section with an edge that a gate tidies up; it is a gate holding back
+    #: a flood, with a profitable trickle getting through. If
+    #: `max_spread_share_of_stop` is ever loosened, mis-set, or simply not
+    #: reached on some path, BTCUSD goes from +15 to catastrophic with nothing
+    #: in between and nothing saying so.
+    #:
+    #: So `risk.hard_spread_ceiling_by_symbol` is a per-symbol ceiling in a
+    #: DIFFERENT layer -- the sizer, not the confluence -- with its own number
+    #: and its own refusal. Two independent things now have to fail before
+    #: that flood reaches the account.
+    SPREAD_ABOVE_HARD_CEILING = "SPREAD_ABOVE_HARD_CEILING"
     #: Even the minimum lot would risk more than the configured ceiling.
     RISK_EXCEEDS_CAP = "RISK_EXCEEDS_CAP"
     #: Stop missing, on the wrong side of entry, or equal to it.

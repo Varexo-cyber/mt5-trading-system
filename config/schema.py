@@ -406,6 +406,21 @@ UNLIMITED_TRADES = 0
 #: the manual kill switch.
 NO_LOSS_LIMIT = 0.0
 
+#: Markets whose measured result depends on a gate refusing nearly everything,
+#: and which therefore may not go live on one gate alone.
+#:
+#: BTCUSD is here on a number, not a feeling. Over 180 days section fifteen
+#: returned +EUR 15.62 while `analysis.confluence.max_spread_share_of_stop`
+#: refused 7,414 BTCUSD setups worth -2,241.89 R. Every euro of that section
+#: is the residue of a gate working; loosen it and the -2,241 arrives instead.
+#:
+#: `Settings._a_capped_market_keeps_its_cap_while_it_is_live` refuses to load a
+#: configuration that puts a market from this set on the allowlist without an
+#: entry in `risk.hard_spread_ceiling_by_symbol`. Adding a market here is a
+#: decision to require two independent locks on it; removing one is a decision
+#: to trust a single number, and should be made with the measurement in hand.
+SYMBOLS_THAT_REQUIRE_A_SPREAD_CEILING: frozenset[str] = frozenset({"BTCUSD"})
+
 #: Zero on the circuit breaker means "no automatic peak-to-current halt".
 #: Named rather than spelled 0.0 at the comparison sites, because a bare zero
 #: there reads as a threshold of nought — which would trip on every account,
@@ -580,6 +595,46 @@ class RiskConfig(Base):
     #: Zero falls back to `max_cost_share_of_risk`, so an account that has not
     #: set this keeps its old behaviour rather than being tightened silently.
     section_one_max_cost_share: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    #: THE SECOND LOCK ON A SYMBOL, per symbol, in a different layer from the
+    #: gate that is currently doing all the work.
+    #:
+    #: WHY IT EXISTS. Section fifteen returned +EUR 15.62 over 180 days while
+    #: `analysis.confluence.max_spread_share_of_stop` refused 7,414 BTCUSD
+    #: setups worth -2,241.89 R in that same window. Read that pair again: the
+    #: profitable section is a trickle getting past a dam. Loosen that one
+    #: number, or find a path that does not reach it, and BTCUSD goes from
+    #: +15 euros to catastrophic with nothing in between.
+    #:
+    #: One number holding back a flood is not a design, it is an accident
+    #: waiting for an edit. So this is a SECOND ceiling, on the raw
+    #: spread-over-stop share, checked inside `PositionSizer.size` -- the last
+    #: thing before an order is sized. Two independent things must now fail.
+    #:
+    #: THREE DELIBERATE DIFFERENCES FROM `max_cost_share_of_risk`, and each one
+    #: is a way that gate can be turned off by accident:
+    #:
+    #:   * A ZERO HERE MEANS "NEVER TRADE THIS SYMBOL", not "check disabled".
+    #:     `max_cost_share_of_risk` reads `if limit > 0`, so setting it to zero
+    #:     silently removes the check. That footgun is not repeated: absence
+    #:     from this dict is how you say "no ceiling".
+    #:   * It is per SYMBOL, so tuning the account-wide number for gold cannot
+    #:     quietly open BTCUSD.
+    #:   * No caller can override it. `max_cost_share` is a parameter of
+    #:     `size()`; this is read from the settings inside.
+    #:
+    #: The key is the canonical symbol. `BTCUSD` covers `BTCUSD.i` and any
+    #: other suffix this broker invents.
+    hard_spread_ceiling_by_symbol: dict[str, float] = Field(default_factory=dict)
+    #: A symbol WITH a ceiling whose spread cannot be read is refused, rather
+    #: than admitted on an unverified number. `spread_price=0.0` means "not
+    #: supplied" everywhere in this codebase, and admitting a trade because the
+    #: cost is unknown is the exact inverse of the rule this account runs on
+    #: its calendar: no data is no trade.
+    #:
+    #: Off by default so no existing research path changes behaviour; on for
+    #: the live account, where the tick is always available.
+    refuse_capped_symbols_without_a_spread: bool = False
 
     #: Broker commission per lot per side, in account currency. 0 for accounts
     #: whose cost is entirely in the spread.
@@ -5693,6 +5748,51 @@ class Settings(Base):
                 f"Raise it, lower risk.min_risk_reward, or set "
                 f"analysis.confluence.target_planning_margin to 0 to accept the knife edge."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _a_capped_market_keeps_its_cap_while_it_is_live(self) -> Settings:
+        """A market that only pays because a gate holds it back keeps BOTH gates.
+
+        THE MEASUREMENT THIS EXISTS FOR. Over 180 days section fifteen returned
+        +EUR 15.62 on BTCUSD while the confluence spread gate refused 7,414
+        setups on that same market worth -2,241.89 R. The section is not an
+        edge that a gate tidies up; it is a trickle past a dam.
+
+        `risk.hard_spread_ceiling_by_symbol` is the second dam, in the sizer,
+        with its own number. This refuses to LOAD a configuration that gives a
+        section real money on such a market while that second ceiling has been
+        removed -- because the removal is silent, the consequence is not, and
+        nothing else in this system would notice for weeks.
+
+        Load time rather than startup, so it is impossible to reach a running
+        process in that state -- including from a script, a research run, or a
+        `model_copy` that rebuilds the settings.
+        """
+
+        ceilings = {
+            self.instruments.canonical_symbol(name).upper()
+            for name in self.risk.hard_spread_ceiling_by_symbol
+        }
+        live = set(self.analysis.confluence.live_enabled_modules)
+        for name in live:
+            section = getattr(self.analysis, name, None)
+            if section is None:
+                continue
+            declared = tuple(getattr(section, "allowed_symbols", ()) or ())
+            if not declared:
+                one = getattr(section, "symbol", "")
+                declared = (one,) if one else ()
+            for market in declared:
+                canonical = self.instruments.canonical_symbol(market).upper()
+                if canonical in SYMBOLS_THAT_REQUIRE_A_SPREAD_CEILING and canonical not in ceilings:
+                    raise ValueError(
+                        f"{name} is on live_enabled_modules and trades {market}, which "
+                        f"requires an entry in risk.hard_spread_ceiling_by_symbol. That "
+                        f"market's measured result depends on the spread gate refusing "
+                        f"almost everything, so it carries a second ceiling in the sizer. "
+                        f"Add it back, or take {name} off the allowlist."
+                    )
         return self
 
     @model_validator(mode="after")

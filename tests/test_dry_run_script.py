@@ -4066,6 +4066,14 @@ class TestTheWalkCanBeNarrowedToWhatTheSectionsTrade:
         launcher = (ROOT / "hoeveel.cmd").read_text()
 
         assert "--section-markets" in launcher
+        # AND ONLY THE SECTIONS THAT SPEND MONEY, by default. Without this the
+        # run also measures the shadow sections, and each of those drags in its
+        # own market and its own clock -- USDJPY.i and M30 for section nine,
+        # XAUJPY for eleven. Useful when you want to know what a benched
+        # section WOULD do; pure waiting when you want to know what the account
+        # does. `schaduw` is the word that puts them back.
+        assert "--live-only" in launcher
+        assert "schaduw" in launcher
 
 
 class TestASilentSectionSaysWhichSilenceItIs:

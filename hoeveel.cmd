@@ -26,6 +26,12 @@ rem US30, GER40. Driehonderdduizend bars per stuk, zeven keer per bar
 rem beoordeeld, om niets op te leveren. `kern` zet de zestien kernmarkten
 rem terug, `alles` de hele catalogus.
 set MARKTEN=--section-markets
+rem ALLEEN DE SECTIES DIE ECHT GELD MOGEN UITGEVEN. Zonder dit meet hij
+rem ook de schaduwsecties, en die slepen hun eigen markten en klokken mee
+rem -- USDJPY.i voor sectie negen, XAUJPY voor elf, M30 en M15 erbij. Dat
+rem is nuttig als je wilt zien wat een sectie ZOU doen, en pure vertraging
+rem als je wilt weten wat de rekening doet. `schaduw` zet ze er weer bij.
+set BOEK=--live-only
 
 :lees
 if "%~1"=="" goto klaar
@@ -33,6 +39,7 @@ echo %~1| findstr /r "^[0-9][0-9]*$" >nul && set DAGEN=%~1
 if /i "%~1"=="alles" set MARKTEN=
 if /i "%~1"=="all" set MARKTEN=
 if /i "%~1"=="kern" set MARKTEN=--core
+if /i "%~1"=="schaduw" set BOEK=
 shift
 goto lees
 :klaar
@@ -63,12 +70,15 @@ echo      die Claude gegeven zou hebben zijn nooit gegeven.
 echo    * slippage voorbij de geboekte spread, en de volgorde van partial /
 echo      trailing / health / peak-stall binnen een bar.
 echo.
-echo  WELKE SECTIES. Het hele boek, inclusief de secties die GEEN echt geld
-echo  mogen gebruiken -- S11 (de benen op M5), S12, S13 en de BTC-secties
-echo  15/16/17. Die staan apart in de uitkomst onder "niet op de allowlist",
-echo  want hun euro's zijn hypothetisch. De vier die wel live zijn --
-echo  failed_session_breakout, sectie 6, sectie 8 en sectie 10 -- zijn het
-echo  antwoord op de vraag zoals je hem stelde.
+echo  WELKE SECTIES. Standaard alleen die op `live_enabled_modules` staan,
+echo  elk op ZIJN EIGEN klok, en alleen op de markten die ze mogen handelen.
+echo  Welke dat op dit moment zijn leest de run uit de config -- er staat hier
+echo  geen tweede lijst die daarmee moet kloppen, en op het Control Deck staan
+echo  ze bovenaan Overview.
+echo.
+echo  Wil je ook zien wat de secties ZOUDEN doen die geen geld mogen gebruiken,
+echo  typ dan `schaduw` erachter. Die slepen dan hun eigen markten en klokken
+echo  mee en de run wordt fors langer.
 echo.
 echo  DE UITKOMST STAAT ER TWEE KEER. Vast inzetbedrag (elke trade op dezelfde
 echo  startbalans, exact) en samengesteld (de inzet loopt mee met de balans,
@@ -80,10 +90,11 @@ echo  Op %DAGEN% dagen over de kernmarkten is dit een lange run. Zet hem aan en
 echo  laat hem staan.
 echo.
 echo  GEBRUIK
-echo    hoeveel.cmd 180        180 dagen, alleen de markten van de secties zelf
-echo    hoeveel.cmd 90         90 dagen
-echo    hoeveel.cmd 180 kern   de zestien kernmarkten erbij
-echo    hoeveel.cmd 180 alles  elke markt die de scanner ziet (veel langer)
+echo    hoeveel.cmd 180          180 dagen, live boek, eigen markten en klokken
+echo    hoeveel.cmd 90           90 dagen
+echo    hoeveel.cmd 180 schaduw  ook de secties die geen geld mogen gebruiken
+echo    hoeveel.cmd 180 kern     de zestien kernmarkten erbij
+echo    hoeveel.cmd 180 alles    elke markt die de scanner ziet (veel langer)
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (
@@ -94,7 +105,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAGEN% %MARKTEN% --jarvis-replay --csv runtime\hoeveel.csv
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAGEN% %MARKTEN% %BOEK% --jarvis-replay --csv runtime\hoeveel.csv
 
 if errorlevel 1 (
   echo.
