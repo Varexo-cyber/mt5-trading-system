@@ -113,44 +113,62 @@ class SectionElevenLegs:
 
     def analyze(self, ctx: MarketContext) -> Signal:
         cfg = self.config
-        # NOT `Signal.neutral` WITH A ZERO SCORE BY ACCIDENT: a section that
-        # could not read its legs has NOT looked at the market and must not be
-        # counted as having looked and found nothing.
-        quiet = Signal.neutral(self.name, "no read")
+
+        # EVERY SILENCE SAYS WHICH SILENCE IT IS.
+        #
+        # The first 90-day replay gave this section 204,575 decisions and ZERO
+        # trades, and every one of those decisions read "no weighted
+        # directional evidence" -- the engine's words for "the module sent
+        # nothing". There are six completely different reasons this module can
+        # send nothing, and that report could not tell them apart: legs never
+        # arrived, a leg was stale, the gap never reached the threshold, the
+        # cross is synthetic. One of those is a broken build and three are the
+        # mechanism working as designed, and they looked identical.
+        #
+        # So `quiet` takes a reason. It costs one f-string on a path that
+        # already returns, and it is the difference between "this section
+        # found nothing" and "this section never got to look".
+        def quiet(why: str) -> Signal:
+            return Signal.neutral(self.name, f"{self.name}: {why}")
+
         if not cfg.enabled:
-            return quiet
+            return quiet("section disabled")
         if ctx.symbol not in (self.broker_symbol, cfg.symbol):
-            return quiet
+            return quiet("not this section's market")
 
         clock = Timeframe.parse(cfg.timeframe)
         series = ctx.series.get(clock)
         if series is None or len(series.df) < MIN_LEG_BARS:
-            return quiet
+            held = 0 if series is None else len(series.df)
+            return quiet(f"cross has {held} {cfg.timeframe} bars, needs {MIN_LEG_BARS}")
         cross = series.df
         hour = int(cross.index[-1].hour)
         if cfg.allowed_hours and hour not in cfg.allowed_hours:
-            return quiet
+            return quiet(f"{hour:02d}:00 UTC is outside the allowed hours")
         if hour in cfg.blocked_hours:
-            return quiet
+            return quiet(f"{hour:02d}:00 UTC is blocked")
 
         legs = self.legs_from(ctx)
         if legs is None:
-            return quiet
+            return quiet(self.why_no_legs(ctx))
         base, quote = legs
 
         reading, unit, live_gap = self.reading(cross, base.frame, quote.frame)
         if reading is None or unit is None:
-            return quiet
+            return quiet("legs and cross share no current bar")
         if live_gap is not None and live_gap < cfg.minimum_gap_atr:
             # THE CROSS IS BEING COMPUTED FROM ITS LEGS, not quoted against
             # them. There is no lag, no counterparty and nothing to trade, and
             # a search that finds an edge inside a gap that cannot exist has
             # found its own rounding error.
-            return quiet
+            return quiet(
+                f"median gap {live_gap:.4f} ATR is below the {cfg.minimum_gap_atr:.4f} "
+                f"floor: the broker is computing this cross from its legs"
+            )
 
         direction_flag = int(signals_from_gap(np.asarray([reading]), cfg.gap_atr)[0])
         if direction_flag == 0:
-            return quiet
+            return quiet(f"gap {reading:+.2f} ATR has not reached {cfg.gap_atr:.2f}")
         direction = Direction.LONG if direction_flag > 0 else Direction.SHORT
 
         close = float(cross["close"].iloc[-1])
@@ -203,6 +221,33 @@ class SectionElevenLegs:
                 return None
             found.append(leg)
         return found[0], found[1]
+
+    def why_no_legs(self, ctx: MarketContext) -> str:
+        """Which of the four leg failures happened, in words.
+
+        `legs_from` returns None for four different reasons and a caller that
+        prints "no legs" cannot tell a build that never attaches them from a
+        market whose leg simply paused. Both produce zero trades; only one of
+        them is a bug.
+        """
+
+        raw = (ctx.meta or {}).get(LEGS_META_KEY)
+        if not isinstance(raw, dict):
+            return "no legs attached at all -- the runner or the replay is not supplying them"
+        cfg = self.config
+        missing = [name for name in (cfg.base_leg, cfg.quote_leg) if name not in raw]
+        if missing:
+            return f"leg(s) {', '.join(missing)} absent; attached: {sorted(raw)}"
+        for name in (cfg.base_leg, cfg.quote_leg):
+            leg = raw[name]
+            if not isinstance(leg, LegBars):
+                return f"leg {name} is not a LegBars"
+            if leg.age_seconds > cfg.max_leg_age_seconds:
+                limit = cfg.max_leg_age_seconds
+                return f"leg {name} is {leg.age_seconds:.0f}s old, limit {limit:.0f}s"
+            if len(leg.frame) < MIN_LEG_BARS:
+                return f"leg {name} has {len(leg.frame)} bars, needs {MIN_LEG_BARS}"
+        return "legs present but unusable"
 
     def reading(
         self, cross: pd.DataFrame, base: pd.DataFrame, quote: pd.DataFrame

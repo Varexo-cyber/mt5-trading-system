@@ -1055,13 +1055,32 @@ def _one_clock(
             idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
             module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
             if not idea.approved:
+                # WHOSE WORDS GO IN THE NOTE, and this is the difference
+                # between a diagnosis and a shrug.
+                #
+                # `idea.reason` is the ENGINE's verdict, and when the section
+                # sent no score at all that verdict is always the same
+                # sentence: "no weighted directional evidence". Section eleven
+                # produced 204,575 of those in one run and not one of them
+                # said whether its legs were missing, stale, or simply quiet.
+                #
+                # So when the section's OWN signal scored zero, its own
+                # reasoning is the more specific fact and it goes in instead.
+                # The engine's sentence is kept whenever the section did vote
+                # and was outvoted, because then the engine is the one with
+                # the answer.
+                own = next(
+                    (sig for sig in idea.signals if sig.module == name and not sig.score),
+                    None,
+                )
+                why = own.reasoning if own is not None and own.reasoning else idea.reason
                 out[name].append(
                     Decision(
                         upto,
                         symbol,
                         module,
                         "NO_SIGNAL" if raw_shadow else "REFUSED_CONFLUENCE",
-                        note=idea.reason[:90],
+                        note=why[:90],
                         # THE SECTION THAT WAS REFUSED, not just the detector
                         # that voted. Without it a section which took no trades
                         # has no rows anywhere carrying its name, and BY SECTION
@@ -1680,6 +1699,55 @@ def _under_the_slot_cap(
     return taken
 
 
+def _markets_each_section_needs(settings, names: tuple[str, ...]) -> tuple[list[str], list[str]]:
+    """`(the markets these sections can trade, the sections that trade anything)`.
+
+    WHY THIS IS NOT A LIST IN A LAUNCHER. The 90-day account replay walked
+    eleven markets and SIX of them took no trade at all -- GBPUSD, USDCHF,
+    EURJPY, GBPJPY, US30, GER40. Not "took no trade because the strategy
+    passed": no section on the book is even ALLOWED to trade them. Six markets
+    of bars, three hundred thousand each, judged seven times per bar, to
+    produce nothing. That is most of an hour of the owner's evening.
+
+    A hand-written symbol list would fix it once and be wrong the next time a
+    section changes market. So the question is asked of the sections
+    themselves, and there are THREE places they answer it from:
+
+        `allowed_symbols` on the config   -- sections 7, 8, 9, 10, 15, 16, 17
+        `symbol` on the config            -- the XAUJPY sections
+        `symbol` on the MODULE class      -- section six, both instances
+
+    All three are read, because reading only the first is exactly the bug this
+    file already shipped once: `getattr(config, "allowed_symbols", ())`
+    returned an empty tuple for every XAUJPY section, so the widening that
+    block exists for never happened for them.
+
+    A SECTION THAT DECLARES NOTHING TRADES EVERYTHING, and it is returned in
+    the second list rather than silently ignored. Narrowing the universe while
+    such a section is measured would quietly stop measuring it -- the same
+    silence, in a new place -- so the caller has to decide out loud.
+    """
+
+    from runner.service import build_analysis_modules
+
+    modules = {module.name: module for module in build_analysis_modules(settings)}
+    markets: list[str] = []
+    unbounded: list[str] = []
+    for name in names:
+        config = getattr(settings.analysis, name, None)
+        declared = tuple(getattr(config, "allowed_symbols", ()) or ())
+        if not declared:
+            one = getattr(config, "symbol", "") or getattr(modules.get(name), "symbol", "")
+            declared = (one,) if one else ()
+        if not declared:
+            unbounded.append(name)
+            continue
+        for market in declared:
+            if market not in markets:
+                markets.append(market)
+    return markets, unbounded
+
+
 def _retimed(settings, module_name: str, timeframe: str):
     """One section, moved to one clock, and ALLOWED TO VOTE.
 
@@ -1900,6 +1968,15 @@ def build_parser() -> argparse.ArgumentParser:
             "measure just these sections, comma or space separated "
             "(--only impulse_retest). Halves the run when the other one has "
             "already been measured."
+        ),
+    )
+    parser.add_argument(
+        "--section-markets",
+        action="store_true",
+        help=(
+            "walk ONLY the markets the measured sections are allowed to trade, "
+            "read from the sections themselves. The 90-day book run spent six "
+            "of its eleven markets proving that no section may trade them."
         ),
     )
     parser.add_argument(
@@ -2391,6 +2468,40 @@ def main(argv: list[str] | None = None) -> None:
         # `--symbols` and `--section-ten-only` DECLARE the universe on purpose,
         # so they are left alone. This fills a gap; it does not overrule a
         # choice.
+        # NARROW FIRST, THEN WIDEN. `--section-markets` replaces the universe
+        # with exactly what the measured sections declare, so the widening
+        # below then has nothing left to add. Both use the same helper, so the
+        # narrow set can never disagree with what the widening would have
+        # produced.
+        if args.section_markets and not args.symbols and not args.section_ten_only:
+            wanted, unbounded = _markets_each_section_needs(
+                settings, tuple(sorted({name for name, _tf in passes}))
+            )
+            if unbounded:
+                # A SECTION THAT TRADES ANYTHING CANNOT BE NARROWED AROUND.
+                # Dropping markets while it is measured would silently stop
+                # measuring it, which is the failure this whole file is about,
+                # so the universe stays as it was and the run says why.
+                print(
+                    "  --section-markets ignored: "
+                    f"{', '.join(sorted(unbounded))} declare no market and trade the "
+                    "whole universe, so narrowing would silently stop measuring them"
+                )
+            elif not wanted:
+                print("  --section-markets ignored: no section declares a market")
+            else:
+                dropped = [market for market in symbols if market not in wanted]
+                symbols = wanted
+                print(
+                    f"  section markets: {len(symbols)} instead of {len(symbols) + len(dropped)}"
+                    f" -- {', '.join(symbols)}"
+                )
+                if dropped:
+                    print(
+                        f"    {len(dropped)} markets left out, no section may trade them:"
+                        f" {', '.join(dropped)}"
+                    )
+
         section_markets: dict[str, list[str]] = {}
         widen = not args.symbols and not args.section_ten_only
         for name in sorted({name for name, _tf in passes}) if widen else ():

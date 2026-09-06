@@ -3229,6 +3229,28 @@ analysis:
       - section_sixteen_btc_m5
       - section_seventeen_btc_m15
 
+      # SECTIE ELF, 6 september, op verzoek van de eigenaar om hem mee te
+      # meten. Met twee dingen erbij die je moet weten voordat je dit leest
+      # als een promotie.
+      #
+      # EEN: hij haalde zijn lat niet. +2,93 sigma tegen 2,96, gemist met
+      # 0,03, en die lat is niet verzet. Zie het blok bij de sectie zelf.
+      #
+      # TWEE, EN DIT IS DE BELANGRIJKERE: in de 90-daagse replay deed hij
+      # NUL trades op 204.575 beslissingen. Verwacht was ongeveer negentien.
+      # Of dat klopt (het mechanisme is nu eenmaal zeldzaam) of dat de benen
+      # niet binnenkomen, was uit dat rapport niet op te maken -- elke regel
+      # las "no weighted directional evidence". Dat is nu gerepareerd: de
+      # sectie zegt per bar WELKE stilte het is, en de eerstvolgende run
+      # geeft het antwoord.
+      #
+      # Tot dat antwoord er is kost hij niets, want een sectie die niets
+      # uitstuurt geeft niets uit. Maar als hij stil blijkt door een bug en
+      # die bug wordt gerepareerd, dan begint hij geld uit te geven op een
+      # mechanisme dat nooit live gemeten is. Dat is het moment om deze regel
+      # opnieuw te bekijken, niet nu.
+      - section_eleven_xaujpy_legs_m5
+
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
 
