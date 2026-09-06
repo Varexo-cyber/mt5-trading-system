@@ -337,7 +337,10 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
         # trade now, and it comes back None when the H1 ATR is unknown -- live
         # refuses to move a stop in that case too. Reading the CONFIGURED rule
         # here would free the symbol on a managed exit that never happened.
-        assert "freed = managed_at if resolved_manage is not None else exit_at" in source
+        assert (
+            "freed = managed_at if (resolved_manage is not None or jarvis_replay) else exit_at"
+            in source
+        )
 
     def test_the_resolver_reports_both_exit_times(self) -> None:
         """Measured, not grepped. Break-even scratches this trade on the first
@@ -3824,6 +3827,11 @@ class TestEachClaimedGateIsActuallyReachable:
             entry=entry,
             stop_loss=entry - width,
             take_profit=entry + width * ratio,
+            # A REAL `TradeIdea` CARRIES THIS and the gate reads it to pick a
+            # per-family spread limit. A fixture without it passed until the
+            # per-family limit arrived, then raised AttributeError -- on the
+            # gate path, which is the path that decides every trade.
+            setup_family="section_eleven_xaujpy_legs_m5",
         )
 
     def _spec(self):
@@ -3899,3 +3907,57 @@ class TestEachClaimedGateIsActuallyReachable:
         ctx = self._context(frame, minute, spread=0.01)
         blocked = self._gate(ctx, self._idea(frame, width=6.0, ratio=1.5))
         assert blocked is not None and blocked[0] == "MARKET_TOO_QUIET"
+
+
+class TestTheCounterfactualSurvivesEveryClock:
+    """`RAW_BTC_HORIZONS[clock]` and an `entry_spread_price` that only exists
+    on the BTC path.
+
+    Both arrived with the counterfactual, which was written for three BTC
+    sections on M1/M5/M15 and is now run for the whole book. Section eight
+    runs H1 and section nine M30, so the first gated setup on either would
+    have raised -- a KeyError on one line, a NameError on the next -- after
+    however many hours the run had already spent. Neither is reachable from a
+    BTC-only test, which is exactly why they got through.
+    """
+
+    def test_every_configured_section_clock_has_a_counterfactual_horizon(self) -> None:
+        from pathlib import Path
+
+        from config.loader import load_settings
+        from core.types import Timeframe
+        from scripts.dry_run_sections import RAW_BTC_HORIZONS, REACH_HORIZON
+
+        settings = load_settings(
+            overlay=Path(__file__).resolve().parents[1] / "config" / "eightcap.yaml",
+            env_overrides=False,
+        )
+        import re
+
+        table = re.search(r"module_config = \{(.+?)\n        \}", SOURCE, re.S)
+        assert table is not None
+        for name in sorted(set(re.findall(r'"([a-z0-9_]+)":', table.group(1)))):
+            config = getattr(settings.analysis, name, None)
+            clock = getattr(config, "timeframe", None)
+            if clock is None:
+                continue
+            horizon = RAW_BTC_HORIZONS.get(Timeframe.parse(clock), REACH_HORIZON)
+            assert horizon > 0, f"{name} runs {clock} and has no counterfactual horizon"
+
+    def test_the_gate_path_never_reads_a_btc_only_local(self) -> None:
+        """`entry_spread_price` is assigned inside `if raw_shadow:` and read
+        by the gate block below it. The gate block must not touch it."""
+        block = SOURCE[
+            SOURCE.index("            if jarvis_replay:") : SOURCE.index(
+                "            if raw_shadow:\n                volume = float(spec.volume_min)"
+            )
+        ]
+        offenders = [
+            line.strip()
+            for line in block.splitlines()
+            if "entry_spread_price" in line and "raw_shadow" not in line and "#" not in line
+        ]
+        assert not offenders, (
+            "the gate block reads entry_spread_price outside the raw-shadow guard, "
+            f"so a non-BTC section raises NameError on its first refusal:\n{offenders}"
+        )

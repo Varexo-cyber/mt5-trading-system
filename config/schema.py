@@ -3706,6 +3706,9 @@ class ConfluenceConfig(Base):
     #: disable; the field cannot be turned off entirely, because a trade that
     #: cannot pay its own spread is not a trade.
     max_spread_share_of_stop: float = Field(default=0.20, gt=0.0, le=0.5)
+    #: Narrow, measured exceptions for standalone families. The global gate
+    #: remains unchanged for every other strategy.
+    max_spread_share_of_stop_by_family: dict[str, float] = Field(default_factory=dict)
     #: Paper/backtest may research every module. Live execution is restricted
     #: to this independently validated subset; empty means live entries block.
     live_enabled_modules: tuple[str, ...] = ()
