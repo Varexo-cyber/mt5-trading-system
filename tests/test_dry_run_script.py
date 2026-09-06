@@ -3617,16 +3617,32 @@ class TestTheEuroAnswerIsActuallyComputed:
         assert "zero observations" in out
 
     def test_a_shadow_section_is_named_as_hypothetical(self, capsys) -> None:
+        """THE SHADOW SECTION IS FOUND, NOT TYPED.
+
+        This named `section_eleven_xaujpy_legs_m5` and passed until the owner
+        promoted that section on 6 September -- at which point the test failed
+        while the behaviour it guards was perfectly intact. A test that pins
+        WHICH section is shadowed breaks every time permission changes; the
+        property is that a section off the allowlist is labelled hypothetical,
+        whichever one that is.
+        """
         from scripts.dry_run_sections import _what_the_account_would_be_worth
 
+        settings = self._settings()
+        live = set(settings.analysis.confluence.live_enabled_modules)
+        shadow = next(
+            name
+            for name in sorted(vars(settings.analysis))
+            if name.startswith("section_") and name not in live
+        )
         rows = self._trades([1.0, -1.0])
         for row in rows:
-            row.pass_key = ("section_eleven_xaujpy_legs_m5", "M5")
-        _what_the_account_would_be_worth(rows, self._settings(), 200.0, 180)
+            row.pass_key = (shadow, "M5")
+        _what_the_account_would_be_worth(rows, settings, 200.0, 180)
         out = capsys.readouterr().out
 
         assert "NOT on the real-money allowlist" in out
-        assert "section_eleven_xaujpy_legs_m5" in out
+        assert shadow in out
 
     def test_the_contract_prints_and_names_the_position_cap(self, capsys) -> None:
         from scripts.dry_run_sections import _jarvis_replay_contract
@@ -3961,3 +3977,162 @@ class TestTheCounterfactualSurvivesEveryClock:
             "the gate block reads entry_spread_price outside the raw-shadow guard, "
             f"so a non-BTC section raises NameError on its first refusal:\n{offenders}"
         )
+
+
+class TestTheWalkCanBeNarrowedToWhatTheSectionsTrade:
+    """Six of eleven markets in the 90-day book run took no trade at all --
+    GBPUSD, USDCHF, EURJPY, GBPJPY, US30, GER40 -- and not one section on the
+    book is ALLOWED to trade any of them. Three hundred thousand bars each,
+    judged seven times per bar, to prove a thing the config already knew.
+    """
+
+    def _settings(self):
+        from pathlib import Path
+
+        from config.loader import load_settings
+
+        return load_settings(
+            overlay=Path(__file__).resolve().parents[1] / "config" / "eightcap.yaml",
+            env_overrides=False,
+        )
+
+    def test_it_finds_a_market_for_every_live_section(self) -> None:
+        """THE PROPERTY, and the reason it is not a list in a launcher.
+
+        A section declares its market in one of three places -- `allowed_symbols`
+        on the config, `symbol` on the config, or `symbol` on the module class.
+        Reading only the first is the bug this file already shipped once: it
+        returned an empty tuple for every XAUJPY section.
+        """
+        from scripts.dry_run_sections import _markets_each_section_needs
+
+        settings = self._settings()
+        live = settings.analysis.confluence.live_enabled_modules
+        for name in live:
+            markets, unbounded = _markets_each_section_needs(settings, (name,))
+            assert not unbounded, f"{name} declares no market, so the walk cannot be narrowed"
+            assert markets, f"{name} resolved to no market at all"
+
+    def test_narrowing_never_drops_a_market_a_section_needs(self) -> None:
+        """The union has to contain every section's own markets. A narrow walk
+        that leaves one out produces a zero row, and a zero row reads as
+        'the strategy found nothing'."""
+        from scripts.dry_run_sections import _markets_each_section_needs
+
+        settings = self._settings()
+        live = tuple(settings.analysis.confluence.live_enabled_modules)
+        together, _unbounded = _markets_each_section_needs(settings, live)
+        for name in live:
+            alone, _ = _markets_each_section_needs(settings, (name,))
+            missing = [market for market in alone if market not in together]
+            assert not missing, f"{name} needs {missing}, absent from the narrowed universe"
+
+    def test_a_section_that_trades_anything_refuses_the_narrowing(self) -> None:
+        """`impulse_retest` has no market of its own. Narrowing around it would
+        silently stop measuring it -- the same silence, in a new place -- so it
+        is reported instead of ignored."""
+        from scripts.dry_run_sections import _markets_each_section_needs
+
+        settings = self._settings()
+        _markets, unbounded = _markets_each_section_needs(settings, ("impulse_retest",))
+        assert unbounded == ["impulse_retest"]
+
+    def test_the_narrowing_is_refused_rather_than_applied_when_unbounded(self) -> None:
+        assert "--section-markets ignored" in SOURCE
+
+    def test_the_launcher_asks_for_it(self) -> None:
+        launcher = (ROOT / "hoeveel.cmd").read_text()
+
+        assert "--section-markets" in launcher
+
+
+class TestASilentSectionSaysWhichSilenceItIs:
+    """Section eleven produced 204,575 decisions and zero trades, and every
+    one of them read "no weighted directional evidence" -- the ENGINE's words
+    for "the module sent nothing". Six different causes, one sentence, and no
+    way to tell a broken build from a rare mechanism.
+    """
+
+    def test_the_sections_own_reason_reaches_the_row(self) -> None:
+        assert "own = next(" in SOURCE
+        assert "sig.module == name and not sig.score" in SOURCE
+
+    def test_the_legs_section_gives_a_different_reason_per_cause(self) -> None:
+        """Distinct strings, asserted by DRIVING the module rather than by
+        reading its source. A reason that exists and never reaches a caller is
+        this repository's most-repeated defect."""
+        from datetime import datetime, timedelta
+
+        import numpy as np
+        import pandas as pd
+
+        from analysis.section_eleven_legs import (
+            LEGS_META_KEY,
+            MIN_LEG_BARS,
+            SectionElevenLegs,
+            leg_bars,
+        )
+        from config.schema import SectionElevenLegsConfig
+        from core.types import MarketContext, Series, Tick, Timeframe
+
+        count = MIN_LEG_BARS + 60
+        index = pd.DatetimeIndex(
+            [datetime(2026, 2, 2, 8, tzinfo=UTC) + timedelta(minutes=5 * i) for i in range(count)]
+        )
+        steps = np.arange(count, dtype=float)
+        gold = 2000.0 + np.sin(steps / 7.0) * 6.0
+        yen = 150.0 + np.cos(steps / 11.0) * 0.5
+
+        def frame(values, wobble):
+            return pd.DataFrame(
+                {
+                    "open": values,
+                    "high": values + wobble,
+                    "low": values - wobble,
+                    "close": values,
+                    "tick_volume": np.full(count, 100.0),
+                },
+                index=index,
+            )
+
+        base, quote = frame(gold, 0.4), frame(yen, 0.02)
+        cross = frame(gold * yen + 500.0, 20.0)
+        now = index[-1].to_pydatetime() + timedelta(minutes=5)
+
+        def read(meta):
+            ctx = MarketContext(
+                "XAUJPY",
+                now,
+                {Timeframe.M5: Series("XAUJPY", Timeframe.M5, cross, now)},
+                Tick("XAUJPY", now, 1.0, 1.1),
+            )
+            if meta is not None:
+                ctx.meta[LEGS_META_KEY] = meta
+            section = SectionElevenLegs(
+                "section_eleven_xaujpy_legs_m5",
+                SectionElevenLegsConfig(enabled=True, gap_atr=0.50, minimum_gap_atr=0.0),
+            )
+            signal = section.analyze(ctx)
+            assert signal.score == 0.0
+            return signal.reasoning
+
+        fresh = {
+            "XAUUSD": leg_bars("XAUUSD", base, now),
+            "USDJPY": leg_bars("USDJPY", quote, now),
+        }
+        stale = dict(fresh)
+        old = stale["XAUUSD"]
+        stale["XAUUSD"] = type(old)(old.symbol, old.frame, age_seconds=99_999.0)
+
+        reasons = {
+            "none": read(None),
+            "missing": read({"XAUUSD": fresh["XAUUSD"]}),
+            "stale": read(stale),
+            "quiet": read(fresh),
+        }
+        assert len(set(reasons.values())) == 4, reasons
+        assert "no legs attached at all" in reasons["none"]
+        assert "USDJPY" in reasons["missing"]
+        assert "old" in reasons["stale"]
+        # The legs are present and current; the gap simply is not there.
+        assert "gap" in reasons["quiet"]

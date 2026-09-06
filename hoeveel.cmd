@@ -19,13 +19,20 @@ rem Elke variabele hier, bovenaan, voordat iets hem leest. Een niet-gezette
 rem %VAR% in cmd is een lege string en dat is stil -- `sectie11.cmd --days`
 rem eindigde daardoor op "argument --days: expected one argument".
 set DAGEN=180
-set MARKTEN=--core
+rem ALLEEN DE MARKTEN WAAR DE GEMETEN SECTIES OP MOGEN HANDELEN, uit de
+rem secties zelf gelezen. De 90-daagse run liep elf markten en ZES ervan
+rem mag geen enkele sectie aanraken -- GBPUSD, USDCHF, EURJPY, GBPJPY,
+rem US30, GER40. Driehonderdduizend bars per stuk, zeven keer per bar
+rem beoordeeld, om niets op te leveren. `kern` zet de zestien kernmarkten
+rem terug, `alles` de hele catalogus.
+set MARKTEN=--section-markets
 
 :lees
 if "%~1"=="" goto klaar
 echo %~1| findstr /r "^[0-9][0-9]*$" >nul && set DAGEN=%~1
 if /i "%~1"=="alles" set MARKTEN=
 if /i "%~1"=="all" set MARKTEN=
+if /i "%~1"=="kern" set MARKTEN=--core
 shift
 goto lees
 :klaar
@@ -73,8 +80,9 @@ echo  Op %DAGEN% dagen over de kernmarkten is dit een lange run. Zet hem aan en
 echo  laat hem staan.
 echo.
 echo  GEBRUIK
-echo    hoeveel.cmd            %DAGEN% dagen, kernmarkten
+echo    hoeveel.cmd 180        180 dagen, alleen de markten van de secties zelf
 echo    hoeveel.cmd 90         90 dagen
+echo    hoeveel.cmd 180 kern   de zestien kernmarkten erbij
 echo    hoeveel.cmd 180 alles  elke markt die de scanner ziet (veel langer)
 echo.
 
