@@ -184,6 +184,9 @@ class TestTheShippedAccountAgrees:
             "section_fifteen_btc_m1": 2.0,
             "section_sixteen_btc_m5": 2.0,
             "section_seventeen_btc_m15": 4.0,
+            # Section five, back on the allowlist 6 September on +EUR 181,75
+            # over 546 trades. 1.0 is the ratio it was measured on.
+            "section_five_ndx100_m5": 1.0,
         }
 
         live = set(confluence.live_enabled_modules)

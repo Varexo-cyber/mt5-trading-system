@@ -4418,7 +4418,7 @@ class AnalysisConfig(Base):
     candle_momentum: CandleMomentumConfig = CandleMomentumConfig()
     walkforward_index: WalkforwardIndexConfig = WalkforwardIndexConfig()
     failed_session_breakout: FailedSessionBreakoutConfig = FailedSessionBreakoutConfig()
-    section_five_m5: SectionFiveM5Config = SectionFiveM5Config()
+    section_five_ndx100_m5: SectionFiveM5Config = SectionFiveM5Config()
     section_six_gold_m5: SectionSixModelConfig = SectionSixModelConfig()
     section_six_spx_h1: SectionSixModelConfig = SectionSixModelConfig(timeframe="H1")
     section_eight_trend_day_h1: SectionEightTrendDayConfig = SectionEightTrendDayConfig()

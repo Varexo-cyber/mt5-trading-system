@@ -88,3 +88,152 @@ def test_dashboard_reads_market_brain_snapshot(tmp_path) -> None:  # type: ignor
 
     assert snapshot is not None
     assert snapshot["world"] == {"risk_tone": "mixed"}
+
+
+class TestTheDeckShowsWhoMaySpendMoney:
+    """`render_live_sections` answers the question the owner asked out loud --
+    "welke staan er nu allemaal live, ik snap het niet meer" -- after four
+    promotions and three removals in two days.
+
+    THESE DRIVE THE PANEL, they do not read its source. `dashboard/app.py`
+    connects to MT5 at import time, so the panel's own block is compiled and
+    executed against a fake Streamlit. A panel asserted by substring is a panel
+    nobody has ever run, and the first time it ran it produced `USDJPY.i.i` --
+    a symbol that exists nowhere, from appending the broker suffix twice.
+    """
+
+    @staticmethod
+    def _run(settings):  # type: ignore[no-untyped-def]
+        """Execute the panel with a recording stand-in for Streamlit."""
+        import sys
+        import types
+        from pathlib import Path
+
+        import pandas as pd
+
+        calls: list[tuple[str, object]] = []
+
+        class _Ctx:
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return self
+
+            def __exit__(self, *args):  # type: ignore[no-untyped-def]
+                return False
+
+        fake = types.ModuleType("streamlit")
+        for name in ("subheader", "warning", "error", "caption", "dataframe", "divider"):
+            fake.__dict__[name] = (
+                lambda key: (lambda *a, **k: calls.append((key, a[0] if a else None)))
+            )(name)
+        fake.expander = lambda *a, **k: _Ctx()
+
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "dashboard" / "app.py").read_text()
+        block = source[
+            source.index("def _section_markets(") : source.index("def render_account_header(")
+        ]
+        namespace: dict = {"st": fake, "pd": pd, "ROOT": root}
+        previous = sys.modules.get("streamlit")
+        sys.modules["streamlit"] = fake
+        try:
+            exec(compile(block, "panel", "exec"), namespace)
+            namespace["render_live_sections"](settings)
+        finally:
+            if previous is None:
+                sys.modules.pop("streamlit", None)
+            else:
+                sys.modules["streamlit"] = previous
+        return calls, namespace
+
+    @staticmethod
+    def _live_settings():  # type: ignore[no-untyped-def]
+        from pathlib import Path
+
+        return load_settings(
+            overlay=Path(__file__).resolve().parents[1] / "config" / "eightcap.yaml",
+            env_overrides=False,
+        )
+
+    def test_it_names_every_section_that_may_spend_money(self) -> None:
+        settings = self._live_settings()
+        calls, _ns = self._run(settings)
+        tables = [payload for kind, payload in calls if kind == "dataframe"]
+        assert tables, "the panel drew no table at all"
+        shown = set(tables[0]["sectie"])
+        assert shown == set(settings.analysis.confluence.live_enabled_modules)
+
+    def test_the_count_in_the_heading_matches_the_config(self) -> None:
+        settings = self._live_settings()
+        calls, _ns = self._run(settings)
+        heading = next(payload for kind, payload in calls if kind == "subheader")
+        assert str(len(settings.analysis.confluence.live_enabled_modules)) in str(heading)
+
+    def test_no_market_carries_the_broker_suffix_twice(self) -> None:
+        """The bug the first run produced. `section_nine_vwap_m30` stores
+        `USDJPY.i` -- already the broker's spelling -- and resolving it again
+        made `USDJPY.i.i`, which is not a symbol on any account."""
+        settings = self._live_settings()
+        suffix = settings.instruments.symbol_suffix
+        calls, _ns = self._run(settings)
+        for kind, payload in calls:
+            if kind != "dataframe" or "markt" not in getattr(payload, "columns", []):
+                continue
+            for market in payload["markt"]:
+                assert suffix == "" or not str(market).endswith(suffix + suffix), market
+
+    def test_a_permitted_section_with_no_weight_is_called_a_fault(self) -> None:
+        """The pair that is permitted and inert. `ConfluenceEngine` tests
+        `if weight > 0`, so this section is allowed to trade and counted by
+        nothing -- zero trades forever, and from every other surface on the
+        deck it looks exactly like a quiet market. It has been wrong on this
+        account twice, so the panel has to say it rather than show a 0.0."""
+        settings = self._live_settings()
+        confluence = settings.analysis.confluence
+        victim = confluence.live_enabled_modules[0]
+        weights = dict(confluence.weights)
+        weights[victim] = 0.0
+        broken = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={"confluence": confluence.model_copy(update={"weights": weights})}
+                )
+            }
+        )
+        calls, _ns = self._run(broken)
+        errors = [str(payload) for kind, payload in calls if kind == "error"]
+        assert any(victim in text and "gewicht 0" in text for text in errors), errors
+
+    def test_an_empty_allowlist_says_so_instead_of_drawing_nothing(self) -> None:
+        """An empty table reads as a broken panel; the words read as the truth."""
+        settings = self._live_settings()
+        confluence = settings.analysis.confluence
+        empty = settings.model_copy(
+            update={
+                "analysis": settings.analysis.model_copy(
+                    update={
+                        "confluence": confluence.model_copy(update={"live_enabled_modules": ()})
+                    }
+                )
+            }
+        )
+        calls, _ns = self._run(empty)
+        warnings = [str(payload) for kind, payload in calls if kind == "warning"]
+        assert any("GEEN ENKELE" in text for text in warnings), warnings
+
+    def test_the_shadow_sections_are_listed_separately(self) -> None:
+        settings = self._live_settings()
+        live = set(settings.analysis.confluence.live_enabled_modules)
+        expected = {
+            name
+            for name in vars(settings.analysis)
+            if name.startswith("section_")
+            and getattr(getattr(settings.analysis, name), "enabled", False)
+            and name not in live
+        }
+        calls, _ns = self._run(settings)
+        tables = [payload for kind, payload in calls if kind == "dataframe"]
+        if not expected:
+            assert len(tables) == 1
+            return
+        assert len(tables) == 2, "the shadow table is missing"
+        assert set(tables[1]["sectie"]) == expected

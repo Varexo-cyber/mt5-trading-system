@@ -150,14 +150,24 @@ def model_reading(frame: pd.DataFrame) -> tuple[float, float] | None:
 
 
 class SectionFiveM5:
-    name = "section_five_m5"
+    name = "section_five_ndx100_m5"
 
-    def __init__(self, config: SectionFiveM5Config | None = None) -> None:
+    def __init__(
+        self, config: SectionFiveM5Config | None = None, broker_symbol: str | None = None
+    ) -> None:
         self.config = config or SectionFiveM5Config()
+        # THE NAME THIS BROKER USES. `ctx.symbol` carries the broker's
+        # spelling and Eightcap prints `NDX100.i`; the config says `NDX100`.
+        # Raw, that is a section which is silent on every bar with nothing
+        # anywhere saying why -- and it only started mattering the day this
+        # section was given real money, because the dry run walks plain names
+        # and every replay that judged it compared NDX100 to NDX100.
+        allowed = self.config.allowed_symbols
+        self.broker_symbol = broker_symbol or (allowed[0] if allowed else "")
 
     def analyze(self, ctx: MarketContext) -> Signal:
         cfg = self.config
-        if not cfg.enabled or ctx.symbol not in cfg.allowed_symbols:
+        if not cfg.enabled or ctx.symbol not in (self.broker_symbol, *cfg.allowed_symbols):
             return Signal.neutral(self.name, "section five disabled for this symbol")
         series = ctx.series.get(Timeframe.parse(cfg.timeframe))
         found = model_reading(series.df) if series is not None else None

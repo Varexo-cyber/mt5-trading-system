@@ -95,14 +95,18 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
 
     SECTION 5 AND SECTION 9 CAME OFF ON 2 SEPTEMBER, on the owner's dry-run:
 
-        section_five_m5        170 trades   -1,09 R   EUR  -1,11
-        section_nine_vwap_m30    6 trades   -0,02 R   EUR  -0,08
+        section_five_ndx100_m5   170 trades   -1,09 R   EUR  -1,11
+        section_nine_vwap_m30      6 trades   -0,02 R   EUR  -0,08
 
-    Section five is the clear one -- 170 trades is not noise any more and the
-    number is under zero. Section nine on six trades is not proven bad; six
-    observations prove nothing either way. It is off because it is not proven
-    GOOD while spending real money. Both stay enabled and weighted, so they
-    are still measured in the shadow.
+    SECTION FIVE WENT BACK ON 6 SEPTEMBER on a bigger measurement that
+    disagreed -- 546 trades, +42,76 R, +EUR 181,75 over 180 days with the live
+    gates applied. Both numbers are real; the second one has three times the
+    trades and twice the window, and that is the whole reason to prefer it.
+
+    Section nine on six trades is not proven bad; six observations prove
+    nothing either way. It is off because it is not proven GOOD while spending
+    real money, and it stays enabled and weighted so it is still measured in
+    the shadow.
     """
     settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
 
@@ -145,7 +149,16 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
 
     live = settings.analysis.confluence.live_enabled_modules
     assert "section_nine_vwap_m30" not in live
-    assert "section_five_m5" not in live
+    # SECTION FIVE WENT BACK ON 6 SEPTEMBER, at the owner's instruction, on the
+    # 180-day account replay: 546 trades, 56.2% win, +42.76 R, +EUR 181.75 --
+    # the largest single figure in that measurement, larger than section six.
+    # The -1.09 R over 170 trades that took it off in September is not
+    # disputed; it was a smaller sample on a shorter window.
+    #
+    # Asserted as PRESENT rather than deleted, because "section five is
+    # benched" was a decision and pinning it made this test fail on a correct
+    # config -- the shape this file has already been rewritten for twice.
+    assert "section_five_ndx100_m5" in live
     # SECTION SIX WENT BACK ON 3 SEPTEMBER, at the owner's instruction, with a
     # causal 12-bar confirmation and with position management actually reaching
     # it -- see `TestSectionSixIsBackWithManagementAndAFilter`. The -71.65R
@@ -155,7 +168,7 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
     # is how three M1 detectors went unjudged for months.
     assert settings.analysis.section_nine_vwap_m30.enabled is True
     assert settings.analysis.confluence.weights["section_nine_vwap_m30"] > 0
-    assert settings.analysis.confluence.weights["section_five_m5"] > 0
+    assert settings.analysis.confluence.weights["section_five_ndx100_m5"] > 0
     assert settings.analysis.confluence.weights["section_six_gold_m5"] > 0
     assert (
         settings.analysis.confluence.lone_floor_for("section_ten_gold_m1")
@@ -327,7 +340,7 @@ class TestSectionTenGoesFlatBeforeGoldShuts:
 
         assert label("section_ten_gold_m1") in flattened
         assert label("section_six_gold_m5") not in flattened, "S6 stays exactly as measured"
-        assert label("section_five_m5") not in flattened
+        assert label("section_five_ndx100_m5") not in flattened
 
     def test_the_flatten_list_is_a_subset_of_the_fixed_exit_list(self) -> None:
         """Naming a family here that is NOT on the fixed list does nothing --

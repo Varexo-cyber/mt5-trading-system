@@ -507,7 +507,12 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         CandleMomentum(analysis.candle_momentum),
         WalkforwardIndex(analysis.walkforward_index),
         FailedSessionBreakout(analysis.failed_session_breakout),
-        SectionFiveM5(analysis.section_five_m5),
+        SectionFiveM5(
+            analysis.section_five_ndx100_m5,
+            broker_symbol=settings.instruments.broker_symbol(
+                analysis.section_five_ndx100_m5.allowed_symbols[0]
+            ),
+        ),
         SectionSixGoldM5(analysis.section_six_gold_m5),
         SectionSixSpxH1(analysis.section_six_spx_h1),
         SectionEightTrendDayH1(analysis.section_eight_trend_day_h1),

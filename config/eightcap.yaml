@@ -1412,7 +1412,7 @@ analysis:
   # SECTIE VIJF. NDX100 M5, nonlinear state model. Middelste kwart:
   # 62 trades, +0,218R/trade. Onaangeraakt nieuwste kwart: 87 trades,
   # 59,8% raak, +0,114R/trade, EUR +15,65 op EUR 203. Andere markten faalden.
-  section_five_m5:
+  section_five_ndx100_m5:
     enabled: true
     timeframe: M5
     allowed_symbols: [NDX100]
@@ -1836,7 +1836,18 @@ analysis:
     blocked_hours: []
 
   section_thirteen_xaujpy_m15:
-    enabled: true
+    # UIT, 6 september, op instructie van de eigenaar en op de 180-daagse
+    # meting. Hij stond nooit op de allowlist, dus "eraf halen" is hier
+    # `enabled: false`.
+    #
+    #     20 trades   55,0% raak   -5,47 R   -EUR 23,40   (-0,295 per trade)
+    #
+    # Dat is de SLECHTSTE R per trade van alles wat er gemeten werd, slechter
+    # dan S16 en S17 die dezelfde dag van de allowlist gingen. De 90-daagse
+    # meting hieronder gaf +0,38 per trade over 19 trades en die is dus
+    # omgeslagen -- op negentien trades wist je het niet, op veertig weet je
+    # het beter.
+    enabled: false
     # DE ENIGE VAN DE DRIE DIE BETAALT, 90-daagse replay met echte kosten:
     #
     #     19 trades   +7,24 R   +29,46 EUR   +0,38 per trade
@@ -2655,7 +2666,7 @@ analysis:
       order_block_h1: 1.0
       walkforward_index: 1.5
       failed_session_breakout: 1.5
-      section_five_m5: 1.0
+      section_five_ndx100_m5: 1.0
       section_six_gold_m5: 3.0
       section_six_spx_h1: 1.0
       section_eight_trend_day_h1: 1.0
@@ -2703,7 +2714,7 @@ analysis:
     # was AWAITING_CONFIRMATION 140 van de 414 setups -- de grootste poort van
     # allemaal. Deze drie eroverheen leggen meet iets anders dan wat er
     # gebacktest is.
-    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_legs_m5, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_ndx100_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_legs_m5, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
     # Sectie 6 is als complete closed-barstrategie gemeten. Een geldig
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
@@ -3203,53 +3214,44 @@ analysis:
       # retired pooled `section_eleven_metals`, not the new XAUEUR-only S11.
 
       # ------------------------------------------------------------------
-      # SECTIES 15, 16 EN 17 STAAN ER 6 SEPTEMBER 2026 OP, op uitdrukkelijke
-      # instructie van de eigenaar nadat hij ze zelf had gebacktest.
+      # SECTIE 15 STAAT ER 6 SEPTEMBER 2026 OP, op uitdrukkelijke instructie
+      # van de eigenaar. Zestien en zeventien stonden er die dag ook op en
+      # zijn er dezelfde dag weer AFGEHAALD op de 180-daagse meting, met de
+      # cijfers erbij zodat niemand later denkt dat het per ongeluk gebeurde:
       #
-      # WAT HIER TEGENOVER STAAT, en het staat erbij zodat niemand later
-      # denkt dat het over het hoofd is gezien. Deze drie zijn ONTDEKT door
-      # alle drie de periodes te bekijken. De regel die daarbij hoorde stond
-      # twee blokken hierboven in dit bestand en luidde: "only later forward
-      # data may grant real-money permission". Er is geen onaangeraakte
-      # holdout, en die kan er ook niet meer komen voor de data waarop ze
-      # gevonden zijn -- de enige echte out-of-sample die deze drie ooit nog
-      # krijgen, is wat er vanaf vandaag gebeurt.
+      #     S15  18 trades  +EUR 15,62  +0,228 per trade   <- blijft
+      #     S16  19 trades  -EUR  4,50  -0,119 per trade   <- eraf
+      #     S17  19 trades  -EUR 13,30  -0,174 per trade   <- eraf
       #
-      # De eigenaar weet dat en heeft het besluit genomen met dat feit op
-      # tafel. Wat hem begrenst is niet een meting maar de sectiebreaker
-      # onder `risk.section_breakers`: 60 trades venster, meer dan 60%
-      # verliezers of acht op rij, en de sectie zet zichzelf uit.
+      # Op negentig dagen zag S16 er nog het BEST van de drie uit (+0,260 per
+      # trade). Negentien trades later stond hij negatief. Dat is precies
+      # waarom er niet op tien trades besloten wordt.
       #
-      # DE ALLOWLIST ALLEEN WAS NIET GENOEG GEWEEST. Deze drie stonden op
-      # gewicht 0,0, en de engine test `if weight > 0` -- op de allowlist met
-      # gewicht nul is een sectie die wordt uitgerekend, gelogd en nooit
-      # geteld. Nul trades, voor altijd, zonder dat iets zegt waarom. De
-      # gewichten hieronder staan daarom mee op 1,0.
+      # WAT JE OVER S15 MOET WETEN VOORDAT JE HEM VERTROUWT. Zijn +EUR 15,62
+      # bestaat bij gratie van EEN poort: `SPREAD_EATS_THE_STOP` weigerde in
+      # datzelfde venster 7.414 setups die samen -2241,89 R waren. Die poort
+      # draait live, dus het cijfer is echt -- maar het live gedrag van deze
+      # sectie is vooral "niet handelen", en als die poort ooit losser gezet
+      # wordt is dit de sectie die de rekening leegtrekt.
+      #
+      # Deze drie zijn ONTDEKT door alle drie de periodes te bekijken. Er is
+      # geen onaangeraakte holdout en die komt er voor deze data ook niet
+      # meer. Wat S15 begrenst is de sectiebreaker, niet een meting.
       - section_fifteen_btc_m1
-      - section_sixteen_btc_m5
-      - section_seventeen_btc_m15
 
-      # SECTIE ELF, 6 september, op verzoek van de eigenaar om hem mee te
-      # meten. Met twee dingen erbij die je moet weten voordat je dit leest
-      # als een promotie.
+      # SECTIE VIJF, 6 september, TERUG op de allowlist op instructie van de
+      # eigenaar en op het grootste cijfer in de hele 180-daagse meting:
       #
-      # EEN: hij haalde zijn lat niet. +2,93 sigma tegen 2,96, gemist met
-      # 0,03, en die lat is niet verzet. Zie het blok bij de sectie zelf.
+      #     546 trades   56,2% raak   +42,76 R   +EUR 181,75   (3,0 per dag)
       #
-      # TWEE, EN DIT IS DE BELANGRIJKERE: in de 90-daagse replay deed hij
-      # NUL trades op 204.575 beslissingen. Verwacht was ongeveer negentien.
-      # Of dat klopt (het mechanisme is nu eenmaal zeldzaam) of dat de benen
-      # niet binnenkomen, was uit dat rapport niet op te maken -- elke regel
-      # las "no weighted directional evidence". Dat is nu gerepareerd: de
-      # sectie zegt per bar WELKE stilte het is, en de eerstvolgende run
-      # geeft het antwoord.
+      # Dat is meer dan sectie zes (+EUR 88,14) en het is het verschil tussen
+      # +EUR 69,77 en +EUR 228,93 over dat venster. Hij stond al die tijd
+      # enabled en gewogen als schaduwsectie; wat ontbrak was toestemming.
       #
-      # Tot dat antwoord er is kost hij niets, want een sectie die niets
-      # uitstuurt geeft niets uit. Maar als hij stil blijkt door een bug en
-      # die bug wordt gerepareerd, dan begint hij geld uit te geven op een
-      # mechanisme dat nooit live gemeten is. Dat is het moment om deze regel
-      # opnieuw te bekijken, niet nu.
-      - section_eleven_xaujpy_legs_m5
+      # HERNOEMD naar `section_five_ndx100_m5`, want hij handelt NDX100 en
+      # niets anders, en een naam die zijn markt niet noemt is een naam die
+      # bij de volgende sectie op M5 verwarring oplevert.
+      - section_five_ndx100_m5
 
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
@@ -3257,7 +3259,7 @@ analysis:
     # SECTIE 5 EN SECTIE 9 ZIJN ER 2 SEPTEMBER AFGEHAALD, op instructie van de
     # eigenaar, op de dry-run die hij voor zich had:
     #
-    #     section_five_m5        170 trades   -1,09 R   EUR  -1,11
+    #     section_five_ndx100_m5        170 trades   -1,09 R   EUR  -1,11
     #     section_nine_vwap_m30    6 trades   -0,02 R   EUR  -0,08
     #
     # Sectie 5 is de duidelijke van de twee: 170 trades is geen ruis meer en
@@ -3553,23 +3555,37 @@ analysis:
       order_block_h1: 1.0
       walkforward_index: 1.0
       failed_session_breakout: 1.0
-      section_five_m5: 1.0
+      section_five_ndx100_m5: 1.0
       section_six_gold_m5: 1.0
       section_six_spx_h1: 1.0
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.0
       section_ten_gold_m1: 1.0
-      section_eleven_xaujpy_legs_m5: 1.0
-      section_twelve_xaujpy_m5: 1.0
-      section_thirteen_xaujpy_m15: 1.0
+      # NUL OMDAT ZE VAN DE ALLOWLIST AF ZIJN, 6 september, en dat hoort bij
+      # elkaar: gewicht dragen en toestemming hebben is EEN toestand met twee
+      # kanten. Gewicht zonder toestemming is misleidend -- `effective_weights`
+      # zet het live toch op nul, maar elke researchrun en het journaal lezen
+      # de ruwe tabel. Toestemming zonder gewicht is erger: de engine test
+      # `if weight > 0`, dus zo'n sectie mag handelen en telt nergens mee.
+      # `test_the_shadow_wiring_holds_for_every_discovery_section` bewaakt
+      # precies die koppeling.
+      #
+      # Een meting tilt het gewicht zelf op naar 1,0 op een KOPIE van de
+      # settings (`_retimed`), dus deze secties blijven volledig meetbaar.
+      section_eleven_xaujpy_legs_m5: 0.0
+      section_twelve_xaujpy_m5: 0.0
+      section_thirteen_xaujpy_m15: 0.0
       # 1,0 SINDS 6 SEPTEMBER, samen met de allowlist hierboven. Dit was 0,0
       # en dat is geen "uit maar meetbaar": de engine test `if weight > 0`,
       # dus met nul telt de stem niet mee al staat de sectie op de allowlist.
       # Een sectie die live mag en niets kan doen is precies de stilte die
       # dit bestand overal probeert te voorkomen.
       section_fifteen_btc_m1: 1.0
-      section_sixteen_btc_m5: 1.0
-      section_seventeen_btc_m15: 1.0
+      # ZESTIEN EN ZEVENTIEN STONDEN HIER EEN DAG OP 1,0 en zijn 6 september
+      # weer op nul gezet toen ze van de allowlist gingen. De cijfers staan
+      # bij de allowlist hierboven.
+      section_sixteen_btc_m5: 0.0
+      section_seventeen_btc_m15: 0.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -3602,8 +3618,8 @@ analysis:
       # Dat is een redenering, geen meting.
       candle_momentum: 0.6
 
-    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
-    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_m5, section_six_gold_m5, section_ten_gold_m1, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
+    quick_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_ndx100_m5, section_six_gold_m5, section_ten_gold_m1, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
+    quick_embedded_confirmation_modules: [fast_ema_cross, ema_pullback_resume, m1_micro_breakout, failed_session_breakout, section_five_ndx100_m5, section_six_gold_m5, section_ten_gold_m1, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
 
   # Short-horizon theories, alongside the swing engine rather than inside it.
   #
@@ -4615,7 +4631,7 @@ risk:
       minimum_trades: 12
       maximum_loss_share: 0.75
       losing_streak: 6
-    section_five_m5:
+    section_five_ndx100_m5:
       window: 40
       minimum_trades: 25
       maximum_loss_share: 0.60
@@ -5130,7 +5146,7 @@ trade_management:
   # route waarop elk cijfer daar geldt. Wordt zo'n cel gekozen, dan hoort haar
   # comment hier ERBIJ te komen -- anders meet de dry-run een andere strategie
   # dan degene die gezocht is. Sectie tien zag daar ongeveer 15 R verschil van.
-  fixed_exit_comments: [JARVIS-S5-NL-M5, JARVIS-S10-AU-M1]
+  fixed_exit_comments: [JARVIS-S5-NDX-M5, JARVIS-S10-AU-M1]
   # S6 is exact op deze ene managementregel gemeten. Geen partial, trailing,
   # giveback, health- of time-exit mag die gemeten route stilletjes veranderen.
   break_even_only_comments: [JARVIS-S6-AU-M5]

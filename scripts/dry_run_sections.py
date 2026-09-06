@@ -2297,7 +2297,7 @@ def main(argv: list[str] | None = None) -> None:
             "order_block_h1": "order_block_h1",
             "walkforward_index": "walkforward_index",
             "failed_session_breakout": "failed_session_breakout",
-            "section_five_m5": "section_five_m5",
+            "section_five_ndx100_m5": "section_five_ndx100_m5",
             "section_six_gold_m5": "section_six_gold_m5",
             "section_six_spx_h1": "section_six_spx_h1",
             "section_eight_trend_day_h1": "section_eight_trend_day_h1",
@@ -2315,7 +2315,7 @@ def main(argv: list[str] | None = None) -> None:
             # THE BOOK, AS IT ACTUALLY STANDS -- not a list written down when it
             # had six entries.
             #
-            # This was a hardcoded set including `section_five_m5` and
+            # This was a hardcoded set including `section_five_ndx100_m5` and
             # `section_nine_vwap_m30`. Both came off the live allowlist on
             # 2 September (-1.09 R over 170 trades and -0.02 R over 6), and a
             # second copy of a list that must agree with `live_enabled_modules`
@@ -2333,7 +2333,7 @@ def main(argv: list[str] | None = None) -> None:
             # twelfth section belongs here the day it is written.
             book = {
                 "failed_session_breakout",
-                "section_five_m5",
+                "section_five_ndx100_m5",
                 "section_six_gold_m5",
                 "section_eight_trend_day_h1",
                 "section_nine_vwap_m30",
