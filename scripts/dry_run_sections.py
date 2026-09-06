@@ -313,6 +313,20 @@ class Decision:
     lots: float = 0.0
     risk_money: float = 0.0
     risk_pct: float = 0.0
+    #: WHAT THIS TRADE COSTS PER LOT, and the broker's lot grid. Carried on the
+    #: row because the compounding walk has to RE-SIZE each trade at the
+    #: balance it would actually have had, and by report time the connector is
+    #: shut and the spec is gone.
+    #:
+    #: Without these three the "compounded" number can only rescale a result
+    #: that was sized once at the starting balance -- which silently assumes
+    #: the account can always afford the trade. On EUR 252 with a 0.01 minimum
+    #: lot that assumption is wrong in both directions: early trades the
+    #: account could not have taken, and later ones where the lot step rounds
+    #: the stake down.
+    risk_per_lot: float = 0.0
+    volume_min: float = 0.0
+    volume_step: float = 0.0
     result_r: float | None = None
     pnl_money: float | None = None
     note: str = ""
@@ -1441,6 +1455,12 @@ def _one_clock(
                     lots=sized.volume,
                     risk_money=risk_money,
                     risk_pct=sized.actual_risk_pct,
+                    # Derived rather than recomputed, so it is exactly the
+                    # money the sizer put behind this trade divided by the lots
+                    # it chose -- commission included, no second definition.
+                    risk_per_lot=(risk_money / sized.volume if sized.volume > 0 else 0.0),
+                    volume_min=float(spec.volume_min),
+                    volume_step=float(spec.volume_step),
                     result_r=r,
                     pnl_money=None if r is None else r * risk_money,
                     exit_at=exit_at,
@@ -3886,6 +3906,134 @@ def _jarvis_replay_contract(settings, equity: float, offered: int, allowed: int)
     print("  is still not a broker statement.")
 
 
+@dataclass(slots=True)
+class _CompoundedRun:
+    """What the account actually did, trade by trade, with the stake walking."""
+
+    balance: float
+    peak: float
+    worst_drawdown: float
+    taken: int
+    skipped_too_small: int
+    first_risk: float
+    last_risk: float
+    biggest_risk: float
+    curve: list[tuple[datetime, float]]
+    #: What the balance has to reach before the stake can grow by one lot step
+    #: at all, or 0.0 when it already did. On a EUR 252 account with a 0.01
+    #: minimum lot this is the number that decides whether compounding is a
+    #: real effect or a rounding error, and nothing else in this report can
+    #: show it.
+    next_step_balance: float
+
+
+def _compound(trades: list[Decision], settings, equity: float) -> _CompoundedRun:
+    """Re-SIZE every trade at the balance it would actually have had.
+
+    NOT A RESCALE, AND THAT IS THE WHOLE POINT OF THIS FUNCTION.
+
+    The old line multiplied each result by `balance_then / balance_start`,
+    which quietly assumes the account can always afford the trade it is about
+    to take. On EUR 252 with a 0.01 minimum lot that assumption is wrong in
+    both directions at once:
+
+      * EARLY, and after a drawdown, the minimum lot risks MORE than the
+        percentage allows. Live that trade does not happen -- the sizer refuses
+        it as UNDERCAPITALIZED. A rescale takes it anyway, at a stake the
+        account could not have posted.
+      * LATER, as the balance grows, the stake does not move smoothly. It moves
+        in lot steps. A rescale gives fractional lots no broker accepts and
+        credits profit on volume that was never on the book.
+
+    So this walks the trades in time order and, at each one, asks the same
+    question the sizer asks: how many whole lot steps of THIS instrument does
+    `risk_pct` of the CURRENT balance buy? Below the minimum lot the trade is
+    dropped and counted, exactly as live drops it.
+
+    `risk_per_lot`, `volume_min` and `volume_step` come off the row itself --
+    put there when the trade was booked, because by report time the connector
+    is shut and the instrument spec is gone.
+
+    WHAT IS STILL AN APPROXIMATION, said plainly rather than left to be found:
+    the ORDER of trades cannot change, and live it would. A trade the account
+    could not afford here leaves its slot free, and live that slot would go to
+    the next setup instead. This walk keeps the sequence the shared position
+    book produced at the starting balance. It is much closer than a rescale
+    and it is not a broker statement.
+    """
+
+    risk_pct = settings.effective_risk_pct() / 100.0
+    balance = equity
+    peak = equity
+    worst = 0.0
+    taken = 0
+    skipped = 0
+    first_risk = 0.0
+    last_risk = 0.0
+    biggest = 0.0
+    next_step = 0.0
+    curve: list[tuple[datetime, float]] = []
+
+    for row in sorted(trades, key=lambda item: item.when):
+        if balance <= 0.0:
+            # A WIPED ACCOUNT STOPS TRADING. Continuing to book results on a
+            # negative balance is how a replay produces a recovery that could
+            # not have happened.
+            break
+        result_r = row.managed_r
+        if result_r is None:
+            continue
+
+        per_lot = row.risk_per_lot
+        step = row.volume_step
+        minimum = row.volume_min
+        if per_lot <= 0.0 or step <= 0.0 or minimum <= 0.0:
+            # An older row with no lot economics. Fall back to the rescale
+            # rather than dropping the trade, and it stays visible because
+            # `taken` and the flat total are printed side by side.
+            balance += float(row.managed_money or 0.0) * (balance / equity)
+        else:
+            wanted = balance * risk_pct
+            steps = int(wanted / per_lot / step)
+            volume = steps * step
+            if volume < minimum - 1e-12:
+                # THE TRADE THE ACCOUNT CANNOT AFFORD. Live this is
+                # UNDERCAPITALIZED and no order is sent; a rescale takes it
+                # anyway and that is the single largest lie in the old number.
+                skipped += 1
+                continue
+            risk_money = volume * per_lot
+            balance += float(result_r) * risk_money
+            taken += 1
+            if first_risk == 0.0:
+                first_risk = risk_money
+            last_risk = risk_money
+            biggest = max(biggest, risk_money)
+
+        peak = max(peak, balance)
+        if peak > 0:
+            worst = max(worst, (peak - balance) / peak)
+        curve.append((row.when, balance))
+        # THE BALANCE THAT WOULD BUY ONE MORE LOT STEP. Kept from the last
+        # affordable trade, because that is the instrument the account is
+        # actually sized against.
+        if per_lot > 0.0 and step > 0.0 and risk_pct > 0.0:
+            next_step = (minimum + step) * per_lot / risk_pct
+
+    return _CompoundedRun(
+        balance=balance,
+        peak=peak,
+        worst_drawdown=worst,
+        taken=taken,
+        skipped_too_small=skipped,
+        first_risk=first_risk,
+        last_risk=last_risk,
+        biggest_risk=biggest,
+        curve=curve,
+        next_step_balance=0.0 if biggest > first_risk else next_step,
+    )
+
+
 def _what_the_account_would_be_worth(
     trades: list[Decision], settings, equity: float, days: int
 ) -> None:
@@ -3893,20 +4041,15 @@ def _what_the_account_would_be_worth(
 
     TWO NUMBERS, AND THEY ARE NOT THE SAME QUESTION.
 
-    FLAT STAKE is the arithmetic the rest of this file already does: every
-    trade sized off the SAME starting equity. It is exact, in the sense that
-    each trade's euro figure is the one the sizer produced, and it answers
-    "what did the edge pay" without the account's own growth flattering it.
+    FLAT STAKE sizes every trade off the SAME starting balance. It answers
+    "what did the edge pay" without the account's own growth flattering it,
+    and every euro in it is one the sizer actually produced.
 
-    COMPOUNDED is what percentage-of-equity sizing actually does: the stake
-    walks with the balance. It is the honest answer to "what would I have",
-    and it carries an approximation that has to be said out loud -- each trade
-    is rescaled by `balance_then / balance_start` rather than re-sized, so the
-    minimum lot and the lot step are NOT re-checked at the new balance. On a
-    growing account that is optimistic (a real 0.01-lot floor rounds up), and
-    on a shrinking one it is optimistic in the other direction (trades the
-    account could no longer afford are still taken). Both are named rather
-    than buried, and the flat number beside it is the one with no such hole.
+    COMPOUNDED is what the account does: the stake walks with the balance,
+    every trade re-SIZED at the money available at that moment, in whole lot
+    steps, with the minimum lot re-checked. A trade the account could not
+    afford does not happen -- which is why the two lines can disagree on the
+    NUMBER OF TRADES and not only on the euros.
     """
 
     print(f"\n{'=' * 78}")
@@ -3923,37 +4066,76 @@ def _what_the_account_would_be_worth(
         return
 
     flat = sum(float(row.managed_money or 0.0) for row in booked)
-    balance = equity
-    peak = equity
-    trough_share = 0.0
-    for row in booked:
-        # The stake walks with the balance, which is what a percentage-risk
-        # sizer does. Never below zero: a wiped account stops trading.
-        if balance <= 0.0:
-            break
-        balance += float(row.managed_money or 0.0) * (balance / equity)
-        peak = max(peak, balance)
-        trough_share = max(trough_share, (peak - balance) / peak if peak > 0 else 0.0)
-
     wins = sum(1 for row in booked if (row.managed_money or 0.0) > 0)
     total_r = sum(float(row.managed_r or 0.0) for row in booked)
+    run = _compound(booked, settings, equity)
+
     print(f"  started with            EUR {equity:>10.2f}")
-    print("  flat stake, every trade sized off that same balance")
+    print(f"  risk per trade          {settings.effective_risk_pct():.2f}% of the balance")
+    print("\n  FLAT STAKE -- every trade sized off that same starting balance")
     print(f"    {len(booked)} trades, {wins} winners ({wins / len(booked):.0%}), {total_r:+.2f} R")
     print(f"    result              EUR {flat:>+10.2f}   ->  EUR {equity + flat:>10.2f}")
-    print("  compounded, the stake walking with the balance")
+
+    print("\n  COMPOUNDED -- re-sized at the balance it had, in whole lot steps")
     print(
-        f"    result              EUR {balance - equity:>+10.2f}   ->  EUR {balance:>10.2f}"
-        f"   ({(balance / equity - 1.0) * 100:+.1f}%)"
+        f"    result              EUR {run.balance - equity:>+10.2f}   ->  "
+        f"EUR {run.balance:>10.2f}   ({(run.balance / equity - 1.0) * 100:+.1f}%)"
     )
-    print(f"    worst drawdown from a peak            {trough_share * 100:>5.1f}%")
-    print("    (rescaled, not re-sized: the minimum lot is not re-checked at the")
-    print("     new balance, so read the flat line as the one with no hole in it)")
+    print(f"    highest balance     EUR {run.peak:>10.2f}")
+    print(f"    worst drawdown from a peak            {run.worst_drawdown * 100:>5.1f}%")
+    if run.first_risk or run.last_risk:
+        # THE STAKE GROWING IS THE THING HE ASKED ABOUT. Printed, because a
+        # single end balance cannot show whether it grew smoothly or in one
+        # jump, and because the first figure is what the account risks TODAY.
+        print(
+            f"    risk per trade      EUR {run.first_risk:>6.2f} at the start   ->  "
+            f"EUR {run.last_risk:>6.2f} at the end   (peak EUR {run.biggest_risk:.2f})"
+        )
+    if run.next_step_balance > 0.0:
+        # THE ANSWER TO "DOES COMPOUNDING EVEN DO ANYTHING HERE", and on this
+        # account size it is usually no.
+        #
+        # 2% of EUR 252 is EUR 5.04 and one minimum lot of gold risks EUR 3.85,
+        # so the sizer buys 0.0131 lots and rounds DOWN to 0.01. At EUR 358 it
+        # buys 0.0186 and still rounds to 0.01. The stake cannot move until the
+        # balance can afford two whole steps -- and until then compounding is
+        # arithmetically identical to a flat stake.
+        #
+        # A rescale hid this completely: it grew the stake smoothly through
+        # lot sizes no broker would accept, and produced a curve this account
+        # cannot have.
+        pct = settings.effective_risk_pct()
+        print(f"    THE STAKE NEVER MOVED. It stayed at EUR {run.first_risk:.2f} the whole way.")
+        print(
+            f"      The minimum lot is indivisible: the balance has to reach about "
+            f"EUR {run.next_step_balance:.0f}"
+        )
+        print(f"      before {pct:.2f}% buys one more lot step. Below that, compounded and flat")
+        print("      are the same number and the difference between them is rounding.")
+    print(f"    {run.taken} of {len(booked)} trades were affordable")
+    if run.skipped_too_small:
+        # NOT A ROUNDING DETAIL. On this account size it is the difference
+        # between a replay and a fantasy: a trade whose minimum lot risks more
+        # than the percentage allows is refused live and taken by a rescale.
+        print(
+            f"    {run.skipped_too_small} were NOT: the minimum lot risked more than "
+            f"{settings.effective_risk_pct():.2f}% of the balance at that moment,"
+        )
+        print("      which is exactly what the live sizer refuses as UNDERCAPITALIZED")
+
+    if run.curve:
+        _print_balance_curve(run.curve, equity)
+
+    print(
+        "\n  The order of trades is the one the shared position book produced at the"
+        "\n  STARTING balance. Live, a trade the account could not afford leaves its"
+        "\n  slot free and the next setup takes it, so the real sequence would differ."
+    )
 
     by_section: dict[str, list[Decision]] = {}
     for row in booked:
         by_section.setdefault(row.pass_key[0] or row.module, []).append(row)
-    print(f"\n  {'section':<34}{'trades':>7}{'R':>10}{'EUR':>11}{'per trade':>11}")
+    print(f"\n  {'section':<34}{'trades':>7}{'R':>10}{'EUR flat':>11}{'per trade':>11}")
     for name, rows in sorted(
         by_section.items(), key=lambda item: -sum(float(r.managed_money or 0.0) for r in item[1])
     ):
@@ -3963,6 +4145,9 @@ def _what_the_account_would_be_worth(
             f"  {name:<34}{len(rows):>7}{r_total:>+10.2f}{money:>+11.2f}"
             f"{r_total / len(rows):>+11.3f}"
         )
+    print("  (per section the FLAT euros, because a compounded share of a shared")
+    print("   balance cannot be attributed to one section without inventing a rule)")
+
     live = set(settings.analysis.confluence.live_enabled_modules)
     shadow = sorted(set(by_section) - live)
     if shadow:
@@ -3970,6 +4155,31 @@ def _what_the_account_would_be_worth(
             "\n  Sections NOT on the real-money allowlist, whose euros above are"
             f" hypothetical:\n    {', '.join(shadow)}"
         )
+
+
+def _print_balance_curve(curve: list[tuple[datetime, float]], equity: float) -> None:
+    """The balance month by month, so growth has a shape and not just an end.
+
+    An end balance cannot tell a steady climb from one lucky month followed by
+    six flat ones, and this account has already been fooled by exactly that:
+    one month carried 74% of a 180-day result.
+    """
+
+    by_month: dict[str, float] = {}
+    for when, balance in curve:
+        by_month[f"{when:%Y-%m}"] = balance
+    if len(by_month) < 2:
+        return
+    print("\n    balance at the end of each month")
+    previous = equity
+    for month, balance in sorted(by_month.items()):
+        change = balance - previous
+        bar = "+" * min(int(abs(change) / max(equity, 1.0) * 60), 40)
+        print(
+            f"      {month}   EUR {balance:>9.2f}   {change:>+9.2f}   "
+            f"{'-' if change < 0 else ''}{bar}"
+        )
+        previous = balance
 
 
 def _btc_jarvis_replay_contract(settings, equity: float, offered: int, allowed: int) -> None:

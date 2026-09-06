@@ -3613,6 +3613,114 @@ class TestTheEuroAnswerIsActuallyComputed:
         assert "+2.00" in out
         assert "IF THIS HAD BEEN RUNNING FOR 180 DAYS" in out
 
+    def _lotted(self, results, *, per_lot: float, minimum: float = 0.01, step: float = 0.01):
+        """Trades that carry the lot economics a real re-size needs."""
+        rows = self._trades(results)
+        for row in rows:
+            row.risk_per_lot = per_lot
+            row.volume_min = minimum
+            row.volume_step = step
+        return rows
+
+    def _live_mode(self):  # type: ignore[no-untyped-def]
+        from core.types import TradingMode
+
+        settings = self._settings()
+        return settings.model_copy(
+            update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
+        )
+
+    def test_the_stake_moves_only_in_whole_lot_steps(self) -> None:
+        """THE THING A RESCALE CANNOT SHOW, and the reason this was rewritten.
+
+        The old compounded line multiplied each result by
+        `balance_then / balance_start`, which grows the stake smoothly through
+        lot sizes no broker accepts. Really the stake is indivisible: 2% of
+        EUR 252 is EUR 5.04 and one minimum lot of gold risks EUR 3.85, so the
+        sizer buys 0.0131 lots and rounds DOWN to 0.01. At EUR 358 it buys
+        0.0186 and still rounds to 0.01.
+
+        So on this account the compounded and flat numbers are ARITHMETICALLY
+        IDENTICAL until the balance roughly triples, and a report that shows
+        them differing is showing a curve the account cannot have.
+        """
+        from scripts.dry_run_sections import _compound
+
+        settings = self._live_mode()
+        # Twenty winners at EUR 3.85 is +EUR 77, so the balance ends near
+        # EUR 329 -- still short of the roughly EUR 385 a second lot step
+        # needs. Forty winners WOULD cross it, and the stake would correctly
+        # double; that case is the next test.
+        rows = self._lotted([1.0] * 20, per_lot=385.0)
+        run = _compound(rows, settings, 252.18)
+
+        assert run.balance < run.next_step_balance
+        assert run.first_risk == run.last_risk == run.biggest_risk
+        assert run.next_step_balance > 0.0
+        assert run.taken == len(rows)
+
+    def test_the_stake_steps_up_the_moment_the_balance_can_carry_it(self) -> None:
+        """The same instrument, enough winners to cross the threshold. Without
+        this the test above is satisfied by a walk that never re-sizes."""
+        from scripts.dry_run_sections import _compound
+
+        settings = self._live_mode()
+        run = _compound(self._lotted([1.0] * 40, per_lot=385.0), settings, 252.18)
+
+        assert run.last_risk == pytest.approx(2 * run.first_risk)
+
+    def test_the_stake_does_grow_once_a_step_is_affordable(self) -> None:
+        """Without this the test above passes on a walk that never re-sizes
+        anything, which would be the old bug with a new name."""
+        from scripts.dry_run_sections import _compound
+
+        settings = self._live_mode()
+        # A cheap instrument: 0.01 lot risks EUR 0.50, so 2% of EUR 252 already
+        # buys ten steps and every win buys more.
+        rows = self._lotted([1.0] * 60, per_lot=50.0)
+        run = _compound(rows, settings, 252.18)
+
+        assert run.last_risk > run.first_risk, (run.first_risk, run.last_risk)
+        assert run.next_step_balance == 0.0, "the stake grew, so there is no step to wait for"
+
+    def test_a_trade_the_account_cannot_afford_does_not_happen(self) -> None:
+        """Live that trade is UNDERCAPITALIZED and no order is sent. A rescale
+        takes it anyway, at a stake the account could not have posted -- the
+        single largest lie in the old number."""
+        from scripts.dry_run_sections import _compound
+
+        settings = self._live_mode()
+        # 0.01 lot risks EUR 100, and 2% of EUR 252 is EUR 5.04.
+        rows = self._lotted([1.0] * 12, per_lot=10_000.0)
+        run = _compound(rows, settings, 252.18)
+
+        assert run.taken == 0
+        assert run.skipped_too_small == len(rows)
+        assert run.balance == pytest.approx(252.18)
+
+    def test_a_wiped_account_stops_trading(self) -> None:
+        """Booking results on a negative balance is how a replay produces a
+        recovery that could not have happened."""
+        from scripts.dry_run_sections import _compound
+
+        settings = self._live_mode()
+        rows = self._lotted([-1.0] * 400, per_lot=385.0)
+        run = _compound(rows, settings, 252.18)
+
+        assert run.taken < len(rows), "it kept trading past the point of no money"
+        assert run.balance <= 252.18
+
+    def test_the_report_says_the_stake_never_moved(self, capsys) -> None:
+        from scripts.dry_run_sections import _what_the_account_would_be_worth
+
+        _what_the_account_would_be_worth(
+            self._lotted([1.0, -1.0, 1.0, 1.0], per_lot=385.0), self._live_mode(), 252.18, 180
+        )
+        out = capsys.readouterr().out
+
+        assert "THE STAKE NEVER MOVED" in out
+        assert "COMPOUNDED" in out and "FLAT STAKE" in out
+
     def test_compounding_beats_a_flat_stake_on_a_rising_curve(self, capsys) -> None:
         """Not a tautology: it is the property that makes the second number
         worth printing at all, and a sign error in the rescale inverts it."""
