@@ -55,7 +55,7 @@ def test_only_the_measured_new_sections_may_trade_real_money() -> None:
     assert settings.analysis.confluence.target_r_multiple_by_family["walkforward_index"] == 1.5
     assert "walkforward_index" in settings.risk.section_breakers
     assert "failed_session_breakout" in settings.risk.section_breakers
-    assert "section_five_m5" in settings.risk.section_breakers
+    assert "section_five_ndx100_m5" in settings.risk.section_breakers
     assert "section_six_gold_m5" in settings.risk.section_breakers
     assert "section_eight_trend_day_h1" in settings.risk.section_breakers
     assert "section_nine_vwap_m30" in settings.risk.section_breakers

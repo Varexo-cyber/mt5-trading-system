@@ -372,6 +372,155 @@ def render_live_scanner() -> None:
 
 
 @st.fragment(run_every="1s")
+def _section_markets(settings, name: str, modules) -> str:
+    """Which market this section may trade, in the broker's own spelling.
+
+    THREE PLACES A SECTION CAN DECLARE IT, and reading only one is the bug
+    this repository has now shipped twice: `allowed_symbols` on the config,
+    `symbol` on the config, and `symbol` on the module class.
+    """
+
+    config = getattr(settings.analysis, name, None)
+    declared = tuple(getattr(config, "allowed_symbols", ()) or ())
+    if not declared:
+        one = getattr(config, "symbol", "") or getattr(modules.get(name), "symbol", "")
+        declared = (one,) if one else ()
+    if not declared:
+        return "every market"
+    # CANONICALISE BEFORE RESOLVING, or the suffix is appended twice.
+    # `section_nine_vwap_m30` stores `USDJPY.i` -- already the broker's
+    # spelling -- and `broker_symbol()` made that `USDJPY.i.i`, a symbol that
+    # exists nowhere. Round-tripping through `canonical_symbol` is idempotent,
+    # so a config holding either spelling comes out right.
+    return ", ".join(
+        settings.instruments.broker_symbol(settings.instruments.canonical_symbol(item))
+        for item in declared
+    )
+
+
+def render_live_sections(settings) -> None:  # type: ignore[no-untyped-def]
+    """WHICH SECTIONS MAY SPEND REAL MONEY, on the page rather than in a YAML.
+
+    The owner asked this out loud -- "welke staan er nu allemaal live, ik snap
+    het niet meer" -- after four promotions and three removals in two days.
+    The answer lived only in `live_enabled_modules`, four thousand lines into
+    an overlay he cannot open from his phone, and every other surface on this
+    deck shows what Jarvis DID rather than what it is ALLOWED to do.
+
+    READ FROM THE CONFIG THE ACCOUNT RUNS, never from a list typed here. A
+    second copy of the allowlist is a copy that disagrees with the first one
+    the next time a section moves, which on this account is roughly weekly.
+
+    AND THE WEIGHT IS SHOWN NEXT TO THE PERMISSION, because those two together
+    are what decides whether a section can trade. `ConfluenceEngine` tests
+    `if weight > 0`, so a section on the allowlist at weight zero is permitted,
+    computed, logged and counted by nothing -- zero trades forever with nothing
+    saying why. That pair has been wrong on this account twice.
+    """
+
+    from core.trade_origin import origin_for_setup_family
+    from core.types import TradingMode
+    from runner.service import build_analysis_modules
+
+    confluence = settings.analysis.confluence
+    live = list(confluence.live_enabled_modules)
+    effective = confluence.effective_weights(TradingMode.MICRO_LIVE)
+    try:
+        modules = {module.name: module for module in build_analysis_modules(settings)}
+    except Exception:  # noqa: BLE001 - the panel must not take the deck down
+        modules = {}
+
+    breakers = settings.risk.section_breakers
+    tripped: dict[str, object] = {}
+    journal = ROOT / "journal" / "trading.db"
+    if breakers and journal.exists():
+        try:
+            import sqlite3
+
+            from risk.section_breaker import tripped_modules
+
+            with sqlite3.connect(f"file:{journal}?mode=ro", uri=True, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                tripped = tripped_modules(conn, breakers)
+        except Exception:  # noqa: BLE001 - unknown is reported as unknown below
+            tripped = {}
+
+    st.subheader(f"Welke secties mogen ECHT GELD uitgeven — {len(live)}")
+    if not live:
+        # An empty allowlist is a real and legitimate state, and an empty table
+        # would read as "the panel is broken" instead of "nothing may trade".
+        st.warning(
+            "GEEN ENKELE. `live_enabled_modules` is leeg, dus Jarvis scant en "
+            "analyseert alles en plaatst niets. Dat is een geldige stand, maar "
+            "zelden de bedoelde."
+        )
+        return
+
+    rows = []
+    for name in live:
+        weight = effective.get(name, 0.0)
+        origin = origin_for_setup_family(name)
+        config = getattr(settings.analysis, name, None)
+        breaker = breakers.get(name)
+        if name in tripped:
+            state = "GESTOPT door eigen breaker"
+        elif weight <= 0.0:
+            # The pair that is permitted and inert. Named as a fault, because
+            # it looks identical to a quiet market from every other surface.
+            state = "KAN NIET HANDELEN — gewicht 0"
+        elif breaker is None:
+            state = "live, GEEN breaker"
+        else:
+            state = "live"
+        rows.append(
+            {
+                "sectie": name,
+                "klok": getattr(config, "timeframe", "?"),
+                "markt": _section_markets(settings, name, modules),
+                "gewicht": round(float(weight), 2),
+                "MT5-label": origin.comment if origin is not None else "GEEN LABEL",
+                "status": state,
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    faults = [row for row in rows if row["status"] != "live"]
+    for row in faults:
+        st.error(f"**{row['sectie']}: {row['status']}**")
+
+    # Enabled and measured, but not allowed to spend. Printed for the same
+    # reason the dry run prints them: switched off is not deleted, and these
+    # are the numbers that decide whether a section comes back.
+    shadow = sorted(
+        name
+        for name in vars(settings.analysis)
+        if name.startswith("section_")
+        and getattr(getattr(settings.analysis, name), "enabled", False)
+        and name not in live
+    )
+    if shadow:
+        with st.expander(f"Draaien mee, mogen GEEN geld gebruiken ({len(shadow)})"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "sectie": name,
+                            "klok": getattr(getattr(settings.analysis, name), "timeframe", "?"),
+                            "markt": _section_markets(settings, name, modules),
+                        }
+                        for name in shadow
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+            st.caption(
+                "Deze worden uitgerekend en gejournaliseerd zodat een replay ze kan "
+                "beoordelen. `effective_weights` zet hun stem live op nul, dus ze "
+                "kunnen geen order veroorzaken."
+            )
+
+
 def render_account_header(operation: str, paper) -> None:  # type: ignore[no-untyped-def]
     """Balance and equity, re-read from the terminal every second.
 
@@ -1396,6 +1545,11 @@ try:
             st.sidebar.warning(f"{name}: {exc}")
 
     with overview_tab:
+        # THE ALLOWLIST FIRST, above the instrument the sidebar happens to be
+        # pointing at. "Which sections may spend real money" is the question
+        # the owner asks most and the one this deck could not answer at all.
+        render_live_sections(settings)
+        st.divider()
         st.subheader(f"{selected_name} — {selected_descriptor.description}")
         st.write(
             {

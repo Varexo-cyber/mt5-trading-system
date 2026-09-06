@@ -22,4 +22,4 @@ one-ATR stop and one-R target at the broker.  All other strategy families keep
 their existing management policy.
 
 The reproducible search is `scripts/search_multimarket_section.py`; the frozen
-live implementation is `analysis/section_five_m5.py`.
+live implementation is `analysis/section_five_ndx100_m5.py`.

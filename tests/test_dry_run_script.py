@@ -2592,11 +2592,33 @@ class TestTheLiveDryRunMeasuresOnlyWhatRuns:
         assert "measured = measured & book & live" in source
         assert "off the live allowlist" in source, "a benched section is named, not dropped"
 
-    def test_the_two_benched_sections_are_not_live(self) -> None:
-        live = set(self._settings().analysis.confluence.live_enabled_modules)
+    def test_a_benched_section_is_bounded_the_same_way_a_live_one_is(self) -> None:
+        """THE PROPERTY, NOT WHICH TWO SECTIONS ARE BENCHED THIS WEEK.
 
-        assert "section_five_m5" not in live
-        assert "section_nine_vwap_m30" not in live
+        This asserted that `section_five_ndx100_m5` and `section_nine_vwap_m30`
+        were both off the allowlist. That is a DECISION -- it was taken on
+        2 September and reversed for section five on 6 September, on 546 trades
+        and +EUR 181.75 over 180 days -- and the test failed while nothing was
+        wrong. Same defect as the frozen allowlist this class already documents
+        one method below.
+
+        What has to hold whichever way the owner decides: a section either has
+        real-money permission AND everything permission requires (a weight, a
+        breaker, a broker label), or it has none of it. The half-promoted state
+        is the dangerous one.
+        """
+        from core.trade_origin import origin_for_setup_family
+        from core.types import TradingMode
+
+        settings = self._settings()
+        confluence = settings.analysis.confluence
+        live = set(confluence.live_enabled_modules)
+        effective = confluence.effective_weights(TradingMode.MICRO_LIVE)
+        assert live, "the account is live with no sections at all"
+        for name in sorted(live):
+            assert effective.get(name, 0.0) > 0.0, f"{name} is live and votes on nothing"
+            assert name in settings.risk.section_breakers, f"{name} is live with no breaker"
+            assert origin_for_setup_family(name) is not None, f"{name} is live with no MT5 label"
 
     def test_section_six_is_live_and_bounded_by_its_breaker(self) -> None:
         """S6 came off on 3 September and went back on the same day.

@@ -8,7 +8,7 @@ def test_every_live_setup_family_has_an_unambiguous_mt5_label() -> None:
         "section_ten_gold_m1": (10, "M1", "JARVIS-S10-AU-M1"),
         "section_eight_trend_day_h1": (8, "H1", "JARVIS-S8-TD-H1"),
         "section_nine_vwap_m30": (9, "M30", "JARVIS-S9-VW-M30"),
-        "section_five_m5": (5, "M5", "JARVIS-S5-NL-M5"),
+        "section_five_ndx100_m5": (5, "M5", "JARVIS-S5-NDX-M5"),
         "section_six_gold_m5": (6, "M5", "JARVIS-S6-AU-M5"),
         "section_six_spx_h1": (6, "H1", "JARVIS-S6-SP-H1"),
         "section_eleven_xaujpy_legs_m5": (11, "M5", "JARVIS-S11-LEG-M5"),
