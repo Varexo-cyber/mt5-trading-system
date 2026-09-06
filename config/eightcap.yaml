@@ -4802,6 +4802,43 @@ risk:
   # zet de spread op 10% van R en slippage komt er bovenop.
   max_cost_share_of_risk: 0.12
 
+  # ==========================================================================
+  # DE TWEEDE SLOT OP BTCUSD, 6 september, op verzoek van de eigenaar.
+  # ==========================================================================
+  #
+  # WAAROM. Sectie vijftien verdiende +EUR 15,62 over 180 dagen terwijl
+  # `analysis.confluence.max_spread_share_of_stop` in datzelfde venster 7.414
+  # BTCUSD-setups weigerde die samen -2241,89 R waren. Lees dat nog een keer:
+  # de winstgevende sectie is een straaltje dat langs een dam komt.
+  #
+  # Een getal dat een vloed tegenhoudt is geen ontwerp, het is een ongeluk dat
+  # op een edit wacht. Zet iemand die 0,08 op 0,15, of loopt er ooit een pad
+  # dat die poort niet raakt, dan gaat BTCUSD van +15 euro naar rampzalig
+  # zonder iets ertussenin en zonder dat iets het zegt.
+  #
+  # Dit is dezelfde vraag, nog een keer gesteld, met een EIGEN getal, in de
+  # sizer -- het laatste punt voordat er een lotgrootte bestaat. Er moeten nu
+  # twee onafhankelijke dingen falen.
+  #
+  # 0,10 EN NIET 0,08. Bewust ruimer dan de eerste poort: hij hoort niet mee
+  # te sturen, hij hoort te vangen. Vuurt deze regelmatig, dan is de eerste
+  # poort al stuk en staat dat met een eigen naam in het rapport
+  # (SPREAD_ABOVE_HARD_CEILING) in plaats van verstopt tussen de andere.
+  #
+  # NUL BETEKENT HIER "NOOIT HANDELEN", niet "uit". Weglaten is hoe je zegt
+  # dat een symbool geen plafond heeft. Dat is het verschil met
+  # `max_cost_share_of_risk`, die zichzelf uitzet zodra iemand hem op 0 zet.
+  #
+  # De sleutel is de kale naam; `BTCUSD` dekt ook `BTCUSD.i`.
+  hard_spread_ceiling_by_symbol:
+    BTCUSD: 0.10
+  # Een symbool MET plafond waarvan de spread niet te lezen is, wordt
+  # geweigerd in plaats van toegelaten op een ongecontroleerd getal. Geen data
+  # is geen trade -- dezelfde regel als bij de kalender. Live is de tick er
+  # altijd, dus dit kost niets en dekt het ene geval waarin het plafond
+  # open zou falen.
+  refuse_capped_symbols_without_a_spread: true
+
   # SECTIE 1 REKENT ANDERS EN KRIJGT ZIJN EIGEN PLAFOND.
   #
   # Zijn eigen teruggavetabel over 1.970 trades:

@@ -220,6 +220,46 @@ class PositionSizer:
                 )
             )
 
+        # -- 2b. THE SECOND LOCK, per symbol ------------------------------
+        #
+        # Deliberately BEFORE the general cost gate and independent of it.
+        # `analysis.confluence.max_spread_share_of_stop` refused 7,414 BTCUSD
+        # setups worth -2,241.89 R over 180 days while section fifteen kept
+        # +EUR 15.62. One number is holding back that flood, in a layer this
+        # one cannot see, and it can be loosened with a single YAML edit.
+        #
+        # This is the same question asked again, with its own number, in the
+        # last place before a lot size exists. Nothing about it can be turned
+        # off by a caller or by a zero: absence from the dict is how a symbol
+        # says it has no ceiling, and a zero means never.
+        hard_ceiling = self._hard_spread_ceiling(spec)
+        if hard_ceiling is not None:
+            if spread_price <= 0.0:
+                if self.settings.risk.refuse_capped_symbols_without_a_spread:
+                    # NO DATA IS NO TRADE, the same rule the calendar runs on.
+                    # A capped symbol admitted because its cost could not be
+                    # read is the cap failing open, which is the one way it
+                    # must never fail.
+                    return result(
+                        RiskDecision.block(
+                            Reason.SPREAD_ABOVE_HARD_CEILING,
+                            f"{spec.symbol} carries a hard spread ceiling of "
+                            f"{hard_ceiling:.0%} of the stop and no spread was supplied, "
+                            f"so it cannot be verified",
+                        )
+                    )
+            else:
+                share = spread_price / sl_distance if sl_distance > 0 else float("inf")
+                if share > hard_ceiling:
+                    return result(
+                        RiskDecision.block(
+                            Reason.SPREAD_ABOVE_HARD_CEILING,
+                            f"{spec.symbol}: raw spread is {share:.0%} of the stop, above "
+                            f"this symbol's hard ceiling of {hard_ceiling:.0%}. This is the "
+                            f"second lock, separate from the confluence spread gate",
+                        )
+                    )
+
         # Is the stop wide enough that the trade, and not the cost of taking
         # it, decides the outcome?
         #
@@ -402,6 +442,25 @@ class PositionSizer:
         """
         commission = self.settings.risk.commission_per_lot(spec.asset_class.value)
         return self._cost_share(spec, sl_distance, commission, spread_price)
+
+    def _hard_spread_ceiling(self, spec: InstrumentSpec) -> float | None:
+        """This symbol's own ceiling, or None when it has none.
+
+        MATCHED ON THE CANONICAL NAME. The config says `BTCUSD` and the broker
+        prints `BTCUSD.i`; a raw dict lookup would miss on every live tick and
+        the second lock would be a comment. That exact spelling mismatch has
+        silently disabled three separate things in this repository, and here it
+        would disable the guard that exists because the first guard might fail.
+        """
+
+        ceilings = self.settings.risk.hard_spread_ceiling_by_symbol
+        if not ceilings:
+            return None
+        canonical = self.settings.instruments.canonical_symbol(spec.symbol).upper()
+        for name, ceiling in ceilings.items():
+            if self.settings.instruments.canonical_symbol(name).upper() == canonical:
+                return float(ceiling)
+        return None
 
     def _cost_share(
         self,
