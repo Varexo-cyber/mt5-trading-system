@@ -2696,7 +2696,14 @@ analysis:
     # rest: de instaptiming-poort weigert een instap waar prijs de laatste
     # drie M5-bars tegenin liep, en dat IS het mechanisme van een model dat
     # precies die bar afleest. De poort zou zijn eigen these weigeren.
-    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_legs_m5, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15]
+    # SECTIES 15, 16 EN 17 STAAN ER 6 SEPTEMBER BIJ, samen met hun promotie.
+    # Niet als gunst: elke andere live sectie staat hier, en de generieke
+    # timingpoort meet drie M5-bars tegendrift op detectoren wiens hele these
+    # een GESLOTEN bar op hun eigen klok is. Op de enige volledig geteldedag
+    # was AWAITING_CONFIRMATION 140 van de 414 setups -- de grootste poort van
+    # allemaal. Deze drie eroverheen leggen meet iets anders dan wat er
+    # gebacktest is.
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_legs_m5, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
     # Sectie 6 is als complete closed-barstrategie gemeten. Een geldig
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
@@ -3195,6 +3202,33 @@ analysis:
       # lost on every untouched market holdout. That comment refers to the
       # retired pooled `section_eleven_metals`, not the new XAUEUR-only S11.
 
+      # ------------------------------------------------------------------
+      # SECTIES 15, 16 EN 17 STAAN ER 6 SEPTEMBER 2026 OP, op uitdrukkelijke
+      # instructie van de eigenaar nadat hij ze zelf had gebacktest.
+      #
+      # WAT HIER TEGENOVER STAAT, en het staat erbij zodat niemand later
+      # denkt dat het over het hoofd is gezien. Deze drie zijn ONTDEKT door
+      # alle drie de periodes te bekijken. De regel die daarbij hoorde stond
+      # twee blokken hierboven in dit bestand en luidde: "only later forward
+      # data may grant real-money permission". Er is geen onaangeraakte
+      # holdout, en die kan er ook niet meer komen voor de data waarop ze
+      # gevonden zijn -- de enige echte out-of-sample die deze drie ooit nog
+      # krijgen, is wat er vanaf vandaag gebeurt.
+      #
+      # De eigenaar weet dat en heeft het besluit genomen met dat feit op
+      # tafel. Wat hem begrenst is niet een meting maar de sectiebreaker
+      # onder `risk.section_breakers`: 60 trades venster, meer dan 60%
+      # verliezers of acht op rij, en de sectie zet zichzelf uit.
+      #
+      # DE ALLOWLIST ALLEEN WAS NIET GENOEG GEWEEST. Deze drie stonden op
+      # gewicht 0,0, en de engine test `if weight > 0` -- op de allowlist met
+      # gewicht nul is een sectie die wordt uitgerekend, gelogd en nooit
+      # geteld. Nul trades, voor altijd, zonder dat iets zegt waarom. De
+      # gewichten hieronder staan daarom mee op 1,0.
+      - section_fifteen_btc_m1
+      - section_sixteen_btc_m5
+      - section_seventeen_btc_m15
+
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
 
@@ -3348,8 +3382,14 @@ analysis:
       # S11-S14 are each one complete, independently measured detector. Their
       # configured 0.55 confidence is the frozen event definition; applying
       # the generic 0.65 floor made 10,962 valid events mathematically
-      # impossible to replay. This only makes the broker dry-run reachable:
-      # all four remain weight 0 and outside the real-money allowlist.
+      # impossible to replay.
+      #
+      # DIT WAS EEN REGEL DIE ALLEEN DE DRY-RUN BEREIKBAAR MAAKTE, met erbij
+      # "all four remain weight 0 and outside the real-money allowlist". Dat
+      # is sinds 6 september NIET meer waar voor 15, 16 en 17: die staan op
+      # de allowlist en op gewicht 1,0. Deze vloer is dus geen meetgemak meer
+      # maar een live poort, en 0,55 is precies wat de detector uitstuurt --
+      # een hogere waarde hier weigert elk geldig signaal van de drie.
       section_fifteen_btc_m1: 0.55
       section_sixteen_btc_m5: 0.55
       section_seventeen_btc_m15: 0.55
@@ -3500,9 +3540,14 @@ analysis:
       section_eleven_xaujpy_legs_m5: 1.0
       section_twelve_xaujpy_m5: 1.0
       section_thirteen_xaujpy_m15: 1.0
-      section_fifteen_btc_m1: 0.0
-      section_sixteen_btc_m5: 0.0
-      section_seventeen_btc_m15: 0.0
+      # 1,0 SINDS 6 SEPTEMBER, samen met de allowlist hierboven. Dit was 0,0
+      # en dat is geen "uit maar meetbaar": de engine test `if weight > 0`,
+      # dus met nul telt de stem niet mee al staat de sectie op de allowlist.
+      # Een sectie die live mag en niets kan doen is precies de stilte die
+      # dit bestand overal probeert te voorkomen.
+      section_fifteen_btc_m1: 1.0
+      section_sixteen_btc_m5: 1.0
+      section_seventeen_btc_m15: 1.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #

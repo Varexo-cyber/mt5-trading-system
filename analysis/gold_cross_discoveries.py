@@ -28,14 +28,29 @@ def _atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
 class GoldCrossDiscovery:
     """One market, clock and mechanism so evidence cannot leak across sections."""
 
-    def __init__(self, config, *, name: str) -> None:
+    def __init__(self, config, *, name: str, broker_symbol: str | None = None) -> None:
         self.config = config
         self.name = name
+        # THE NAME THIS BROKER USES, resolved once by the caller that has the
+        # config to resolve it with.
+        #
+        # `ctx.symbol` carries the BROKER's name. Eightcap lists `BTCUSD.i`,
+        # the config says `BTCUSD`, and this was a raw `!=` against the config
+        # name. Shadow-only that never showed: the dry run walks plain symbol
+        # names, so every replay these sections were judged on compared
+        # `BTCUSD` to `BTCUSD` and passed. LIVE it compares `BTCUSD.i` to
+        # `BTCUSD` and the section is silent on every bar, forever, with
+        # nothing anywhere saying why -- and the money is real by then.
+        #
+        # Found on 6 September, the day the three BTC sections were promoted.
+        # The identical bug was already fixed twice, in `SectionXauJpy` and in
+        # `SectionElevenLegs`. Third time.
+        self.broker_symbol = broker_symbol or (cfg[0] if (cfg := config.allowed_symbols) else "")
 
     def analyze(self, ctx: MarketContext) -> Signal:
         cfg = self.config
         quiet = Signal.neutral(self.name, "no read")
-        if not cfg.enabled or ctx.symbol != cfg.allowed_symbols[0]:
+        if not cfg.enabled or ctx.symbol not in (self.broker_symbol, cfg.allowed_symbols[0]):
             return quiet
         timeframe = Timeframe.parse(cfg.timeframe)
         series = ctx.series.get(timeframe)
