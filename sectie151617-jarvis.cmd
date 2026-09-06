@@ -6,9 +6,10 @@ set DAGEN=180
 if not "%~1"=="" set DAGEN=%~1
 
 echo.
-echo  S15-S17 BTCUSD -- TWEEDE METING MET JARVIS ACCOUNTREGELS
+echo  S15-S17 BTCUSD -- VOLLEDIGE OHLC-JARVIS REPLAY
 echo  Alleen S15 M1, S16 M5 en S17 M15. Geen echt geld.
 echo  %DAGEN% dagen. Nieuws wordt in deze historische replay overgeslagen.
+echo  Inclusief reproduceerbare gates, positieboek en mechanisch positiebeheer.
 echo  De bestaande research-parity meting blijft onaangeraakt.
 echo.
 

@@ -23,13 +23,18 @@ from runner.service import JarvisRunner
 NOW = datetime(2026, 8, 4, 21, 30, tzinfo=UTC)
 
 
-def gate(limit: float = 0.20):  # type: ignore[no-untyped-def]
+def gate(limit: float = 0.20, by_family=None):  # type: ignore[no-untyped-def]
     """The method under test, on a runner with only the setting it reads."""
     from types import SimpleNamespace
 
     instance = JarvisRunner.__new__(JarvisRunner)
     instance.settings = SimpleNamespace(  # type: ignore[assignment]
-        analysis=SimpleNamespace(confluence=SimpleNamespace(max_spread_share_of_stop=limit))
+        analysis=SimpleNamespace(
+            confluence=SimpleNamespace(
+                max_spread_share_of_stop=limit,
+                max_spread_share_of_stop_by_family=by_family or {},
+            )
+        )
     )
     return instance._spread_is_affordable
 
@@ -101,3 +106,10 @@ def test_a_looser_limit_admits_more() -> None:
     loose = gate(0.30)(context(0.00024), 1.0800, 1.0784)
     assert not tight[0]
     assert loose[0]
+
+
+def test_a_measured_family_limit_does_not_loosen_every_strategy() -> None:
+    measured = gate(0.08, {"section_sixteen_btc_m5": 0.12})
+    spread = context(0.00010)
+    assert measured(spread, 1.0800, 1.0790, "section_sixteen_btc_m5")[0]
+    assert not measured(spread, 1.0800, 1.0790, "some_other_strategy")[0]
