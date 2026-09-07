@@ -572,7 +572,7 @@ class TestTheSharedPositionBookCountsTheseSections:
             self._trade(base, "section_us30_impulse_m1"),
             self._trade(base + timedelta(minutes=5), "section_us30_orderblock_m1"),
         ]
-        allowed = _under_the_slot_cap(
+        allowed, _why = _under_the_slot_cap(
             offered, slots=4, share_between_sections=False, refuse_opposite=True
         )
 
@@ -589,7 +589,7 @@ class TestTheSharedPositionBookCountsTheseSections:
             self._trade(base, "section_five_ndx100_m5", symbol="NDX100", minutes=600),
             self._trade(base + timedelta(minutes=1), "section_us30_impulse_m5"),
         ]
-        two_slots = _under_the_slot_cap(
+        two_slots, _reasons = _under_the_slot_cap(
             offered, slots=2, share_between_sections=True, refuse_opposite=True
         )
 
