@@ -1066,6 +1066,8 @@ def _one_clock(
             flatten_time = row[4] if len(row) > 4 else None
             raw_shadow = bool(row[5]) if len(row) > 5 else False
             jarvis_replay = bool(row[6]) if len(row) > 6 else False
+            comparison_exit = row[7] if len(row) > 7 else ""
+            full_replay_management = jarvis_replay and not comparison_exit
             idea = engine.evaluate(ctx, TradingMode.MICRO_LIVE)
             module = ",".join(sorted({sig.module for sig in idea.signals if sig.score})) or "-"
             if not idea.approved:
@@ -1294,7 +1296,9 @@ def _one_clock(
                 if offset_atr == 0.0:
                     resolved_manage = (trigger_r, 0.0)
                 else:
-                    offset_price = offset_atr * _hourly_atr(upto)
+                    # The explicit comparison uses the last CLOSED H1 bar.
+                    atr_at = upto - Timeframe.H1.duration if comparison_exit else upto
+                    offset_price = offset_atr * _hourly_atr(atr_at)
                     resolved_manage = (trigger_r, offset_price) if offset_price > 0.0 else None
 
             force_close_at = None
@@ -1318,7 +1322,7 @@ def _one_clock(
                 arrays=resolve_arrays,
                 force_close_at=force_close_at,
                 close_at_horizon=raw_shadow,
-                full_management=(sizer.settings.trade_management if jarvis_replay else None),
+                full_management=(sizer.settings.trade_management if full_replay_management else None),
                 management_atr=_hourly_atr(upto),
                 management_spread=entry_spread_price if raw_shadow else spread_price,
                 risk_money=sized.actual_risk_money,
@@ -1355,6 +1359,8 @@ def _one_clock(
             # fixed stop is freed by the fixed exit; one running break-even is
             # freed by whichever exit it actually took.
             freed = managed_at if (resolved_manage is not None or jarvis_replay) else exit_at
+            if comparison_exit:
+                freed = managed_at if resolved_manage is not None else exit_at
             if freed is None:
                 # A TRADE THAT REACHED NEITHER BARRIER IS A TIMEOUT, NOT AN
                 # ETERNAL POSITION, and this line was the difference between a
@@ -1463,7 +1469,9 @@ def _one_clock(
                     volume_step=float(spec.volume_step),
                     result_r=r,
                     pnl_money=None if r is None else r * risk_money,
-                    exit_at=exit_at,
+                    exit_at=(
+                        managed_at if comparison_exit == "break-even" else exit_at
+                    ),
                     pass_key=(name, clock.value),
                     managed_r=managed_r,
                     managed_money=None if managed_r is None else managed_r * risk_money,
@@ -1877,6 +1885,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv", default="", help="write every decision to this file")
     parser.add_argument("--equity", type=float, default=0.0, help="override account equity")
     parser.add_argument(
+        "--s5-exit", choices=("fixed", "break-even"), default="",
+        help="Replay-only S5 M5 exit comparison; never changes live settings",
+    )
+    parser.add_argument(
         "--risk-percent",
         type=float,
         default=0.0,
@@ -2040,6 +2052,14 @@ def main(argv: list[str] | None = None) -> None:
     selected_only = {
         item.strip() for item in args.only.replace(" ", ",").split(",") if item.strip()
     }
+    if args.s5_exit and (
+        selected_only != {"section_five_ndx100_m5"}
+        or not args.jarvis_replay
+        or args.sweep
+        or args.btc_research_parity
+        or args.btc_jarvis_replay
+    ):
+        raise SystemExit("--s5-exit requires --only section_five_ndx100_m5 --jarvis-replay without --sweep or BTC modes")
     btc_shadow = args.btc_research_parity or args.btc_jarvis_replay
     if args.jarvis_replay and args.no_m1:
         # THE VOLUME GATE READS M1 AND NOTHING ELSE. Without M1 history it
@@ -2085,6 +2105,18 @@ def main(argv: list[str] | None = None) -> None:
     # without it and this exits with "no live modules" while the account is
     # perfectly well configured.
     settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=True)
+    if args.s5_exit:
+        if settings.analysis.section_five_ndx100_m5.timeframe != "M5":
+            raise SystemExit("S5 comparison requires the configured S5 timeframe to be M5")
+        if args.s5_exit == "break-even" and _break_even_rule(settings) is None:
+            raise SystemExit("No configured break-even rule: cannot label this a BE comparison")
+        comment = broker_comment("section_five_ndx100_m5", is_addon=False, experimental_live=True)
+        fixed = tuple(c for c in settings.trade_management.fixed_exit_comments if c.casefold() != comment.casefold())
+        if args.s5_exit == "fixed":
+            fixed += (comment,)
+        settings = settings.model_copy(update={"trade_management": settings.trade_management.model_copy(update={"fixed_exit_comments": fixed})})
+        print(f"S5 RESEARCH COMPARISON: {args.s5_exit}; independent entry/position sequence. Live configuration unchanged.")
+        print("Only fixed SL/TP or the configured break-even rule is compared; no partial/trailing/profit-lock in this comparison.")
     settings = settings.model_copy(
         update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
     )
@@ -2814,6 +2846,7 @@ def main(argv: list[str] | None = None) -> None:
                             flatten_time,
                             btc_shadow,
                             args.btc_jarvis_replay or args.jarvis_replay,
+                            args.s5_exit,
                         )
                     )
                 produced = _one_clock(
