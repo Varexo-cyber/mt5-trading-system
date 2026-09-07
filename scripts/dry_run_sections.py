@@ -2015,53 +2015,78 @@ def _under_the_slot_cap(
     *,
     share_between_sections: bool = False,
     refuse_opposite: bool = True,
-) -> list[Decision]:
+) -> tuple[list[Decision], dict[int, str]]:
     """The trades that would actually have been opened, cap included.
 
-    `max_concurrent_positions` is 4 on this account and `effective_max_positions`
-    cuts it to 2 at this equity. The dry run enforced neither, so it reported a
-    portfolio nobody could have held: on a morning when eleven markets break
-    together it counted eleven trades where the account can hold two.
+    Returns `(taken, refused)`, where `refused` maps a decision's id to WHICH
+    rule stopped it. Two rules live here and they are not the same question:
+    a symbol this section already holds is the section's own position in the
+    way, while a full book is the account's. Reporting both as "no slot free"
+    is how raising the slot count from four to ten looked like the fix for a
+    number the slot count never controlled.
 
     Walked in time order because that is the only order in which the question
     "is a slot free" has an answer. A trade that never resolved holds its slot
     to the end, which is what an open position does.
     """
     if slots <= 0:
-        return list(trades)
-    # WHO IS HOLDING IT, not just that it is held.
+        return list(trades), {}
+    # ONE ENTRY PER OPEN POSITION, NOT PER BUSY SYMBOL.
     #
-    # `sections_may_share_a_symbol` lets a SECOND section join a symbol another
-    # section already has -- separate plans, separate stops -- while a second
-    # leg of the SAME section stays refused, because that is pyramiding. A
-    # replay that keeps refusing per symbol measures a different account from
-    # the one that trades, and the whole point of this function is that it
-    # does not.
-    open_until: dict[str, tuple[datetime, str, str]] = {}
+    # This used to be a dict keyed by symbol, and `len(...) >= slots` therefore
+    # counted MARKETS rather than POSITIONS. Two consequences, both wrong and
+    # both silent:
+    #
+    #   Three sections sharing gold were one entry, so a cap of two allowed
+    #   three simultaneous positions -- more risk than the account sanctions.
+    #
+    #   This replay walks four markets, so the count could never exceed four,
+    #   and a cap of TEN could not bind at all. Raising the account from four
+    #   slots to ten therefore changed nothing in the measurement, and every
+    #   refusal blamed on "no slot free" was in fact the same-symbol rule.
+    #   That mislabel sent an afternoon after the wrong number.
+    #
+    # A list of positions is what the account holds, so that is what is kept.
+    open_positions: list[tuple[datetime, str, str, str]] = []
     taken: list[Decision] = []
+    #: `id(decision) -> why it was refused`. Two different rules, two different
+    #: answers, and the reader needs to know which one to argue with.
+    refused: dict[int, str] = {}
     for trade in sorted(trades, key=lambda d: d.when):
-        open_until = {symbol: held for symbol, held in open_until.items() if held[0] > trade.when}
-        held = open_until.get(trade.symbol)
-        if held is not None:
-            _stamp, holder, holder_side = held
-            joinable = (
-                share_between_sections
-                and holder != trade.module
-                and (not refuse_opposite or holder_side == trade.direction)
+        open_positions = [row for row in open_positions if row[0] > trade.when]
+        # WHO IS HOLDING IT, not just that it is held.
+        #
+        # `sections_may_share_a_symbol` lets a SECOND section join a symbol
+        # another section already has -- separate plans, separate stops --
+        # while a second leg of the SAME section stays refused, because that is
+        # pyramiding.
+        on_this_symbol = [row for row in open_positions if row[1] == trade.symbol]
+        blocked_by = next(
+            (
+                row
+                for row in on_this_symbol
+                if not (
+                    share_between_sections
+                    and row[2] != trade.module
+                    and (not refuse_opposite or row[3] == trade.direction)
+                )
+            ),
+            None,
+        )
+        if blocked_by is not None:
+            refused[id(trade)] = (
+                "SYMBOL_ALREADY_HELD"
+                if blocked_by[2] == trade.module
+                else "SYMBOL_HELD_BY_ANOTHER_SECTION"
             )
-            if not joinable:
-                continue
-        elif len(open_until) >= slots:
+            continue
+        if len(open_positions) >= slots:
+            refused[id(trade)] = "ACCOUNT_POSITION_LIMIT"
             continue
         taken.append(trade)
-        # The joining section does not take the slot over: the market stays
-        # busy until the LATER of the two exits, because both positions are
-        # open until then.
         until = trade.exit_at or datetime.max.replace(tzinfo=trade.when.tzinfo)
-        if held is not None:
-            until = max(until, held[0])
-        open_until[trade.symbol] = (until, trade.module, trade.direction)
-    return taken
+        open_positions.append((until, trade.symbol, trade.module, trade.direction))
+    return taken, refused
 
 
 def _markets_each_section_needs(settings, names: tuple[str, ...]) -> tuple[list[str], list[str]]:
@@ -3431,17 +3456,29 @@ def main(argv: list[str] | None = None) -> None:
         # trade that comes first and refuses the one that arrives with no slot
         # left, and `_under_the_slot_cap` walks exactly that.
         offered = [d for d in decisions if d.outcome == "TRADE"]
-        allowed = _under_the_slot_cap(
+        allowed, refused_because = _under_the_slot_cap(
             offered,
             settings.effective_max_positions(equity),
             share_between_sections=settings.risk.sections_may_share_a_symbol,
             refuse_opposite=settings.risk.refuse_opposite_direction_across_sections,
         )
+        # NAMED SEPARATELY, because they are different problems with different
+        # fixes. "The account was full" is answered by the slot count; "this
+        # section already holds that symbol" is not, and calling both the first
+        # thing is what made raising the cap look like the answer.
+        why = {
+            "SYMBOL_ALREADY_HELD": "this section already holds a position in this symbol",
+            "SYMBOL_HELD_BY_ANOTHER_SECTION": (
+                "another section holds this symbol and the two may not share it"
+            ),
+            "ACCOUNT_POSITION_LIMIT": "every account slot was already occupied",
+        }
         allowed_ids = {id(row) for row in allowed}
         for row in offered:
             if id(row) not in allowed_ids:
-                row.outcome = "ACCOUNT_POSITION_LIMIT"
-                row.note = "Jarvis account/same-symbol position limit was already occupied"
+                reason = refused_because.get(id(row), "ACCOUNT_POSITION_LIMIT")
+                row.outcome = reason
+                row.note = why[reason]
         if args.btc_jarvis_replay:
             _btc_jarvis_replay_contract(settings, equity, len(offered), len(allowed))
         else:
@@ -3575,7 +3612,7 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
 
     slots = settings.effective_max_positions(equity)
     everything = [d for key in keys for d in results[key] if d.outcome == "TRADE"]
-    trades = _under_the_slot_cap(
+    trades, _refused = _under_the_slot_cap(
         everything,
         slots,
         share_between_sections=settings.risk.sections_may_share_a_symbol,
@@ -3709,7 +3746,7 @@ def _shadow_report(results: dict, settings, slots: int, managed: bool, days: int
     print("SHADOWED — measured, not permitted to trade")
     print("-" * 78)
     for name, clock in shadow:
-        rows = _under_the_slot_cap(
+        rows, _why = _under_the_slot_cap(
             [d for d in results[(name, clock)] if d.outcome == "TRADE"], slots
         )
         closed = [d for d in rows if _live_exit(d, managed) is not None]
@@ -4616,7 +4653,7 @@ def _jarvis_replay_contract(settings, equity: float, offered: int, allowed: int)
         f"EUR {equity:.2f}, sections "
         f"{'may' if settings.risk.sections_may_share_a_symbol else 'may not'} share a symbol"
     )
-    print(f"      {offered - allowed} of {offered} entries arrived with no slot free")
+    print(f"      {offered - allowed} of {offered} entries were refused by that book")
     print("    the real Eightcap spread per bar, the real minimum lot, the real sizer")
     print("    the configured break-even move and pre-close flatten")
     print("  NOT APPLIED, AND EACH ONE ONLY EVER REMOVES TRADES")

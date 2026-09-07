@@ -503,7 +503,7 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
             for i in range(4)
         ]
 
-        taken = _under_the_slot_cap(trades, slots=2)
+        taken, _why = _under_the_slot_cap(trades, slots=2)
 
         assert [d.symbol for d in taken] == ["S0", "S1"]
 
@@ -521,7 +521,7 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
             ),
         ]
 
-        assert len(_under_the_slot_cap(trades, slots=1)) == 2
+        assert len(_under_the_slot_cap(trades, slots=1)[0]) == 2
 
     def test_two_sections_cannot_open_the_same_symbol_at_once(self) -> None:
         """The account permits one position per symbol, not one per module."""
@@ -555,7 +555,7 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
             ),
         ]
 
-        taken = _under_the_slot_cap(trades, slots=4)
+        taken, _why = _under_the_slot_cap(trades, slots=4)
 
         assert [(row.symbol, row.module) for row in taken] == [
             ("US30", "order_block_fast"),
@@ -598,16 +598,16 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
 
         # Two slots, three markets wanting one at the same moment.
         wanted = [held(0, "XAUUSD", "a"), held(1, "SPX500", "a"), held(2, "US30", "a")]
-        assert len(_under_the_slot_cap(wanted, 2)) == 2
-        assert len(_under_the_slot_cap(wanted, 0)) == 3, "0 means no cap at all"
+        assert len(_under_the_slot_cap(wanted, 2)[0]) == 2
+        assert len(_under_the_slot_cap(wanted, 0)[0]) == 3, "0 means no cap at all"
 
         # One market, twice, while the first is still open.
         twice = [held(0, "XAUUSD", "a"), held(30, "XAUUSD", "a")]
-        assert len(_under_the_slot_cap(twice, 4)) == 1
+        assert len(_under_the_slot_cap(twice, 4)[0]) == 1
 
         # And after it closes, the second is taken.
         later = [held(0, "XAUUSD", "a", hours=1), held(120, "XAUUSD", "a")]
-        assert len(_under_the_slot_cap(later, 4)) == 2
+        assert len(_under_the_slot_cap(later, 4)[0]) == 2
 
     def test_two_sections_share_a_symbol_only_when_the_account_allows_it(self) -> None:
         """The replay has to hold the same book the account holds.
@@ -631,18 +631,22 @@ class TestItMeasuresWhatTheAccountWouldActuallyDo:
 
         pair = [row(0, "section_six_gold_m5"), row(30, "section_ten_gold_m1")]
 
-        assert len(_under_the_slot_cap(pair, 4)) == 1
-        assert len(_under_the_slot_cap(pair, 4, share_between_sections=True)) == 2
+        assert len(_under_the_slot_cap(pair, 4)[0]) == 1
+        assert len(_under_the_slot_cap(pair, 4, share_between_sections=True)[0]) == 2
 
         # The same section twice is pyramiding, and it stays refused.
         same = [row(0, "section_ten_gold_m1"), row(30, "section_ten_gold_m1")]
-        assert len(_under_the_slot_cap(same, 4, share_between_sections=True)) == 1
+        assert len(_under_the_slot_cap(same, 4, share_between_sections=True)[0]) == 1
 
         # Opposite directions is flat exposure bought with two spreads.
         against = [row(0, "section_six_gold_m5"), row(30, "section_ten_gold_m1", "SHORT")]
-        assert len(_under_the_slot_cap(against, 4, share_between_sections=True)) == 1
+        assert len(_under_the_slot_cap(against, 4, share_between_sections=True)[0]) == 1
         assert (
-            len(_under_the_slot_cap(against, 4, share_between_sections=True, refuse_opposite=False))
+            len(
+                _under_the_slot_cap(
+                    against, 4, share_between_sections=True, refuse_opposite=False
+                )[0]
+            )
             == 2
         )
 
@@ -3817,7 +3821,7 @@ class TestTheEuroAnswerIsActuallyComputed:
         _jarvis_replay_contract(settings, 215.0, offered=40, allowed=25)
         out = capsys.readouterr().out
 
-        assert "15 of 40 entries arrived with no slot free" in out
+        assert "15 of 40 entries were refused by that book" in out
         assert str(settings.effective_max_positions(215.0)) in out
         assert "news blackout" in out
 
@@ -5224,3 +5228,132 @@ class TestSectionTenIsNoLongerRefusedByTheReachGate:
             if not any(family in name for family in families)
         }
         assert still_gated, "every live section is now advisory; the gate stops nothing"
+
+
+class TestTheSharedBookCountsPositionsAndNamesItsRefusals:
+    """Two defects that between them sent an afternoon after the wrong number.
+
+    The owner read "429 signals dropped: every slot was already busy" and
+    "section six missed 296 trades worth +38.28 R", raised the account cap from
+    four slots to ten, re-measured, and the number did not move. It could not
+    have: the cap was never what refused them.
+    """
+
+    @staticmethod
+    def _rows(spec):
+        from datetime import UTC, datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        base = datetime(2026, 3, 1, tzinfo=UTC)
+        made = []
+        for minute, module, symbol, hold, direction in spec:
+            row = Decision(
+                base + timedelta(minutes=minute), symbol, module, "TRADE", direction=direction
+            )
+            row.exit_at = base + timedelta(minutes=minute + hold)
+            made.append(row)
+        return made
+
+    def test_the_cap_counts_open_positions_and_not_busy_markets(self):
+        """Three sections sharing gold are THREE positions, not one market.
+
+        Keyed by symbol, a cap of two allowed three simultaneous positions --
+        more risk than the account sanctions, reported as if it were less.
+        """
+        from scripts.dry_run_sections import _under_the_slot_cap
+
+        rows = self._rows(
+            [
+                (0, "a", "XAUUSD.i", 600, "LONG"),
+                (1, "b", "XAUUSD.i", 600, "LONG"),
+                (2, "c", "XAUUSD.i", 600, "LONG"),
+            ]
+        )
+        taken, refused = _under_the_slot_cap(rows, 2, share_between_sections=True)
+        assert len(taken) == 2, "a cap of two allowed a third simultaneous position"
+        assert refused[id(rows[2])] == "ACCOUNT_POSITION_LIMIT"
+
+    def test_a_cap_above_the_market_count_could_never_bind(self):
+        """The run walks four markets. Keyed by symbol the count could not pass
+        four, so a cap of ten was unreachable and raising it was a no-op --
+        while the report went on blaming it for every refusal."""
+        from scripts.dry_run_sections import _under_the_slot_cap
+
+        rows = self._rows([(m, f"s{m}", "XAUUSD.i", 600, "LONG") for m in range(12)])
+        taken, refused = _under_the_slot_cap(rows, 10, share_between_sections=True)
+        assert len(taken) == 10
+        assert {refused[id(r)] for r in rows[10:]} == {"ACCOUNT_POSITION_LIMIT"}
+
+    def test_a_sections_own_position_is_named_as_such(self):
+        """THE ONE THAT MATTERS. Section six's 296 missed trades are its own
+        open gold position in the way, not a full account. The two have
+        different fixes and only one of them is the slot count."""
+        from scripts.dry_run_sections import _under_the_slot_cap
+
+        rows = self._rows(
+            [
+                (0, "section_six_gold_m5", "XAUUSD.i", 60, "LONG"),
+                (5, "section_six_gold_m5", "XAUUSD.i", 60, "LONG"),
+            ]
+        )
+        taken, refused = _under_the_slot_cap(rows, 100, share_between_sections=True)
+        assert len(taken) == 1
+        assert refused[id(rows[1])] == "SYMBOL_ALREADY_HELD", (
+            "its own position blocked it and the report must not call that a full account"
+        )
+
+    def test_another_sections_hold_is_named_differently_again(self):
+        from scripts.dry_run_sections import _under_the_slot_cap
+
+        rows = self._rows(
+            [
+                (0, "section_six_gold_m5", "XAUUSD.i", 60, "LONG"),
+                (5, "section_ten_gold_m1", "XAUUSD.i", 60, "LONG"),
+            ]
+        )
+        taken, refused = _under_the_slot_cap(rows, 100, share_between_sections=False)
+        assert len(taken) == 1
+        assert refused[id(rows[1])] == "SYMBOL_HELD_BY_ANOTHER_SECTION"
+
+    def test_raising_the_slot_count_cannot_free_a_symbol_rule(self):
+        """The experiment the owner actually ran, as a test: more slots do not
+        buy a section a second position in a symbol it already holds."""
+        from scripts.dry_run_sections import _under_the_slot_cap
+
+        rows = self._rows(
+            [(m, "section_six_gold_m5", "XAUUSD.i", 60, "LONG") for m in range(0, 300, 5)]
+        )
+        counts = {
+            slots: len(_under_the_slot_cap(rows, slots, share_between_sections=True)[0])
+            for slots in (4, 10, 100)
+        }
+        assert len(set(counts.values())) == 1, (
+            f"the slot count changed the answer: {counts} -- then the symbol rule is not what binds"
+        )
+
+    def test_every_refusal_carries_a_reason_the_report_can_print(self):
+        from scripts.dry_run_sections import _under_the_slot_cap
+
+        rows = self._rows(
+            [
+                (0, "a", "XAUUSD.i", 600, "LONG"),
+                (1, "a", "XAUUSD.i", 600, "LONG"),
+                (2, "b", "NDX100.i", 600, "LONG"),
+                (3, "c", "SPX500.i", 600, "LONG"),
+            ]
+        )
+        taken, refused = _under_the_slot_cap(rows, 2, share_between_sections=True)
+        for row in rows:
+            if row not in taken:
+                assert id(row) in refused, "a refusal with no name reads as an oversight"
+        # And the caller has a printable sentence for each one it can produce.
+        block = SOURCE.split("refused_because = _under_the_slot_cap", 1)[1][:1200]
+        for name in ("SYMBOL_ALREADY_HELD", "SYMBOL_HELD_BY_ANOTHER_SECTION",
+                     "ACCOUNT_POSITION_LIMIT"):
+            assert name in block, f"{name} can be produced and the report cannot name it"
+
+    def test_the_contract_no_longer_calls_every_refusal_a_missing_slot(self):
+        assert "arrived with no slot free" not in SOURCE, (
+            "that sentence blamed the slot count for refusals it never made"
+        )
