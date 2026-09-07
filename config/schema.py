@@ -4298,6 +4298,112 @@ class SectionXauJpyConfig(Base):
         return self
 
 
+class SectionUs30Config(Base):
+    """One experimental US30 section: one mechanism, one clock, one market.
+
+    SHADOW BY CONSTRUCTION. `enabled` buys a replay and a journal line;
+    `live_enabled_modules` is the separate list that buys real money and none
+    of these four is on it.
+
+    THE PARAMETERS BELOW ARE THE STOCK DEFAULTS of `ImpulseRetestConfig` and
+    `OrderBlockConfig`, field for field. That is deliberate -- the point of
+    these sections is to ask what the MEASURED mechanisms do on a market and
+    two clocks they were never measured on, and changing the numbers at the
+    same time would answer neither question.
+
+    It is also the caveat. Those numbers come from M15 and M30, on FX and
+    index CFDs, over eleven years. A one-ATR impulse on M15 and a one-ATR
+    impulse on M1 are different events, and the cost of a trade against a
+    one-ATR stop grows as the clock shrinks: that is precisely what turned
+    section eleven from +0.047 R a trade into -0.18 once the cost model
+    charged M1 what M1 costs. Nothing here is evidence until the replay runs.
+    """
+
+    enabled: bool = False
+    symbol: str = "US30"
+    timeframe: str = "M1"
+    mechanism: Literal["impulse_retest", "order_block"] = "impulse_retest"
+
+    #: -- shared by both mechanisms --------------------------------------
+    atr_period: int = Field(default=14, ge=2, le=200)
+    lookback_bars: int = Field(default=96, ge=4, le=500)
+    impulse_span_atr: float = Field(default=1.5, gt=0.0, le=10.0)
+
+    #: -- impulse retest --------------------------------------------------
+    channel_period: int = Field(default=20, ge=5, le=200)
+    #: The break bar must CLOSE at least this far past the level.
+    impulse_minimum_atr: float = Field(default=1.0, ge=0.0, le=5.0)
+    #: How close to the level the fill must be.
+    retest_tolerance_atr: float = Field(default=0.15, gt=0.0, le=1.0)
+    #: 0.85 + 0.15 = 1.00 ATR of risk, and it clears
+    #: `ConfluenceConfig.min_stop_atr` untouched so nothing widens it behind
+    #: the module's back.
+    retest_stop_beyond_atr: float = Field(default=0.85, gt=0.0, le=3.0)
+
+    #: -- order block -----------------------------------------------------
+    block_minimum_impulse_atr: float = Field(default=1.5, gt=0.0, le=10.0)
+    #: How far back to look for the last opposite-coloured candle.
+    block_search_bars: int = Field(default=5, ge=1, le=50)
+    block_zone_tolerance_atr: float = Field(default=0.25, ge=0.0, le=2.0)
+    block_stop_atr: float = Field(default=1.0, gt=0.0, le=5.0)
+
+    @model_validator(mode="after")
+    def _the_clock_is_one_of_the_two_asked_for(self) -> SectionUs30Config:
+        """M1 or M5 and nothing else.
+
+        Not a style rule. These four sections exist to answer a question about
+        two specific clocks; a fifth clock arriving by a typo would be
+        measured, reported and believed alongside them.
+        """
+
+        if self.timeframe not in {"M1", "M5"}:
+            raise ValueError(
+                f"a US30 section runs M1 or M5, not {self.timeframe!r}. Add a clock here "
+                f"deliberately if that is what you mean."
+            )
+        return self
+
+    def as_impulse_config(self) -> ImpulseRetestConfig:
+        """This section's numbers, in the shape the measured detector reads.
+
+        BUILT, NOT SHARED. The detector gets a config of its own, so tuning
+        US30 cannot reach `analysis.impulse_retest` and section two cannot
+        reach this.
+        """
+
+        return ImpulseRetestConfig(
+            enabled=True,
+            timeframe=self.timeframe,
+            channel_period=self.channel_period,
+            atr_period=self.atr_period,
+            lookback_bars=self.lookback_bars,
+            minimum_impulse_atr=self.impulse_minimum_atr,
+            impulse_span_atr=self.impulse_span_atr,
+            tolerance_atr=self.retest_tolerance_atr,
+            stop_beyond_atr=self.retest_stop_beyond_atr,
+            # EMPTY, and that matters. The live table carries a wider gold
+            # stop; inheriting it here would give US30 a stop chosen for
+            # XAUUSD's spread.
+            stop_beyond_atr_by_symbol={},
+        )
+
+    def as_order_block_config(self) -> OrderBlockConfig:
+        """The same, for the order-block detector."""
+
+        return OrderBlockConfig(
+            enabled=True,
+            timeframe=self.timeframe,
+            atr_period=self.atr_period,
+            lookback_bars=self.lookback_bars,
+            minimum_impulse_atr=self.block_minimum_impulse_atr,
+            impulse_span_atr=self.impulse_span_atr,
+            block_search_bars=self.block_search_bars,
+            zone_tolerance_atr=self.block_zone_tolerance_atr,
+            stop_atr=self.block_stop_atr,
+            stop_atr_by_symbol={},
+        )
+
+
 class SectionElevenLegsConfig(Base):
     """SECTION ELEVEN: the XAUJPY quote faded back toward its own two legs.
 
@@ -4490,6 +4596,22 @@ class AnalysisConfig(Base):
     section_eleven_xaujpy_legs_m5: SectionElevenLegsConfig = SectionElevenLegsConfig()
     section_twelve_xaujpy_m5: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M5")
     section_thirteen_xaujpy_m15: SectionXauJpyConfig = SectionXauJpyConfig(timeframe="M15")
+    #: FOUR EXPERIMENTAL US30 SECTIONS, shadow only. Named once here and
+    #: iterated everywhere downstream, because four near-identical blocks is
+    #: how the M5 one ends up carrying the M1 one's clock with nothing able to
+    #: tell.
+    section_us30_impulse_m1: SectionUs30Config = SectionUs30Config(
+        timeframe="M1", mechanism="impulse_retest"
+    )
+    section_us30_impulse_m5: SectionUs30Config = SectionUs30Config(
+        timeframe="M5", mechanism="impulse_retest"
+    )
+    section_us30_orderblock_m1: SectionUs30Config = SectionUs30Config(
+        timeframe="M1", mechanism="order_block"
+    )
+    section_us30_orderblock_m5: SectionUs30Config = SectionUs30Config(
+        timeframe="M5", mechanism="order_block"
+    )
     section_fifteen_btc_m1: GoldCrossDiscoveryConfig = GoldCrossDiscoveryConfig(
         allowed_symbols=("BTCUSD",), timeframe="M1"
     )

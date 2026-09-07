@@ -1891,6 +1891,84 @@ analysis:
   # BTCUSD discoveries from 180 days of actual Eightcap bars. These are
   # deliberately shadow-only: all three periods were inspected to discover
   # them, so only later forward data may grant real-money permission.
+  # ==========================================================================
+  # VIER EXPERIMENTELE US30-SECTIES, 6 september, op verzoek van de eigenaar.
+  # ==========================================================================
+  #
+  # SCHADUW. `enabled: true` koopt een replay en een journaalregel;
+  # `live_enabled_modules` is de aparte lijst die echt geld koopt en geen van
+  # deze vier staat erop. Gewicht 0,0, en de meting tilt dat zelf op naar 1,0
+  # op een KOPIE van de settings.
+  #
+  # DE DETECTOREN ZIJN NIET GEKOPIEERD, ZE WORDEN AANGEROEPEN. `ImpulseRetest`
+  # en `OrderBlock` krijgen hier hun eigen config en beantwoorden dezelfde
+  # vraag die sectie twee en drie ze stellen. 245 regels detectielogica
+  # dupliceren is een tweede implementatie die afdrijft van de gemeten zodra
+  # iemand er een aanraakt -- het meest herhaalde defect in deze repo.
+  #
+  # DE GETALLEN ZIJN DE BESTAANDE DEFAULTS, veld voor veld. Dat is opzet: de
+  # vraag is wat de GEMETEN mechanismen doen op een markt en twee klokken waar
+  # ze nooit op gemeten zijn, en tegelijk aan de getallen draaien beantwoordt
+  # geen van beide vragen.
+  #
+  # HET IS OOK HET VOORBEHOUD. Die getallen komen van M15 en M30, op FX en
+  # index-CFDs, over elf jaar. Een impuls van een ATR op M15 en een van een ATR
+  # op M1 zijn niet dezelfde gebeurtenis, en de kosten van een trade tegen een
+  # stop van een ATR groeien naarmate de klok krimpt -- precies wat sectie elf
+  # van +0,047 R per trade naar -0,18 bracht zodra het kostenmodel M1 rekende
+  # wat M1 kost. Niets hiervan is bewijs tot `us30.cmd` gedraaid heeft.
+  section_us30_impulse_m1:
+    enabled: true
+    symbol: US30
+    timeframe: M1
+    mechanism: impulse_retest
+    atr_period: 14
+    lookback_bars: 96
+    channel_period: 20
+    impulse_minimum_atr: 1.0
+    impulse_span_atr: 1.5
+    retest_tolerance_atr: 0.15
+    retest_stop_beyond_atr: 0.85
+
+  section_us30_impulse_m5:
+    enabled: true
+    symbol: US30
+    timeframe: M5
+    mechanism: impulse_retest
+    atr_period: 14
+    lookback_bars: 96
+    channel_period: 20
+    impulse_minimum_atr: 1.0
+    impulse_span_atr: 1.5
+    retest_tolerance_atr: 0.15
+    retest_stop_beyond_atr: 0.85
+
+  section_us30_orderblock_m1:
+    enabled: true
+    symbol: US30
+    timeframe: M1
+    mechanism: order_block
+    atr_period: 14
+    lookback_bars: 96
+    block_minimum_impulse_atr: 1.5
+    impulse_span_atr: 1.5
+    block_search_bars: 5
+    block_zone_tolerance_atr: 0.25
+    block_stop_atr: 1.0
+
+  section_us30_orderblock_m5:
+    enabled: true
+    symbol: US30
+    timeframe: M5
+    mechanism: order_block
+    atr_period: 14
+    lookback_bars: 96
+    block_minimum_impulse_atr: 1.5
+    impulse_span_atr: 1.5
+    block_search_bars: 5
+    block_zone_tolerance_atr: 0.25
+    block_stop_atr: 1.0
+
   section_fifteen_btc_m1:
     enabled: true
     timeframe: M1
@@ -2681,6 +2759,13 @@ analysis:
       section_fifteen_btc_m1: 2.0
       section_sixteen_btc_m5: 2.0
       section_seventeen_btc_m15: 4.0
+      # De US30-secties erven het doel van het mechanisme waarop ze
+      # draaien: sectie twee en drie handelen allebei 1,0 R en dat is
+      # waarop die mechanismen gemeten zijn.
+      section_us30_impulse_m1: 1.0
+      section_us30_impulse_m5: 1.0
+      section_us30_orderblock_m1: 1.0
+      section_us30_orderblock_m5: 1.0
     # DE POORT DIE HET MECHANISME VAN DE STRATEGIE ZELF WEIGERDE.
     #
     # Een break-retest koopt het niveau OMDAT de prijs eronder terugkwam. Die
@@ -2714,7 +2799,7 @@ analysis:
     # was AWAITING_CONFIRMATION 140 van de 414 setups -- de grootste poort van
     # allemaal. Deze drie eroverheen leggen meet iets anders dan wat er
     # gebacktest is.
-    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_ndx100_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_legs_m5, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
+    entry_timing_exempt_families: [impulse_retest, order_block, failed_session_breakout, section_five_ndx100_m5, section_six_gold_m5, section_eight_trend_day_h1, section_nine_vwap_m30, section_ten_gold_m1, section_eleven_xaujpy_legs_m5, section_twelve_xaujpy_m5, section_thirteen_xaujpy_m15, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15, section_us30_impulse_m1, section_us30_impulse_m5, section_us30_orderblock_m1, section_us30_orderblock_m5]
     # Sectie 6 is als complete closed-barstrategie gemeten. Een geldig
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
@@ -3586,6 +3671,13 @@ analysis:
       # bij de allowlist hierboven.
       section_sixteen_btc_m5: 0.0
       section_seventeen_btc_m15: 0.0
+      # De vier US30-secties: schaduw, dus nul. Een meting tilt het
+      # gewicht zelf op naar 1,0 op een kopie van de settings, dus ze
+      # blijven volledig meetbaar zonder een stem te hebben.
+      section_us30_impulse_m1: 0.0
+      section_us30_impulse_m5: 0.0
+      section_us30_orderblock_m1: 0.0
+      section_us30_orderblock_m5: 0.0
 
       # SECTIE VIJF, en deze gaat WEL live.
       #
@@ -4705,6 +4797,29 @@ risk:
       maximum_loss_share: 0.65
       losing_streak: 6
     section_thirteen_xaujpy_m15:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 6
+    # De vier US30-secties. Streng, want er is geen gemeten winrate om een
+    # breaker op af te stellen -- dit is de generieke versie tot de replay
+    # er een getal voor heeft.
+    section_us30_impulse_m1:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 6
+    section_us30_impulse_m5:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 6
+    section_us30_orderblock_m1:
+      window: 40
+      minimum_trades: 40
+      maximum_loss_share: 0.65
+      losing_streak: 6
+    section_us30_orderblock_m5:
       window: 40
       minimum_trades: 40
       maximum_loss_share: 0.65
