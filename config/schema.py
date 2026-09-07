@@ -4766,6 +4766,24 @@ class TradeManagementConfig(Base):
     #: Offset past entry when moving to break even, in ATR multiples, to cover
     #: spread and commission. Break even at exactly entry is a small loss.
     break_even_offset_atr: float = Field(default=0.1, ge=0.0)
+    #: Close a winner that has arrived within this many SPREADS of its target
+    #: instead of waiting for the last tick. 0 disables it.
+    #:
+    #: IN SPREADS, NOT IN PIPS OR IN PRICE. The owner described it in gold:
+    #: "TP 4450.00, mag al sluiten rond 4449.6". That distance is 0.4, which is
+    #: roughly one and a half gold spreads -- and the same 0.4 is four hundred
+    #: pips on EURUSD and nothing at all on BTCUSD. A number in price is a
+    #: different rule on every instrument and every day. Spreads is also the
+    #: right unit for THIS problem specifically: the reason a target is missed
+    #: by a hair is that the side of the book being filled has to travel the
+    #: spread to reach it.
+    close_near_target_spreads: float = Field(default=0.0, ge=0.0, le=10.0)
+    #: ...and never further out than this share of the whole entry-to-target
+    #: distance. Without it a wide spread makes the rule fire halfway: on an M1
+    #: gold stop the round trip is already about 12% of the risk, so "one and a
+    #: half spreads" is a hair on a big target and a third of the way on a
+    #: small one. BOTH conditions hold, so the looser one never decides alone.
+    close_near_target_max_share: float = Field(default=0.10, ge=0.0, le=0.5)
     #: Strategies whose measured edge uses the original broker SL/TP unchanged.
     #: Exact MT5 comments prevent unrelated positions from inheriting this.
     fixed_exit_comments: tuple[str, ...] = ()

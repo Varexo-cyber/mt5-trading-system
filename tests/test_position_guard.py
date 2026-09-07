@@ -2463,3 +2463,186 @@ class TestPeakStallAsksWhatLeavingCosts:
         event = manager._peak_stall_exit(position, 0.90, 0.92, self._at(7), health)
 
         assert event is not None and closed
+
+
+# ------------------------------------------------- the doorstep close ---
+#
+# The owner's words: "als de prijs al bijna bij TP is, 5 pips onder ofzo, dan
+# mag hij al sluiten -- stel gold is 4450.00 TP dan mag hij al sluiten rond
+# 4449.6". The last fraction of a target is where a move runs out of buyers,
+# and where the broker's spread stands between the price on screen and the
+# price that fills.
+
+
+def doorstep_manager(broker: BrokerStub, journal: JournalStub, **overrides):  # type: ignore[no-untyped-def]
+    return manager_for(
+        broker,
+        journal,
+        close_near_target_spreads=1.5,
+        close_near_target_max_share=0.10,
+        **overrides,
+    )
+
+
+def test_a_winner_on_the_doorstep_is_taken() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = doorstep_manager(broker, journal)
+
+    # TP is 110.0 and the reward is 10.0, so the tolerance is
+    # min(1.5 x 0.4, 0.10 x 10.0) = 0.6. The bid at 109.5 is 0.5 short.
+    broker.price = 109.5
+    events = manager.manage([position()], NOW)
+
+    assert [event.action for event in events] == ["TARGET_DOORSTEP"]
+    assert broker.closed, "the position was reported closed and never actually closed"
+
+
+def test_a_winner_still_short_of_the_doorstep_is_left_alone() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = doorstep_manager(broker, journal)
+
+    broker.price = 108.5  # 1.5 short, well outside the 0.6 tolerance
+    events = manager.manage([position()], NOW)
+
+    assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
+    assert broker.closed == []
+
+
+def test_it_reaches_a_fixed_exit_family_too() -> None:
+    """THE POINT OF THE WHOLE CHANGE, and the easiest thing to get wrong.
+
+    Two live families sit on `fixed_exit_comments` and leave `manage` on the
+    line after that check, before any other rule runs. A doorstep close placed
+    below that line would have shipped as "for all sections" while skipping the
+    two whose targets are hit most often -- section five and section ten, which
+    between them took 817 of the 1213 trades in the 180-day replay.
+    """
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = doorstep_manager(broker, journal, fixed_exit_comments=("JARVIS-S10-AU-M1",))
+    held = replace(position(), comment="JARVIS-S10-AU-M1")
+
+    broker.price = 109.5
+    events = manager.manage([held], NOW)
+
+    assert [event.action for event in events] == ["TARGET_DOORSTEP"]
+
+
+def test_it_reaches_a_break_even_only_family_too() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = doorstep_manager(broker, journal, break_even_only_comments=("JARVIS-S6-AU-M5",))
+    held = replace(position(), comment="JARVIS-S6-AU-M5")
+
+    broker.price = 109.5
+    events = manager.manage([held], NOW)
+
+    assert [event.action for event in events] == ["TARGET_DOORSTEP"]
+
+
+def test_the_share_cap_stops_a_wide_spread_firing_halfway() -> None:
+    """1.5 spreads is a hair on a big target and a third of the way on a small
+    one. On an M1 gold stop the round trip is already about 12% of the risk, so
+    without the share cap this stops being a doorstep close and becomes a
+    discretionary early exit wearing its name."""
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 4.0  # 1.5 spreads = 6.0, which is 60% of the 10.0 reward
+    manager = doorstep_manager(broker, journal)
+
+    broker.price = 105.0  # 5.0 short: inside 6.0 spreads, outside the 1.0 cap
+    events = manager.manage([position()], NOW)
+
+    assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
+    # And it still fires once the price really has arrived.
+    broker.price = 109.5
+    events = manager.manage([position()], NOW)
+    assert [event.action for event in events] == ["TARGET_DOORSTEP"]
+
+
+def test_a_short_is_measured_from_the_ask() -> None:
+    """A long closes on the bid and a short on the ask. Comparing the same side
+    for both would make the rule fire early on one and late on the other by
+    exactly one spread -- which is the entire quantity being discussed."""
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = doorstep_manager(broker, journal)
+    short = replace(position(), direction=Direction.SHORT, sl=ENTRY + 2.0, tp=ENTRY - 10.0)
+
+    # ask = price + 0.4. Target 90.0, tolerance 0.6, so the ask must be <= 90.6.
+    broker.price = 90.1  # ask 90.5
+    events = manager.manage([short], NOW)
+    assert [event.action for event in events] == ["TARGET_DOORSTEP"]
+
+
+def test_a_short_is_not_closed_on_its_bid() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = doorstep_manager(broker, journal)
+    short = replace(position(), direction=Direction.SHORT, sl=ENTRY + 2.0, tp=ENTRY - 10.0)
+
+    # bid 90.5 is inside the tolerance; the ask at 90.9 is not, and the ask is
+    # the price this position has to pay to get out.
+    broker.price = 90.5
+    events = manager.manage([short], NOW)
+    assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
+
+
+def test_it_does_nothing_when_switched_off() -> None:
+    """0 spreads is the schema default, so every configuration that has not
+    asked for this behaves exactly as it did."""
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = manager_for(broker, journal, close_near_target_spreads=0.0)
+
+    broker.price = 109.9
+    events = manager.manage([position()], NOW)
+    assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
+
+
+def test_no_spread_means_no_rule() -> None:
+    """A zero or missing spread is a quote this rule cannot reason about, and
+    inventing a distance from it would close positions early on nothing."""
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.0
+    manager = doorstep_manager(broker, journal)
+
+    broker.price = 109.9
+    events = manager.manage([position()], NOW)
+    assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
+
+
+def test_a_position_without_a_target_is_left_alone() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = doorstep_manager(broker, journal)
+
+    events = manager.manage([replace(position(), tp=0.0)], NOW)
+    assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
+
+
+def test_a_price_already_through_the_target_is_the_brokers() -> None:
+    """Past the target the broker's own take-profit owns the exit. Stepping in
+    would book a second close on a position that is about to be closed for us,
+    at a price we did not choose."""
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    manager = doorstep_manager(broker, journal)
+
+    broker.price = 110.5
+    events = manager.manage([position()], NOW)
+    assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
+
+
+def test_a_refused_close_is_not_reported_as_one() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    broker.spread = 0.4
+    broker.close_position = lambda _p, volume=None: OrderResult(  # type: ignore[assignment]
+        ok=False, filled_price=None, retcode_name="MARKET_CLOSED"
+    )
+    manager = doorstep_manager(broker, journal)
+
+    broker.price = 109.5
+    events = manager.manage([position()], NOW)
+    assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
