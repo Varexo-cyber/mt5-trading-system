@@ -1565,6 +1565,50 @@ def _section_ten_universe(spec: str, connector, settings) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _as_this_broker_spells_them(wanted, connector, settings) -> list[str]:
+    """Requested market names, resolved to the catalogue's own spelling.
+
+    A name that is already in the catalogue is left alone. A name that is not
+    is tried once more through `broker_symbol(canonical_symbol(name))`, and
+    kept only if THAT is in the catalogue. Anything still unknown is returned
+    exactly as it was typed, so the fetch loop's per-symbol "no history" line
+    names the thing the operator actually asked for rather than a rewritten
+    guess they never wrote.
+
+    The catalogue is read once. If the connector cannot produce one at all
+    (an empty archive, a broker call that fails), nothing is rewritten --
+    guessing a suffix against no evidence is how `USDJPY.i.i` happened.
+    """
+
+    try:
+        catalogue = {item.name for item in connector.symbols()}
+    except Exception:  # noqa: BLE001 - no catalogue means no basis to rewrite
+        catalogue = set()
+    if not catalogue:
+        return list(wanted)
+
+    resolved: list[str] = []
+    rewritten: list[tuple[str, str]] = []
+    for name in wanted:
+        if name in catalogue:
+            resolved.append(name)
+            continue
+        spelled = settings.instruments.broker_symbol(
+            settings.instruments.canonical_symbol(name)
+        )
+        if spelled != name and spelled in catalogue:
+            resolved.append(spelled)
+            rewritten.append((name, spelled))
+        else:
+            resolved.append(name)
+    if rewritten:
+        print(
+            "  --symbols resolved to this broker's names: "
+            + ", ".join(f"{typed} -> {actual}" for typed, actual in rewritten)
+        )
+    return resolved
+
+
 def _core_universe(connector, settings) -> list[str]:
     """`CORE_UNIVERSE` as this broker actually spells it.
 
@@ -1891,6 +1935,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replay-only S5 M5 exit comparison; never changes live settings",
     )
     parser.add_argument(
+        "--fixed-exits",
+        action="store_true",
+        help="replay with the entry stop and target only: no break-even, no partial, "
+        "no trailing, no profit lock. Replay-only; live settings are untouched",
+    )
+    parser.add_argument(
         "--risk-percent",
         type=float,
         default=0.0,
@@ -2065,6 +2115,18 @@ def main(argv: list[str] | None = None) -> None:
             "--s5-exit requires --only section_five_ndx100_m5 --jarvis-replay "
             "without --sweep or BTC modes"
         )
+    if args.fixed_exits:
+        # BOTH FLAGS WRITE THE SAME FIELD. `--s5-exit` already decides the exit
+        # regime for its one section; letting the two run together would mean
+        # one silently winning, and the report would name the loser.
+        if args.s5_exit:
+            raise SystemExit("--fixed-exits and --s5-exit both set the exit regime; choose one")
+        # WITHOUT `--jarvis-replay` THERE IS NO MANAGEMENT TO REMOVE. The plain
+        # dry run is already entry stop and target only, so the flag would
+        # change nothing while the header claimed it had -- a run that reports
+        # a comparison it never made.
+        if not args.jarvis_replay:
+            raise SystemExit("--fixed-exits only means something with --jarvis-replay")
     btc_shadow = args.btc_research_parity or args.btc_jarvis_replay
     if args.jarvis_replay and args.no_m1:
         # THE VOLUME GATE READS M1 AND NOTHING ELSE. Without M1 history it
@@ -2137,6 +2199,35 @@ def main(argv: list[str] | None = None) -> None:
         print(
             "Only fixed SL/TP or the configured break-even rule is compared; no "
             "partial/trailing/profit-lock in this comparison."
+        )
+    if args.fixed_exits:
+        # TURNED OFF AT THE SOURCE, not at the one call site that applies it.
+        #
+        # `_break_even_rule` returns None as soon as `break_even_at_r` is zero,
+        # and it is the single thing every part of this script asks. Zeroing it
+        # here therefore removes the rule from the trade resolution AND from
+        # every header, footnote and column that reports whether break-even was
+        # in force. Suppressing it only where it is applied would leave a run
+        # that behaves one way and describes itself the other -- which is the
+        # single most repeated defect in this repository, and the reason the
+        # 180-day section-six number had to be thrown away once already.
+        #
+        # In memory, on a copy, for this process. `config/eightcap.yaml` is not
+        # written and the live account keeps every rule it has.
+        settings = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"break_even_at_r": 0.0}
+                )
+            }
+        )
+        print(
+            "FIXED-EXIT REPLAY: entry stop and target only -- no break-even, no partial, "
+            "no trailing, no profit lock, no peak-stall, no time exit."
+        )
+        print(
+            "  Live configuration is untouched. Every gate, the cost model and the shared "
+            "position book are unchanged; only what happens AFTER entry is."
         )
     settings = settings.model_copy(
         update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
@@ -2222,7 +2313,28 @@ def main(argv: list[str] | None = None) -> None:
         # the first run of this reported "4 symbols" against an account that
         # scans a couple of hundred.
         if args.symbols:
-            symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+            # SPELLED THE WAY THIS BROKER SPELLS IT, not the way it was typed.
+            #
+            # Every other branch here gets its names from `connector.symbols()`
+            # or from `_core_universe`, so they already carry Eightcap's
+            # suffix. `--symbols` is the one path that goes straight from the
+            # command line to the fetch, and `--symbols US30` therefore asks
+            # for a market called `US30` on a broker that lists `US30.i`.
+            #
+            # That does not crash. It prints "no history" once per name and
+            # produces a report with no rows -- which reads exactly like a
+            # strategy that found nothing, and is the same suffix mismatch that
+            # has now silently disabled four separate things in this project.
+            #
+            # `broker_symbol(canonical_symbol(x))` and not `broker_symbol(x)`:
+            # the latter turns an already-suffixed `US30.i` into `US30.i.i`.
+            # That is not hypothetical either -- the Control Deck panel shipped
+            # with `USDJPY.i.i` in it for exactly this reason.
+            symbols = _as_this_broker_spells_them(
+                [s.strip() for s in args.symbols.split(",") if s.strip()],
+                connector,
+                settings,
+            )
         elif args.core:
             symbols = _core_universe(connector, settings)
             print(f"core universe: {len(symbols)} markets -- {', '.join(symbols)}")
@@ -2853,7 +2965,13 @@ def main(argv: list[str] | None = None) -> None:
                     shadow_trigger = getattr(
                         getattr(tuned.analysis, name), "shadow_break_even_at_r", None
                     )
-                    if shadow_trigger is not None:
+                    if shadow_trigger is not None and not args.fixed_exits:
+                        # `--fixed-exits` MEANS THIS ONE TOO. Zeroing
+                        # `break_even_at_r` above removes the account-wide rule,
+                        # but a section carrying its own
+                        # `shadow_break_even_at_r` would quietly put break-even
+                        # back for itself -- three sections do -- and the run
+                        # would print "no break-even" over a result that had it.
                         section_manage = (
                             None if shadow_trigger <= 0.0 else (float(shadow_trigger), 0.0)
                         )
@@ -2862,7 +2980,13 @@ def main(argv: list[str] | None = None) -> None:
                         item.casefold() for item in settings.trade_management.fixed_exit_comments
                     }
                     flatten_time = None
-                    if comment.casefold() in flattened:
+                    # THE EVENING FLATTEN IS A TIME EXIT, and the header this
+                    # flag prints says there is none. Section ten is the one
+                    # family that carries it, so without this line a
+                    # `--fixed-exits` run of section ten would close positions
+                    # on the clock while claiming the stop and target decided
+                    # every one of them.
+                    if comment.casefold() in flattened and not args.fixed_exits:
                         flatten_time = settings.filters.session.evening_flat_by_class.get(
                             spec.asset_class.value
                         )
@@ -2879,7 +3003,13 @@ def main(argv: list[str] | None = None) -> None:
                             flatten_time,
                             btc_shadow,
                             args.btc_jarvis_replay or args.jarvis_replay,
-                            args.s5_exit,
+                            # THE SAME SWITCH `--s5-exit fixed` USES, which is
+                            # the point: `_one_clock` reads this one field to
+                            # decide that the trade runs to its entry stop or
+                            # its target and nothing intervenes. A second
+                            # mechanism for the same thing is a second thing to
+                            # keep in step.
+                            args.s5_exit or ("fixed" if args.fixed_exits else ""),
                         )
                     )
                 produced = _one_clock(
