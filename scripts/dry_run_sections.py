@@ -2015,6 +2015,7 @@ def _under_the_slot_cap(
     *,
     share_between_sections: bool = False,
     refuse_opposite: bool = True,
+    legs_per_symbol: int = 1,
 ) -> tuple[list[Decision], dict[int, str]]:
     """The trades that would actually have been opened, cap included.
 
@@ -2061,14 +2062,35 @@ def _under_the_slot_cap(
         # while a second leg of the SAME section stays refused, because that is
         # pyramiding.
         on_this_symbol = [row for row in open_positions if row[1] == trade.symbol]
+        # `legs_per_symbol` > 1 LETS A SECTION STACK ON ITS OWN MARKET, and it
+        # exists to be measured rather than to be shipped. The owner's question
+        # was whether section six is leaving money on the table by refusing a
+        # setup while it already holds gold; the honest answer is a number for
+        # the extra R AND a number for the extra drawdown, not an argument.
+        own = [row for row in on_this_symbol if row[2] == trade.module]
         blocked_by = next(
             (
                 row
                 for row in on_this_symbol
                 if not (
-                    share_between_sections
-                    and row[2] != trade.module
-                    and (not refuse_opposite or row[3] == trade.direction)
+                    (
+                        row[2] == trade.module
+                        and len(own) < legs_per_symbol
+                        # AND THE SAME WAY ROUND, ALWAYS. A second leg is the
+                        # same idea again; a leg against the first one is flat
+                        # exposure bought with two spreads, and at most one of
+                        # the two stops can be hit. Not tied to
+                        # `refuse_opposite` -- that setting is about two
+                        # SECTIONS disagreeing, which is a real disagreement.
+                        # A section reversing itself is a close-and-reverse,
+                        # not a stack.
+                        and row[3] == trade.direction
+                    )
+                    or (
+                        share_between_sections
+                        and row[2] != trade.module
+                        and (not refuse_opposite or row[3] == trade.direction)
+                    )
                 )
             ),
             None,
@@ -2249,6 +2271,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--s5-exit", choices=("fixed", "break-even"), default="",
         help="Replay-only S5 M5 exit comparison; never changes live settings",
+    )
+    parser.add_argument(
+        "--legs-per-symbol",
+        type=int,
+        default=1,
+        help=(
+            "how many positions ONE section may hold in one symbol at a time. 1 is "
+            "the account; above that measures what stacking would have done, both "
+            "in R and in drawdown. Replay-only"
+        ),
     )
     parser.add_argument(
         "--fixed-exits",
@@ -3461,7 +3493,19 @@ def main(argv: list[str] | None = None) -> None:
             settings.effective_max_positions(equity),
             share_between_sections=settings.risk.sections_may_share_a_symbol,
             refuse_opposite=settings.risk.refuse_opposite_direction_across_sections,
+            legs_per_symbol=max(1, args.legs_per_symbol),
         )
+        if args.legs_per_symbol > 1:
+            print(
+                f"\nSTACKING: a section may hold {args.legs_per_symbol} positions in one "
+                f"symbol. Replay only; the account holds one."
+            )
+            print(
+                "  Read the DRAWDOWN with the R, not the R on its own. Stacking the same "
+                "model on the same market at the same time is not a second bet, it is the "
+                "first one at a larger size -- so more R is expected and means nothing by "
+                "itself."
+            )
         # NAMED SEPARATELY, because they are different problems with different
         # fixes. "The account was full" is answered by the slot count; "this
         # section already holds that symbol" is not, and calling both the first
@@ -4597,16 +4641,32 @@ NOT_MODELLED: tuple[tuple[str, int, str], ...] = (
 #: "+1.00R" and "half off at 1.5R, the rest trailed out at 0.6R".
 #:
 #: Not necessarily worse. Different, and unmeasured here.
+#: WHAT `_resolve` ACTUALLY WALKS when `--jarvis-replay` hands it the live
+#: `TradeManagementConfig`. This list used to be inside EXITS_NOT_MODELLED and
+#: the contract therefore told the reader that six rules it DOES apply were
+#: missing.
+#:
+#: That mislabel is the usual defect running backwards: instead of claiming a
+#: rule it does not apply, the report disowned six it does. It made the account
+#: replay read as far cruder than it is, and it is why the owner asked whether
+#: the measurement could be made "accurater" -- most of what he was asking for
+#: was already there and being denied on screen.
+EXITS_MODELLED_UNDER_FULL_MANAGEMENT: tuple[tuple[str, str], ...] = (
+    ("partial_close_at_r", "half the position comes off, when the lot allows it"),
+    ("trailing_mode atr", "the rest trails the configured ATR behind"),
+    ("profit_lock_from_r", "a share of the peak profit is locked in"),
+    ("giveback_arm_r", "out if it hands back its configured share of the peak"),
+    ("peak_stall_minutes", "out if it stalls near its peak"),
+    ("time_exit_hours", "out after the deadline, or the plan horizon multiple"),
+)
+
+#: The three that genuinely cannot come out of OHLC. Each needs something bars
+#: do not carry: a running health model, the thesis the idea was built on, or a
+#: tick-level spread history.
 EXITS_NOT_MODELLED: tuple[tuple[str, str], ...] = (
-    ("partial_close_at_r 1.5", "half the position comes off at 1.5R"),
-    ("trailing_mode atr / 2.0", "the rest trails two ATR behind"),
-    ("profit_lock_from_r 0.2", "60% of the peak profit is locked in"),
-    ("giveback_arm_r 0.5", "out if it hands back half of what it made"),
-    ("peak_stall_minutes 4.0", "out if it stalls near its peak"),
-    ("time_exit_hours 24", "out after a day, or 1.5x the plan horizon"),
-    ("health_tighten_at_r 0.2", "the health monitor tightens the stop"),
-    ("thesis_invalidation_at_r 0.15", "out when the reason for the trade breaks"),
-    ("spread_squeeze_share", "out when the spread goes abnormal"),
+    ("health_tighten_at_r", "the health monitor tightens the stop"),
+    ("thesis_invalidation_at_r", "out when the reason for the trade breaks"),
+    ("spread_squeeze_share", "out when the spread goes abnormal on the tick"),
 )
 
 
@@ -5093,15 +5153,19 @@ def _gates_this_run_does_not_apply(
         print("    and ambiguous within-M1 ordering. The replay uses the conservative")
         print("    HEALTHY branch and stop-first ordering; it does not invent AI answers.")
     else:
-        print("\n  AND THE EXITS. This replay simulates the break-even move for managed")
-        print("  families, fixed broker SL/TP for fixed-exit families, and their configured")
-        print("  pre-close flatten before a daily market pause. It does NOT simulate:\n")
+        print("\n  AND THE EXITS. Fixed-exit families are judged on their broker SL/TP")
+        print("  and their configured pre-close flatten. For every OTHER family this")
+        print("  replay walks the live TradeManagementConfig bar by bar and applies:\n")
+        for name, what in EXITS_MODELLED_UNDER_FULL_MANAGEMENT:
+            print(f"    {name:<30}{what}")
+        print("\n  plus the break-even move. What it still cannot apply, because bars")
+        print("  do not carry what these read:\n")
         for name, what in EXITS_NOT_MODELLED:
             print(f"    {name:<30}{what}")
         print(
-            "\n  A managed-family +1.00R here is still not a complete live forecast:"
-            "\n  partials, trailing and the other exits above can change it. A fixed-exit"
-            "\n  family is judged on its broker barriers and configured pause flatten."
+            "\n  Within a bar the ordering of stop, target and every rule above is"
+            "\n  unknowable, and this walk takes the stop first. So a managed number"
+            "\n  here is close to the account and still not a broker statement."
         )
     print(f"{'=' * 78}")
 
