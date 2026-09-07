@@ -2812,7 +2812,30 @@ analysis:
     # BTC gate study, 180 broker days: for S15 this generic unconditional
     # statistic removed 61 otherwise eligible trades worth +20.50R. S16/S17
     # kept it: there it saved respectively 42.35R and 15.75R of losses.
-    target_reach_advisory_families: [impulse_retest, order_block, section_six_gold_m5, section_fifteen_btc_m1]
+    # SECTIE TIEN STAAT ER 7 SEPTEMBER BIJ, op instructie van de eigenaar, en
+    # het cijfer waarom staat hier zodat het terug te draaien is met de reden
+    # ernaast:
+    #
+    #     TARGET_RARELY_REACHED weigerde 312 setups van sectie tien
+    #     84,3% daarvan zou gewonnen hebben, samen +38,86 R
+    #
+    # Sectie tien verdiende in datzelfde 180-daagse venster +24,23 R. De poort
+    # kostte hem dus meer dan de hele sectie opleverde, en sectie ZES -- die al
+    # op deze lijst stond -- had er geen enkele weigering van. Dat is precies
+    # het verschil dat deze regel maakt.
+    #
+    # ADVISERend, NIET WEG. De poort blijft rekenen en blijft in de journal
+    # staan; wat vervalt is zijn recht om de trade tegen te houden. De reden
+    # dat dat verdedigbaar is voor JUIST deze sectie: sectie tien is een
+    # volledig omschreven zelfstandige strategie met een eigen target dat uit
+    # zijn eigen meting komt, en dan is een generieke historische trefkans een
+    # tweede mening over een vraag die de sectie zelf al beantwoord heeft.
+    #
+    # WAT DIT NIET IS: bewijs. +38,86 R is wat die geweigerde setups deden op
+    # ONGEWIJZIGDE instaps, zonder dat het positieboek meeliep. 312 trades
+    # erbij verandert wat er daarna beschikbaar is, dus het getal is een
+    # richting. De replay na deze wijziging is de meting.
+    target_reach_advisory_families: [impulse_retest, order_block, section_six_gold_m5, section_fifteen_btc_m1, section_ten_gold_m1]
     # The global 8% stop-share remains intact. S16/S17 use the same ceilings
     # their frozen broker research used. Re-testing the already screened band
     # at 8% removed +20.52R and +13.68R respectively over 180 days.
@@ -5351,6 +5374,30 @@ trade_management:
   # route waarop elk cijfer daar geldt. Wordt zo'n cel gekozen, dan hoort haar
   # comment hier ERBIJ te komen -- anders meet de dry-run een andere strategie
   # dan degene die gezocht is. Sectie tien zag daar ongeveer 15 R verschil van.
+  # DE DEURMAT-SLUITING, 7 september, op instructie van de eigenaar: "als de
+  # prijs al bijna bij TP is mag hij al sluiten".
+  #
+  # IN SPREADS, NIET IN PIPS. Zijn voorbeeld was goud: TP 4450,00 en sluiten
+  # mag rond 4449,6. Die 0,4 is ongeveer anderhalve goudspread -- en dezelfde
+  # 0,4 is vierhonderd pips op EURUSD en niets op BTCUSD. Een getal in prijs is
+  # een andere regel op elk instrument; een getal in spreads is overal
+  # dezelfde. Het is ook de juiste eenheid voor dit probleem: een target wordt
+  # op een haar na gemist doordat de kant van het boek die moet vullen die
+  # spread nog moet afleggen.
+  #
+  # 1,5 SPREAD, EN NOOIT MEER DAN 10% VAN DE HELE BEWEGING. Alleen het eerste
+  # zou op een markt met een brede spread halverwege afgaan: op een M1-goudstop
+  # is de round trip al ongeveer 12% van het risico. Beide voorwaarden gelden,
+  # dus de ruimste beslist nooit alleen.
+  #
+  # GELDT VOOR ELKE SECTIE, ook voor de twee met een vaste uitstap. Dit is geen
+  # discretionaire uitstap: hij neemt DEZELFDE uitstap een haar eerder, en
+  # alleen als de trade er al is. Wat eraf gaat zijn de laatste centen; wat
+  # eraf gaat is ook het geval waarin de markt op de stoep omdraait en de hele
+  # winnaar teruggeeft.
+  close_near_target_spreads: 1.5
+  close_near_target_max_share: 0.10
+
   fixed_exit_comments: [JARVIS-S5-NDX-M5, JARVIS-S10-AU-M1]
   # S6 is exact op deze ene managementregel gemeten. Geen partial, trailing,
   # giveback, health- of time-exit mag die gemeten route stilletjes veranderen.

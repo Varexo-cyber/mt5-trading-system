@@ -557,6 +557,22 @@ class PositionManager:
             "peak_r": float(peak_r),
             "health_observed": False,
         }
+        # ABOVE THE FIXED-EXIT RETURN, DELIBERATELY, so this reaches EVERY
+        # section. Two of the live families (S5 NDX and S10 gold) leave this
+        # method on the next line and never see another rule; putting the
+        # doorstep close below that line would have shipped a fix that skips
+        # the two sections whose targets are hit most often.
+        #
+        # It is not a discretionary exit either. Every rule below CHANGES the
+        # measured exit -- it takes a different price for a different reason.
+        # This one takes the SAME exit a hair early, and only once the trade
+        # has already arrived. The measured route is kept; what is removed is
+        # the last few cents of it, and with them the case where the market
+        # turns on the doorstep and the whole winner is given back.
+        doorstep = self._close_at_the_doorstep(position, config, tick, r_now)
+        if doorstep is not None:
+            events.append(doorstep)
+            return events
         comment = str(position.comment).casefold()
         if comment in {item.casefold() for item in config.fixed_exit_comments}:
             # This family was selected and holdout-tested with unchanged SL/TP.
@@ -1027,6 +1043,86 @@ class PositionManager:
             new_sl=new_sl,
             old_tp=position.tp,
             new_tp=position.tp,
+        )
+
+    def _close_at_the_doorstep(
+        self, position: Position, config, tick, r_now: float
+    ) -> ManagementEvent | None:
+        """Take a winner that has arrived, instead of waiting for the last tick.
+
+        THE CASE THIS EXISTS FOR. Gold's target is 4450.00, the bid reaches
+        4449.6, and the trade is for practical purposes finished -- except that
+        the order does not fill, the market turns, and a winner walks all the
+        way back. That is not a rare tail: the last fraction of a target is
+        exactly where a move runs out of buyers, and it is where the broker's
+        own spread stands between the price you see and the price that fills.
+
+        MEASURED FROM THE SIDE THAT HAS TO FILL. A long closes on the BID and
+        its take-profit is reached by the bid, so the bid is what is compared;
+        a short closes on the ask. Comparing the mid, or the last trade price,
+        would make the rule fire early on one side and late on the other by
+        exactly one spread -- which is the whole quantity being discussed here.
+
+        TWO CONDITIONS, BOTH REQUIRED, and the second one is not decoration.
+        `close_near_target_spreads` alone would fire halfway to a small target
+        on a wide-spread market: an M1 gold round trip is already about 12% of
+        the risk. `close_near_target_max_share` caps the distance at a share of
+        the whole entry-to-target move, so the rule stays a hair and cannot
+        become a discretionary early exit wearing this rule's name.
+
+        NO MOMENTUM EXCEPTION, and that is a decision rather than an omission.
+        "Unless it is clearly still rising" sounds prudent and gives the
+        give-back straight back: if the move really is still running it reaches
+        the target within seconds and the two outcomes are the same trade. The
+        rule only bites when the move has stalled on the doorstep, which is the
+        case it was asked for. Adding the exception would reintroduce exactly
+        what it is meant to prevent.
+
+        Returns None when the feature is off, the position has no target, or
+        the price has not arrived -- so a run with `close_near_target_spreads`
+        at 0 behaves exactly as before.
+        """
+
+        spreads = float(getattr(config, "close_near_target_spreads", 0.0) or 0.0)
+        if spreads <= 0.0 or not position.tp:
+            return None
+        reward = abs(position.tp - position.price_open)
+        if reward <= 0.0:
+            return None
+        spread = abs(float(tick.ask) - float(tick.bid))
+        if spread <= 0.0:
+            # NO SPREAD, NO RULE. A zero or missing spread is a quote this
+            # method cannot reason about, and inventing a distance from it
+            # would close positions early on nothing.
+            return None
+        share = float(getattr(config, "close_near_target_max_share", 0.0) or 0.0)
+        tolerance = min(spreads * spread, share * reward) if share > 0 else spreads * spread
+        if tolerance <= 0.0:
+            return None
+
+        long = position.direction is Direction.LONG
+        price = float(tick.bid) if long else float(tick.ask)
+        gap = (position.tp - price) if long else (price - position.tp)
+        if gap > tolerance:
+            return None
+        if gap < 0:
+            # Already through it. The broker's own take-profit owns this exit;
+            # stepping in here would book a second close on a position that is
+            # about to be closed for us, at a price we did not choose.
+            return None
+
+        result = self.broker.close_position(position)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "TARGET_DOORSTEP",
+            f"{gap:.5f} from target {position.tp:.5f} at {r_now:.2f}R "
+            f"({gap / spread:.2f} spreads, {gap / reward:.1%} of the move left); "
+            f"taken rather than waiting for the last tick",
+            result.filled_price,
+            position.profit + position.swap,
+            r_at_action=r_now,
         )
 
     def _evening_flatten(

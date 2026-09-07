@@ -5038,3 +5038,189 @@ class TestTheExitGridComparesEveryWayOfManagingATrade:
         assert parsed.only == "", "the default must not narrow to a section"
         assert parsed.live_only
         assert parsed.csv.endswith("beheer.csv")
+
+
+class TestTheDoorstepCloseIsMeasuredAndNotOnlyLive:
+    """The replay has to resolve trades the way the account now exits them.
+
+    `PositionManager._close_at_the_doorstep` takes a winner that has arrived
+    within a hair of its target. If the replay kept resolving on the untouched
+    target, `hoeveel.cmd` would report the OLD exit and the owner would be
+    measuring a system he is not running. That gap -- a rule that is live, is
+    correct, and is absent from the measurement -- is the single most repeated
+    defect in this repository.
+    """
+
+    @staticmethod
+    def _frame():
+        from datetime import UTC
+
+        import pandas as pd
+
+        index = pd.date_range("2026-06-01", periods=5, freq="min", tz=UTC)
+        # Runs to 109.5, one tick short of the 110.0 target, then collapses
+        # through the stop. Without the doorstep close this is a full loss.
+        return pd.DataFrame(
+            {
+                "high": [104.0, 109.5, 109.5, 101.0, 99.0],
+                "low": [99.5, 103.0, 100.0, 97.0, 97.0],
+                "close": [103.0, 109.0, 101.0, 98.0, 97.0],
+            },
+            index=index,
+        )
+
+    @staticmethod
+    def _idea():
+        from types import SimpleNamespace
+
+        from core.types import Direction
+
+        return SimpleNamespace(
+            direction=Direction.LONG, entry=100.0, stop_loss=98.0, take_profit=110.0
+        )
+
+    def test_a_trade_that_stalls_on_the_doorstep_is_a_winner_not_a_loser(self):
+        from scripts.dry_run_sections import _resolve
+
+        frame, idea = self._frame(), self._idea()
+        index = frame.index
+
+        # Untouched target: the high of 109.5 never reaches 110.0, so this runs
+        # on to the stop and books a full -1R.
+        plain, _at, _m, _ma = _resolve(frame, index[0], idea, 5)
+        assert plain == pytest.approx(-1.0)
+
+        # 1.5 spreads of 0.4 is 0.6, capped at 10% of the 10.0 reward = 1.0.
+        # The effective target is 109.4, which the second bar reaches.
+        near, near_at, _m2, _ma2 = _resolve(
+            frame, index[0], idea, 5, near_target_tolerance=0.6, near_target_max_share=0.10
+        )
+        assert near is not None and near > 0
+        assert near_at == index[1]
+
+    def test_the_r_credited_is_the_r_of_the_price_actually_taken(self):
+        """Crediting the full reward for an exit taken short of the target
+        would pay the replay for money the account never receives -- and it
+        would do it on every winner, which is where an optimistic rounding
+        does the most damage."""
+        from scripts.dry_run_sections import _resolve
+
+        frame, idea = self._frame(), self._idea()
+        near, _at, _m, _ma = _resolve(
+            frame, frame.index[0], idea, 5, near_target_tolerance=0.6, near_target_max_share=0.10
+        )
+        # Entry 100, stop 98 so 1R = 2.0. Target 110 is +5R; taken at 109.4
+        # that is +4.7R, and it must be the smaller number.
+        assert near == pytest.approx(4.7)
+        assert near < (110.0 - 100.0) / 2.0
+
+    def test_the_share_cap_binds_in_the_replay_too(self):
+        from scripts.dry_run_sections import _resolve
+
+        frame, idea = self._frame(), self._idea()
+        # A huge spread tolerance, capped at 1% of the move = 0.1, so the
+        # effective target is 109.9 and the 109.5 high does not reach it.
+        result, _at, _m, _ma = _resolve(
+            frame, frame.index[0], idea, 5, near_target_tolerance=9.0, near_target_max_share=0.01
+        )
+        assert result == pytest.approx(-1.0)
+
+    def test_zero_tolerance_changes_nothing(self):
+        from scripts.dry_run_sections import _resolve
+
+        frame, idea = self._frame(), self._idea()
+        a, a_at, _m, _ma = _resolve(frame, frame.index[0], idea, 5)
+        b, b_at, _m2, _ma2 = _resolve(
+            frame, frame.index[0], idea, 5, near_target_tolerance=0.0, near_target_max_share=0.10
+        )
+        assert (a, a_at) == (b, b_at)
+
+    def test_a_short_gets_the_target_moved_the_other_way(self):
+        from datetime import UTC
+        from types import SimpleNamespace
+
+        import pandas as pd
+
+        from core.types import Direction
+        from scripts.dry_run_sections import _resolve
+
+        index = pd.date_range("2026-06-01", periods=4, freq="min", tz=UTC)
+        frame = pd.DataFrame(
+            {"high": [100.5, 97.0, 103.0, 103.0], "low": [96.0, 90.5, 99.0, 99.0],
+             "close": [97.0, 91.0, 102.0, 103.0]},
+            index=index,
+        )
+        idea = SimpleNamespace(
+            direction=Direction.SHORT, entry=100.0, stop_loss=102.0, take_profit=90.0
+        )
+        plain, _at, _m, _ma = _resolve(frame, index[0], idea, 4)
+        assert plain == pytest.approx(-1.0)
+        near, _at2, _m2, _ma2 = _resolve(
+            frame, index[0], idea, 4, near_target_tolerance=0.6, near_target_max_share=0.10
+        )
+        assert near == pytest.approx(4.7)
+
+    def test_the_walk_hands_the_tolerance_to_both_the_trade_and_the_grid(self):
+        # The wiring, not the helper. An exit grid resolved against a target
+        # the account no longer uses would judge every rule -- including the
+        # fixed baseline they are all compared to -- against the wrong price.
+        body = SOURCE.split("doorstep_spread = entry_spread_price", 1)[1]
+        assert body.count("near_target_tolerance=near_target") >= 2
+        assert body.count("near_target_max_share=near_target_share") >= 2
+
+    def test_the_live_config_switches_it_on_in_spreads(self):
+        from config.loader import load_settings
+
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        tm = settings.trade_management
+        assert tm.close_near_target_spreads > 0.0, "the owner asked for this and it is off"
+        assert 0.0 < tm.close_near_target_max_share <= 0.5, (
+            "without the share cap a wide spread fires this halfway to the target"
+        )
+
+
+class TestSectionTenIsNoLongerRefusedByTheReachGate:
+    """`TARGET_RARELY_REACHED` refused 312 section-ten setups over 180 days.
+
+    84.3% of them would have won, together +38.86 R -- against the +24.23 R
+    the section actually earned in the same window. The gate cost more than the
+    section made, and section six, which was already on the advisory list, took
+    no refusals from it at all.
+    """
+
+    @staticmethod
+    def _settings():
+        from config.loader import load_settings
+
+        return load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+
+    def test_section_ten_is_advisory(self):
+        families = self._settings().analysis.confluence.target_reach_advisory_families
+        assert any("section_ten_gold_m1" in family for family in families)
+
+    def test_the_gate_still_runs_and_is_only_advisory(self):
+        # ADVISORY, NOT DELETED. The gate keeps measuring and keeps appearing
+        # in the journal; what lapses is its right to refuse the trade. A
+        # removed gate cannot be judged later, and this one has not been.
+        assert "TARGET_RARELY_REACHED" in SOURCE
+        assert "target_reach_advisory_families" in SOURCE
+
+    def test_both_the_replay_and_the_runner_read_the_same_list(self):
+        """Two lists would mean the measurement and the account disagree about
+        which sections the gate may stop -- and the replay is what the decision
+        to change this was made on."""
+        runner = (ROOT / "runner" / "service.py").read_text(encoding="utf-8")
+        assert "target_reach_advisory_families" in runner
+        assert "target_reach_advisory_families" in SOURCE
+
+    def test_the_sections_that_keep_the_hard_gate_still_have_it(self):
+        # A blanket "advisory for everyone" would have been the easy edit and
+        # would have removed the gate from sections nobody measured it on.
+        families = set(self._settings().analysis.confluence.target_reach_advisory_families)
+        live = set(self._settings().analysis.confluence.live_enabled_modules)
+        still_gated = {
+            name
+            for name in live
+            if not any(family in name for family in families)
+        }
+        assert still_gated, "every live section is now advisory; the gate stops nothing"

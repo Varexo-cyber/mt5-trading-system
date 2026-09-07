@@ -675,6 +675,8 @@ def _resolve(
     equity: float = 0.0,
     planned_minutes: float | None = None,
     partial_possible: bool = False,
+    near_target_tolerance: float = 0.0,
+    near_target_max_share: float = 0.0,
 ):
     """First touch of stop or target on the bars after entry.
 
@@ -747,7 +749,26 @@ def _resolve(
         return None, None, None, None
     long = idea.direction is Direction.LONG
     risk = abs(idea.entry - idea.stop_loss)
-    reward_r = (abs(idea.take_profit - idea.entry) / risk) if risk > 0 else 0.0
+
+    # THE DOORSTEP CLOSE, MODELLED WHERE THE TRADE IS RESOLVED.
+    #
+    # Live, `PositionManager._close_at_the_doorstep` takes a winner that has
+    # arrived within a hair of its target rather than waiting for the last
+    # tick. If that only existed live, `hoeveel.cmd` would keep reporting the
+    # old exit and the owner would be measuring a system he is not running --
+    # which is this repository's most repeated defect, and the reason the
+    # section-six number had to be thrown away once already.
+    #
+    # The target moves NEARER by the tolerance, and the R credited moves with
+    # it. Crediting the full reward for an exit taken short of the target would
+    # pay the replay for money the account never receives.
+    target = idea.take_profit
+    if near_target_tolerance > 0.0 and risk > 0:
+        reward_price = abs(idea.take_profit - idea.entry)
+        room = min(near_target_tolerance, near_target_max_share * reward_price)
+        if 0.0 < room < reward_price:
+            target = idea.take_profit - room if long else idea.take_profit + room
+    reward_r = (abs(target - idea.entry) / risk) if risk > 0 else 0.0
 
     # The managed run walks the same bars with a stop that is allowed to move.
     # `armed` is one-way: a stop that has been pulled up is never pushed back.
@@ -775,7 +796,7 @@ def _resolve(
         bar_high = float(highs[position])
         bar_low = float(lows[position])
         hit_stop = bar_low <= idea.stop_loss if long else bar_high >= idea.stop_loss
-        hit_target = bar_high >= idea.take_profit if long else bar_low <= idea.take_profit
+        hit_target = bar_high >= target if long else bar_low <= target
 
         if managed_open:
             # ORDER MATTERS AND IT IS NOT THE FLATTERING ONE. Within a bar the
@@ -1535,6 +1556,14 @@ def _one_clock(
                 )
                 >= spec.volume_min
             )
+            # ONE DEFINITION, HANDED TO BOTH THE TRADE AND THE GRID. Computing
+            # it twice is how the baseline row and the trade itself end up
+            # resolving against two slightly different targets.
+            doorstep_spread = entry_spread_price if raw_shadow else spread_price
+            near_target = (
+                sizer.settings.trade_management.close_near_target_spreads * doorstep_spread
+            )
+            near_target_share = sizer.settings.trade_management.close_near_target_max_share
             r, exit_at, managed_r, managed_at = _resolve(
                 resolve_frame,
                 upto,
@@ -1555,6 +1584,8 @@ def _one_clock(
                     raw_horizon * clock.duration.total_seconds() / 60.0 if raw_horizon else None
                 ),
                 partial_possible=partial_is_possible,
+                near_target_tolerance=near_target,
+                near_target_max_share=near_target_share,
             )
             # FREED AT THE EXIT THE ACCOUNT ACTUALLY TAKES.
             #
@@ -1697,6 +1728,14 @@ def _one_clock(
                             else None
                         ),
                         partial_possible=variant.partial and partial_is_possible,
+                        # THE GRID GETS IT TOO. The doorstep close is not an
+                        # exit RULE being compared here -- it is part of how
+                        # every exit resolves -- so leaving it out would judge
+                        # each rule against a target the account no longer
+                        # uses, including the fixed baseline they are all
+                        # measured against.
+                        near_target_tolerance=near_target,
+                        near_target_max_share=near_target_share,
                     )
                     measured.append(
                         (variant.label, None if grid_result is None else grid_result - cost)
