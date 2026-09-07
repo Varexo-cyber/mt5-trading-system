@@ -19,6 +19,14 @@ rem Elke variabele hier, bovenaan, voordat iets hem leest. Een niet-gezette
 rem %VAR% in cmd is een lege string en dat is stil.
 set DAGEN=180
 set SECTIES=section_us30_impulse_m1,section_us30_impulse_m5,section_us30_orderblock_m1,section_us30_orderblock_m5
+rem LEEG = zoals geconfigureerd. `vast` zet er --fixed-exits achter: de
+rem trade loopt naar zijn instapstop of zijn target en niets grijpt in.
+set EXITS=
+set EXITNAAM=zoals geconfigureerd
+rem EIGEN BESTANDSNAAM PER STAND. Zonder dit schrijven beide standen naar
+rem runtime\us30.csv en overschrijft de laatste run de vorige, waarna twee
+rem verschillende metingen een naam delen.
+set CSVTAG=
 
 :lees
 if "%~1"=="" goto klaar
@@ -27,6 +35,9 @@ if /i "%~1"=="impuls" set SECTIES=section_us30_impulse_m1,section_us30_impulse_m
 if /i "%~1"=="block" set SECTIES=section_us30_orderblock_m1,section_us30_orderblock_m5
 if /i "%~1"=="m1" set SECTIES=section_us30_impulse_m1,section_us30_orderblock_m1
 if /i "%~1"=="m5" set SECTIES=section_us30_impulse_m5,section_us30_orderblock_m5
+if /i "%~1"=="vast" set EXITS=--fixed-exits
+if /i "%~1"=="vast" set EXITNAAM=VAST -- stop en target, verder niets
+if /i "%~1"=="vast" set CSVTAG=-vast
 shift
 goto lees
 :klaar
@@ -81,6 +92,16 @@ echo    us30.cmd 180 impuls   alleen de twee impulse-retest secties
 echo    us30.cmd 180 block    alleen de twee order-block secties
 echo    us30.cmd 180 m1       alleen de twee M1-secties
 echo    us30.cmd 180 m5       alleen de twee M5-secties
+echo    us30.cmd 180 vast     zonder beheer: alleen instapstop en target
+echo.
+echo  UITSTAP: %EXITNAAM%
+echo.
+echo  `vast` HAALT AL HET BEHEER WEG -- geen break-even, geen partial, geen
+echo  trailing, geen profit lock, geen peak-stall, geen tijdsexit, geen
+echo  avondsluiting. Alleen de instapstop en het target. Dat is de eerlijke
+echo  vraag voor een nieuw mechanisme: verdient de INSTAP geld, of komt het
+echo  van een regel die er achteraf overheen ligt. Alleen de replay verandert;
+echo  aan de live rekening wordt niets aangeraakt.
 echo.
 echo  MT5 moet draaien en ingelogd zijn, met US30 zichtbaar in Market Watch.
 echo.
@@ -93,7 +114,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAGEN% --section-markets --only %SECTIES% --jarvis-replay --csv runtime\us30.csv
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAGEN% --section-markets --only %SECTIES% --jarvis-replay %EXITS% --csv runtime\us30%CSVTAG%.csv
 
 if errorlevel 1 (
   echo.
@@ -102,8 +123,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo  Elke afzonderlijke beslissing staat in runtime\us30.csv
-echo  Opnieuw lezen zonder opnieuw te rekenen:  lees.cmd runtime\us30.csv
+echo  Elke afzonderlijke beslissing staat in runtime\us30%CSVTAG%.csv
+echo  Opnieuw lezen zonder opnieuw te rekenen:  lees.cmd runtime\us30%CSVTAG%.csv
 echo.
 echo  WAT JE MOET LEZEN, in deze volgorde:
 echo    1. BY SECTION -- trades, R en EUR per sectie afzonderlijk.

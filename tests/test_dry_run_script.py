@@ -48,9 +48,14 @@ def cmd_argv(launcher: str, **values: str) -> list[str]:
     line = next(ln for ln in launcher.splitlines() if "scripts.dry_run_sections" in ln)
     argv: list[str] = []
     for token in line.split("scripts.dry_run_sections", 1)[1].split():
-        if token.startswith("%") and token.endswith("%"):
-            assert token in values, f"the launcher uses {token} and this test does not set it"
-            token = values[token]
+        # SUBSTITUTED WHEREVER IT APPEARS, not only when the whole argument is
+        # one variable. `runtime\\us30%CSVTAG%.csv` is one token containing a
+        # variable, and treating that as a literal filename is exactly the
+        # silent-empty-variable failure this helper exists to catch -- it would
+        # have let two different measurements share one output file.
+        for marker in set(re.findall(r"%[A-Z_][A-Z0-9_]*%", token)):
+            assert marker in values, f"the launcher uses {marker} and this test does not set it"
+            token = token.replace(marker, values[marker])
         # THE SPLIT HAPPENS AFTER EXPANSION, which is the third cmd behaviour
         # that matters here. `%CLOCKS%` holding "M1 M5" becomes two arguments,
         # not one argument containing a space -- and a helper that produced
@@ -4274,3 +4279,245 @@ class TestASilentSectionSaysWhichSilenceItIs:
         assert "old" in reasons["stale"]
         # The legs are present and current; the gap simply is not there.
         assert "gap" in reasons["quiet"]
+
+
+class TestSymbolsAreSpelledTheWayTheBrokerSpellsThem:
+    """`--symbols US30` on a broker that lists `US30.i`.
+
+    Every other way of choosing a universe reads names FROM the broker, so
+    they arrive suffixed. `--symbols` is the one path from the command line
+    straight to the fetch, and an unresolved name there does not raise: it
+    prints "no history" and yields a report with no rows, which is
+    indistinguishable from a strategy that found nothing. That is the same
+    suffix mismatch that has silently disabled four things in this project,
+    so these tests pin the BEHAVIOUR (a typed name reaches the catalogue's
+    spelling) rather than any particular list of markets.
+    """
+
+    @staticmethod
+    def _settings():
+        # THE EIGHTCAP OVERLAY, because that is where `symbol_suffix: ".i"`
+        # lives. Against the default config the suffix is empty, the resolve
+        # is a no-op, and the one test that matters here SKIPPED -- which is
+        # exactly the shape of proof this bug keeps hiding behind.
+        from config.loader import load_settings
+
+        return load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+
+    @staticmethod
+    def _connector(*names):
+        class _Cat:
+            def symbols(self):
+                return [type("S", (), {"name": n})() for n in names]
+
+        return _Cat()
+
+    def test_a_plain_name_reaches_the_suffixed_market(self):
+        from scripts.dry_run_sections import _as_this_broker_spells_them
+
+        settings = self._settings()
+        suffix = settings.instruments.symbol_suffix
+        assert suffix, "the live overlay must carry a broker suffix for this to test anything"
+        assert _as_this_broker_spells_them(
+            ["US30"], self._connector(f"US30{suffix}"), settings
+        ) == [f"US30{suffix}"]
+
+    def test_an_already_correct_name_is_left_exactly_alone(self):
+        # The double-suffix half of the bug: `broker_symbol` on an already
+        # suffixed name produces `US30.i.i`, which the Control Deck shipped.
+        from scripts.dry_run_sections import _as_this_broker_spells_them
+
+        settings = self._settings()
+        suffix = settings.instruments.symbol_suffix
+        listed = f"US30{suffix}"
+        assert _as_this_broker_spells_them(
+            [listed], self._connector(listed), settings
+        ) == [listed]
+
+    def test_a_name_this_broker_does_not_list_is_returned_as_typed(self):
+        # So the fetch loop's per-symbol failure names what the operator
+        # wrote, not a suffix this code invented for them.
+        from scripts.dry_run_sections import _as_this_broker_spells_them
+
+        assert _as_this_broker_spells_them(
+            ["NOTAMARKET"], self._connector("EURUSD.i"), self._settings()
+        ) == ["NOTAMARKET"]
+
+    def test_no_catalogue_means_no_rewriting(self):
+        from scripts.dry_run_sections import _as_this_broker_spells_them
+
+        class _Broken:
+            def symbols(self):
+                raise RuntimeError("terminal not connected")
+
+        settings = self._settings()
+        assert _as_this_broker_spells_them(["US30"], _Broken(), settings) == ["US30"]
+        assert _as_this_broker_spells_them(["US30"], self._connector(), settings) == ["US30"]
+
+    def test_the_symbols_branch_actually_calls_it(self):
+        # The defect class this repository keeps producing is a correct helper
+        # that nothing on the live path calls. Pin the wiring, not the helper.
+        branch = SOURCE.split("if args.symbols:", 1)[1].split("elif args.core:", 1)[0]
+        assert "_as_this_broker_spells_them" in branch
+
+    def test_the_requested_market_launchers_name_markets_this_resolves(self):
+        # `replay_requested_markets` hardcodes plain names. That is fine ONLY
+        # because the branch above resolves them; if that ever stops being
+        # true this test is what says so.
+        from scripts.replay_requested_markets import commands
+
+        named = {
+            argv[argv.index("--symbols") + 1]
+            for kind in ("us30", "s5")
+            for argv in commands(kind, 30)
+            if "--symbols" in argv
+        }
+        assert named, "the launchers pass no --symbols at all any more"
+        settings = self._settings()
+        for name in named:
+            assert settings.instruments.canonical_symbol(name) == name, (
+                f"{name} is already a broker spelling; the launcher should pass the canonical one"
+            )
+
+
+class TestAFixedExitReplayReallyRemovesEveryManager:
+    """`--fixed-exits`: entry stop and target, and nothing else touches it.
+
+    The owner asked for this after seeing a gold M1 trade sit at +EUR 1.60 and
+    give it all back. The question underneath is whether a mechanism's ENTRY
+    earns anything, or whether the number comes from a rule laid over the top
+    afterwards -- and that question is only answered if the flag removes ALL
+    of them. A flag that removed three of four and printed "no management"
+    would answer a question nobody asked, convincingly.
+
+    So these pin the four independent ways management can survive: the
+    account-wide break-even rule, a section's own shadow override, the full
+    replay manager, and the evening flatten.
+    """
+
+    @staticmethod
+    def _args(*extra):
+        from scripts.dry_run_sections import build_parser
+
+        return build_parser().parse_args(
+            ["--days", "30", "--only", "section_us30_impulse_m1", "--jarvis-replay", *extra]
+        )
+
+    def test_the_account_wide_break_even_rule_is_gone(self):
+        from config.loader import load_settings
+        from scripts.dry_run_sections import _break_even_rule
+
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        assert _break_even_rule(settings) is not None, (
+            "this config has no break-even rule at all, so this test proves nothing"
+        )
+        stripped = settings.model_copy(
+            update={
+                "trade_management": settings.trade_management.model_copy(
+                    update={"break_even_at_r": 0.0}
+                )
+            }
+        )
+        assert _break_even_rule(stripped) is None
+
+    def test_main_actually_strips_it_rather_than_only_defining_the_flag(self):
+        # The wiring, not the helper. A correct rule that no live path reaches
+        # is the defect this repository produces most often.
+        block = SOURCE.split("if args.fixed_exits:", 2)[2]
+        assert "break_even_at_r" in block.split("settings = settings.model_copy(", 2)[1]
+
+    def test_a_sections_own_shadow_override_cannot_put_it_back(self):
+        # Three sections carry `shadow_break_even_at_r`. Zeroing the account
+        # rule does not touch them, so the loop has to refuse it explicitly.
+        guard = SOURCE.split("shadow_trigger is not None", 1)[1].split("\n", 1)[0]
+        assert "args.fixed_exits" in guard
+
+    def test_the_full_replay_manager_is_switched_off(self):
+        # `_one_clock` reads one field to decide this; the flag must set it.
+        # A WINDOW, NOT A SPLIT ON ")". The expression contains its own
+        # brackets, so splitting on the first one cut it in half and the test
+        # failed against code that was correct.
+        row = SOURCE.split("args.btc_jarvis_replay or args.jarvis_replay,", 1)[1][:800]
+        assert 'args.s5_exit or ("fixed" if args.fixed_exits else "")' in row
+        assert 'full_replay_management = jarvis_replay and not comparison_exit' in SOURCE
+
+    def test_the_evening_flatten_is_a_time_exit_and_goes_too(self):
+        guard = SOURCE.split("if comment.casefold() in flattened", 1)[1].split(":", 1)[0]
+        assert "not args.fixed_exits" in guard
+
+    def test_it_is_refused_where_it_would_be_a_no_op(self):
+        # Without --jarvis-replay there is no management to remove, so the run
+        # would print a comparison it never made.
+        from scripts.dry_run_sections import build_parser, main
+
+        args = build_parser().parse_args(
+            ["--days", "30", "--only", "section_us30_impulse_m1", "--fixed-exits"]
+        )
+        assert args.fixed_exits and not args.jarvis_replay
+        with pytest.raises(SystemExit):
+            main(["--days", "30", "--only", "section_us30_impulse_m1", "--fixed-exits"])
+
+    def test_it_refuses_to_share_the_field_with_the_s5_comparison(self):
+        from scripts.dry_run_sections import main
+
+        with pytest.raises(SystemExit):
+            main(
+                [
+                    "--days", "30", "--only", "section_five_ndx100_m5",
+                    "--jarvis-replay", "--s5-exit", "fixed", "--fixed-exits",
+                ]
+            )
+
+    def test_neither_guard_reaches_the_broker_or_the_config(self):
+        # A refusal has to happen before login, or the operator waits for a
+        # connection to be told the arguments were wrong.
+        from unittest.mock import patch
+
+        from scripts.dry_run_sections import main
+
+        with patch("scripts.dry_run_sections.load_settings") as load:
+            with pytest.raises(SystemExit):
+                main(["--days", "30", "--only", "section_us30_impulse_m1", "--fixed-exits"])
+            load.assert_not_called()
+
+    def test_the_launcher_offers_it_and_writes_its_own_file(self):
+        launcher = (ROOT / "us30.cmd").read_text(encoding="utf-8")
+        assert "--fixed-exits" in launcher
+        # TWO STANDS, TWO FILES. Sharing runtime\us30.csv would let the second
+        # run overwrite the first, and cmd expands an unset %CSVTAG% to
+        # nothing at all rather than failing.
+        assert "set CSVTAG=" in launcher
+        assert 'if /i "%~1"=="vast" set CSVTAG=-vast' in launcher
+        argv = cmd_argv(
+            launcher,
+            **{
+                "%DAGEN%": "180",
+                "%SECTIES%": "section_us30_impulse_m1",
+                "%EXITS%": "--fixed-exits",
+                "%CSVTAG%": "-vast",
+            },
+        )
+        parsed = build_parser_for_launcher(argv)
+        assert parsed.fixed_exits and parsed.jarvis_replay
+        assert parsed.csv.endswith("us30-vast.csv")
+
+    def test_the_default_stand_is_still_the_configured_one(self):
+        launcher = (ROOT / "us30.cmd").read_text(encoding="utf-8")
+        argv = cmd_argv(
+            launcher,
+            **{
+                "%DAGEN%": "180",
+                "%SECTIES%": "section_us30_impulse_m1",
+                "%EXITS%": "",
+                "%CSVTAG%": "",
+            },
+        )
+        parsed = build_parser_for_launcher(argv)
+        assert not parsed.fixed_exits
+        assert parsed.csv.endswith("us30.csv")
+
+
+def build_parser_for_launcher(argv):
+    from scripts.dry_run_sections import build_parser
+
+    return build_parser().parse_args(argv)
