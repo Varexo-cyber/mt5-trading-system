@@ -2912,13 +2912,15 @@ class TestTheBreakEvenGridComparesExitsAndNotEntries:
             "TRADE",
             result_r=fixed,
             grid_r=tuple(
-                (label, value)
-                for (label, _t, _l), value in zip(MANAGE_GRID, grid_values, strict=True)
+                (variant.label, value)
+                for variant, value in zip(MANAGE_GRID, grid_values, strict=True)
             ),
         )
 
     def _rows(self, count=40):
         from datetime import UTC, datetime, timedelta
+
+        from scripts.dry_run_sections import MANAGE_GRID
 
         base = datetime(2026, 3, 1, tzinfo=UTC)
         made = []
@@ -2926,7 +2928,9 @@ class TestTheBreakEvenGridComparesExitsAndNotEntries:
             fixed = 1.5 if index % 3 == 0 else -1.0
             # Break-even scratches every loser and half the winners.
             managed = 0.0 if fixed < 0 or index % 6 == 0 else fixed
-            made.append(self._row(base + timedelta(days=index), fixed, [managed] * 6))
+            made.append(
+                self._row(base + timedelta(days=index), fixed, [managed] * len(MANAGE_GRID))
+            )
         return made
 
     def test_every_level_is_reported_beside_the_fixed_baseline(self, capsys) -> None:
@@ -2936,8 +2940,8 @@ class TestTheBreakEvenGridComparesExitsAndNotEntries:
         out = capsys.readouterr().out
 
         assert "fixed SL/TP" in out, "the baseline the levels are judged against is missing"
-        for label, _trigger, _lock in MANAGE_GRID:
-            assert label in out, f"{label} was measured and not printed"
+        for variant in MANAGE_GRID:
+            assert variant.label in out, f"{variant.label} was measured and not printed"
 
     def test_both_halves_of_the_period_are_shown(self, capsys) -> None:
         """Picking the best of seven columns on one sample is how this project
@@ -2974,10 +2978,12 @@ class TestTheBreakEvenGridComparesExitsAndNotEntries:
         section six and section ten together answers neither."""
         from datetime import UTC, datetime, timedelta
 
+        from scripts.dry_run_sections import MANAGE_GRID
+
         rows = self._rows()
         base = datetime(2026, 3, 1, tzinfo=UTC)
         for index in range(20):
-            row = self._row(base + timedelta(days=index), -1.0, [0.0] * 6)
+            row = self._row(base + timedelta(days=index), -1.0, [0.0] * len(MANAGE_GRID))
             row.module = "section_six_gold_m5"
             rows.append(row)
 
@@ -2998,9 +3004,15 @@ class TestTheBreakEvenGridComparesExitsAndNotEntries:
         from scripts.dry_run_sections import MANAGE_GRID
 
         assert MANAGE_GRID
-        for label, trigger, lock in MANAGE_GRID:
-            assert 0.0 < trigger <= 2.0, label
-            assert 0.0 <= lock < trigger, label
+        moves = [v for v in MANAGE_GRID if v.kind == "break-even"]
+        assert moves, "the grid compares no break-even level at all"
+        for variant in moves:
+            assert 0.0 < variant.trigger_r <= 2.0, variant.label
+            # The lock is where the stop GOES; past the trigger it would sit
+            # beyond the price that armed it.
+            assert 0.0 <= variant.lock_r < variant.trigger_r, variant.label
+            assert variant.lock_atr >= 0.0, variant.label
+            assert not (variant.lock_r and variant.lock_atr), variant.label
 
 
 class TestSectionTenRunsOnlyWhereItCanTrade:
@@ -4521,3 +4533,391 @@ def build_parser_for_launcher(argv):
     from scripts.dry_run_sections import build_parser
 
     return build_parser().parse_args(argv)
+
+
+class TestTheExitGridComparesEveryWayOfManagingATrade:
+    """`beheer.cmd` / `--exit-grid`: which exit rule is best, per section.
+
+    The owner asked to measure "ELKE MOGELIJKHEID" -- every break-even
+    trigger, every stop placement, trailing, partials -- and to be told which
+    one wins. The measuring is the easy half. The half that decides whether
+    this costs him money is the verdict: comparing thirty rules and keeping
+    the best is thirty chances to be fooled, and a section here holds about
+    150 trades. So these tests pin the guard as hard as the arithmetic.
+    """
+
+    @staticmethod
+    def _rows(count, variants, edge_for=None, edge=0.0, seed=11):
+        import random
+        from datetime import UTC, datetime, timedelta
+
+        from scripts.dry_run_sections import Decision
+
+        rng = random.Random(seed)
+        base = datetime(2026, 3, 1, tzinfo=UTC)
+        made = []
+        for index in range(count):
+            fixed = rng.choice([-1.0, -1.0, 2.0])
+            grid = []
+            for variant in variants:
+                if variant.kind == "fixed":
+                    grid.append((variant.label, fixed))
+                elif edge_for and variant.label == edge_for:
+                    grid.append((variant.label, fixed + edge + rng.gauss(0, 0.05)))
+                else:
+                    grid.append((variant.label, fixed + rng.gauss(0, 0.25)))
+            made.append(
+                Decision(
+                    base + timedelta(hours=index),
+                    "XAUUSD.i",
+                    "section_ten_gold_m1",
+                    "TRADE",
+                    result_r=fixed,
+                    grid_r=tuple(grid),
+                )
+            )
+        return made
+
+    # -- what is compared ---------------------------------------------------
+
+    def test_the_triggers_the_owner_named_are_all_there(self):
+        from scripts.dry_run_sections import BREAK_EVEN_TRIGGERS
+
+        for asked in (0.10, 0.15, 0.20, 0.25, 0.35, 0.50):
+            assert any(abs(t - asked) < 1e-9 for t in BREAK_EVEN_TRIGGERS), asked
+
+    def test_stops_are_placed_in_r_and_in_atr(self):
+        # The live rule is an ATR offset, and an ATR offset is NOT a fixed
+        # fraction of the stop -- 0.10 ATR is about 0.44R on section six's M5
+        # stop and nearer 0.10R on an H1 one. Measuring only R would answer a
+        # question this account does not ask.
+        from scripts.dry_run_sections import exit_grid
+
+        moves = [v for v in exit_grid(wide=True) if v.kind == "break-even"]
+        assert any(v.lock_atr > 0 for v in moves), "no ATR-based stop placement is compared"
+        assert any(v.lock_r > 0 for v in moves), "no R-based stop placement is compared"
+        assert any(v.lock_r == 0 and v.lock_atr == 0 for v in moves), "no stop-at-entry row"
+
+    def test_trailing_and_partials_are_compared_too(self):
+        from scripts.dry_run_sections import exit_grid
+
+        labels = [v.label for v in exit_grid(wide=True) if v.kind == "mechanism"]
+        assert any(label.startswith("trail") for label in labels)
+        assert any(label.startswith("part") for label in labels)
+        assert any(label.startswith("lock") for label in labels)
+
+    def test_wide_is_a_superset_of_narrow(self):
+        from scripts.dry_run_sections import exit_grid
+
+        narrow = {v.label for v in exit_grid(wide=False)}
+        assert narrow < {v.label for v in exit_grid(wide=True)}
+
+    def test_no_rule_puts_its_stop_on_the_price_that_arms_it(self):
+        # "Move to +0.1R once the trade is +0.1R" is an instant exit at the
+        # trigger, not a break-even rule, and it would have sat in the table
+        # as a plausible row that always scratches.
+        from scripts.dry_run_sections import exit_grid
+
+        for variant in exit_grid(wide=True):
+            if variant.kind == "break-even":
+                assert variant.lock_r < variant.trigger_r, variant.label
+
+    def test_every_label_is_unique(self):
+        # The report reads results back BY LABEL. Two rules sharing one would
+        # silently report the first one's numbers for both.
+        from scripts.dry_run_sections import exit_grid
+
+        for wide in (False, True):
+            labels = [v.label for v in exit_grid(wide=wide)]
+            assert len(labels) == len(set(labels))
+
+    # -- isolation ----------------------------------------------------------
+
+    def test_a_mechanism_row_switches_on_only_what_it_names(self):
+        from config.loader import load_settings
+        from scripts.dry_run_sections import _variant_management, exit_grid
+
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        base = settings.trade_management
+        trail = next(v for v in exit_grid(wide=True) if v.label.startswith("trail 2.0A"))
+        built = _variant_management(base, trail)
+
+        assert built.trailing_mode == "atr" and built.trailing_atr_multiple == 2.0
+        # Everything else is a threshold the trade can never reach.
+        assert built.break_even_at_r >= 99.0
+        assert built.profit_lock_from_r >= 99.0
+        assert built.peak_stall_arm_r >= 99.0
+        assert built.giveback_arm_r >= 99.0
+        assert built.capital_protection_at_equity_pct == 0.0
+
+    def test_the_built_config_is_validated_and_not_just_copied(self):
+        # `model_copy(update=...)` writes past pydantic, so an out-of-bounds
+        # value would be accepted here and only misbehave later inside the bar
+        # walk as a threshold that is quietly never reached.
+        from config.loader import load_settings
+        from scripts.dry_run_sections import ExitVariant, _variant_management
+
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        from pydantic import ValidationError
+
+        bad = ExitVariant(label="impossible", manage_fields=(("partial_close_fraction", 5.0),))
+        with pytest.raises(ValidationError):
+            _variant_management(settings.trade_management, bad)
+
+    def test_trailing_rows_do_not_also_take_a_partial(self):
+        # The two share `partial_close_at_r` as their arm, so without this the
+        # trailing rows would quietly be measuring trail-plus-partial.
+        from scripts.dry_run_sections import exit_grid
+
+        for variant in exit_grid(wide=True):
+            if variant.label.startswith("trail"):
+                assert not variant.partial, variant.label
+            if variant.label.startswith("part"):
+                assert variant.partial, variant.label
+
+    # -- the verdict, which is the part that protects the account -----------
+
+    def test_pure_noise_produces_no_winner(self, capsys):
+        """150 trades, 29 rules, and nothing but noise between them.
+
+        SEED 2 IS CHOSEN, NOT ARBITRARY. On it the best of the 29 reaches a
+        paired t of 2.17 and leads in BOTH halves -- so it clears the naive
+        two-sided 5% bar of 1.96 and every hurdle except the one raised for
+        having tried 29 rules. That makes this test fail the moment the
+        correction is weakened, which a seed with a quieter winner would not:
+        it would pass for the wrong reason and prove nothing.
+        """
+        from scripts.dry_run_sections import _manage_grid_report, exit_grid
+
+        variants = exit_grid(wide=False)
+        _manage_grid_report(self._rows(150, variants, seed=2), variants)
+        out = capsys.readouterr().out
+        assert "keep the exit as configured" in out
+        assert "<-- best" not in out
+        assert "beats the fixed exit" not in out
+        # The refusal has to say it was best-of-many that disqualified it, or
+        # the reader will go back to the table and pick the biggest number.
+        assert "best-of-" in out
+
+    def test_a_real_edge_is_found(self, capsys):
+        from scripts.dry_run_sections import _manage_grid_report, exit_grid
+
+        variants = exit_grid(wide=False)
+        rows = self._rows(150, variants, edge_for="BE@0.35R", edge=0.30)
+        _manage_grid_report(rows, variants)
+        out = capsys.readouterr().out
+        assert "VERDICT: BE@0.35R beats the fixed exit" in out
+        assert "Not live yet" in out
+
+    def test_the_bar_rises_with_the_number_of_rules_tried(self):
+        # This is the whole guard. A single pre-registered rule needs t>1.96;
+        # the best of thirty needs far more, or best-of-N noise ships.
+        from scripts.dry_run_sections import _bonferroni_t
+
+        assert _bonferroni_t(1) == pytest.approx(1.96, abs=0.01)
+        assert _bonferroni_t(29) > 3.0
+        assert _bonferroni_t(63) > _bonferroni_t(29)
+
+    def test_a_rule_that_wins_in_only_one_half_is_refused(self, capsys):
+        from datetime import UTC, datetime, timedelta
+
+        from scripts.dry_run_sections import Decision, _manage_grid_report, exit_grid
+
+        variants = exit_grid(wide=False)
+        target = "BE@0.25R"
+        base = datetime(2026, 3, 1, tzinfo=UTC)
+        rows = []
+        for index in range(150):
+            fixed = -1.0
+            # Enormous edge, but only in the early 60% of the period.
+            lift = 5.0 if index < 90 else -0.2
+            grid = []
+            for v in variants:
+                if v.kind == "fixed" or v.label != target:
+                    grid.append((v.label, fixed))
+                else:
+                    grid.append((v.label, fixed + lift))
+            rows.append(
+                Decision(
+                    base + timedelta(hours=index),
+                    "XAUUSD.i",
+                    "section_ten_gold_m1",
+                    "TRADE",
+                    result_r=fixed,
+                    grid_r=tuple(grid),
+                )
+            )
+        _manage_grid_report(rows, variants)
+        out = capsys.readouterr().out
+        assert "not in both halves" in out
+        assert "beats the fixed exit" not in out
+
+    def test_the_paired_t_is_paired(self):
+        # Unpaired, these two sets of trades have vast variance and no
+        # detectable difference; paired, the constant +0.20 is obvious. That
+        # difference is the entire reason the grid resolves identical entries.
+        from scripts.dry_run_sections import _paired_t
+
+        swings = [(-1.0 if i % 3 else 4.0) for i in range(60)]
+        # A constant improvement has no spread, so t is enormous -- not
+        # literally infinite, because summing floats leaves a variance around
+        # 1e-33 rather than a true zero.
+        assert _paired_t([0.20] * 60) > 1e6
+        assert _paired_t([s + 0.20 - s for s in swings]) > 1e6
+        # The same trades under both rules: no difference, and no evidence of
+        # one either.
+        assert _paired_t([0.0] * 60) == 0.0
+        # Too few observations is arithmetic, not evidence.
+        assert _paired_t([1.0, 1.0, 1.0]) == 0.0
+        # Sign is carried: a rule that consistently loses reads negative.
+        assert _paired_t([-0.20] * 60) < -1e6
+
+    def test_the_table_reads_results_by_label_not_by_position(self, capsys):
+        # Reading `grid_r[i]` against the grid's i-th entry means adding or
+        # reordering a rule silently relabels every column.
+        from scripts.dry_run_sections import _manage_grid_report, exit_grid
+
+        variants = exit_grid(wide=False)
+        rows = self._rows(60, variants, edge_for="BE@0.35R", edge=0.30)
+        shuffled = []
+        for row in rows:
+            row.grid_r = tuple(reversed(row.grid_r))
+            shuffled.append(row)
+        _manage_grid_report(shuffled, variants)
+        out = capsys.readouterr().out
+        # Same answer despite the stored order being reversed.
+        assert "BE@0.35R" in out and "keep the exit as configured" not in out
+
+    def test_a_measured_rule_missing_from_the_table_is_announced(self, capsys):
+        from scripts.dry_run_sections import _manage_grid_report, exit_grid
+
+        variants = exit_grid(wide=False)
+        rows = self._rows(40, variants)
+        for row in rows:
+            row.grid_r = (*row.grid_r, ("BE@9.99R invented", 0.5))
+        _manage_grid_report(rows, variants)
+        out = capsys.readouterr().out
+        assert "missing from this table" in out
+        assert "BE@9.99R invented" in out
+
+    # -- wiring -------------------------------------------------------------
+
+    def test_the_flag_builds_the_grid_and_the_walk_gets_it(self):
+        branch = SOURCE.split("exit_variants = (", 1)[1][:400]
+        assert 'args.exit_grid == "alles"' in branch
+        assert "args.manage_grid or args.exit_grid" in branch
+        assert "manage_grid=exit_variants," in SOURCE
+
+    def test_the_launcher_asks_for_the_grid_and_the_live_book(self):
+        launcher = (ROOT / "beheer.cmd").read_text(encoding="utf-8")
+        argv = cmd_argv(
+            launcher,
+            **{"%DAGEN%": "180", "%MARKTEN%": "--section-markets",
+               "%BOEK%": "--live-only", "%GRID%": "kern", "%CSVTAG%": ""},
+        )
+        parsed = build_parser_for_launcher(argv)
+        assert parsed.exit_grid == "kern"
+        assert parsed.jarvis_replay and parsed.live_only and parsed.section_markets
+        assert parsed.days == 180
+
+    def test_the_launcher_writes_a_separate_file_for_the_wide_grid(self):
+        launcher = (ROOT / "beheer.cmd").read_text(encoding="utf-8")
+        assert 'if /i "%~1"=="alles" set CSVTAG=-alles' in launcher
+        argv = cmd_argv(
+            launcher,
+            **{"%DAGEN%": "180", "%MARKTEN%": "--section-markets",
+               "%BOEK%": "--live-only", "%GRID%": "alles", "%CSVTAG%": "-alles"},
+        )
+        parsed = build_parser_for_launcher(argv)
+        assert parsed.exit_grid == "alles"
+        assert parsed.csv.endswith("beheer-alles.csv")
+
+    def test_the_biggest_total_is_named_when_it_is_not_the_pick(self, capsys):
+        """The owner asked which rule pays the MOST, and the verdict ranks on
+        consistency instead. Both belong on screen: hiding the fattest column
+        answers a different question than the one asked, and ranking on it
+        would ship the rule that got lucky on the biggest trades."""
+        from datetime import UTC, datetime, timedelta
+
+        from scripts.dry_run_sections import Decision, _manage_grid_report, exit_grid
+
+        variants = exit_grid(wide=False)
+        steady, spiky = "BE@0.25R", "BE@0.50R"
+        base = datetime(2026, 3, 1, tzinfo=UTC)
+        rows = []
+        for index in range(150):
+            fixed = -1.0
+            values = {}
+            # A small, relentless improvement.
+            values[steady] = fixed + 0.30
+            # One enormous windfall, nothing the rest of the time.
+            values[spiky] = fixed + (200.0 if index == 40 else 0.0)
+            grid = [
+                (v.label, values.get(v.label, fixed) if v.kind != "fixed" else fixed)
+                for v in variants
+            ]
+            rows.append(
+                Decision(
+                    base + timedelta(hours=index),
+                    "XAUUSD.i",
+                    "section_ten_gold_m1",
+                    "TRADE",
+                    result_r=fixed,
+                    grid_r=tuple(grid),
+                )
+            )
+        _manage_grid_report(rows, variants)
+        out = capsys.readouterr().out
+        assert f"Biggest total: {spiky}" in out
+        assert "not the pick" in out
+        assert f"VERDICT: {steady} beats the fixed exit" in out
+
+    def test_an_atr_lock_and_an_r_lock_really_differ_in_the_walk(self):
+        """`stop_offset` returns a PRICE, and the two kinds of lock have to
+        land the stop in different places or the ATR half of this grid is an
+        elaborate no-op printing a second copy of the R column."""
+        from datetime import UTC
+        from types import SimpleNamespace
+
+        import pandas as pd
+
+        from core.types import Direction
+        from scripts.dry_run_sections import ExitVariant, _resolve
+
+        index = pd.date_range("2026-06-01", periods=6, freq="min", tz=UTC)
+        # Runs to +0.6R, falls back through entry, and stops out.
+        frame = pd.DataFrame(
+            {
+                "high": [104, 106, 106, 101, 100, 100],
+                "low": [99, 103, 100, 99, 89, 89],
+                "close": [103, 105, 101, 100, 90, 90],
+            },
+            index=index,
+        )
+        idea = SimpleNamespace(direction=Direction.LONG, entry=100, stop_loss=90, take_profit=120)
+        risk_price, atr = 10.0, 20.0
+
+        def managed_r(variant):
+            _f, _fa, managed, _ma = _resolve(
+                frame,
+                index[0],
+                idea,
+                6,
+                manage=(variant.trigger_r, variant.stop_offset(risk_price, atr)),
+            )
+            return managed
+
+        at_entry = ExitVariant(label="e", trigger_r=0.25)
+        in_r = ExitVariant(label="r", trigger_r=0.25, lock_r=0.1)
+        in_atr = ExitVariant(label="a", trigger_r=0.25, lock_atr=0.10)
+
+        assert in_r.stop_offset(risk_price, atr) == pytest.approx(1.0)
+        assert in_atr.stop_offset(risk_price, atr) == pytest.approx(2.0)
+        # Unmanaged this trade loses its full R; each lock keeps more, and the
+        # ATR lock keeps more than the R lock because on this clock it is the
+        # wider offset.
+        fixed, _fa, _m, _ma = _resolve(frame, index[0], idea, 6)
+        assert fixed == pytest.approx(-1.0)
+        assert managed_r(at_entry) == pytest.approx(0.0)
+        assert managed_r(in_r) == pytest.approx(0.1)
+        assert managed_r(in_atr) == pytest.approx(0.2)
