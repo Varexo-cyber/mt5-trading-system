@@ -32,6 +32,12 @@ rem -- USDJPY.i voor sectie negen, XAUJPY voor elf, M30 en M15 erbij. Dat
 rem is nuttig als je wilt zien wat een sectie ZOU doen, en pure vertraging
 rem als je wilt weten wat de rekening doet. `schaduw` zet ze er weer bij.
 set BOEK=--live-only
+rem STAPELEN: hoeveel posities een sectie tegelijk in EEN markt mag hebben. 1 is
+rem de rekening. `stapel` zet er twee, `stapel3` drie -- alleen om te METEN wat
+rem sectie zes zou doen als hij niet op zijn eigen open goudpositie hoefde te
+rem wachten. Lees dan de TERUGVAL naast de R, niet de R alleen.
+set STAPEL=
+set CSVTAG=
 
 :lees
 if "%~1"=="" goto klaar
@@ -40,6 +46,10 @@ if /i "%~1"=="alles" set MARKTEN=
 if /i "%~1"=="all" set MARKTEN=
 if /i "%~1"=="kern" set MARKTEN=--core
 if /i "%~1"=="schaduw" set BOEK=
+if /i "%~1"=="stapel" set STAPEL=--legs-per-symbol 2
+if /i "%~1"=="stapel" set CSVTAG=-stapel2
+if /i "%~1"=="stapel3" set STAPEL=--legs-per-symbol 3
+if /i "%~1"=="stapel3" set CSVTAG=-stapel3
 shift
 goto lees
 :klaar
@@ -95,6 +105,14 @@ echo    hoeveel.cmd 90           90 dagen
 echo    hoeveel.cmd 180 schaduw  ook de secties die geen geld mogen gebruiken
 echo    hoeveel.cmd 180 kern     de zestien kernmarkten erbij
 echo    hoeveel.cmd 180 alles    elke markt die de scanner ziet (veel langer)
+echo    hoeveel.cmd 180 stapel   wat als een sectie TWEE posities per markt mocht
+echo    hoeveel.cmd 180 stapel3  ...of drie
+echo.
+echo  STAPELEN IS EEN METING, GEEN VOORSTEL. Sectie zes weigert een setup zolang
+echo  hij zelf al goud open heeft. Dat voelt als gemiste winst, en `stapel` zet
+echo  daar een getal onder. Lees dan WEL de terugval erbij: dezelfde model op
+echo  dezelfde markt op hetzelfde moment is geen tweede weddenschap, het is de
+echo  eerste in dubbele omvang. Meer R hoort daarbij en zegt op zichzelf niets.
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (
@@ -105,7 +123,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAGEN% %MARKTEN% %BOEK% --jarvis-replay --csv runtime\hoeveel.csv
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAGEN% %MARKTEN% %BOEK% --jarvis-replay %STAPEL% --csv runtime\hoeveel%CSVTAG%.csv
 
 if errorlevel 1 (
   echo.
@@ -115,6 +133,6 @@ if errorlevel 1 (
 
 echo.
 echo  Elke afzonderlijke beslissing, een regel per stuk, staat in
-echo  runtime\hoeveel.csv
+echo  runtime\hoeveel%CSVTAG%.csv
 echo.
 pause

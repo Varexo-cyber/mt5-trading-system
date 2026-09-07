@@ -2865,51 +2865,93 @@ class TestASectionThatTookNothingStillHasARow:
 
 
 class TestTheExitsAreNotModelledEither:
-    """The eight entry gates were only half the gap.
+    """What the account replay applies after entry, and what it still cannot.
 
-    `_resolve` simulates exactly one exit rule -- the break-even move -- and
-    `TradeManagementConfig` carries a dozen more that fire on every open
-    position. A dry-run +1.00R is a trade that ran to target untouched; live,
-    half of it came off at 1.5R and the rest trailed out somewhere else.
+    THIS CLASS USED TO ASSERT THE OPPOSITE OF THE TRUTH. It required
+    `partial_close_at_r` to appear in the "not modelled" list -- and
+    `--jarvis-replay` hands `_resolve` the live `TradeManagementConfig`, which
+    walks partials, the ATR trail, the profit lock, give-back, peak-stall and
+    the time exit bar by bar. Six rules the replay applies were being disowned
+    on screen, and the test was holding that mislabel in place.
+
+    That is the repository's most repeated defect running backwards: instead of
+    claiming a check it does not perform, the report denied six it does. It
+    made the measurement read as far cruder than it is.
     """
 
-    def test_every_named_rule_is_real_and_switched_on(self) -> None:
+    def test_every_named_rule_is_real_in_both_lists(self) -> None:
         """A list of rules that do not exist would be worse than no list."""
         from config.loader import DEFAULT_CONFIG_PATH, load_settings
-        from scripts.dry_run_sections import EXITS_NOT_MODELLED
+        from scripts.dry_run_sections import (
+            EXITS_MODELLED_UNDER_FULL_MANAGEMENT,
+            EXITS_NOT_MODELLED,
+        )
 
         settings = load_settings(
             DEFAULT_CONFIG_PATH, overlay="config/eightcap.yaml", env_overrides=False
         )
         management = settings.trade_management
 
-        for name, _what in EXITS_NOT_MODELLED:
+        for name, _what in (*EXITS_NOT_MODELLED, *EXITS_MODELLED_UNDER_FULL_MANAGEMENT):
             field = name.split()[0].rstrip("*")
-            if field.endswith("_"):
-                assert any(f.startswith(field) for f in type(management).model_fields), name
-            else:
-                assert hasattr(management, field), f"{field} is not a real setting"
+            assert hasattr(management, field), f"{field} is not a real setting"
 
-    def test_break_even_is_the_one_that_IS_modelled_and_is_not_in_the_list(self) -> None:
+    def test_no_rule_is_claimed_as_both_applied_and_missing(self) -> None:
+        from scripts.dry_run_sections import (
+            EXITS_MODELLED_UNDER_FULL_MANAGEMENT,
+            EXITS_NOT_MODELLED,
+        )
+
+        applied = {name.split()[0] for name, _ in EXITS_MODELLED_UNDER_FULL_MANAGEMENT}
+        missing = {name.split()[0] for name, _ in EXITS_NOT_MODELLED}
+        assert not (applied & missing)
+
+    def test_the_rules_resolve_actually_reads_are_on_the_applied_side(self) -> None:
+        """`_resolve`'s full-management branch reads these fields by name. If a
+        field it reads is listed as NOT modelled, the contract is lying about
+        the number printed under it."""
+        from scripts.dry_run_sections import EXITS_NOT_MODELLED
+
+        body = SOURCE.split("def _resolve(", 1)[1].split("\ndef ", 1)[0]
+        for name, _what in EXITS_NOT_MODELLED:
+            field = name.split()[0]
+            assert f"full_management.{field}" not in body, (
+                f"{field} is listed as not modelled and _resolve reads it"
+            )
+
+    def test_break_even_is_modelled_and_is_not_in_the_missing_list(self) -> None:
         from scripts.dry_run_sections import EXITS_NOT_MODELLED
 
         named = " ".join(name for name, _ in EXITS_NOT_MODELLED)
-
         assert "break_even_at_r" not in named
-        assert "partial_close_at_r" in named
+        assert "partial_close_at_r" not in named, (
+            "the replay walks the partial; listing it as missing understates the run"
+        )
 
-    def test_the_report_prints_them(self, capsys) -> None:
-        from scripts.dry_run_sections import _gates_this_run_does_not_apply
+    def test_the_report_prints_both_sides(self, capsys) -> None:
+        """Both lists, and on the right side of the sentence. Printing only the
+        missing three would understate the run; printing only the applied six
+        would overstate it."""
+        from scripts.dry_run_sections import (
+            EXITS_MODELLED_UNDER_FULL_MANAGEMENT,
+            EXITS_NOT_MODELLED,
+            _gates_this_run_does_not_apply,
+        )
 
         _gates_this_run_does_not_apply()
-        out = capsys.readouterr().out
+        out = capsys.readouterr().out.casefold()
 
-        assert "AND THE EXITS" in out
-        assert "partial_close_at_r" in out
-        assert "trailing_mode" in out
+        assert "and the exits" in out
         assert "fixed-exit" in out
-        assert "broker barriers" in out
-        assert "configured pause flatten" in out
+        applied, missing = out.split("still cannot apply", 1)
+        for name, _what in EXITS_MODELLED_UNDER_FULL_MANAGEMENT:
+            field = name.split()[0].casefold()
+            assert field in applied, f"{field} is applied and is not printed as applied"
+        for name, _what in EXITS_NOT_MODELLED:
+            field = name.split()[0].casefold()
+            assert field in missing, f"{field} is missing and is not printed as missing"
+        # The within-bar ordering is the honest remaining caveat and has to stay.
+        assert "unknowable" in out
 
 
 class TestTheBreakEvenGridComparesExitsAndNotEntries:
@@ -5347,13 +5389,113 @@ class TestTheSharedBookCountsPositionsAndNamesItsRefusals:
         for row in rows:
             if row not in taken:
                 assert id(row) in refused, "a refusal with no name reads as an oversight"
-        # And the caller has a printable sentence for each one it can produce.
-        block = SOURCE.split("refused_because = _under_the_slot_cap", 1)[1][:1200]
+        # AND THE CALLER HAS A SENTENCE FOR EACH ONE. Read from the `why` map
+        # itself rather than from a window of characters after the call: the
+        # window version broke the moment an unrelated print was added above
+        # it, which is a test that fails for the wrong reason.
+        table = SOURCE.split("        why = {", 1)[1].split("\n        }", 1)[0]
         for name in ("SYMBOL_ALREADY_HELD", "SYMBOL_HELD_BY_ANOTHER_SECTION",
                      "ACCOUNT_POSITION_LIMIT"):
-            assert name in block, f"{name} can be produced and the report cannot name it"
+            assert name in table, f"{name} can be produced and the report cannot name it"
+        # Every reason the walk can emit must be in that map, or the caller
+        # raises a KeyError on a real run instead of printing a refusal.
+        emitted = set(re.findall(r'refused\[id\(trade\)\] = \(?\s*"([A-Z_]+)"', SOURCE))
+        for name in emitted:
+            assert name in table, f"{name} is emitted and has no sentence"
 
     def test_the_contract_no_longer_calls_every_refusal_a_missing_slot(self):
         assert "arrived with no slot free" not in SOURCE, (
             "that sentence blamed the slot count for refusals it never made"
         )
+
+    def test_stacking_is_measurable_and_off_by_default(self):
+        """The owner's question: is section six leaving money on the table by
+        refusing a setup while it already holds gold?
+
+        The honest answer is a number, not an argument -- and the number has to
+        be read with the drawdown, because stacking the same model on the same
+        market at the same time is not a second bet, it is the first one at a
+        larger size.
+        """
+        from scripts.dry_run_sections import _under_the_slot_cap, build_parser
+
+        assert build_parser().parse_args(["--days", "30"]).legs_per_symbol == 1, (
+            "the account holds one position per section per symbol; that is the default"
+        )
+        rows = self._rows(
+            [(m, "section_six_gold_m5", "XAUUSD.i", 60, "LONG") for m in range(0, 300, 5)]
+        )
+        counts = {
+            legs: len(
+                _under_the_slot_cap(rows, 100, share_between_sections=True, legs_per_symbol=legs)[0]
+            )
+            for legs in (1, 2, 3)
+        }
+        assert counts[2] > counts[1] and counts[3] > counts[2], counts
+
+    def test_stacking_never_escapes_the_account_cap(self):
+        """More legs may not buy more positions than the book allows -- that
+        would measure an account nobody could have held."""
+        from scripts.dry_run_sections import _under_the_slot_cap
+
+        rows = self._rows([(m, "s", "XAUUSD.i", 600, "LONG") for m in range(6)])
+        taken, refused = _under_the_slot_cap(
+            rows, 2, share_between_sections=True, legs_per_symbol=99
+        )
+        assert len(taken) == 2
+        assert set(refused.values()) == {"ACCOUNT_POSITION_LIMIT"}
+
+    def test_stacking_does_not_let_a_section_join_against_itself(self):
+        """A second leg is the same idea again, not the opposite one. Allowing
+        a stacked short under a stacked long would be flat exposure bought with
+        two spreads."""
+        from scripts.dry_run_sections import _under_the_slot_cap
+
+        rows = self._rows(
+            [
+                (0, "s", "XAUUSD.i", 600, "LONG"),
+                (1, "s", "XAUUSD.i", 600, "SHORT"),
+            ]
+        )
+        taken, _why = _under_the_slot_cap(
+            rows, 10, share_between_sections=True, legs_per_symbol=3, refuse_opposite=True
+        )
+        assert len(taken) == 1
+
+    def test_the_launcher_offers_it_and_says_what_to_read(self):
+        launcher = (ROOT / "hoeveel.cmd").read_text(encoding="utf-8")
+        assert "--legs-per-symbol 2" in launcher
+        assert "stapel3" in launcher
+        # It must warn, in the launcher itself, that more R is expected and
+        # means nothing alone. The number gets screenshotted; the caveat does
+        # not travel with it unless it is on the same screen.
+        assert "terugval" in launcher.casefold()
+        argv = cmd_argv(
+            launcher,
+            **{
+                "%DAGEN%": "180",
+                "%MARKTEN%": "--section-markets",
+                "%BOEK%": "--live-only",
+                "%STAPEL%": "--legs-per-symbol 2",
+                "%CSVTAG%": "-stapel2",
+            },
+        )
+        parsed = build_parser_for_launcher(argv)
+        assert parsed.legs_per_symbol == 2
+        assert parsed.csv.endswith("hoeveel-stapel2.csv")
+
+    def test_the_plain_launcher_still_measures_the_account(self):
+        launcher = (ROOT / "hoeveel.cmd").read_text(encoding="utf-8")
+        argv = cmd_argv(
+            launcher,
+            **{
+                "%DAGEN%": "180",
+                "%MARKTEN%": "--section-markets",
+                "%BOEK%": "--live-only",
+                "%STAPEL%": "",
+                "%CSVTAG%": "",
+            },
+        )
+        parsed = build_parser_for_launcher(argv)
+        assert parsed.legs_per_symbol == 1
+        assert parsed.csv.endswith("hoeveel.csv")
