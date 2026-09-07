@@ -21,19 +21,42 @@ set DAGEN=180
 set MARKTEN=--section-markets
 set BOEK=--live-only
 set GRID=kern
-set CSVTAG=
+rem TWEE LOSSE STUKJES NAAM, en dat is geen netheid maar een bug die er al in
+rem zat: `goud alles` liet de tweede keuze de naam van de eerste overschrijven,
+rem dus een run over twee secties met 78 regels heette hetzelfde als een run
+rem over alle secties met 78 regels. Aparte stukjes kunnen dat niet.
+set SECTAG=
+set GRIDTAG=
+rem DE KOMMALIJST STAAT TUSSEN AANHALINGSTEKENS, en dat is niet cosmetisch.
+rem Zonder quotes hangt het van cmd af of `--only a,b` als een argument bij
+rem python aankomt of als twee, en in het tweede geval stopt argparse met
+rem "unrecognized arguments" NA de vraag om historie. Met quotes kan het niet
+rem splitsen, welk gedrag ook waar is.
+rem LEEG = alle live secties. Een keuze hieronder beperkt het tot een of twee
+rem en dat scheelt enorm: sectie zes en tien handelen allebei alleen goud, dus
+rem `goud` loopt EEN markt in plaats van de vijf die de hele lijst nodig heeft.
+set SECTIES=
 
 :lees
 if "%~1"=="" goto klaar
 echo %~1| findstr /r "^[0-9][0-9]*$" >nul && set DAGEN=%~1
 if /i "%~1"=="alles" set GRID=alles
-if /i "%~1"=="alles" set CSVTAG=-alles
+if /i "%~1"=="alles" set GRIDTAG=-alles
 if /i "%~1"=="kern" set GRID=kern
 if /i "%~1"=="schaduw" set BOEK=
 if /i "%~1"=="markten" set MARKTEN=--core
+if /i "%~1"=="zes" set SECTIES=--only section_six_gold_m5
+if /i "%~1"=="zes" set SECTAG=-s6
+if /i "%~1"=="tien" set SECTIES=--only section_ten_gold_m1
+if /i "%~1"=="tien" set SECTAG=-s10
+if /i "%~1"=="goud" set SECTIES=--only "section_six_gold_m5,section_ten_gold_m1"
+if /i "%~1"=="goud" set SECTAG=-goud
+if /i "%~1"=="vijf" set SECTIES=--only section_five_ndx100_m5
+if /i "%~1"=="vijf" set SECTAG=-s5
 shift
 goto lees
 :klaar
+set CSVTAG=%SECTAG%%GRIDTAG%
 
 echo.
 echo  ==========================================================================
@@ -53,7 +76,8 @@ echo  uitstappen. Hier ziet elke regel exact dezelfde trades.
 echo.
 echo  WAT ER VERGELEKEN WORDT
 echo    * vaste SL/TP                 -- geen beheer, de instapstop en target
-echo    * break-even op 0,10 / 0,15 / 0,20 / 0,25 / 0,35 / 0,50 / 0,75 / 1,00 R
+echo    * break-even op 0,10 / 0,15 / 0,20 / 0,25 / 0,35 / 0,50 / 0,75 /
+echo      1,00 / 1,25 / 1,50 / 2,00 R
 echo      en per trigger: stop naar entry, naar +0,1R, of naar +0,10 x H1-ATR
 echo    * trailing stop op meerdere ATR-afstanden, vanaf meerdere R
 echo    * deelafname (partial) op meerdere R en meerdere fracties
@@ -71,7 +95,7 @@ echo    2. hem OOK verslaat in de vroege helft en in de late helft apart, EN
 echo    3. een gepaarde t haalt die is opgehoogd voor het aantal regels.
 echo.
 echo  DAT DERDE PUNT IS HET BELANGRIJKSTE EN HET WORDT NOOIT GEDAAN. Dertig
-echo  regels proberen en de beste houden is dertig kansen om voor de gek
+echo  regels proberen en de beste houden is net zoveel kansen om voor de gek
 echo  gehouden te worden. Op pure ruis haalt de beste van dertig moeiteloos
 echo  t=2,1 -- wat er "significant" uitziet en niets is. De lat gaat daarom
 echo  mee omhoog met het aantal regels. Verwacht vaak: GEEN winnaar. Dat is
@@ -86,14 +110,23 @@ echo  venster), de AI-review, en slippage voorbij de geboekte spread. Alle
 echo  drie halen alleen trades weg, dus de uitkomst is een bovengrens.
 echo.
 echo  GEBRUIK
-echo    beheer.cmd 180           29 regels per sectie, 180 dagen
-echo    beheer.cmd 180 alles     63 regels per sectie -- fors langer
+echo    beheer.cmd 180           alle live secties, 38 regels per stuk
+echo    beheer.cmd 180 goud      ALLEEN sectie 6 en 10 -- veruit het snelst
+echo    beheer.cmd 180 zes       alleen sectie 6  (goud M5)
+echo    beheer.cmd 180 tien      alleen sectie 10 (goud M1)
+echo    beheer.cmd 180 vijf      alleen sectie 5  (NDX100 M5)
+echo    beheer.cmd 180 alles     78 regels per sectie -- fors langer
 echo    beheer.cmd 90            90 dagen
 echo    beheer.cmd 180 schaduw   ook de secties die geen geld mogen gebruiken
 echo    beheer.cmd 180 markten   de zestien kernmarkten erbij
 echo.
+echo  De keuzes zijn te combineren: `beheer.cmd 180 goud alles` meet sectie 6
+echo  en 10 tegen alle 78 regels. Elke keuze schrijft naar zijn eigen CSV, dus
+echo  een run overschrijft een vorige niet.
+echo.
 echo  DIT DUURT LANG. hoeveel.cmd loopt de bars een keer per trade; deze loopt
-echo  ze nog 28 keer extra (of 62 met `alles`). Zet hem aan en laat hem staan.
+echo  ze nog 37 keer extra (of 77 met `alles`). Zet hem aan en laat hem staan.
+echo  `goud` scheelt het meest: een markt in plaats van vijf.
 echo.
 echo  M1-bars zijn verplicht: de volumepoort leest M1 en niets anders.
 echo  MT5 moet draaien en ingelogd zijn.
@@ -107,7 +140,7 @@ if not exist ".venv-live\Scripts\python.exe" (
 
 if not exist "runtime" mkdir runtime
 
-.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAGEN% %MARKTEN% %BOEK% --jarvis-replay --exit-grid %GRID% --csv runtime\beheer%CSVTAG%.csv
+.venv-live\Scripts\python.exe -m scripts.dry_run_sections --days %DAGEN% %MARKTEN% %BOEK% --jarvis-replay --exit-grid %GRID% %SECTIES% --csv runtime\beheer%CSVTAG%.csv
 
 if errorlevel 1 (
   echo.

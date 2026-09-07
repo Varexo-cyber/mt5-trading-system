@@ -46,22 +46,32 @@ def cmd_argv(launcher: str, **values: str) -> list[str]:
     `%SCOPE%` literal to be silently accepted as a filename.
     """
     line = next(ln for ln in launcher.splitlines() if "scripts.dry_run_sections" in ln)
+    tail = line.split("scripts.dry_run_sections", 1)[1]
+
+    # EXPAND FIRST, TOKENISE SECOND -- the order cmd itself uses, and the order
+    # matters. Tokenising first hides a quoted value that arrives from inside a
+    # variable: `%SECTIES%` holding `--only "a,b"` is one token before
+    # expansion and three arguments after it, and a helper that decided on the
+    # unexpanded token would never see the quotes at all.
+    for marker in sorted(set(re.findall(r"%[A-Z_][A-Z0-9_]*%", tail)), reverse=True):
+        assert marker in values, f"the launcher uses {marker} and this test does not set it"
+        tail = tail.replace(marker, values[marker])
+
     argv: list[str] = []
-    for token in line.split("scripts.dry_run_sections", 1)[1].split():
-        # SUBSTITUTED WHEREVER IT APPEARS, not only when the whole argument is
-        # one variable. `runtime\\us30%CSVTAG%.csv` is one token containing a
-        # variable, and treating that as a literal filename is exactly the
-        # silent-empty-variable failure this helper exists to catch -- it would
-        # have let two different measurements share one output file.
-        for marker in set(re.findall(r"%[A-Z_][A-Z0-9_]*%", token)):
-            assert marker in values, f"the launcher uses {marker} and this test does not set it"
-            token = token.replace(marker, values[marker])
-        # THE SPLIT HAPPENS AFTER EXPANSION, which is the third cmd behaviour
-        # that matters here. `%CLOCKS%` holding "M1 M5" becomes two arguments,
-        # not one argument containing a space -- and a helper that produced
-        # the latter would let a launcher pass "M1 M5" as a single timeframe
-        # name and report it as parsed.
-        argv.extend(piece for word in token.split() for piece in word.split(",") if piece)
+    # A quoted run is one argument; everything else is a run of non-space.
+    for piece in re.findall(r'"[^"]*"|\S+', tail):
+        if piece.startswith('"') and piece.endswith('"') and len(piece) > 1:
+            # NOT SPLIT, on whitespace or on commas. That is what the quotes
+            # are for: a launcher quotes `--only a,b` precisely so cmd cannot
+            # turn it into two arguments and stop argparse mid-run.
+            argv.append(piece[1:-1])
+            continue
+        # THE SPLIT HAPPENS AFTER EXPANSION, which is the cmd behaviour that
+        # matters for the unquoted case. `%CLOCKS%` holding "M1 M5" becomes two
+        # arguments, not one argument containing a space -- and a helper that
+        # produced the latter would let a launcher pass "M1 M5" as a single
+        # timeframe name and report it as parsed.
+        argv.extend(part for word in piece.split() for part in word.split(",") if part)
     return argv
 
 
@@ -4834,7 +4844,8 @@ class TestTheExitGridComparesEveryWayOfManagingATrade:
         argv = cmd_argv(
             launcher,
             **{"%DAGEN%": "180", "%MARKTEN%": "--section-markets",
-               "%BOEK%": "--live-only", "%GRID%": "kern", "%CSVTAG%": ""},
+               "%BOEK%": "--live-only", "%GRID%": "kern", "%SECTIES%": "",
+               "%CSVTAG%": ""},
         )
         parsed = build_parser_for_launcher(argv)
         assert parsed.exit_grid == "kern"
@@ -4843,11 +4854,16 @@ class TestTheExitGridComparesEveryWayOfManagingATrade:
 
     def test_the_launcher_writes_a_separate_file_for_the_wide_grid(self):
         launcher = (ROOT / "beheer.cmd").read_text(encoding="utf-8")
-        assert 'if /i "%~1"=="alles" set CSVTAG=-alles' in launcher
+        # The BEHAVIOUR, not the source line: the wide grid has to land on its
+        # own filename. Asserting the literal `set CSVTAG=-alles` broke the
+        # moment the tag was split in two to stop `goud alles` colliding --
+        # which is a fix, not a regression, and a test should not have to be
+        # edited to allow one.
         argv = cmd_argv(
             launcher,
             **{"%DAGEN%": "180", "%MARKTEN%": "--section-markets",
-               "%BOEK%": "--live-only", "%GRID%": "alles", "%CSVTAG%": "-alles"},
+               "%BOEK%": "--live-only", "%GRID%": "alles", "%SECTIES%": "",
+               "%CSVTAG%": "-alles"},
         )
         parsed = build_parser_for_launcher(argv)
         assert parsed.exit_grid == "alles"
@@ -4942,3 +4958,83 @@ class TestTheExitGridComparesEveryWayOfManagingATrade:
         assert managed_r(at_entry) == pytest.approx(0.0)
         assert managed_r(in_r) == pytest.approx(0.1)
         assert managed_r(in_atr) == pytest.approx(0.2)
+
+    def test_the_launcher_can_measure_one_or_two_sections(self):
+        """`beheer.cmd 180 goud` -- section six and ten only.
+
+        Both trade gold and nothing else, so narrowing to them walks ONE
+        market instead of five. That is the difference between a run the owner
+        starts and waits for and one he abandons.
+        """
+        launcher = (ROOT / "beheer.cmd").read_text(encoding="utf-8")
+        cases = {
+            "goud": {"section_six_gold_m5", "section_ten_gold_m1"},
+            "zes": {"section_six_gold_m5"},
+            "tien": {"section_ten_gold_m1"},
+            "vijf": {"section_five_ndx100_m5"},
+        }
+        from config.loader import load_settings
+
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        live = set(settings.analysis.confluence.live_enabled_modules)
+
+        for word, wanted in cases.items():
+            assert f'if /i "%~1"=="{word}" set SECTIES=--only ' in launcher, word
+            named = launcher.split(f'"%~1"=="{word}" set SECTIES=--only ', 1)[1].split("\n", 1)[0]
+            named = named.strip()
+            if "," in named:
+                assert named.startswith('"') and named.endswith('"'), (
+                    f"{word} passes a comma list unquoted; cmd may split it into two arguments"
+                )
+            assert set(named.strip('"').split(",")) == wanted, word
+            # `--only` is refused for a section --live-only already dropped, so
+            # a shortcut naming a benched section would be a launcher that
+            # exits instead of measuring.
+            assert wanted <= live, f"{word} names a section that is not live"
+
+    def test_two_choices_cannot_collide_on_one_filename(self):
+        """`beheer.cmd 180 goud alles` is offered in the help text, and with a
+        single CSVTAG the second word overwrote the first -- so a two-section
+        run over 78 rules landed on the same filename as an all-section run
+        over 78 rules, and the later one silently replaced the earlier."""
+        launcher = (ROOT / "beheer.cmd").read_text(encoding="utf-8")
+        assert "set CSVTAG=%SECTAG%%GRIDTAG%" in launcher
+        # No branch may write the combined variable directly, or the split is
+        # undone by whichever line runs last.
+        for line in launcher.splitlines():
+            if line.strip().startswith("if /i") and "CSVTAG=" in line:
+                raise AssertionError(f"a branch still overwrites CSVTAG: {line}")
+
+        argv = cmd_argv(
+            launcher,
+            **{
+                "%DAGEN%": "180",
+                "%MARKTEN%": "--section-markets",
+                "%BOEK%": "--live-only",
+                "%GRID%": "alles",
+                "%SECTIES%": '--only "section_six_gold_m5,section_ten_gold_m1"',
+                "%CSVTAG%": "-goud-alles",
+            },
+        )
+        parsed = build_parser_for_launcher(argv)
+        assert parsed.exit_grid == "alles"
+        assert set(parsed.only.split(",")) == {"section_six_gold_m5", "section_ten_gold_m1"}
+        assert parsed.csv.endswith("beheer-goud-alles.csv")
+
+    def test_the_default_still_measures_everything_live(self):
+        launcher = (ROOT / "beheer.cmd").read_text(encoding="utf-8")
+        argv = cmd_argv(
+            launcher,
+            **{
+                "%DAGEN%": "180",
+                "%MARKTEN%": "--section-markets",
+                "%BOEK%": "--live-only",
+                "%GRID%": "kern",
+                "%SECTIES%": "",
+                "%CSVTAG%": "",
+            },
+        )
+        parsed = build_parser_for_launcher(argv)
+        assert parsed.only == "", "the default must not narrow to a section"
+        assert parsed.live_only
+        assert parsed.csv.endswith("beheer.csv")

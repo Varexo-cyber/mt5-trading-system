@@ -18,7 +18,7 @@ cd /d "%US30_ROOT%"
 rem Elke variabele hier, bovenaan, voordat iets hem leest. Een niet-gezette
 rem %VAR% in cmd is een lege string en dat is stil.
 set DAGEN=180
-set SECTIES=section_us30_impulse_m1,section_us30_impulse_m5,section_us30_orderblock_m1,section_us30_orderblock_m5
+set SECTIES="section_us30_impulse_m1,section_us30_impulse_m5,section_us30_orderblock_m1,section_us30_orderblock_m5"
 rem LEEG = zoals geconfigureerd. `vast` zet er --fixed-exits achter: de
 rem trade loopt naar zijn instapstop of zijn target en niets grijpt in.
 set EXITS=
@@ -31,10 +31,10 @@ set CSVTAG=
 :lees
 if "%~1"=="" goto klaar
 echo %~1| findstr /r "^[0-9][0-9]*$" >nul && set DAGEN=%~1
-if /i "%~1"=="impuls" set SECTIES=section_us30_impulse_m1,section_us30_impulse_m5
-if /i "%~1"=="block" set SECTIES=section_us30_orderblock_m1,section_us30_orderblock_m5
-if /i "%~1"=="m1" set SECTIES=section_us30_impulse_m1,section_us30_orderblock_m1
-if /i "%~1"=="m5" set SECTIES=section_us30_impulse_m5,section_us30_orderblock_m5
+if /i "%~1"=="impuls" set SECTIES="section_us30_impulse_m1,section_us30_impulse_m5"
+if /i "%~1"=="block" set SECTIES="section_us30_orderblock_m1,section_us30_orderblock_m5"
+if /i "%~1"=="m1" set SECTIES="section_us30_impulse_m1,section_us30_orderblock_m1"
+if /i "%~1"=="m5" set SECTIES="section_us30_impulse_m5,section_us30_orderblock_m5"
 if /i "%~1"=="vast" set EXITS=--fixed-exits
 if /i "%~1"=="vast" set EXITNAAM=VAST -- stop en target, verder niets
 if /i "%~1"=="vast" set CSVTAG=-vast
