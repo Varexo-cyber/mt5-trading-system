@@ -13,12 +13,20 @@ def commands(kind: str, days: int, database: str = "", equity: float = 0.0):
     if equity:
         common += ["--equity", str(equity)]
     if kind == "us30":
-        return [common + ["--symbols", "US30", "--only", "impulse_retest,order_block_fast",
-                          "--sweep", tf, "--csv", f"runtime/us30-{tf.lower()}-{days}.csv"]
-                for tf in ("M1", "M5")]
-    return [common + ["--symbols", "NDX100", "--only", "section_five_ndx100_m5",
-                      "--s5-exit", mode, "--csv", f"runtime/ndx100-s5-{mode}-{days}.csv"]
-            for mode in ("fixed", "break-even")]
+        return [
+            [
+                *common, "--symbols", "US30", "--only", "impulse_retest,order_block_fast",
+                "--sweep", tf, "--csv", f"runtime/us30-{tf.lower()}-{days}.csv",
+            ]
+            for tf in ("M1", "M5")
+        ]
+    return [
+        [
+            *common, "--symbols", "NDX100", "--only", "section_five_ndx100_m5",
+            "--s5-exit", mode, "--csv", f"runtime/ndx100-s5-{mode}-{days}.csv",
+        ]
+        for mode in ("fixed", "break-even")
+    ]
 
 
 def main(argv=None):

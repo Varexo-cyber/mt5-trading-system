@@ -3267,11 +3267,27 @@ analysis:
       # Hij staat hier om die twee dingen te forward-testen, niet omdat hij
       # bewezen is. De sectiebreaker eronder is wat hem begrenst.
       - section_six_gold_m5
-      # Explicitly promoted 2 September 2026 after the owner's instruction to
-      # dry-run the complete S5-S10 book before launching Jarvis. S8 has
-      # positive early and late halves but only 26 historical trades; its
-      # section breaker is therefore essential, not optional.
-      - section_eight_trend_day_h1
+      # SECTIE 8 IS ER 7 SEPTEMBER AFGEHAALD, op instructie van de eigenaar,
+      # en het cijfer waarop dat gebeurde staat hier zodat niemand later denkt
+      # dat het per ongeluk ging:
+      #
+      #     22 trades   81,8% raak   -1,73 R   EUR -7,09   (180 dagen)
+      #
+      # Een winstpercentage van 81,8 met een negatief resultaat betekent maar
+      # een ding: de verliezers zijn veel groter dan de winnaars. Dat is de
+      # vorm die het langst onopgemerkt blijft, want het dashboard toont een
+      # raakpercentage waar niets mis mee lijkt.
+      #
+      # En de uitstapmeting van diezelfde run wees dezelfde kant op: ELKE
+      # break-evenvariant maakte hem slechter, tot t=-3,46 aan toe. Er was dus
+      # ook geen beheer-instelling die hem zou redden.
+      #
+      # Hij is 2 september gepromoveerd op 26 historische trades. Nu zijn het
+      # er 22 in het live venster en het antwoord is negatief. TERUGZETTEN is
+      # deze ene regel, en de lat ervoor is een meting met een positief
+      # resultaat over een venster dat groter is dan dit.
+      #
+      # - section_eight_trend_day_h1
       - section_ten_gold_m1
       # SECTIE ELF STOND HIER EEN DAG EN IS ER 4 SEPTEMBER WEER AFGEHAALD, op
       # instructie van de eigenaar en met beide cijfers erbij, zodat niemand
@@ -5038,7 +5054,41 @@ risk:
   # Zet dit op false als je ze ook tegen elkaar in wil laten handelen.
   refuse_opposite_direction_across_sections: true
 
-  max_concurrent_positions: 4
+  # HET SLOTPLAFOND IS 7 SEPTEMBER OPGEHEVEN, op instructie van de eigenaar.
+  #
+  # WAAROM. De 180-daagse replay liet 442 signalen vallen omdat alle vier de
+  # slots bezet waren, en sectie zes -- de sectie met de beste verhouding op
+  # deze rekening -- miste daardoor 301 trades ter waarde van +38,49 R. Dat is
+  # meer dan de +30,60 R die hij in datzelfde venster wel verdiende. De rem
+  # zat dus niet op de zwakke secties maar op de sterkste.
+  #
+  # 10 EN NIET HOGER, want dat is wat het schema toestaat (`le=10`). Dat is
+  # hier geen beperking: bij 2% per trade raakt 10 posities exact het
+  # boekplafond van 20% hieronder, dus vanaf nu is DAT de rem en niet dit
+  # getal. Het plafond is verschoven, niet weggehaald -- weghalen kan niet en
+  # zou ook niet moeten kunnen.
+  #
+  # WAT ER OVEREIND BLIJFT, en dat is de reden dat dit geen blanco cheque is:
+  #   * max_total_open_risk_pct: 20  -- het echte plafond, 10 posities op 2%
+  #   * een positie per symbool
+  #   * refuse_opposite_direction_across_sections hierboven
+  #   * max_drawdown_circuit_breaker_pct: 15
+  #   * elke sectiebreaker afzonderlijk
+  #
+  # WAT DIT NIET DOET, en dat is contra-intuitief: het verhoogt het maximale
+  # risico NIET. Dat stond al op 20% en is dat nog steeds. Overtuiging mag een
+  # trade op 10% zetten (`conviction_risk.ceiling_pct`), dus TWEE posities
+  # vulden het boek ook bij vier slots al helemaal. Wat verandert is de VORM
+  # van die 20%: tien gewone trades van 2% in plaats van twee van 10%. Datzelfde
+  # bedrag over meer markten en meer secties gespreid is, als er iets is,
+  # minder geconcentreerd dan wat er stond.
+  #
+  # WAT HET WEL DOET: meer trades tegelijk, dus meer doorstroom, en daarmee ook
+  # meer round trips betaald. En het is NIET gemeten -- de +38,49 R hierboven
+  # is wat die geweigerde setups deden op ONGEWIJZIGDE instaps, niet wat ze
+  # opleveren als ze ook echt genomen worden. Een genomen trade verandert wat
+  # er daarna beschikbaar is, dus dat getal is een richting en geen belofte.
+  max_concurrent_positions: 10
 
   # De broker-minimumlot mag het bedoelde risico nooit overschrijden. XAU/XPT
   # kunnen op deze equity soms niet binnen 2% worden uitgedrukt; die kandidaat
@@ -5252,7 +5302,10 @@ modes:
     #
     # De inzetten waar de eigenaar in dezelfde adem om vroeg staan al zo en
     # blijven ongewijzigd: gewoon 2%, op overtuiging tot 8%, boekplafond 16%.
-    max_concurrent_positions: 4
+    # 7 september van 4 naar 10, samen met `risk.max_concurrent_positions`
+    # hierboven -- DIT is het getal dat `effective_max_positions` leest
+    # (`active_limits`), dus alleen de bovenste veranderen had niets gedaan.
+    max_concurrent_positions: 10
     max_journal_detail: true
     min_equity: 50
     max_equity: 500

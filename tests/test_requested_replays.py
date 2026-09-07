@@ -1,11 +1,12 @@
 import unittest
-from unittest.mock import patch
 from types import SimpleNamespace
-import pandas as pd
-from core.types import Direction
+from unittest.mock import patch
 
+import pandas as pd
+
+from core.types import Direction
 from scripts import replay_requested_markets as launch
-from scripts.dry_run_sections import build_parser, main, _resolve
+from scripts.dry_run_sections import _resolve, build_parser, main
 
 
 class RequestedReplayTests(unittest.TestCase):
@@ -14,7 +15,9 @@ class RequestedReplayTests(unittest.TestCase):
         frame = pd.DataFrame({"high": [104, 103, 100], "low": [99, 100, 89],
                               "close": [103, 101, 90]}, index=index)
         idea = SimpleNamespace(direction=Direction.LONG, entry=100, stop_loss=90, take_profit=110)
-        fixed, fixed_at, managed, managed_at = _resolve(frame, index[0], idea, 3, manage=(0.25, 1.0))
+        fixed, fixed_at, managed, managed_at = _resolve(
+            frame, index[0], idea, 3, manage=(0.25, 1.0)
+        )
         self.assertEqual(fixed, -1.0)
         self.assertAlmostEqual(managed, 0.1)
         self.assertEqual(managed_at, index[1])
