@@ -36,6 +36,12 @@ _ORIGINS: tuple[tuple[str, TradeOrigin], ...] = (
     #     4 September would have been switched back off by its own labels.
     # Longest name first: `origin_for_setup_family` matches by substring, and
     # "section_eleven_xaujpy_legs_m5" must not be reached by a shorter prefix.
+    # The four experimental US30 sections. Longest name first, as above.
+    ("section_us30_orderblock_m15", TradeOrigin(0, "us30_orderblock", "M15", "JARVIS-U30-OB-M15")),
+    ("section_us30_orderblock_m1", TradeOrigin(0, "us30_orderblock", "M1", "JARVIS-U30-OB-M1")),
+    ("section_us30_orderblock_m5", TradeOrigin(0, "us30_orderblock", "M5", "JARVIS-U30-OB-M5")),
+    ("section_us30_impulse_m1", TradeOrigin(0, "us30_impulse", "M1", "JARVIS-U30-IR-M1")),
+    ("section_us30_impulse_m5", TradeOrigin(0, "us30_impulse", "M5", "JARVIS-U30-IR-M5")),
     ("section_seventeen_btc_m15", TradeOrigin(17, "btc_discovery", "M15", "JARVIS-S17-BTC-M15")),
     ("section_sixteen_btc_m5", TradeOrigin(16, "btc_discovery", "M5", "JARVIS-S16-BTC-M5")),
     ("section_fifteen_btc_m1", TradeOrigin(15, "btc_discovery", "M1", "JARVIS-S15-BTC-M1")),

@@ -2326,6 +2326,10 @@ def main(argv: list[str] | None = None) -> None:
             "section_eleven_xaujpy_legs_m5": "section_eleven_xaujpy_legs_m5",
             "section_twelve_xaujpy_m5": "section_twelve_xaujpy_m5",
             "section_thirteen_xaujpy_m15": "section_thirteen_xaujpy_m15",
+            "section_us30_impulse_m1": "section_us30_impulse_m1",
+            "section_us30_impulse_m5": "section_us30_impulse_m5",
+            "section_us30_orderblock_m1": "section_us30_orderblock_m1",
+            "section_us30_orderblock_m5": "section_us30_orderblock_m5",
             "section_fifteen_btc_m1": "section_fifteen_btc_m1",
             "section_sixteen_btc_m5": "section_sixteen_btc_m5",
             "section_seventeen_btc_m15": "section_seventeen_btc_m15",
@@ -2370,6 +2374,14 @@ def main(argv: list[str] | None = None) -> None:
                 "section_fifteen_btc_m1",
                 "section_sixteen_btc_m5",
                 "section_seventeen_btc_m15",
+                # The four experimental US30 sections. Shadow, so they never
+                # reach the live intersection below -- listed so that the day
+                # one of them is promoted, `dryrun-live.cmd` already measures
+                # it instead of failing on a name it has never seen.
+                "section_us30_impulse_m1",
+                "section_us30_impulse_m5",
+                "section_us30_orderblock_m1",
+                "section_us30_orderblock_m5",
             }
             missing = (book & live) - measured
             if missing:

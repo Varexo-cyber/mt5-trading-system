@@ -109,6 +109,7 @@ from analysis.section_eleven_legs import (
     SectionElevenLegs,
     leg_bars,
 )
+from analysis.section_us30 import SectionUs30
 from analysis.section_xaujpy import SectionXauJpy
 from analysis.target_reach import measure as measure_target_reach
 from analysis.target_reach import measure_first_touch
@@ -200,6 +201,15 @@ XAUJPY_SECTIONS: tuple[str, ...] = (
 
 #: The legs section, named once for the same reason.
 LEGS_SECTION = "section_eleven_xaujpy_legs_m5"
+
+#: The four experimental US30 sections. Shadow: enabled so a replay can
+#: judge them, weighted zero, and off `live_enabled_modules`.
+US30_SECTIONS: tuple[str, ...] = (
+    "section_us30_impulse_m1",
+    "section_us30_impulse_m5",
+    "section_us30_orderblock_m1",
+    "section_us30_orderblock_m5",
+)
 
 #: What is reported for a position the fast layer has not read yet — one opened
 #: seconds ago, or one whose bars could not be fetched. Deliberately not
@@ -547,6 +557,17 @@ def build_analysis_modules(settings: Settings) -> list[object]:
             broker_symbol=settings.instruments.broker_symbol(
                 analysis.section_eleven_xaujpy_legs_m5.symbol
             ),
+        ),
+        # FOUR US30 SECTIONS FROM ONE CLASS AND ONE LOOP, for the same
+        # reason the XAUJPY pair is: writing them out four times is how the
+        # orderblock-M5 one ends up holding the impulse-M1 one's config.
+        *(
+            SectionUs30(
+                name,
+                getattr(analysis, name),
+                broker_symbol=settings.instruments.broker_symbol(getattr(analysis, name).symbol),
+            )
+            for name in US30_SECTIONS
         ),
         GoldCrossDiscovery(
             analysis.section_fifteen_btc_m1,
