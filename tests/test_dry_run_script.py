@@ -1298,7 +1298,16 @@ class TestTheScanUniverseIsTheLiveOne:
 
     def test_the_core_list_is_confined_to_the_measurement_script(self) -> None:
         """If it ever appears in the runner, the scan universe has silently
-        shrunk to sixteen markets on a live account."""
+        shrunk to sixteen markets on a live account.
+
+        PINNED AS A PROPERTY, NOT AS A LIST OF FILENAMES. This used to hold a
+        hand-kept set of launchers, so every new measurement launcher failed
+        it and the fix was to add a name -- which trains you to add names, and
+        the day a LIVE launcher needed adding it would have been added too.
+        What actually matters is what the file starts: a measurement launcher
+        drives the replay script, a live launcher starts the runner, and only
+        the second one may never narrow the universe.
+        """
         import subprocess
 
         hits = subprocess.run(
@@ -1307,27 +1316,27 @@ class TestTheScanUniverseIsTheLiveOne:
             capture_output=True,
             text=True,
         ).stdout.split()
+        assert hits, "the flag has vanished entirely; this test is guarding nothing"
+
+        # What makes a file a measurement: it drives the replay, and it does
+        # not start the live runner.
+        measures = re.compile(r"dry_run_sections|replay_requested_markets|fetch_history")
+        # `jarvis.py` and `main.py` are how a live launcher starts the runner.
+        # Deliberately NOT `--live`: `--live-only` is a replay flag meaning
+        # "measure only the sections that may spend money", and matching it
+        # would fail exactly the launchers this test wants to allow.
+        runs_live = re.compile(r"\bmain\.py|\bjarvis\.py|runner\.service")
 
         for path in hits:
-            assert path.startswith("tests/") or path in {
-                "scripts/dry_run_sections.py",
-                "dryrun.cmd",
-                "dryrun-live.cmd",
-                "quick.cmd",
-                "history.cmd",
-                "history-one.cmd",
-                "sweep.cmd",
-                # Offline measurement, same universe, no terminal.
-                "snel.cmd",
-                "ophalen.cmd",
-                # Section ten's replay. It starts from the same core universe
-                # and then narrows to the markets that section may trade, so it
-                # has to know the flag in order to hand it over.
-                "sectie10.cmd",
-                # The account replay: "start it N days ago, what is it now".
-                # Same universe as dryrun-live, with the live gates applied.
-                "hoeveel.cmd",
-            }, f"{path} is not a measurement file and must not know about --core"
+            if path.startswith("tests/") or path == "scripts/dry_run_sections.py":
+                continue
+            body = (ROOT / path).read_text(encoding="utf-8", errors="replace")
+            assert measures.search(body), (
+                f"{path} knows about --core but drives no measurement script"
+            )
+            assert not runs_live.search(body), (
+                f"{path} narrows the universe AND starts the live runner"
+            )
 
     def test_the_scanner_covers_every_class_except_stocks(self) -> None:
         """The owner's words: all markets except the dumb stocks. That is what
@@ -4585,6 +4594,18 @@ class TestTheExitGridComparesEveryWayOfManagingATrade:
 
         for asked in (0.10, 0.15, 0.20, 0.25, 0.35, 0.50):
             assert any(abs(t - asked) < 1e-9 for t in BREAK_EVEN_TRIGGERS), asked
+
+    def test_the_sweep_runs_past_where_a_section_last_won(self):
+        """Section ten lost on every trigger up to 0.75R and won on all three
+        variants of 1.00R -- the last row of the table. A result sitting on the
+        edge of a sweep is usually the sweep running out rather than the
+        answer, so the sweep has to reach past it or the reader cannot tell
+        those two apart."""
+        from scripts.dry_run_sections import BREAK_EVEN_TRIGGERS
+
+        assert max(BREAK_EVEN_TRIGGERS) > 1.00
+        beyond = [t for t in BREAK_EVEN_TRIGGERS if t > 1.00]
+        assert len(beyond) >= 2, "one cell past the edge cannot show a direction"
 
     def test_stops_are_placed_in_r_and_in_atr(self):
         # The live rule is an ATR offset, and an ATR offset is NOT a fixed

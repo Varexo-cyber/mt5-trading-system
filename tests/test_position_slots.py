@@ -87,28 +87,28 @@ class TestScaling:
         """
         assert scaled(settings, 0.0, step=50.0, ceiling=6, floor=1) == 1
 
-    def test_four_slots_because_the_owner_said_four(self) -> None:
-        """FOUR IS AN INSTRUCTION, NOT A DERIVATION, and that is why it is
-        asserted flatly instead of against a formula.
+    def test_the_slot_count_is_the_owners_and_the_book_cap_is_the_brake(self) -> None:
+        """THE SLOT COUNT IS AN INSTRUCTION, NOT A DERIVATION, which is why it
+        is asserted flatly instead of against a formula.
 
-        It went to eight on 27 August on the arithmetic that four slots had
-        been calibrated for a 5% stake -- 4 x 5 = 20% against a 24% cap -- and
-        the stake had since gone to 2%, leaving half the sanctioned risk
-        unused. The owner put it back the same day: "max 4 trades tegelijk open
-        mag niks 8". That is a decision about how much he wants open at once,
-        and no measurement produces it.
+        Four on 27 August, eight the same day, four again -- "max 4 trades
+        tegelijk open mag niks 8" -- and ten on 7 September, each time because
+        the owner said so. No measurement produces this number; it is a
+        decision about how much he wants open at once.
 
-        The earlier version of this test asserted `slots x ordinary == book
-        cap`, which was true at eight and is false at four. Keeping that
-        property would mean the SUITE overrules the owner the next time he
-        picks a number, so it is gone: the relation was a consequence of one
-        particular choice, never a rule the account has to obey.
+        An earlier version asserted `slots x ordinary == book cap`. That was a
+        consequence of one particular choice, never a rule the account obeys,
+        and keeping it would mean the SUITE overrules the owner the next time
+        he picks a number. Gone, and it stays gone.
 
-        WHAT STAYS TRUE AT FOUR is the thing that actually bounds the money,
-        and it is asserted below: the book cap is still reachable, because
-        conviction can size a trade to 8% and two of those fill 16%. Four slots
-        therefore lowers how far the risk is SPREAD, not how much of it there
-        can be.
+        WHAT STAYS TRUE AT EVERY COUNT is the thing that actually bounds the
+        money, and it is what this test really guards: the book cap is
+        reachable with TWO positions, because conviction can size a trade to
+        10%. So the slot count has never set the ceiling on money at risk --
+        it sets how far that same 20% is spread. Reading a rise from four to
+        ten as "two and a half times the risk" is the mistake this docstring
+        exists to prevent; the honest description is ten ordinary trades
+        instead of two conviction ones.
         """
         overlay = DEFAULT_CONFIG_PATH.with_name("eightcap.yaml")
         settings = apply_experimental_live_limits(
@@ -116,7 +116,16 @@ class TestScaling:
         )
 
         assert settings.risk.equity_per_position == 0.0
-        assert settings.effective_max_positions(153.03) == 4
+        # 4 -> 10 on 7 September, at the owner's instruction, on the 180-day
+        # replay: 442 signals were dropped because every slot was busy, and
+        # section six -- the best ratio on this account -- missed 301 trades
+        # worth +38.49 R, more than the +30.60 R it actually earned. The brake
+        # was on the strongest section, not the weakest.
+        #
+        # 10 is the schema ceiling (`le=10`) and it is not a constraint here:
+        # at the ordinary 2% stake, ten positions reach the 20% book cap
+        # exactly, so from here the BOOK is the brake and this number is not.
+        assert settings.effective_max_positions(153.03) == 10
         # The stakes the owner named in the same breath, unchanged.
         assert settings.risk.conviction_risk.floor_pct == 2.0
         # 8 -> 10 on 30 August at the owner's request; what this test is
@@ -124,11 +133,20 @@ class TestScaling:
         assert settings.risk.conviction_risk.ceiling_pct == 10.0
         assert settings.risk.max_risk_per_trade_pct == 10.0
         # And the cap the slots do not move: two conviction trades reach it, so
-        # the ceiling on money at risk is the same at four slots as at eight.
+        # the ceiling on money at risk is the same at ten slots as at four, and
+        # was the same at eight. THIS IS THE POINT WORTH KEEPING. Raising the
+        # slot count reads like raising the risk and does not: the book cap was
+        # already reachable with two positions. What the slot count decides is
+        # how far that same 20% is SPREAD -- ten ordinary trades instead of two
+        # conviction ones.
         assert settings.risk.max_total_open_risk_pct == 20.0
         assert (
             settings.risk.conviction_risk.ceiling_pct * 2 == settings.risk.max_total_open_risk_pct
-        )
+        ), "two conviction trades no longer fill the book; the claim above needs rechecking"
+        assert (
+            settings.effective_max_positions(153.03) * settings.risk.conviction_risk.floor_pct
+            <= settings.risk.max_total_open_risk_pct
+        ), "the slot count now allows more ordinary risk than the book cap sanctions"
         assert settings.trade_management.pyramiding.enabled
         assert settings.trade_management.pyramiding.max_legs_per_symbol == 3
         assert settings.trade_management.pyramiding.max_active_symbols == 1

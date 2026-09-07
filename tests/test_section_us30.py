@@ -355,17 +355,24 @@ class TestTheseSectionsAreShadowAndStayThatWay:
         assert measured.analysis.confluence.weights["section_us30_impulse_m1"] == 1.0
         assert settings.analysis.confluence.weights["section_us30_impulse_m1"] == 0.0
 
-    def test_no_existing_live_section_was_touched(self) -> None:
-        """The brief said not to change the running strategies, and the
-        allowlist is where that would show first."""
-        assert set(self._settings().analysis.confluence.live_enabled_modules) == {
-            "failed_session_breakout",
-            "section_six_gold_m5",
-            "section_eight_trend_day_h1",
-            "section_ten_gold_m1",
-            "section_fifteen_btc_m1",
-            "section_five_ndx100_m5",
-        }
+    def test_no_us30_section_reached_the_allowlist(self) -> None:
+        """The brief said these four may not spend money, and the allowlist is
+        where that would show first.
+
+        PINNED AS "NO US30 SECTION IS LIVE", not as a frozen copy of the whole
+        allowlist. This held the exact six-name set, so it failed the moment
+        the owner benched an unrelated section -- and the fix would have been
+        to retype the list, which teaches you to retype the list. Then the day
+        a US30 section slipped onto it, retyping is what you would have done
+        again. What this test is for is the US30 sections, so that is what it
+        checks.
+        """
+        from runner.service import US30_SECTIONS
+
+        live = set(self._settings().analysis.confluence.live_enabled_modules)
+        assert live, "the allowlist is empty; this test is guarding nothing"
+        for name in US30_SECTIONS:
+            assert name not in live, f"{name} is shadow-only and reached the live allowlist"
 
     def test_every_section_is_built_labelled_and_bounded(self) -> None:
         from core.trade_origin import origin_for_setup_family

@@ -144,7 +144,23 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
     )
     assert ten.blocked_start_hour_utc == 7
     assert ten.blocked_end_hour_utc == 13
-    assert "section_eight_trend_day_h1" in settings.analysis.confluence.live_enabled_modules
+    # SECTIE 8 IS 7 SEPTEMBER VAN DE ALLOWLIST, op instructie van de eigenaar,
+    # op de 180-daagse rekeningreplay: 22 trades, 81,8% raak, -1,73 R,
+    # EUR -7,09. Een hoog raakpercentage met een negatieve uitkomst betekent
+    # dat de verliezers de winnaars overtreffen, en de uitstapmeting van
+    # diezelfde run liet zien dat GEEN enkele beheerinstelling dat omdraait --
+    # elke break-evenvariant maakte hem slechter, tot t=-3,46.
+    #
+    # Zijn configuratie hierboven blijft staan en wordt hier nog steeds
+    # getoetst; wat weg is, is de toestemming om geld uit te geven. Terugzetten
+    # is een regel in de YAML en dan valt deze assertie vanzelf om.
+    assert "section_eight_trend_day_h1" not in settings.analysis.confluence.live_enabled_modules
+    assert settings.analysis.section_eight_trend_day_h1.enabled is True, (
+        "benched, not deleted: it must stay measurable in a replay"
+    )
+    assert "section_eight_trend_day_h1" in settings.risk.section_breakers, (
+        "its breaker stays, so putting it back is one line and not a reconstruction"
+    )
     assert "section_ten_gold_m1" in settings.analysis.confluence.live_enabled_modules
 
     live = settings.analysis.confluence.live_enabled_modules

@@ -376,7 +376,17 @@ EVERY_MECHANISM_OFF: dict[str, object] = {
 #: target" is a different rule on every instrument and on every day -- on this
 #: account's gold M1 stop it is roughly ten times the risk, so it is past the
 #: target and would never fire.
-BREAK_EVEN_TRIGGERS: tuple[float, ...] = (0.10, 0.15, 0.20, 0.25, 0.35, 0.50, 0.75, 1.00)
+#:
+#: 1,25 / 1,50 / 2,00 ZIJN ER 7 SEPTEMBER BIJ GEKOMEN, en om een reden die het
+#: waard is te onthouden. In de eerste 180-daagse run verloor sectie tien op
+#: elke trigger tot en met 0,75 R en WON hij op alle drie de varianten van
+#: 1,00 R -- de laatste rij van de tabel. Een uitkomst die precies op de rand
+#: van een sweep ligt is meestal de sweep die ophoudt, niet het antwoord: het
+#: optimum kan er net buiten liggen, en dan is 1,00 R alleen de dichtstbijzijnde
+#: cel en niet de beste. Zonder deze drie is dat verschil niet te zien.
+BREAK_EVEN_TRIGGERS: tuple[float, ...] = (
+    0.10, 0.15, 0.20, 0.25, 0.35, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00
+)
 
 #: Where the stop goes once the trigger fires. A stop exactly AT entry is
 #: scratched by the spread on its way past, which is the whole reason a locked
