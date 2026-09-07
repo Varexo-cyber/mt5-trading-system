@@ -290,14 +290,188 @@ WARMUP = 260
 #: gold M1 stop it is roughly ten times the risk, which is past the target and
 #: would never fire. R is the same distance in every market, which is the
 #: whole reason this project measures in it.
-MANAGE_GRID: tuple[tuple[str, float, float], ...] = (
-    ("BE @ 0.25R", 0.25, 0.0),
-    ("BE @ 0.50R", 0.50, 0.0),
-    ("BE @ 0.75R", 0.75, 0.0),
-    ("BE @ 1.00R", 1.00, 0.0),
-    ("+0.1R @ 0.50R", 0.50, 0.1),
-    ("+0.1R @ 1.00R", 1.00, 0.1),
+@dataclass(frozen=True)
+class ExitVariant:
+    """One way of managing a trade after entry, resolvable on its own.
+
+    THE POINT IS THAT EVERY VARIANT SEES THE SAME ENTRY. `_resolve` is called
+    once per variant on the same bars from the same moment, so what the table
+    compares is exit rules and not entry sets. The instant a variant were
+    allowed to free its symbol early and take a different next setup, the
+    columns would be comparing two strategies and the answer would mean
+    nothing.
+
+    Three shapes, and each row is exactly one of them:
+
+        the fixed exit      no trigger, no management -- the entry stop and
+                            the target, whichever price reaches first
+        a break-even move   `trigger_r` and one of `lock_r` / `lock_atr`,
+                            through `_resolve(manage=...)`
+        a mechanism         `manage_fields`, through
+                            `_resolve(full_management=...)`, with every OTHER
+                            mechanism switched off so the row measures the
+                            thing it is named after and nothing else
+
+    LOCKS IN R AND LOCKS IN ATR ARE BOTH HERE ON PURPOSE. The live rule is
+    `break_even_offset_atr` x the symbol's H1 ATR, which is not a fixed
+    fraction of the stop: on section six that offset is about 0.44R while the
+    same number on an H1 stop is nearer 0.10R. Measuring only R-locks would
+    therefore answer a question the account does not ask, and measuring only
+    ATR-locks would hide how much of the effect is just distance.
+    """
+
+    label: str
+    #: Break-even trigger in R. 0.0 means the stop is never moved.
+    trigger_r: float = 0.0
+    #: Where the stop goes when it triggers, as a fraction of this trade's own
+    #: risk. Mutually exclusive with `lock_atr`.
+    lock_r: float = 0.0
+    #: Where the stop goes, as a multiple of the symbol's H1 ATR -- the shape
+    #: the live rule uses.
+    lock_atr: float = 0.0
+    #: `TradeManagementConfig` fields to switch back ON for this variant.
+    #: Empty means no discretionary management at all.
+    manage_fields: tuple[tuple[str, object], ...] = ()
+    #: Whether the partial close may fire. Off for trailing rows so the trail
+    #: is measured alone -- the two share `partial_close_at_r` as their arm.
+    partial: bool = False
+
+    @property
+    def kind(self) -> str:
+        if self.manage_fields:
+            return "mechanism"
+        return "break-even" if self.trigger_r > 0.0 else "fixed"
+
+    def stop_offset(self, risk_price: float, atr: float) -> float:
+        """The stop's distance above entry, in price, when the trigger fires."""
+
+        if self.lock_atr:
+            return self.lock_atr * atr
+        return self.lock_r * risk_price
+
+
+#: EVERY MECHANISM OFF. A mechanism variant switches back on exactly what it
+#: is named for, so a row reading "trail 2.0 ATR" is the trail and not the
+#: trail plus a profit lock plus a give-back rule that happened to be on.
+#:
+#: Each of these is a threshold the trade can never reach rather than a
+#: missing field, because `_resolve` reads the field either way and a config
+#: that omits it would silently fall back to the live default -- which is how
+#: a "no break-even" row would quietly have contained one.
+EVERY_MECHANISM_OFF: dict[str, object] = {
+    "giveback_arm_r": 99.0,
+    "peak_stall_arm_r": 99.0,
+    "profit_lock_from_r": 99.0,
+    "capital_protection_at_equity_pct": 0.0,
+    "partial_close_at_r": 99.0,
+    "trailing_mode": "none",
+    "time_exit_hours": 1.0e6,
+    "time_exit_uses_plan_horizon": False,
+    "break_even_at_r": 99.0,
+    "break_even_offset_atr": 0.0,
+}
+
+#: The break-even triggers the owner asked for, in R, plus the two the old
+#: six-row grid already carried. R and not pips: "fifty pips toward the
+#: target" is a different rule on every instrument and on every day -- on this
+#: account's gold M1 stop it is roughly ten times the risk, so it is past the
+#: target and would never fire.
+BREAK_EVEN_TRIGGERS: tuple[float, ...] = (0.10, 0.15, 0.20, 0.25, 0.35, 0.50, 0.75, 1.00)
+
+#: Where the stop goes once the trigger fires. A stop exactly AT entry is
+#: scratched by the spread on its way past, which is the whole reason a locked
+#: tick exists; it is also why the locked rows carry fewer trades to target.
+STOP_PLACEMENTS_CORE: tuple[tuple[str, float, float], ...] = (
+    # (suffix, lock in R, lock in ATR)
+    ("", 0.0, 0.0),
+    (" +0.1R", 0.1, 0.0),
+    (" +0.10A", 0.0, 0.10),
 )
+STOP_PLACEMENTS_WIDE: tuple[tuple[str, float, float], ...] = (
+    *STOP_PLACEMENTS_CORE,
+    (" +0.25A", 0.0, 0.25),
+    (" +0.50A", 0.0, 0.50),
+)
+
+
+def _mechanism_variants(wide: bool) -> tuple[ExitVariant, ...]:
+    """Trailing, partial and profit-lock rows, each isolated from the others."""
+
+    rows: list[ExitVariant] = []
+    trails = (1.0, 1.5, 2.0, 3.0) if wide else (1.5, 2.0)
+    for arm in ((0.5, 1.0, 1.5) if wide else (1.0,)):
+        for multiple in trails:
+            rows.append(
+                ExitVariant(
+                    label=f"trail {multiple:.1f}A from {arm:.1f}R",
+                    manage_fields=(
+                        ("trailing_mode", "atr"),
+                        ("trailing_atr_multiple", multiple),
+                        ("partial_close_at_r", arm),
+                    ),
+                    partial=False,
+                )
+            )
+    for at_r in ((0.75, 1.0, 1.5, 2.0) if wide else (1.0, 1.5)):
+        for fraction in ((0.25, 0.5) if wide else (0.5,)):
+            rows.append(
+                ExitVariant(
+                    label=f"part {fraction:.0%} @ {at_r:.2f}R",
+                    manage_fields=(
+                        ("partial_close_at_r", at_r),
+                        ("partial_close_fraction", fraction),
+                    ),
+                    partial=True,
+                )
+            )
+    for from_r in ((0.5, 0.7, 1.0) if wide else (0.7,)):
+        rows.append(
+            ExitVariant(
+                label=f"lock 50% peak>{from_r:.2f}R",
+                manage_fields=(
+                    ("profit_lock_from_r", from_r),
+                    ("profit_lock_fraction", 0.5),
+                ),
+            )
+        )
+    return tuple(rows)
+
+
+def exit_grid(wide: bool = False) -> tuple[ExitVariant, ...]:
+    """Every exit rule this replay compares, fixed first.
+
+    `wide` is the owner's "meet ALLES": every stop placement against every
+    trigger, and the trailing and partial sweeps at full width. It is a real
+    cost -- each variant walks the bars again -- so the narrow grid is the
+    default and the launcher says which one it ran.
+    """
+
+    placements = STOP_PLACEMENTS_WIDE if wide else STOP_PLACEMENTS_CORE
+    rows: list[ExitVariant] = [ExitVariant(label="fixed SL/TP")]
+    for trigger in BREAK_EVEN_TRIGGERS:
+        for suffix, lock_r, lock_atr in placements:
+            if lock_r >= trigger:
+                # THE STOP WOULD LAND ON THE PRICE THAT ARMED IT. "Move to
+                # +0.1R once the trade is +0.1R" is not a break-even rule; it
+                # is an instant exit at the trigger, and it would have sat in
+                # the table as a plausible-looking row that always scratches.
+                # Only R-locks can be judged here -- an ATR lock's size against
+                # this trade's risk is not known until the bar.
+                continue
+            rows.append(
+                ExitVariant(
+                    label=f"BE@{trigger:.2f}R{suffix}",
+                    trigger_r=trigger,
+                    lock_r=lock_r,
+                    lock_atr=lock_atr,
+                )
+            )
+    rows.extend(_mechanism_variants(wide))
+    return tuple(rows)
+
+
+#: Kept as the default so `--manage-grid` on its own behaves as before.
+MANAGE_GRID: tuple[ExitVariant, ...] = exit_grid(wide=False)
 
 
 @dataclass(slots=True)
@@ -444,6 +618,25 @@ def _context(
         if payload:
             ctx.meta[LEGS_META_KEY] = payload
     return ctx
+
+
+def _variant_management(base, variant: ExitVariant):
+    """`base` with every mechanism off except the one this variant names.
+
+    VALIDATED, NOT JUST COPIED. `model_copy(update=...)` writes whatever it is
+    handed straight past pydantic -- that is how a value outside a field's own
+    bounds gets accepted here and then misbehaves inside the bar walk as a
+    threshold that is quietly never reached. Re-validating turns that into a
+    crash on the first call instead of a column of plausible numbers.
+
+    NOT `lru_cache`d, and that is not an oversight: a pydantic model with a
+    dict field is unhashable, so the decorator raises on the first trade. The
+    caller memoises per section instead, which is where it can key on the
+    section whose settings these are.
+    """
+
+    fields = {**base.model_dump(), **EVERY_MECHANISM_OFF, **dict(variant.manage_fields)}
+    return type(base).model_validate(fields)
 
 
 def _horizon_window(index, start, horizon_bars: int) -> tuple[int, int]:
@@ -918,7 +1111,7 @@ def _one_clock(
     clock: Timeframe,
     resolve_on: Timeframe,
     needed: tuple[Timeframe, ...] | None = None,
-    manage_grid: bool = False,
+    manage_grid: tuple[ExitVariant, ...] = (),
     legs: dict | None = None,
 ) -> dict:
     """Every section that reads one clock, walked ONCE.
@@ -952,6 +1145,8 @@ def _one_clock(
     """
     out: dict = {row[0]: [] for row in sections}
     busy: dict = {row[0]: None for row in sections}
+    # `(section, variant label) -> TradeManagementConfig`, built on first use.
+    variant_configs: dict[tuple[str, str], object] = {}
     #: Per section, trades that reached neither barrier inside their horizon.
     #: Counted and PRINTED, because a timeout used to silently take the
     #: section out of the run and nothing anywhere said so.
@@ -1313,6 +1508,23 @@ def _one_clock(
                 if raw_shadow and raw_horizon
                 else horizon
             )
+            # HOISTED so the grid below judges its partial rows against the
+            # same broker minimum this trade actually faced. Recomputing it
+            # there, or assuming every trade can halve, would let the partial
+            # columns bank a close that this account's 0.01 lot cannot place.
+            partial_is_possible = (
+                spec.round_volume_down(
+                    sized.volume * sizer.settings.trade_management.partial_close_fraction
+                )
+                >= spec.volume_min
+                and spec.round_volume_down(
+                    sized.volume
+                    - spec.round_volume_down(
+                        sized.volume * sizer.settings.trade_management.partial_close_fraction
+                    )
+                )
+                >= spec.volume_min
+            )
             r, exit_at, managed_r, managed_at = _resolve(
                 resolve_frame,
                 upto,
@@ -1332,19 +1544,7 @@ def _one_clock(
                 planned_minutes=(
                     raw_horizon * clock.duration.total_seconds() / 60.0 if raw_horizon else None
                 ),
-                partial_possible=(
-                    spec.round_volume_down(
-                        sized.volume * sizer.settings.trade_management.partial_close_fraction
-                    )
-                    >= spec.volume_min
-                    and spec.round_volume_down(
-                        sized.volume
-                        - spec.round_volume_down(
-                            sized.volume * sizer.settings.trade_management.partial_close_fraction
-                        )
-                    )
-                    >= spec.volume_min
-                ),
+                partial_possible=partial_is_possible,
             )
             # FREED AT THE EXIT THE ACCOUNT ACTUALLY TAKES.
             #
@@ -1436,19 +1636,61 @@ def _one_clock(
             grid_rows: tuple[tuple[str, float | None], ...] = ()
             if manage_grid:
                 risk_price = abs(idea.entry - idea.stop_loss)
+                grid_atr = _hourly_atr(upto)
                 measured: list[tuple[str, float | None]] = []
-                for label, trigger_r, lock_r in MANAGE_GRID:
+                for variant in manage_grid:
+                    if variant.kind == "fixed":
+                        # THE BASELINE IS THE TRADE ITSELF, not a seventh walk
+                        # of the same bars. `r` is already the fixed exit with
+                        # the cost taken off, so recomputing it here would put
+                        # a second, independently-derived number in the column
+                        # every other row is judged against.
+                        measured.append((variant.label, r))
+                        continue
+                    management = None
+                    manage_pair = None
+                    if variant.kind == "mechanism":
+                        # BUILT ONCE PER SECTION, not once per trade. The
+                        # table is a handful of configs and this runs tens of
+                        # thousands of times; rebuilding and re-validating
+                        # each one per trade is the difference between a run
+                        # that finishes and one that gets abandoned.
+                        key = (name, variant.label)
+                        management = variant_configs.get(key)
+                        if management is None:
+                            management = _variant_management(
+                                sizer.settings.trade_management, variant
+                            )
+                            variant_configs[key] = management
+                    else:
+                        manage_pair = (
+                            variant.trigger_r,
+                            variant.stop_offset(risk_price, grid_atr),
+                        )
                     _f, _e, grid_result, _ga = _resolve(
                         resolve_frame,
                         upto,
                         idea,
                         horizon_bars=resolved_horizon,
-                        manage=(trigger_r, lock_r * risk_price),
+                        manage=manage_pair,
                         arrays=resolve_arrays,
                         force_close_at=force_close_at,
                         close_at_horizon=raw_shadow,
+                        full_management=management,
+                        management_atr=grid_atr,
+                        management_spread=entry_spread_price if raw_shadow else spread_price,
+                        risk_money=sized.actual_risk_money,
+                        equity=equity,
+                        planned_minutes=(
+                            raw_horizon * clock.duration.total_seconds() / 60.0
+                            if raw_horizon
+                            else None
+                        ),
+                        partial_possible=variant.partial and partial_is_possible,
                     )
-                    measured.append((label, None if grid_result is None else grid_result - cost))
+                    measured.append(
+                        (variant.label, None if grid_result is None else grid_result - cost)
+                    )
                 grid_rows = tuple(measured)
             out[name].append(
                 Decision(
@@ -1953,9 +2195,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--manage-grid",
         action="store_true",
         help=(
-            "resolve every taken trade again at each break-even trigger in "
-            "MANAGE_GRID and print what each one would have kept, on the same "
-            "entries as the fixed exit"
+            "resolve every taken trade again under each exit rule in the grid "
+            "and print what each one would have kept, on the same entries as "
+            "the fixed exit"
+        ),
+    )
+    parser.add_argument(
+        "--exit-grid",
+        choices=("kern", "alles"),
+        default="",
+        help=(
+            "which exit rules to compare; implies --manage-grid. `kern` is the "
+            "break-even triggers at three stop placements plus a short trailing "
+            "and partial sweep; `alles` is every placement and the full sweep, "
+            "which is far slower"
         ),
     )
     parser.add_argument(
@@ -2127,6 +2380,15 @@ def main(argv: list[str] | None = None) -> None:
         # a comparison it never made.
         if not args.jarvis_replay:
             raise SystemExit("--fixed-exits only means something with --jarvis-replay")
+    # BUILT ONCE, HERE, so the report and the walk cannot disagree about which
+    # rules were compared. A second call to `exit_grid()` further down would be
+    # a second list to keep in step, and a table headed with rules the walk did
+    # not measure is worse than no table.
+    exit_variants = (
+        exit_grid(wide=args.exit_grid == "alles")
+        if (args.manage_grid or args.exit_grid)
+        else ()
+    )
     btc_shadow = args.btc_research_parity or args.btc_jarvis_replay
     if args.jarvis_replay and args.no_m1:
         # THE VOLUME GATE READS M1 AND NOTHING ELSE. Without M1 history it
@@ -3023,7 +3285,7 @@ def main(argv: list[str] | None = None) -> None:
                     clock=clock,
                     resolve_on=finest,
                     needed=_frames_read(settings, clock, finest, tuple(names)),
-                    manage_grid=args.manage_grid,
+                    manage_grid=exit_variants,
                     legs=(leg_frames if legs_name in names else None),
                 )
                 for name, rows in produced.items():
@@ -3640,57 +3902,131 @@ def _by_market_report(trades: list[Decision]) -> None:
             print(f"    {len(losing)} of {len(by_symbol)} markets negative: {names}")
 
 
-def _grid_line(label, rows, early, late, pick) -> None:
-    """One exit rule's row. A free function so the closure cannot capture the
-    loop variables of its caller -- the kind of binding that works today and
-    silently reports the last section's numbers under every section's name
-    the moment the call moves."""
+def _grid_stats(values: list[float]) -> tuple[float, float, float]:
+    """`(total, per trade, hit rate)` for one exit rule's results."""
+
+    if not values:
+        return 0.0, 0.0, 0.0
+    won = sum(1 for v in values if v > 0)
+    return sum(values), sum(values) / len(values), won / len(values)
+
+
+def _paired_t(differences: list[float]) -> float:
+    """t of the mean of `differences` against zero, or 0.0 when undefined.
+
+    PAIRED, AND THAT IS THE WHOLE VALUE OF THIS TABLE. Every rule is resolved
+    on the SAME entry, so the difference between two rules is measured trade by
+    trade and the enormous variance of the trades themselves cancels out. An
+    unpaired comparison of two totals would need several times the sample to
+    see the same effect.
+    """
+
+    n = len(differences)
+    if n < 8:
+        # Under eight paired observations a t is arithmetic, not evidence.
+        return 0.0
+    mean = sum(differences) / n
+    var = sum((d - mean) ** 2 for d in differences) / (n - 1)
+    if var <= 0.0:
+        # Every trade moved by exactly the same amount, or none moved at all.
+        return 0.0 if mean == 0.0 else float("inf") * (1.0 if mean > 0 else -1.0)
+    return mean / (var / n) ** 0.5
+
+
+def _grid_line(label: str, rows, early, late, pick, baseline=None, marker: str = "") -> None:
+    """One exit rule's row, against the fixed exit on the same trades.
+
+    A free function so the closure cannot capture its caller's loop variables
+    -- the kind of binding that works today and silently reports the last
+    section's numbers under every section's name the moment the call moves.
+    """
+
     values = [v for v in (pick(r) for r in rows) if v is not None]
     if not values:
         return
     early_v = [v for v in (pick(r) for r in early) if v is not None]
     late_v = [v for v in (pick(r) for r in late) if v is not None]
-    won = sum(1 for v in values if v > 0)
+    total, per_trade, hit = _grid_stats(values)
+    t_text = "     -"
+    if baseline is not None:
+        pairs = [
+            (v, b)
+            for v, b in ((pick(r), baseline(r)) for r in rows)
+            if v is not None and b is not None
+        ]
+        t = _paired_t([v - b for v, b in pairs])
+        t_text = "   inf" if t == float("inf") else f"{t:>6.2f}"
     print(
-        f"    {label:<16}{sum(values):>+9.2f}{sum(values) / len(values):>+11.3f}"
-        f"{sum(early_v):>+9.2f}{sum(late_v):>+9.2f}{won / len(values):>7.1%}"
+        f"    {label:<20}{total:>+9.2f}{per_trade:>+11.3f}"
+        f"{sum(early_v):>+9.2f}{sum(late_v):>+9.2f}{hit:>7.1%}{t_text}  {marker}"
     )
 
 
-def _manage_grid_report(trades: list[Decision]) -> None:
-    """Every break-even trigger on the same entries, per section, split by date.
+def _manage_grid_report(trades: list[Decision], variants: tuple[ExitVariant, ...] = ()) -> None:
+    """Every exit rule on the same entries, per section, with a verdict.
 
     WHAT THIS ANSWERS AND WHAT IT DOES NOT.
 
-    It answers: on the trades this section actually took, would moving the stop
-    to break-even after some distance have kept more of them? Every row is the
-    same entries, the same costs, the same 20:50 flatten -- only the exit rule
-    differs. That is the narrow question and it is the one worth asking first.
+    It answers: on the trades this section actually took, which way of managing
+    the position afterwards would have kept the most of them? Every row is the
+    same entries, the same costs, the same flatten time -- only what happens
+    after entry differs. That is the narrow question and it is the one worth
+    asking first.
 
-    It does NOT answer whether to ship the winner. Break-even frees a symbol
-    earlier, an earlier free symbol takes the next setup, and a section that
-    trades a different set of entries is a different section. A level that
-    wins here earns a full replay with the position book following it, not a
-    promotion.
+    It does NOT answer whether to ship the winner. Any rule that exits earlier
+    frees its symbol earlier, an earlier free symbol takes the next setup, and
+    a section trading a different set of entries is a different section. A rule
+    that wins here has earned a full replay with the position book following
+    it, not a promotion.
 
-    AND IT PRINTS BOTH HALVES OF THE PERIOD, side by side, because picking the
-    best of seven columns on one sample is how this project has produced most
-    of its disappointments. A rule that helps in the older 60% and the newer
-    40% is worth replaying. One that only helps in one half is the sample.
+    AND IT IS A BEST-OF-MANY, WHICH IS THE TRAP. Comparing thirty rules and
+    keeping the best one is not the same experiment as testing one rule. On
+    pure noise the best of thirty looks good roughly thirty times as easily,
+    and this account has around 150 trades in a section -- so the report prints
+    the count, splits the period, and names a winner ONLY when it wins in both
+    halves and clears a threshold raised for the number of rules compared.
     """
+
     graded = [
         row for row in trades if row.grid_r and row.result_r is not None and row.outcome == "TRADE"
     ]
     if not graded:
         return
+    if not variants:
+        # READ FROM WHAT THE WALK ACTUALLY MEASURED, in the order it measured
+        # it, rather than from a grid constant this function chose for itself.
+        # Those are two lists that have to agree, and when they stop agreeing
+        # the table silently prints one rule's numbers under another's name.
+        known = {v.label: v for v in (*exit_grid(wide=True), *exit_grid(wide=False))}
+        variants = tuple(
+            known.get(label, ExitVariant(label=label, trigger_r=1.0))
+            for label, _value in graded[0].grid_r
+        )
 
     order = sorted(row.when for row in graded)
     split = order[int(len(order) * 0.6)]
+    # BY LABEL, NEVER BY POSITION. The old table read `grid_r[i]` against the
+    # grid's i-th entry, so adding, removing or reordering a rule silently
+    # relabelled every column -- the reader would have had no way to tell.
+    by_label = {v.label: v for v in variants}
 
-    print("\nBREAK-EVEN GRID — the same trades, a different exit rule")
-    print("  Only the exit differs. Same entries, same costs, same flatten time.")
-    print("  A level that helps in BOTH halves is worth a full replay; one that")
-    print("  helps in a single half is the sample, not a rule.")
+    def pick(label):
+        def read(row):
+            for name, value in row.grid_r:
+                if name == label:
+                    return value
+            return None
+
+        return read
+
+    fixed_label = next((v.label for v in variants if v.kind == "fixed"), "")
+    baseline = pick(fixed_label) if fixed_label else (lambda r: r.result_r)
+
+    print("\nEXIT GRID — the same trades, a different rule after entry")
+    print(f"  {len(variants)} rules compared on identical entries. Only the exit differs;")
+    print("  same setups, same costs, same flatten time, same position book.")
+    print("  t is PAIRED against the fixed exit: the trades cancel, so it reads")
+    print("  the difference the rule made and not the noise of the section.")
 
     by_section: dict[str, list[Decision]] = {}
     for row in graded:
@@ -3701,24 +4037,170 @@ def _manage_grid_report(trades: list[Decision]) -> None:
         late = [r for r in rows if r.when >= split]
         print(f"\n  {module}   {len(rows)} trades   ({len(early)} early / {len(late)} late)")
         print(
-            f"    {'exit rule':<16}{'total R':>9}{'per trade':>11}"
-            f"{'early R':>9}{'late R':>9}{'hit':>7}"
+            f"    {'exit rule':<20}{'total R':>9}{'per trade':>11}"
+            f"{'early R':>9}{'late R':>9}{'hit':>7}{'t':>6}"
         )
 
-        _grid_line("fixed SL/TP", rows, early, late, lambda r: r.result_r)
-        for index, (label, _trigger, _lock) in enumerate(MANAGE_GRID):
+        verdict = _grid_verdict(rows, early, late, variants, pick, baseline)
+        for variant in variants:
             _grid_line(
-                label,
+                variant.label,
                 rows,
                 early,
                 late,
-                lambda r, i=index: (r.grid_r[i][1] if i < len(r.grid_r) else None),
+                pick(variant.label),
+                None if variant.kind == "fixed" else baseline,
+                marker="<-- best" if variant.label == verdict.get("label") else "",
             )
+        _print_grid_verdict(verdict)
 
-    print("\n  A break-even level costs the trades that dip below entry and then")
-    print("  reach the target anyway, and saves the ones that turn. Which effect")
-    print("  is larger is a property of the section, not of the idea, so it has")
-    print("  to be read per section and never carried across.")
+    print("\n  A stop that moves costs the trades that dip and would have reached")
+    print("  the target anyway, and saves the ones that turn. Which effect is")
+    print("  larger is a property of the section, not of the idea, so it has to")
+    print("  be read per section and never carried across.")
+    unread = {label for row in graded for label, _v in row.grid_r} - set(by_label)
+    if unread:
+        # The walk measured a rule this table has no column for. That is a
+        # disagreement between the grid and the report, and printing the table
+        # as if it were complete is how a silent one survives.
+        print(f"\n  WARNING: {len(unread)} measured rule(s) are missing from this table:")
+        print(f"    {', '.join(sorted(unread))}")
+
+
+def _grid_verdict(rows, early, late, variants, pick, baseline) -> dict:
+    """The best rule, or nothing, with the reason it did not qualify.
+
+    THREE HURDLES, and a rule has to clear all of them:
+
+        it beats the fixed exit on the whole period
+        it beats it in the EARLY part and in the LATE part separately
+        its paired t clears a threshold raised for the number of rules tried
+
+    The third is the one that matters most and it is the one nobody applies.
+    Trying thirty rules and keeping the best is thirty chances to be fooled, so
+    the bar moves with the count: roughly Bonferroni, which is blunt but errs
+    toward refusing a rule rather than shipping one.
+    """
+
+    def total(subset, reader):
+        return sum(v for v in (reader(r) for r in subset) if v is not None)
+
+    fixed_total = total(rows, baseline)
+    fixed_early = total(early, baseline)
+    fixed_late = total(late, baseline)
+
+    # Bonferroni on a two-sided 5% test, as a normal-quantile approximation.
+    # Blunt on purpose: it refuses more rules than a sharper correction would,
+    # and every rule it refuses costs nothing while every rule it wrongly
+    # admits gets shipped to a live account.
+    tried = max(1, sum(1 for v in variants if v.kind != "fixed"))
+    bar = _bonferroni_t(tried)
+
+    ranked = []
+    for variant in variants:
+        if variant.kind == "fixed":
+            continue
+        reader = pick(variant.label)
+        pairs = [
+            (v, b)
+            for v, b in ((reader(r), baseline(r)) for r in rows)
+            if v is not None and b is not None
+        ]
+        if not pairs:
+            continue
+        t = _paired_t([v - b for v, b in pairs])
+        ranked.append(
+            {
+                "label": variant.label,
+                "t": t,
+                "total": total(rows, reader),
+                "early": total(early, reader),
+                "late": total(late, reader),
+            }
+        )
+    if not ranked:
+        return {"bar": bar, "tried": tried, "why": "no rule produced a comparable result"}
+
+    # RANKED BY t AND NOT BY TOTAL R, and that is a choice worth stating.
+    #
+    # The largest total is the rule that got lucky on the biggest trades. On
+    # 150 trades one gold day can carry a whole column, and shipping that is
+    # how a section gets tuned to a week that will not repeat. The paired t
+    # asks the other question -- did this rule improve trade after trade --
+    # and that is the one that survives.
+    #
+    # The biggest total is still named below when it differs, because the
+    # owner asked which rule pays the most and hiding it would be answering a
+    # different question than the one asked.
+    ranked.sort(key=lambda row: row["t"], reverse=True)
+    best = ranked[0]
+    fattest = max(ranked, key=lambda row: row["total"])
+    result = {
+        "bar": bar,
+        "tried": tried,
+        "best": best,
+        "fixed_total": fixed_total,
+        "fattest": fattest if fattest["label"] != best["label"] else None,
+    }
+    if best["total"] <= fixed_total:
+        result["why"] = "no rule beat the fixed exit over the whole period"
+        return result
+    if best["early"] <= fixed_early or best["late"] <= fixed_late:
+        result["why"] = (
+            f"{best['label']} leads overall but not in both halves "
+            f"(early {best['early']:+.2f} vs {fixed_early:+.2f}, "
+            f"late {best['late']:+.2f} vs {fixed_late:+.2f}) -- that is the sample"
+        )
+        return result
+    if best["t"] < bar:
+        result["why"] = (
+            f"{best['label']} leads by t={best['t']:.2f}, under the t>{bar:.2f} this "
+            f"table needs for best-of-{tried}"
+        )
+        return result
+    result["label"] = best["label"]
+    return result
+
+
+def _bonferroni_t(tried: int) -> float:
+    """The paired t a best-of-`tried` winner has to clear to mean anything.
+
+    A two-sided 5% test split across `tried` comparisons, as a normal
+    quantile -- close enough at these sample sizes and, being an approximation
+    that runs slightly HIGH, it errs toward refusing a rule.
+    """
+
+    from statistics import NormalDist
+
+    alpha = 0.05 / max(1, tried)
+    return NormalDist().inv_cdf(1.0 - alpha / 2.0)
+
+
+def _print_grid_verdict(verdict: dict) -> None:
+    """Say plainly whether anything won, and say plainly when nothing did."""
+
+    fattest = verdict.get("fattest")
+    if fattest is not None:
+        print(
+            f"    Biggest total: {fattest['label']} at {fattest['total']:+.2f} R "
+            f"(t={fattest['t']:.2f}) -- more R, less consistently, so it is not "
+            f"the pick."
+        )
+    if verdict.get("label"):
+        best = verdict["best"]
+        print(
+            f"    VERDICT: {best['label']} beats the fixed exit by "
+            f"{best['total'] - verdict['fixed_total']:+.2f} R, in both halves, "
+            f"t={best['t']:.2f} over the t>{verdict['bar']:.2f} needed for "
+            f"best-of-{verdict['tried']}."
+        )
+        print("    Worth a full replay with the position book following it. Not live yet.")
+        return
+    # SAYING NOTHING WON IS A RESULT. An absent verdict line would read as an
+    # oversight, and the reader would go back to the numbers and pick the
+    # biggest one themselves -- which is the exact thing the hurdles exist to
+    # prevent.
+    print(f"    VERDICT: keep the exit as configured. {verdict.get('why', 'no rule qualified')}.")
 
 
 def _is_this_real(
