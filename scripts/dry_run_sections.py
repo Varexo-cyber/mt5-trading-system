@@ -3656,7 +3656,7 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
 
     slots = settings.effective_max_positions(equity)
     everything = [d for key in keys for d in results[key] if d.outcome == "TRADE"]
-    trades, _refused = _under_the_slot_cap(
+    trades, refused_here = _under_the_slot_cap(
         everything,
         slots,
         share_between_sections=settings.risk.sections_may_share_a_symbol,
@@ -3686,7 +3686,37 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     else:
         print("  exit: break-even stop, which these sections actually run")
     if len(everything) != len(trades):
-        print(f"  {len(everything) - len(trades)} signals dropped: every slot was already busy")
+        # NAMED BY THE RULE THAT REFUSED IT, not by the one that sounds likely.
+        #
+        # This line read "every slot was already busy" for every refusal the
+        # shared book made, and the 180-day run showed 432 of them. All 432
+        # were SYMBOL_ALREADY_HELD: a section's own open position in the way,
+        # with the account cap never reached once. The owner raised the cap
+        # from four slots to ten on the strength of that sentence, re-measured,
+        # and nothing moved -- because the slot count was never what refused
+        # them. One wrong word cost an afternoon and a live config change.
+        # FROM THE WALK'S OWN ANSWER, not from `row.outcome`. This block runs
+        # BEFORE the caller stamps the outcomes, so every row here still reads
+        # "TRADE" and counting them would have printed an empty table under a
+        # heading promising a breakdown. Found by the test, not by the run.
+        dropped: dict[str, int] = {}
+        for reason in refused_here.values():
+            dropped[reason] = dropped.get(reason, 0) + 1
+        total_dropped = len(everything) - len(trades)
+        print(f"  {total_dropped} signals refused by the shared position book:")
+        if dropped:
+            names = {
+                "SYMBOL_ALREADY_HELD": "the section already held that market",
+                "SYMBOL_HELD_BY_ANOTHER_SECTION": "another section held it",
+                "ACCOUNT_POSITION_LIMIT": "every account slot was occupied",
+            }
+            for outcome, count in sorted(dropped.items(), key=lambda row: -row[1]):
+                print(f"     {count:>6}  {names.get(outcome, outcome)}")
+            if not dropped.get("ACCOUNT_POSITION_LIMIT"):
+                print(
+                    "     The account cap refused NOTHING here, so raising it cannot "
+                    "buy a trade."
+                )
         # AND WHICH SECTION PAID FOR IT, because one number cannot say.
         #
         # The 4 September run printed "320 signals dropped" and left it there.
@@ -3715,11 +3745,15 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
             after = sum(_live_exit(d, managed) or 0.0 for d in taken)
             rows.append((before - after, module, lost, before - after))
         if rows:
-            print("     what the cap cost each section, in trades and in R:")
+            print("     what the book cost each section, in trades and in R:")
             for _sort, module, lost, cost in sorted(rows, key=lambda r: -r[0]):
                 print(f"       {module:<28}{lost:>6} trades   {cost:>+8.2f} R")
             print("     A section paying for another section's trades is a real cost")
             print("     and it does not show up in that one total above.")
+            print("     Where the reason is 'already held', those setups overlap in time")
+            print("     with a position the section HAS. Taking them is the same idea at")
+            print("     a larger size, not a second one -- read the drawdown with the R.")
+            print("     `hoeveel.cmd 180 stapel` measures exactly that.")
 
     if not closed:
         print("\n  No resolved trades in this window.")

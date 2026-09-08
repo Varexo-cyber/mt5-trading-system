@@ -5499,3 +5499,38 @@ class TestTheSharedBookCountsPositionsAndNamesItsRefusals:
         parsed = build_parser_for_launcher(argv)
         assert parsed.legs_per_symbol == 1
         assert parsed.csv.endswith("hoeveel.csv")
+
+    def test_the_live_block_names_the_rule_that_refused(self, capsys):
+        """The 180-day run printed "432 signals dropped: every slot was already
+        busy" while the refusal table on the same screen said
+        SYMBOL_ALREADY_HELD 432 and ACCOUNT_POSITION_LIMIT zero.
+
+        Two lines contradicting each other, and the owner acted on the wrong
+        one: he raised the account cap from four slots to ten, re-measured, and
+        nothing moved. A refusal has to be named by the rule that made it.
+        """
+        from config.loader import load_settings
+        from scripts.dry_run_sections import _live_config_report
+
+        settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
+        rows = self._rows(
+            [
+                (0, "section_six_gold_m5", "XAUUSD.i", 600, "LONG"),
+                (5, "section_six_gold_m5", "XAUUSD.i", 600, "LONG"),
+            ]
+        )
+        for row in rows:
+            row.result_r = 1.0
+            row.pass_key = (row.module, "M5")
+        # BOTH still read TRADE, which is the state this block actually sees:
+        # it runs before the caller stamps the refusals. A fixture that
+        # pre-stamped them would have passed against code that prints nothing.
+        results = {("section_six_gold_m5", "M5"): rows}
+        _live_config_report(results, settings, 233.02, 180)
+        out = capsys.readouterr().out
+
+        assert "every slot was already busy" not in out
+        assert "already held that market" in out
+        assert "raising it cannot buy a trade" in out, (
+            "when the cap refused nothing, the report has to say so or it will be blamed again"
+        )
