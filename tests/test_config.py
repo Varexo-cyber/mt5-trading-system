@@ -70,7 +70,7 @@ class TestShippedConfig:
             "commodity",
             "crypto",
         )
-        assert settings.instruments.symbols_only == ()
+        assert settings.instruments.symbols_only == ("NDX100", "SPX500", "XAUUSD", "BTCUSD")
         # A cycle has to be able to FINISH. With shares back in the catalogue
         # an uncapped pass is 800+ symbols, and five minutes after launch the
         # log carried only "slow MT5 calls" and "symbol held out of deep
@@ -562,7 +562,7 @@ class TestTradeFrequency:
             "commodity",
             "crypto",
         )
-        assert settings.instruments.symbols_only == ()
+        assert settings.instruments.symbols_only == ("NDX100", "SPX500", "XAUUSD", "BTCUSD")
         assert settings.instruments.symbol_overrides["XAUUSD"] == "XAUUSD"
         assert settings.ai.provider == "local_history"
         assert settings.ai.anthropic_model == ""
@@ -681,15 +681,22 @@ class TestACycleCanFinish:
         assert settings.scanner.priority_every_cycle
         assert "forex" in settings.scanner.priority_asset_classes
 
-    def test_the_whole_catalogue_is_still_reachable(self) -> None:
-        """Batching narrows a cycle, not the universe. Nothing is excluded — it
-        rotates through, which is the difference between this and a blocklist."""
+    def test_only_the_operators_four_markets_enter_the_catalogue(self) -> None:
+        """Exercise the actual scanner before any quote/history inspection."""
         settings = load_settings(
             overlay=DEFAULT_CONFIG_PATH.parent / "eightcap.yaml", env_overrides=False
         )
 
-        assert settings.instruments.symbols_only == ()
-        assert settings.scanner.deep_candidates >= 847
+        from types import SimpleNamespace
+        from scanner.universe import UniverseScanner
+
+        wanted = ("NDX100", "SPX500", "XAUUSD", "BTCUSD")
+        names = (*wanted, "GBPUSD.i", "EURUSD.i", "US30", "NDX100.i", "BTCUSD.i")
+        paths = {"NDX100": "Indices", "SPX500": "Indices", "XAUUSD": "Commodities\\Metals", "BTCUSD": "Crypto"}
+        broker = SimpleNamespace(symbols=lambda: [
+            SimpleNamespace(name=name, path=paths.get(name, "Forex")) for name in names
+        ])
+        assert tuple(item.name for item in UniverseScanner(broker, settings).catalogue()) == wanted
 
     def test_the_priority_recurrence_needs_a_batch_to_mean_anything(self) -> None:
         """Documented in `scanner/universe.py`: with no batch the whole universe
