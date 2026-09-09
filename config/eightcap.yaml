@@ -10,8 +10,11 @@ instruments:
   symbol_suffix: ".i"
   symbol_overrides:
     XAUUSD: XAUUSD
+    NDX100: NDX100
+    SPX500: SPX500
+    BTCUSD: BTCUSD
 
-  # The whole catalogue is considered, and the position sizer decides what a
+  # Within symbols_only below, the position sizer decides what a
   # EUR 100 account can actually express. This is not the loosening it looks
   # like: the whitelist was a hand-written guess at affordability, while the
   # sizer measures it exactly, per symbol, at the current equity and the
@@ -360,10 +363,9 @@ instruments:
   # trade van zes dagen geen kwart van de capaciteit is.
   asset_classes: [forex, metal, index, commodity, crypto]
 
-  # Or watch a single instrument. Leave empty for the list above; set e.g.
-  # [XAUUSD] to look at nothing else. Blunt on purpose — everything excluded
-  # stops being seen, including better setups elsewhere.
-  symbols_only: []
+  # Operator's four markets, 2026-09-09. Filtered before quotes/history scans.
+  # Exact names above prevent the FX suffix .i hiding indices and Bitcoin.
+  symbols_only: [NDX100, SPX500, XAUUSD, BTCUSD]
 
 data:
   # Eightcap Labor Day 2026: GMT+3 early closes 19:50 indices, 21:20 gold.
