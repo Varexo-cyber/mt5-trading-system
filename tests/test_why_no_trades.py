@@ -678,3 +678,55 @@ class TestASilentSectionSaysWhyItIsSilent:
         out = capsys.readouterr().out
         assert "SECTION_BREAKER_TRIPPED  (8)" in out
         assert "section_six_gold_m5 breaker" in out, "the disabled section is still unnamed"
+
+    def test_the_second_reason_is_shown_because_that_is_where_the_answer_is(
+        self, tmp_path: Path, capsys
+    ) -> None:  # type: ignore[no-untyped-def]
+        """Section six runs on 232 markets and may trade one.
+
+        Its commonest sentence is therefore always "disabled for this market"
+        -- 255,930 of 257,352 runs on the owner's live journal. True, expected,
+        and useless: it says nothing about the 1,422 times it DID run on gold
+        and still scored nothing. Printing only the top row buries the question
+        under the answer to a different one.
+        """
+        path = tmp_path / "trading.db"
+        db = sqlite3.connect(path)
+        db.execute(
+            "CREATE TABLE analysis_cycles (id INTEGER PRIMARY KEY, ts TEXT, symbol TEXT, "
+            "decision TEXT, reason TEXT, detail TEXT, total_score REAL, "
+            "score_threshold REAL, context_json TEXT DEFAULT '{}')"
+        )
+        db.execute(
+            "CREATE TABLE module_scores (id INTEGER PRIMARY KEY, cycle_pk INTEGER, "
+            "module TEXT, score REAL, confidence REAL, weight REAL, "
+            "reasoning TEXT DEFAULT '', details_json TEXT DEFAULT '{}')"
+        )
+        now = datetime.now(UTC)
+        # 30 runs on other markets, 4 on gold. The gold ones are the question.
+        reasons = ["section six disabled for this market"] * 30 + [
+            "model magnitude 0.004 below threshold"
+        ] * 4
+        for i, reason in enumerate(reasons):
+            db.execute(
+                "INSERT INTO analysis_cycles (id, ts, symbol, decision, reason, detail) "
+                "VALUES (?,?,?,?,?,?)",
+                (i + 1, (now - timedelta(minutes=i)).isoformat(), "XAUUSD", "SKIP",
+                 "NO_SIGNAL", "no weighted directional evidence"),
+            )
+            db.execute(
+                "INSERT INTO module_scores (cycle_pk, module, score, confidence, weight, "
+                "reasoning) VALUES (?,?,?,?,?,?)",
+                (i + 1, "section_six_gold_m5", 0.0, 0.0, 1.0, reason),
+            )
+        db.commit()
+        db.close()
+
+        main(["--hours", "72", "--db", str(path)])
+        out = capsys.readouterr().out
+
+        assert "disabled for this market" in out, "the expected sentence is still shown"
+        assert "below threshold" in out, (
+            "the rarer sentence is the one the operator needs and it was buried"
+        )
+        assert "4x" in out
