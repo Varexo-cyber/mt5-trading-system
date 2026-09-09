@@ -366,6 +366,17 @@ instruments:
   symbols_only: []
 
 data:
+  # Eightcap Labor Day 2026: GMT+3 early closes 19:50 indices, 21:20 gold.
+  # Source: https://www.eightcap.com/en/traders/trading-hours/ (2026-09-09).
+  # Only the published holiday date through server midnight is exempted.
+  # Normal overnight gaps remain subject to the existing recurrence check.
+  history_closures:
+    NDX100:
+      - {start: '2026-09-07T16:50:00Z', end: '2026-09-07T21:00:00Z'}
+    SPX500:
+      - {start: '2026-09-07T16:50:00Z', end: '2026-09-07T21:00:00Z'}
+    XAUUSD:
+      - {start: '2026-09-07T18:20:00Z', end: '2026-09-07T21:00:00Z'}
   # The full ladder, weekly down to one minute. The higher frames set bias, the
   # lower ones are what Claude reads for entry timing — and it uses them: two of
   # the first twelve vetoes were "M15/M5 price action is falling into the entry,

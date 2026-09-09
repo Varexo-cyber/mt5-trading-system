@@ -302,14 +302,16 @@ class DataManager:
         if len(df) < 3 or tf in (Timeframe.W1, Timeframe.MN1):
             return
 
-        missing_bars = _missing_bars(df, tf)
+        closures = self.config.history_closures.get(symbol, ())
+        missing_bars = _missing_bars(df, tf, closures=closures)
         expected = max(len(df) - 1, 1)
         fraction = float(missing_bars) / expected
         if fraction > self.config.max_gap_fraction:
             raise DataIntegrityError(
                 f"{symbol} {tf}: {missing_bars:.0f} bars missing inside trading weeks "
                 f"({fraction:.1%} of the window, limit {self.config.max_gap_fraction:.1%}). "
-                f"Refusing to analyse an incomplete series."
+                f"Refusing to analyse an incomplete series. "
+                f"Gap boundaries UTC: {_gap_boundaries(df, tf)}"
             )
         if missing_bars > 0:
             log.debug(
@@ -502,7 +504,13 @@ def _typical_gap(df: pd.DataFrame) -> timedelta:
     return intraweek.quantile(0.90).to_pytimedelta()
 
 
-def _missing_bars(df: pd.DataFrame, tf: Timeframe) -> float:
+def _gap_boundaries(df: pd.DataFrame, tf: Timeframe) -> str:
+    gaps = df.index.to_series().diff()
+    largest = gaps[gaps > pd.Timedelta(tf.duration)].nlargest(3)
+    return "; ".join(f"{end - gap} -> {end}" for end, gap in largest.items())
+
+
+def _missing_bars(df: pd.DataFrame, tf: Timeframe, *, closures: tuple = ()) -> float:
     """Bars absent from a series, judged against the instrument's own rhythm.
 
     **A gap that recurs is structure; a gap that happens once is loss.** That is
@@ -545,10 +553,20 @@ def _missing_bars(df: pd.DataFrame, tf: Timeframe) -> float:
     }
 
     missing = 0.0
-    for width, count in recurrence.items():
+    for end, width in widths.items():
         if width in structural:
             continue
-        missing += float((width - 1) * count)
+        # Deduct only missing bar slots fully within a published closure.
+        # Keep actual bars intact, and count holes before/after the closure.
+        absent = float(width - 1)
+        if closures:
+            start = end - oversized.loc[end] + pd.Timedelta(step)
+            slots = pd.date_range(start, end, freq=pd.Timedelta(step), inclusive="left")
+            covered = np.zeros(len(slots), dtype=bool)
+            for closure in closures:
+                covered |= (slots >= closure.start) & (slots + step <= closure.end)
+            absent -= int(covered.sum())
+        missing += max(0.0, absent)
     return missing
 
 
