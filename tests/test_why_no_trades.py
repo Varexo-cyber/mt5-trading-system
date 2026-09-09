@@ -495,3 +495,76 @@ class TestSilenceAndAbsenceAreDifferentFindings:
             "config/config.yaml", overlay="config/eightcap.yaml", env_overrides=False
         ).analysis.confluence.live_enabled_modules
         assert set(_live_modules()) == set(shipped)
+
+
+class TestTheNumberTheOperatorNeedsIsOnTheScreen:
+    """`_group` collapses measurements so one gate reads as one gate. Right --
+    and it was the ONLY thing printed.
+
+    The owner asked why nothing had traded for three days. The report named the
+    gate, 116 times over, and then said "spread is N of the N stop, above the N
+    limit". N is the number that decides whether the gate is correct or
+    mistuned, and there was no way to see it: `--examples` printed the most
+    RECENT decisions regardless of reason, which on a quiet night is a screen
+    of exotic FX pairs saying NO_SIGNAL.
+
+    A diagnosis that names the cause and withholds the measurement leaves the
+    operator exactly where he started.
+    """
+
+    @staticmethod
+    def _spread_rows(journal: Path) -> None:
+        db = sqlite3.connect(journal)
+        now = datetime.now(UTC)
+        # Same gate, different measurements -- which is why grouping is needed.
+        for i, (spread, stop) in enumerate(
+            [(0.31, 0.28), (0.44, 0.39), (0.52, 0.41), (0.29, 0.27)]
+        ):
+            db.execute(
+                "INSERT INTO analysis_cycles (ts, symbol, decision, reason, detail, "
+                "context_json) VALUES (?,?,?,?,?,?)",
+                (
+                    (now - timedelta(minutes=i)).isoformat(),
+                    "XAUUSD",
+                    "SKIP",
+                    "SPREAD_EATS_THE_STOP",
+                    f"spread is {spread} of the {stop} stop, above the 0.08 limit",
+                    "{}",
+                ),
+            )
+        db.commit()
+        db.close()
+
+    def test_a_grouped_gate_shows_one_real_sentence(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        self._spread_rows(journal)
+        main(["--hours", "72", "--db", str(journal)])
+        out = capsys.readouterr().out
+
+        # The grouped shape is still there: four rows, one gate.
+        assert "spread is N of the N stop" in out
+        # ...and so is an actual measurement from one of them.
+        assert "e.g." in out, "the gate is named and its numbers are still hidden"
+        assert any(
+            f"{spread} of the" in out for spread in ("0.31", "0.44", "0.52", "0.29")
+        ), "no real spread figure reached the screen"
+        assert "0.08 limit" in out, "the limit it was judged against is missing"
+
+    def test_the_grouping_itself_is_not_broken_by_the_example(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """Four different measurements must still count as ONE gate. Without
+        the grouping the single biggest reachable gate shatters into hundreds
+        of rows of two and never appears on the screen at all."""
+        self._spread_rows(journal)
+        main(["--hours", "72", "--db", str(journal)])
+        out = capsys.readouterr().out
+
+        gate = out.split("SPREAD_EATS_THE_STOP  (4)", 1)[1].split("\n\n", 1)[0]
+        assert "    4x" in gate, "the four measurements did not group into one line"
+
+    def test_an_example_never_replaces_the_count(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        # The count is what says how big the problem is; the example only says
+        # what it looks like. Losing the count to make room would be a trade
+        # nobody asked for.
+        self._spread_rows(journal)
+        main(["--hours", "72", "--db", str(journal)])
+        out = capsys.readouterr().out
+        assert "SPREAD_EATS_THE_STOP  (4)" in out
