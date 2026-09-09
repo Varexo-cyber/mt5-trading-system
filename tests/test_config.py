@@ -84,13 +84,26 @@ class TestShippedConfig:
         assert settings.scanner.batch_size == 240
         assert settings.scanner.priority_every_cycle
         assert settings.scanner.deep_candidates >= 847
-        # Gold: opened by Jarvis, never taken over from the owner. Those were
-        # one switch until 26 August and the coupling cost real money -- see
+        # Opened by Jarvis, never taken over from the owner. Those were one
+        # switch until 26 August and the coupling cost real money -- see
         # `TestGoldIsTradableWithoutBeingAdoptable` for the full argument.
-        assert settings.instruments.no_adoption_symbols == ("XAUUSD",)
-        assert settings.instruments.refuses_adoption("XAUUSD")
-        assert not settings.instruments.is_hands_off("XAUUSD")
-        assert not settings.instruments.is_ignored("XAUUSD")
+        #
+        # PINNED AS THE PROPERTY, NOT AS THE LIST. This held the literal
+        # ("XAUUSD",), so gold was protected and the other live markets were
+        # not -- and nothing said so. The owner took a manual NDX100 trade,
+        # `manual_positions` adopted it (magic 0), `positions_in` does not
+        # filter on magic, and section five refused every setup on the only
+        # market it may trade with POSITION_ALREADY_OPEN. Three days, no
+        # trades. A frozen tuple could not have caught that; this can.
+        for symbol in ("XAUUSD", "NDX100", "SPX500", "BTCUSD"):
+            assert settings.instruments.refuses_adoption(symbol), (
+                f"a hand-placed ticket in {symbol} would silence the section that trades it"
+            )
+            assert not settings.instruments.is_hands_off(symbol)
+            assert not settings.instruments.is_ignored(symbol)
+        # And it stays narrow: adoption is refused where this account trades,
+        # not everywhere. A blanket refusal would be a different setting.
+        assert not settings.instruments.refuses_adoption("EURUSD")
         # Every class section six is ALLOWED to trade rides the every-cycle
         # lane, and that property is what is asserted rather than the literal
         # tuple.
