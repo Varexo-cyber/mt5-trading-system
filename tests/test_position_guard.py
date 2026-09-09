@@ -2646,3 +2646,62 @@ def test_a_refused_close_is_not_reported_as_one() -> None:
     broker.price = 109.5
     events = manager.manage([position()], NOW)
     assert [e.action for e in events if e.action == "TARGET_DOORSTEP"] == []
+
+
+def test_a_hand_placed_ticket_cannot_stall_the_section_that_trades_that_market() -> None:
+    """Three days, no trades, and 26 setups refused POSITION_ALREADY_OPEN while
+    Jarvis held nothing.
+
+    A hand-placed MT5 order carries magic 0, `manual_positions` adopts magic 0,
+    and `positions_in(symbol)` does not filter on magic. So the owner taking a
+    manual NDX100 trade made section five -- 502 of the 1404 trades in the
+    180-day replay -- refuse every setup on the only market it may trade, for
+    as long as that position stayed open.
+
+    Gold was already protected by `no_adoption_symbols` and behaved correctly
+    the whole time. The other live markets were not on the list, and the
+    difference was invisible: both cases print the same refusal.
+
+    THIS IS NOT A GATE BEING REMOVED. "May Jarvis open here" stays yes with
+    every ordinary gate. "May Jarvis take over the owner's position here"
+    becomes no.
+    """
+    from config.loader import load_settings
+
+    settings = load_settings(overlay=Path("config/eightcap.yaml"), env_overrides=False)
+    instruments = settings.instruments
+    live = settings.analysis.confluence.live_enabled_modules
+
+    # Every market a live section may trade must refuse adoption, or a manual
+    # ticket there silences that section.
+    wanted: set[str] = set()
+    for name in live:
+        config = getattr(settings.analysis, name, None)
+        for symbol in getattr(config, "allowed_symbols", ()) or ():
+            wanted.add(symbol)
+        single = getattr(config, "symbol", "")
+        if single:
+            wanted.add(single)
+    # Section six carries its market in the class rather than the config.
+    wanted.add("XAUUSD")
+
+    unprotected = [s for s in sorted(wanted) if not instruments.refuses_adoption(s)]
+    assert not unprotected, (
+        f"a manual ticket in {unprotected} would refuse every setup of the section "
+        f"that trades it, and the refusal reads as POSITION_ALREADY_OPEN"
+    )
+
+
+def test_the_refusal_survives_the_brokers_suffix() -> None:
+    """The list is written in canonical names and matched against what MT5
+    reports, which carries Eightcap's `.i` on everything except gold. A list
+    that only matched the canonical spelling would protect nothing live."""
+    from config.loader import load_settings
+
+    instruments = load_settings(
+        overlay=Path("config/eightcap.yaml"), env_overrides=False
+    ).instruments
+    assert instruments.refuses_adoption("NDX100.i")
+    assert instruments.refuses_adoption("BTCUSD.i")
+    # And it stays narrow: a market no section trades is still adoptable.
+    assert not instruments.refuses_adoption("EURUSD.i")

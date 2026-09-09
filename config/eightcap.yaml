@@ -204,7 +204,31 @@ instruments:
   # adopteren, opschrijven als de onze, en hem daarna weigeren te beheren --
   # het slechtste van allebei.
   observation_only_symbols: []
-  no_adoption_symbols: [XAUUSD]
+  # 9 SEPTEMBER: NDX100, SPX500 EN BTCUSD ERBIJ. Goud stond er al op en dat
+  # werkte precies zoals bedoeld; de andere drie stonden er niet, en dat is
+  # drie dagen lang zichtbaar geweest zonder dat iemand het herkende.
+  #
+  # WAT ER GEBEURDE. De eigenaar handelde handmatig NDX100. Een handmatig
+  # ticket draagt magic 0, `manual_positions` adopteert magic 0, en een
+  # geadopteerde positie telt gewoon mee in `positions_in(symbol)` -- die
+  # filtert niet op magic. Sectie vijf kreeg dus POSITION_ALREADY_OPEN op de
+  # enige markt die hij mag handelen, zolang die handmatige positie openstond.
+  # Sectie vijf is 502 van de 1404 trades in de 180-daagse replay.
+  #
+  # 26 van de 199 setups in 72 uur stierven zo, en het waren de setups die de
+  # kostenpoort al overleefd hadden -- de dure.
+  #
+  # DIT IS GEEN POORT DIE WEGGAAT. Het antwoord op "mag Jarvis hier zelf
+  # openen" blijft JA met alle gewone poorten. Wat verandert is het antwoord op
+  # "mag Jarvis de positie van de eigenaar overnemen": NEE. Dat is dezelfde
+  # scheiding die `refuses_adoption` voor goud al maakte, nu ook voor de
+  # overige markten waarop dit account zelf handelt.
+  #
+  # BIJVANGST DIE ER NIET MINDER OM IS: Jarvis mag nu ook de stop van een
+  # handmatige NDX-trade niet meer verzetten of hem sluiten. Dat is wat je wil
+  # -- een sectie die zijn eigen gemeten uitstap draait heeft geen mening over
+  # een trade die jij op een FVG hebt genomen.
+  no_adoption_symbols: [XAUUSD, NDX100, SPX500, BTCUSD]
 
   # No hand-written equity floors. They were a guess at what a small account
   # can afford — gold at EUR 500, indices at EUR 2000 — and a guess made before
