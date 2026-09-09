@@ -130,3 +130,120 @@ def test_live_overlay_keeps_the_measured_gold_exit_and_rejects_spx() -> None:
     assert settings.analysis.section_six_gold_m5.confirmation_bars == 12
     assert settings.analysis.section_six_gold_m5.secondary_confirmation_bars == 48
     assert "JARVIS-S6-AU-M5" in settings.trade_management.break_even_only_comments
+
+
+class TestEachSilenceNamesItself:
+    """Three faults printed one sentence and it cost three days.
+
+    Section six ran 257,352 times over a weekend, scored zero every time, and
+    the only reason available said "needs 80 closed M5 bars" -- while the live
+    scan fetches 200. Every hour after that went into ruling out a cause the
+    message had already named wrongly: the clock was there, the bars were
+    there, the model clears the threshold on ~30% of realistic gold windows.
+
+    A silence that cannot say which silence it is turns a five-minute answer
+    into a weekend.
+    """
+
+    @staticmethod
+    def _context(symbol: str, frame, timeframe=None, hour: int = 22):
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+
+        from core.types import Timeframe
+
+        clock = timeframe or Timeframe.M5
+        series = None if frame is None else SimpleNamespace(df=frame)
+        # 22:00 UTC by default: INSIDE section six's measured 20:00-02:00 gold
+        # session. Outside it the section refuses before reaching the model,
+        # and a fixture that sat at noon would have proved the model unreachable
+        # rather than the message wrong.
+        return SimpleNamespace(
+            symbol=symbol,
+            series={} if series is None else {clock: series},
+            now=datetime(2026, 9, 8, hour, 30, tzinfo=UTC),
+            tick=None,
+            meta={},
+        )
+
+    @staticmethod
+    def _frame(rows: int, flat_volume: bool = False):
+        from datetime import UTC, datetime
+
+        import numpy as np
+        import pandas as pd
+
+        rng = np.random.default_rng(5)
+        index = pd.date_range(datetime(2026, 9, 8, tzinfo=UTC), periods=rows, freq="5min")
+        close = 4400 + np.cumsum(rng.normal(0, 1.5, rows))
+        return pd.DataFrame(
+            {
+                "open": close + rng.normal(0, 0.5, rows),
+                "high": close + np.abs(rng.normal(0, 0.8, rows)),
+                "low": close - np.abs(rng.normal(0, 0.8, rows)),
+                "close": close,
+                "tick_volume": np.zeros(rows) if flat_volume else rng.integers(
+                    200, 900, rows
+                ).astype(float),
+            },
+            index=index,
+        )
+
+    def _section(self):
+        from pathlib import Path
+
+        from analysis.section_six_adaptive import SectionSixGoldM5
+        from config.loader import load_settings
+
+        settings = load_settings(
+            overlay=Path("config/eightcap.yaml"), env_overrides=False
+        )
+        return SectionSixGoldM5(settings.analysis.section_six_gold_m5)
+
+    def test_a_missing_clock_says_the_clock_is_missing(self) -> None:
+        signal = self._section().analyze(self._context("XAUUSD", None))
+        assert "not in this context" in signal.reasoning
+        assert "80" not in signal.reasoning, "this is not a bar-count problem"
+
+    def test_a_short_frame_says_how_short(self) -> None:
+        signal = self._section().analyze(self._context("XAUUSD", self._frame(40)))
+        assert "40 closed M5 bars and needs 80" in signal.reasoning
+
+    def test_a_non_finite_input_says_so_and_not_bars(self) -> None:
+        """200 bars and still nothing. The old message blamed the bar count,
+        which is the one thing that was demonstrably fine."""
+        signal = self._section().analyze(
+            self._context("XAUUSD", self._frame(200, flat_volume=True))
+        )
+        assert "not finite" in signal.reasoning
+        assert "needs 80" not in signal.reasoning
+
+    def test_the_three_sentences_are_all_different(self) -> None:
+        section = self._section()
+        said = {
+            section.analyze(self._context("XAUUSD", None)).reasoning,
+            section.analyze(self._context("XAUUSD", self._frame(40))).reasoning,
+            section.analyze(
+                self._context("XAUUSD", self._frame(200, flat_volume=True))
+            ).reasoning,
+            section.analyze(self._context("EURUSD.i", self._frame(200))).reasoning,
+        }
+        assert len(said) == 4, f"two faults still read the same: {said}"
+
+    def test_a_healthy_frame_still_reaches_the_model(self) -> None:
+        # The split must not have broken the working path.
+        signal = self._section().analyze(self._context("XAUUSD", self._frame(200)))
+        assert "not in this context" not in signal.reasoning
+        assert "needs 80" not in signal.reasoning
+        assert "not finite" not in signal.reasoning
+
+    def test_the_session_window_is_a_fourth_distinct_sentence(self) -> None:
+        """Section six trades gold for six hours a night, long only. That is a
+        design decision and it must not read like a fault -- nor a fault like
+        it. At noon the section is correctly silent and says so in its own
+        words."""
+        signal = self._section().analyze(
+            self._context("XAUUSD", self._frame(200), hour=12)
+        )
+        assert "outside measured" in signal.reasoning
+        assert "20:00-02:00" in signal.reasoning
