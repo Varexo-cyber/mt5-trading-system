@@ -648,11 +648,33 @@ def _print_gate_details(rows: Sequence[sqlite3.Row], counts: Counter[str]) -> No
         return
     print("WHAT EACH GATE ACTUALLY SAID")
     for reason, count in interesting:
-        said = Counter(_group(str(row["detail"])) for row in rows if str(row["reason"]) == reason)
+        # ONE REAL SENTENCE PER GROUPED ROW, WITH THE NUMBERS LEFT IN.
+        #
+        # `_group` replaces every measurement with N so that "spread is 0.31 of
+        # the 0.28 stop" and "spread is 0.44 of the 0.39 stop" count as one
+        # gate instead of two hundred. That grouping is right and this report
+        # would be unreadable without it.
+        #
+        # But it was the ONLY thing printed, so the screen read "116x spread is
+        # N of the N stop, above the N limit" -- and N is the number the
+        # operator needs. He asked why nothing had traded for three days, the
+        # tool told him which gate, and then withheld the one figure that says
+        # whether the gate is right. `--examples` did not help either: it
+        # printed the most RECENT decisions regardless of reason, which on a
+        # quiet night is a screen of exotic FX pairs saying NO_SIGNAL.
+        by_shape: dict[str, list[str]] = {}
+        for row in rows:
+            if str(row["reason"]) != reason:
+                continue
+            detail = str(row["detail"])
+            by_shape.setdefault(_group(detail), []).append(detail)
+        said = Counter({shape: len(seen) for shape, seen in by_shape.items()})
         print(f"  {reason}  ({count})")
         shown = 0
         for detail, seen in said.most_common(3):
             print(f"      {seen:>5}x  {detail[:88]}")
+            example = by_shape[detail][0]
+            print(f"            e.g. {_summarise(example)[:96]}")
             shown += seen
         if count - shown > 0:
             print(f"      {count - shown:>5}x  everything else")
