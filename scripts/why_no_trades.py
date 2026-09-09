@@ -396,8 +396,8 @@ def _module_presence(
 
 def _module_silence(
     conn: sqlite3.Connection, where: str, params: list[object]
-) -> dict[str, tuple[str, int]]:
-    """Per module, the reason it gave most often, and how often.
+) -> dict[str, list[tuple[str, int]]]:
+    """Per module, the two reasons it gave most often, and how often.
 
     THE ANSWER WAS IN THE JOURNAL THE WHOLE TIME. `module_scores.reasoning`
     holds the sentence the module itself wrote -- "section six needs 80 closed
@@ -428,11 +428,19 @@ def _module_silence(
         except sqlite3.OperationalError:
             # An older journal without the column. A diagnostic may not die.
             return {}
-    best: dict[str, tuple[str, int]] = {}
+    # TWO REASONS, NOT ONE, and the second is where the answer usually is.
+    #
+    # Section six runs on 232 markets and may trade one, so its commonest
+    # sentence is always "disabled for this market" -- 255,930 of 257,352 runs.
+    # True, expected, and useless: it says nothing about the 1,422 times it DID
+    # run on gold and still scored nothing. Printing only the top row buries
+    # the question under the answer to a different one.
+    best: dict[str, list[tuple[str, int]]] = {}
     for row in found:
         module = str(row["module"])
-        if module not in best:
-            best[module] = (str(row["reasoning"]), int(row["seen"]))
+        rows = best.setdefault(module, [])
+        if len(rows) < 2:
+            rows.append((str(row["reasoning"]), int(row["seen"])))
     return best
 
 
@@ -455,7 +463,7 @@ def _live_modules() -> tuple[str, ...]:
 def _print_live_section_rollcall(
     presence: dict[str, tuple[int, int, int]],
     live: tuple[str, ...],
-    silence: dict[str, tuple[str, int]] | None = None,
+    silence: dict[str, list[tuple[str, int]]] | None = None,
 ) -> None:
     """One line per section that may trade real money. ALWAYS printed.
 
@@ -483,9 +491,9 @@ def _print_live_section_rollcall(
         # cause. Only the second one tells the operator whether to wait or to
         # fix something.
         said = (silence or {}).get(name)
-        if said is not None and scored == 0:
-            reason, times = said
-            print(f"{'':<22} -> {times}x  {' '.join(reason.split())[:88]}")
+        if said and scored == 0:
+            for reason, times in said:
+                print(f"{'':<22} -> {times}x  {' '.join(reason.split())[:88]}")
     missing = [name for name in live if presence.get(name, (0, 0, 0))[0] == 0]
     if missing:
         print(
@@ -561,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         directional_modules: list[sqlite3.Row] = []
         presence: dict[str, tuple[int, int, int]] = {}
-        silence: dict[str, tuple[str, int]] = {}
+        silence: dict[str, list[tuple[str, int]]] = {}
         if "module_scores" in tables and floor is not None:
             module_where = "m.cycle_pk >= ?"
             module_params: list[object] = [floor]
