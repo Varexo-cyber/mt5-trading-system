@@ -17,6 +17,7 @@ serialised into a log or a journal row.
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -123,7 +124,24 @@ class LoggingConfig(Base):
 # ------------------------------------------------------------------ data ---
 
 
+class HistoryClosure(Base):
+    """Broker-published closure, [start, end), in timezone-aware timestamps."""
+
+    start: datetime
+    end: datetime
+
+    @model_validator(mode="after")
+    def _valid_interval(self) -> HistoryClosure:
+        if self.start.utcoffset() is None or self.end.utcoffset() is None:
+            raise ValueError("history closure timestamps must include a timezone")
+        if self.end <= self.start:
+            raise ValueError("history closure end must be after start")
+        return self
+
+
 class DataConfig(Base):
+    # Exact broker symbols. This only changes historical gap accounting.
+    history_closures: dict[str, tuple[HistoryClosure, ...]] = Field(default_factory=dict)
     #: Timeframes loaded every cycle, highest first (HTF bias -> LTF timing).
     timeframes: tuple[str, ...] = ("D1", "H4", "H1", "M15", "M5")
     #: Bars to keep per timeframe. Must cover the slowest indicator lookback
