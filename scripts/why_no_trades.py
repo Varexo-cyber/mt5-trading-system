@@ -394,6 +394,48 @@ def _module_presence(
     }
 
 
+def _module_silence(
+    conn: sqlite3.Connection, where: str, params: list[object]
+) -> dict[str, tuple[str, int]]:
+    """Per module, the reason it gave most often, and how often.
+
+    THE ANSWER WAS IN THE JOURNAL THE WHOLE TIME. `module_scores.reasoning`
+    holds the sentence the module itself wrote -- "section six needs 80 closed
+    M5 bars", "model magnitude 0.004 below threshold", "disabled for this
+    market" -- and this report printed "scored 0 every time, it looked and
+    found nothing" instead.
+
+    Those are not the same statement. "Found nothing" is a strategy in a quiet
+    market. "Needs 80 closed M5 bars" is a section that cannot run at all. The
+    owner spent three days on that distinction while the sentence that settles
+    it sat one query away.
+    """
+
+    body = f"""
+        SELECT m.module, m.reasoning, COUNT(*) AS seen
+        FROM module_scores m {{index}}
+        WHERE {where} AND m.score = 0 AND m.reasoning <> ''
+        GROUP BY m.module, m.reasoning
+        ORDER BY seen DESC
+        """
+    try:
+        found = conn.execute(
+            body.format(index="INDEXED BY idx_module_scores_cycle"), params
+        ).fetchall()
+    except sqlite3.OperationalError:
+        try:
+            found = conn.execute(body.format(index=""), params).fetchall()
+        except sqlite3.OperationalError:
+            # An older journal without the column. A diagnostic may not die.
+            return {}
+    best: dict[str, tuple[str, int]] = {}
+    for row in found:
+        module = str(row["module"])
+        if module not in best:
+            best[module] = (str(row["reasoning"]), int(row["seen"]))
+    return best
+
+
 def _live_modules() -> tuple[str, ...]:
     """The sections allowed to trade real money, or () if config is unreadable.
 
@@ -411,7 +453,9 @@ def _live_modules() -> tuple[str, ...]:
 
 
 def _print_live_section_rollcall(
-    presence: dict[str, tuple[int, int, int]], live: tuple[str, ...]
+    presence: dict[str, tuple[int, int, int]],
+    live: tuple[str, ...],
+    silence: dict[str, tuple[str, int]] | None = None,
 ) -> None:
     """One line per section that may trade real money. ALWAYS printed.
 
@@ -430,10 +474,18 @@ def _print_live_section_rollcall(
         elif weighted == 0:
             verdict = f"ran {seen}x but WEIGHT 0 — recorded, then multiplied away"
         elif scored == 0:
-            verdict = f"ran {seen}x, scored 0 every time — it looked and found nothing"
+            verdict = f"ran {seen}x, scored 0 every time"
         else:
             verdict = f"ran {seen}x, {scored} with a direction"
         print(f"  {name:<20} {verdict}")
+        # THE SECTION'S OWN SENTENCE, printed under the section that wrote it.
+        # "scored 0 every time" is a count; "needs 80 closed M5 bars" is a
+        # cause. Only the second one tells the operator whether to wait or to
+        # fix something.
+        said = (silence or {}).get(name)
+        if said is not None and scored == 0:
+            reason, times = said
+            print(f"{'':<22} -> {times}x  {' '.join(reason.split())[:88]}")
     missing = [name for name in live if presence.get(name, (0, 0, 0))[0] == 0]
     if missing:
         print(
@@ -509,6 +561,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         directional_modules: list[sqlite3.Row] = []
         presence: dict[str, tuple[int, int, int]] = {}
+        silence: dict[str, tuple[str, int]] = {}
         if "module_scores" in tables and floor is not None:
             module_where = "m.cycle_pk >= ?"
             module_params: list[object] = [floor]
@@ -522,6 +575,7 @@ def main(argv: list[str] | None = None) -> int:
                 module_params.extend([floor, args.symbol])
             directional_modules = _directional_modules(conn, module_where, module_params)
             presence = _module_presence(conn, module_where, module_params)
+            silence = _module_silence(conn, module_where, module_params)
 
     if not rows:
         print(f"No decisions recorded in the last {args.hours:g}h.")
@@ -544,7 +598,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     _print_funnel(counts, len(rows), traded, remembered, hours=args.hours)
     _print_directional_detection(directional_modules)
-    _print_live_section_rollcall(presence, _live_modules())
+    _print_live_section_rollcall(presence, _live_modules(), silence)
 
     # Refused before the review, or after paying for it?
     #
@@ -633,6 +687,17 @@ _WORTH_BREAKING_DOWN: frozenset[str] = frozenset(
         "SPREAD_EATS_THE_STOP",
         "MARKET_TOO_QUIET",
         "SL_TOO_TIGHT_FOR_COSTS",
+        # A TRIPPED BREAKER IS A SECTION THAT IS SWITCHED OFF, and the report
+        # counted eight of them without ever saying WHICH section. That is the
+        # difference between "quiet market" and "your best section has been
+        # disabled since Monday", and it was one word away from being visible.
+        "SECTION_BREAKER_TRIPPED",
+        # The three below refuse setups that already survived the cost gate --
+        # the expensive ones -- and none of them exist in the replay, so they
+        # are invisible in every measurement the account is judged on.
+        "INSUFFICIENT_RUNWAY",
+        "LOSS_COOLDOWN",
+        "POSITION_ALREADY_OPEN",
     }
 )
 

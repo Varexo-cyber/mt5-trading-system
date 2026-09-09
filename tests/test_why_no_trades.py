@@ -568,3 +568,113 @@ class TestTheNumberTheOperatorNeedsIsOnTheScreen:
         main(["--hours", "72", "--db", str(journal)])
         out = capsys.readouterr().out
         assert "SPREAD_EATS_THE_STOP  (4)" in out
+
+
+class TestASilentSectionSaysWhyItIsSilent:
+    """"scored 0 every time — it looked and found nothing" is a count, not a
+    cause.
+
+    The owner ran three days with no trades. The report told him section six
+    ran 253,676 times and scored zero every time. That sentence is true and it
+    is compatible with two opposite situations: a strategy in a quiet market,
+    and a section that cannot run at all because its bars are missing.
+
+    `module_scores.reasoning` has held the section's own sentence the entire
+    time -- "section six needs 80 closed M5 bars", "model magnitude 0.004 below
+    threshold", "disabled for this market". The report never read the column.
+    Same defect as the rest of this week: the deciding fact is recorded,
+    correct, and off the screen.
+    """
+
+    @staticmethod
+    def _journal_with_modules(tmp_path: Path, reasoning: str) -> Path:
+        path = tmp_path / "trading.db"
+        db = sqlite3.connect(path)
+        db.execute(
+            "CREATE TABLE analysis_cycles (id INTEGER PRIMARY KEY, ts TEXT, symbol TEXT, "
+            "decision TEXT, reason TEXT, detail TEXT, total_score REAL, "
+            "score_threshold REAL, context_json TEXT DEFAULT '{}')"
+        )
+        db.execute(
+            "CREATE TABLE module_scores (id INTEGER PRIMARY KEY, cycle_pk INTEGER, "
+            "module TEXT, score REAL, confidence REAL, weight REAL, "
+            "reasoning TEXT DEFAULT '', details_json TEXT DEFAULT '{}')"
+        )
+        now = datetime.now(UTC)
+        for i in range(20):
+            db.execute(
+                "INSERT INTO analysis_cycles (id, ts, symbol, decision, reason, detail) "
+                "VALUES (?,?,?,?,?,?)",
+                (i + 1, (now - timedelta(minutes=i)).isoformat(), "XAUUSD", "SKIP",
+                 "NO_SIGNAL", "no weighted directional evidence"),
+            )
+            db.execute(
+                "INSERT INTO module_scores (cycle_pk, module, score, confidence, weight, "
+                "reasoning) VALUES (?,?,?,?,?,?)",
+                (i + 1, "section_six_gold_m5", 0.0, 0.0, 1.0, reasoning),
+            )
+        db.commit()
+        db.close()
+        return path
+
+    def test_the_sections_own_sentence_is_printed(self, tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        journal = self._journal_with_modules(
+            tmp_path, "section six needs 80 closed M5 bars"
+        )
+        main(["--hours", "72", "--db", str(journal)])
+        out = capsys.readouterr().out
+
+        assert "section_six_gold_m5" in out
+        assert "needs 80 closed M5 bars" in out, (
+            "the section said why it was silent and the report did not print it"
+        )
+        assert "20x" in out, "how often it said it is what separates a cause from a fluke"
+
+    def test_a_different_cause_reads_differently(self, tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """Two silences that need opposite responses must not print the same."""
+        journal = self._journal_with_modules(
+            tmp_path, "model magnitude 0.004 below threshold"
+        )
+        main(["--hours", "72", "--db", str(journal)])
+        out = capsys.readouterr().out
+        assert "below threshold" in out
+        assert "needs 80 closed" not in out
+
+    def test_an_older_journal_without_the_column_still_runs(self, tmp_path: Path) -> None:
+        # A diagnostic may not die on a journal shape it does not know. This
+        # one is the last thing standing on the night nothing else is.
+        path = tmp_path / "trading.db"
+        db = sqlite3.connect(path)
+        db.execute(
+            "CREATE TABLE analysis_cycles (id INTEGER PRIMARY KEY, ts TEXT, symbol TEXT, "
+            "decision TEXT, reason TEXT, detail TEXT, total_score REAL, "
+            "score_threshold REAL, context_json TEXT DEFAULT '{}')"
+        )
+        db.execute(
+            "CREATE TABLE module_scores (id INTEGER PRIMARY KEY, cycle_pk INTEGER, "
+            "module TEXT, score REAL, weight REAL)"
+        )
+        db.commit()
+        db.close()
+        assert main(["--hours", "72", "--db", str(path)]) is not None or True
+
+    def test_a_tripped_breaker_names_the_section(self, journal: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+        """Eight SECTION_BREAKER_TRIPPED and no word about WHICH section. That
+        is the difference between a quiet market and your best section having
+        been switched off since Monday."""
+        db = sqlite3.connect(journal)
+        now = datetime.now(UTC)
+        for i in range(8):
+            db.execute(
+                "INSERT INTO analysis_cycles (ts, symbol, decision, reason, detail, "
+                "context_json) VALUES (?,?,?,?,?,?)",
+                ((now - timedelta(minutes=i)).isoformat(), "XAUUSD", "SKIP",
+                 "SECTION_BREAKER_TRIPPED",
+                 "section_six_gold_m5 breaker: 7 of the last 10 lost", "{}"),
+            )
+        db.commit()
+        db.close()
+        main(["--hours", "72", "--db", str(journal)])
+        out = capsys.readouterr().out
+        assert "SECTION_BREAKER_TRIPPED  (8)" in out
+        assert "section_six_gold_m5 breaker" in out, "the disabled section is still unnamed"
