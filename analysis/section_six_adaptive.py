@@ -261,9 +261,40 @@ class _SectionSixModel:
             return Signal.neutral(self.name, "section six disabled for this market")
         timeframe = Timeframe.parse(cfg.timeframe)
         series = ctx.series.get(timeframe)
-        found = model_reading(series.df, self.model) if series is not None else None
+        # THREE DIFFERENT FAULTS USED TO PRINT ONE SENTENCE.
+        #
+        # "section six needs 80 closed M5 bars" was returned when the clock was
+        # absent from the context, when the frame was short, AND when one of
+        # the twelve model features came out non-finite. Those need three
+        # different responses and they read identically in the journal.
+        #
+        # It cost three days. The section ran 257,352 times over a weekend,
+        # scored zero every time, and the only sentence available said "not
+        # enough bars" -- while the scan fetches 200 and needs 80. Every hour
+        # spent after that was spent ruling out a cause the message had already
+        # named wrongly.
+        if series is None:
+            return Signal.neutral(
+                self.name,
+                f"{cfg.timeframe} is not in this context at all; the scan did not "
+                f"attach it for {ctx.symbol}",
+            )
+        frame = series.df
+        if len(frame) < 80:
+            return Signal.neutral(
+                self.name,
+                f"section six has {len(frame)} closed {cfg.timeframe} bars and needs 80",
+            )
+        found = model_reading(frame, self.model)
         if found is None:
-            return Signal.neutral(self.name, f"section six needs 80 closed {cfg.timeframe} bars")
+            # `model_reading` returns None past the length check only when a
+            # feature is non-finite -- in practice a flat tick volume, whose
+            # rolling median is zero and whose ratio is therefore NaN.
+            return Signal.neutral(
+                self.name,
+                f"section six read {len(frame)} {cfg.timeframe} bars and one model input "
+                f"was not finite (usually a flat tick volume)",
+            )
         reading, unit = found
         directed = reading * cfg.polarity
         if abs(directed) < cfg.threshold:
