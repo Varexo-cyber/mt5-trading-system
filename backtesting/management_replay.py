@@ -71,6 +71,10 @@ class ReplayTrade:
     #: What actually happened, when known, so the replay can be compared to it.
     actual_pnl_r: float | None = None
     actual_exit_reason: str = ""
+    #: The live manager routes fixed-exit and break-even-only families by the
+    #: broker comment carried by the position.  Dropping it silently turns
+    #: those trades into generic managed positions in the replay.
+    comment: str = ""
 
     @property
     def risk(self) -> float:
@@ -354,9 +358,17 @@ def replay_management(
     def r_at(price: float) -> float:
         return (price - trade.entry) * sign / risk
 
-    for index in range(min(len(frame), max_bars)):
+    # `frame` may deliberately contain history from before the fill so the
+    # manager can build M5/H1 indicators.  Those bars are context only.  A bar
+    # whose opening timestamp precedes an intra-minute fill also contains a
+    # high/low from before the position existed, so begin at the first bar at
+    # or after the exact fill timestamp.
+    opened_at = trade.opened_at if trade.opened_at.tzinfo else trade.opened_at.replace(tzinfo=UTC)
+    first = int(frame.index.searchsorted(pd.Timestamp(opened_at), side="left"))
+    last = min(len(frame), first + max_bars)
+    for index in range(first, last):
         broker.cursor = index
-        used = index + 1
+        used += 1
         row = frame.iloc[index]
         moment = frame.index[index].to_pydatetime()
 
@@ -398,6 +410,7 @@ def replay_management(
             profit=spec.money_per_lot(moved) * volume * (1 if moved * sign > 0 else -1),
             swap=0.0,
             opened_at=trade.opened_at,
+            comment=trade.comment,
         )
         events: list[ManagementEvent] = manager.manage([position], moment)
 

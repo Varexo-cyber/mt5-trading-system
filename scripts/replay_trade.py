@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import sqlite3
 import sys
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,7 @@ from backtesting.management_replay import (
 )
 from config.loader import load_credentials, load_settings, terminal_path_from_env
 from core.mt5_connector import MT5Connector
+from core.trade_origin import origin_for_setup_family
 from core.types import Direction
 
 #: How long after the entry to keep feeding bars. Past the 24h time exit, so a
@@ -74,14 +76,20 @@ def closed_trades(
 ) -> list[sqlite3.Row]:
     """Trades that finished, newest first. Symbol matches loosely: the broker
     calls it `GBPAUD.i` and nobody types the suffix."""
+    where, params = "t.closed_at IS NOT NULL", []
     if ticket:
-        return db.execute("SELECT * FROM trades WHERE ticket = ?", (ticket,)).fetchall()
-    where, params = "closed_at IS NOT NULL", []
+        where += " AND t.ticket = ?"
+        params.append(ticket)
     if symbol:
-        where += " AND UPPER(symbol) LIKE ?"
+        where += " AND UPPER(t.symbol) LIKE ?"
         params.append(f"%{symbol.upper()}%")
     return db.execute(
-        f"SELECT * FROM trades WHERE {where} ORDER BY closed_at DESC LIMIT ?",
+        f"SELECT t.*, c.context_json AS cycle_context_json, "
+        "(SELECT oa.broker_comment FROM order_attempts oa "
+        " WHERE oa.trade_id = t.id AND oa.kind = 'ENTRY' AND oa.ok = 1 "
+        " ORDER BY oa.id LIMIT 1) AS broker_comment "
+        "FROM trades t LEFT JOIN analysis_cycles c ON c.id = t.cycle_pk "
+        f"WHERE {where} ORDER BY t.closed_at DESC LIMIT ?",
         [*params, limit],
     ).fetchall()
 
@@ -98,6 +106,15 @@ def to_replay_trade(row: sqlite3.Row) -> ReplayTrade | None:
         print(f"  {row['symbol']}: no usable entry/stop on record, cannot replay")
         return None
     opened = datetime.fromisoformat(row["opened_at"])
+    columns = row.keys()
+    comment = str(row["broker_comment"] or "") if "broker_comment" in columns else ""
+    if not comment and "cycle_context_json" in columns:
+        try:
+            context = json.loads(str(row["cycle_context_json"] or "{}"))
+        except json.JSONDecodeError:
+            context = {}
+        origin = origin_for_setup_family(str(context.get("setup_family") or ""))
+        comment = origin.comment if origin is not None else ""
     return ReplayTrade(
         symbol=str(row["symbol"]),
         direction=Direction.LONG if str(row["direction"]).upper() == "LONG" else Direction.SHORT,
@@ -111,15 +128,16 @@ def to_replay_trade(row: sqlite3.Row) -> ReplayTrade | None:
         opened_at=opened if opened.tzinfo else opened.replace(tzinfo=UTC),
         actual_pnl_r=row["pnl_r"],
         actual_exit_reason=str(row["exit_reason"] or ""),
+        comment=comment,
     )
 
 
 def history(connector: MT5Connector, symbol: str, opened_at: datetime) -> object:
-    """The M1 bars the trade lived through, one minute before it opened."""
+    """M1 execution bars plus enough prior context for live M5/H1 readers."""
     return connector.copy_rates_range(
         symbol,
         BASE.mt5_value,
-        opened_at - timedelta(minutes=1),
+        opened_at - timedelta(days=7),
         opened_at + timedelta(hours=WINDOW_HOURS),
     )
 
