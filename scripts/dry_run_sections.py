@@ -540,6 +540,7 @@ class Decision:
     #: Causal short-trend reading at entry. -1 bearish, 0 mixed, +1 bullish.
     trend_m5: int = 0
     trend_m15: int = 0
+    fault_grid_r: tuple[tuple[str, float | None], ...] = ()
 
 
 def _short_trend(ctx: MarketContext, timeframe: Timeframe) -> int:
@@ -556,6 +557,54 @@ def _short_trend(ctx: MarketContext, timeframe: Timeframe) -> int:
     if side < 0.0 and slope < 0.0:
         return -1
     return 0
+
+
+def _fault_exit_grid(frame, start, idea, baseline_r, baseline_at, cost_r):
+    """Closed-M5, two-factor thesis exits; shadow measurement only."""
+    labels = ("LOSS@-0.15R", "LOSS@-0.25R", "LOSS@-0.35R", "PROFIT_BREAK", "SMART")
+    if baseline_r is None or baseline_at is None:
+        return tuple((label, baseline_r) for label in labels)
+    risk = abs(float(idea.entry) - float(idea.stop_loss))
+    if risk <= 0 or frame.empty:
+        return tuple((label, baseline_r) for label in labels)
+    sign = 1.0 if idea.direction is Direction.LONG else -1.0
+    first = int(frame.index.searchsorted(start, side="left"))
+    last = int(frame.index.searchsorted(baseline_at, side="left"))
+    visible = frame.iloc[max(0, first - 160):last]
+    m5 = visible.resample("5min", label="right", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last"}
+    ).dropna()
+    m5 = m5[(m5.index > start) & (m5.index < baseline_at)]
+    if len(m5) < 24:
+        return tuple((label, baseline_r) for label in labels)
+    close = m5["close"].astype(float)
+    ema = close.ewm(span=20, adjust=False).mean()
+    prior_low = m5["low"].astype(float).shift(1).rolling(6).min()
+    prior_high = m5["high"].astype(float).shift(1).rolling(6).max()
+    peak_r, fired = 0.0, {}
+    thresholds = {"LOSS@-0.15R": -0.15, "LOSS@-0.25R": -0.25, "LOSS@-0.35R": -0.35}
+    for pos in range(23, len(m5)):
+        price = float(close.iloc[pos])
+        r_now = (price - float(idea.entry)) * sign / risk
+        peak_r = max(peak_r, r_now)
+        slope = float(ema.iloc[pos] - ema.iloc[pos - 3])
+        adverse_drift = (price < float(ema.iloc[pos]) and slope < 0) if sign > 0 else (
+            price > float(ema.iloc[pos]) and slope > 0
+        )
+        structure_broken = price < float(prior_low.iloc[pos]) if sign > 0 else (
+            price > float(prior_high.iloc[pos])
+        )
+        if not (adverse_drift and structure_broken):
+            continue
+        for label, threshold in thresholds.items():
+            if label not in fired and r_now <= threshold:
+                fired[label] = r_now - cost_r
+        profit_break = peak_r >= 0.50 and r_now > -0.15
+        if "PROFIT_BREAK" not in fired and profit_break:
+            fired["PROFIT_BREAK"] = r_now - cost_r
+        if "SMART" not in fired and (r_now <= -0.25 or profit_break):
+            fired["SMART"] = r_now - cost_r
+    return tuple((label, fired.get(label, baseline_r)) for label in labels)
 
 
 def _context(
@@ -1162,6 +1211,7 @@ def _one_clock(
     resolve_on: Timeframe,
     needed: tuple[Timeframe, ...] | None = None,
     manage_grid: tuple[ExitVariant, ...] = (),
+    fault_exit_grid: bool = False,
     legs: dict | None = None,
 ) -> dict:
     """Every section that reads one clock, walked ONCE.
@@ -1791,6 +1841,12 @@ def _one_clock(
                     grid_r=grid_rows,
                     trend_m5=_short_trend(ctx, Timeframe.M5),
                     trend_m15=_short_trend(ctx, Timeframe.M15),
+                    fault_grid_r=(
+                        _fault_exit_grid(
+                            resolve_frame, upto, idea, managed_r,
+                            managed_at if managed_at is not None else exit_at, cost,
+                        ) if fault_exit_grid else ()
+                    ),
                 )
             )
     # SAID OUT LOUD, PER CLOCK. A timeout is a trade the harness stopped
@@ -2334,6 +2390,11 @@ def build_parser() -> argparse.ArgumentParser:
             "compare existing entries with M5, M15 and combined short-trend "
             "alignment; no live setting is changed and no exit grid is run"
         ),
+    )
+    parser.add_argument(
+        "--fault-exit-grid",
+        action="store_true",
+        help="measure corroborated M5 thesis exits in shadow only; no live change",
     )
     parser.add_argument(
         "--exit-grid",
@@ -3178,7 +3239,7 @@ def main(argv: list[str] | None = None) -> None:
         # request M15. The trend counterfactual does: without this, every M15
         # reading is silently zero and the table pretends it blocked every
         # trade. Fetch and attach the frame only for this measurement mode.
-        if args.trend_grid:
+        if args.trend_grid or args.fault_exit_grid:
             required_frames.update({Timeframe.M5, Timeframe.M15})
         fetch_these = tuple(
             tf
@@ -3433,6 +3494,7 @@ def main(argv: list[str] | None = None) -> None:
                         )
                     ),
                     manage_grid=exit_variants,
+                    fault_exit_grid=args.fault_exit_grid,
                     legs=(leg_frames if legs_name in names else None),
                 )
                 for name, rows in produced.items():
@@ -3585,6 +3647,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     if args.trend_grid:
         _trend_grid_report(decisions, _break_even_rule(settings) is not None)
+    if args.fault_exit_grid:
+        _fault_exit_report(
+            decisions, _break_even_rule(settings) is not None, equity
+        )
     _gates_this_run_does_not_apply(
         btc_research_parity=args.btc_research_parity,
         btc_jarvis_replay=args.btc_jarvis_replay,
@@ -3721,6 +3787,63 @@ def _trend_grid_report(decisions: list[Decision], managed: bool) -> None:
                 f"{wins_cut:>+10.2f}{losses_cut:>+10.2f}{saved:>+12.2f}"
                 f"{baseline + saved:>+10.2f}"
             )
+    print(f"{'=' * 78}")
+
+
+def _fault_exit_report(decisions: list[Decision], managed: bool, equity: float) -> None:
+    """Show plainly whether a shadow exit saved losses or murdered winners."""
+    rows = [
+        row for row in decisions
+        if row.outcome == "TRADE" and row.fault_grid_r and _live_exit(row, managed) is not None
+    ]
+    print(f"\n{'=' * 78}")
+    print("SMART FAULT EXIT — SHADOW ONLY, NOTHING LIVE CHANGED")
+    print("  Fires on CLOSED M5 only when BOTH adverse EMA20 drift and a break")
+    print("  beyond the preceding six-bar structure agree. One signal cannot exit.")
+    print("  SMART = confirmed failure at -0.25R OR confirmed give-back after +0.50R.")
+    modules = sorted({row.pass_key[0] for row in rows})
+    groups = [("ACCOUNT TOTAL", rows)] + [
+        (module, [row for row in rows if row.pass_key[0] == module])
+        for module in modules
+    ]
+    for module, section in groups:
+        baseline_r = sum(_live_exit(row, managed) or 0.0 for row in section)
+        baseline_eur = sum((_live_exit(row, managed) or 0.0) * row.risk_money for row in section)
+        print(f"\n  {module} — {len(section)} identical trades")
+        print(f"    {'exit':<16}{'acted':>7}{'result R':>10}{'net R':>10}{'loss saved':>13}"
+              f"{'profit saved':>14}{'profit cut':>12}{'would stand':>14}")
+        print(f"    {'CURRENT':<16}{0:>7}{baseline_r:>+10.2f}{0.0:>+10.2f}{0.0:>+13.2f}"
+              f"{0.0:>+14.2f}{0.0:>+12.2f}{equity + baseline_eur:>14.2f}")
+        labels = [label for label, _value in section[0].fault_grid_r]
+        for label in labels:
+            candidate = []
+            for row in section:
+                values = dict(row.fault_grid_r)
+                candidate.append(float(values.get(label, _live_exit(row, managed)) or 0.0))
+            bases = [float(_live_exit(row, managed) or 0.0) for row in section]
+            deltas = [new - old for new, old in zip(candidate, bases, strict=True)]
+            loss_saved = sum(
+                max(0.0, delta)
+                for delta, old in zip(deltas, bases, strict=True) if old <= 0
+            )
+            profit_saved = sum(
+                max(0.0, delta)
+                for delta, old in zip(deltas, bases, strict=True) if old > 0
+            )
+            profit_cut = sum(
+                max(0.0, -delta)
+                for delta, old in zip(deltas, bases, strict=True) if old > 0
+            )
+            result_r = sum(candidate)
+            result_eur = sum(
+                value * row.risk_money
+                for value, row in zip(candidate, section, strict=True)
+            )
+            acted = sum(abs(delta) > 1e-9 for delta in deltas)
+            print(f"    {label:<16}{acted:>7}{result_r:>+10.2f}{sum(deltas):>+10.2f}"
+                  f"{loss_saved:>+13.2f}{profit_saved:>+14.2f}{profit_cut:>+12.2f}"
+                  f"{equity + result_eur:>14.2f}")
+    print("\n  Positive net R means the exit helped after counting winners it cut.")
     print(f"{'=' * 78}")
 
 
