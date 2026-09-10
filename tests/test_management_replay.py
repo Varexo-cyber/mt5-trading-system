@@ -183,6 +183,21 @@ def test_the_target_ends_it_when_only_the_target_is_touched(spec, settings) -> N
     assert outcome.exit_r == pytest.approx(2.0)
 
 
+def test_bars_before_the_fill_are_context_not_execution(spec, settings) -> None:  # type: ignore[no-untyped-def]
+    """A pre-entry target touch cannot close a trade that did not exist yet."""
+    frame = bars(
+        [TARGET, at_r(0.1), at_r(-1.2)],
+        start=OPENED - timedelta(minutes=1),
+        highs=[TARGET + WICK, at_r(0.1) + WICK, at_r(-1.2) + WICK],
+        lows=[TARGET - WICK, at_r(0.1) - WICK, at_r(-1.2) - WICK],
+    )
+
+    outcome = replay_management(trade(opened_at=OPENED), frame, settings, spec)
+
+    assert outcome.exit_reason == "STOP"
+    assert outcome.bars == 2
+
+
 # ------------------------------------------------- the loop feeds back ---
 
 
@@ -204,6 +219,22 @@ def test_a_stop_the_manager_moved_is_the_stop_that_fills(spec, settings) -> None
     assert outcome.exit_reason == "STOP"
     # Half of the 0.9R peak, secured at the broker before price collapsed.
     assert outcome.exit_r == pytest.approx(0.45, abs=0.02)
+
+
+def test_the_live_family_comment_keeps_a_fixed_exit_fixed(spec, settings) -> None:  # type: ignore[no-untyped-def]
+    management = settings.trade_management.model_copy(
+        update={"fixed_exit_comments": ("JARVIS-S5-NDX-M5",)}
+    )
+    fixed_settings = settings.model_copy(update={"trade_management": management})
+    frame = bars([at_r(0.3), at_r(0.9), at_r(0.9), at_r(-1.2)])
+
+    outcome = replay_management(
+        trade(comment="JARVIS-S5-NDX-M5"), frame, fixed_settings, spec
+    )
+
+    assert outcome.steps == ()
+    assert outcome.exit_reason == "STOP"
+    assert outcome.exit_r == pytest.approx(-1.0)
 
 
 def test_the_peak_is_remembered_across_bars(spec, settings) -> None:  # type: ignore[no-untyped-def]
