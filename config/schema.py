@@ -16,8 +16,8 @@ serialised into a log or a journal row.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated, Any, Literal
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -3843,14 +3843,6 @@ class ConfluenceConfig(Base):
     #: news and broker safety checks still run in the execution service.
     #: Matched on substring because setup families carry their clock suffix.
     strategy_owned_entry_families: tuple[str, ...] = ()
-    #: Named standalone families that may not enter when at least two other
-    #: directional readers strongly point the other way. This is deliberately
-    #: local: retests in general remain allowed to fade a move, while the
-    #: account's S5/S6 models stop fighting an independently confirmed trend.
-    countertrend_veto_families: tuple[str, ...] = ()
-    countertrend_veto_minimum_signals: int = Field(default=2, ge=1, le=10)
-    countertrend_veto_minimum_confidence: float = Field(default=0.35, ge=0.0, le=1.0)
-    countertrend_veto_minimum_score: float = Field(default=50.0, ge=0.0, le=100.0)
     #: Strategies whose target probability was measured directly on their own
     #: entries. The generic rolling reach statistic remains visible to the
     #: reviewer for these families, but may not veto the setup before review.
@@ -4813,10 +4805,6 @@ class TradeManagementConfig(Base):
     #: Strategies whose measured edge uses the original broker SL/TP unchanged.
     #: Exact MT5 comments prevent unrelated positions from inheriting this.
     fixed_exit_comments: tuple[str, ...] = ()
-    #: Fixed SL/TP families that still receive broker-side break-even and
-    #: peak-profit protection. No discretionary close, partial or trail is
-    #: added; the original target remains in force.
-    protected_fixed_exit_comments: tuple[str, ...] = ()
     #: Families measured with break-even protection but without the generic
     #: discretionary exits. Exact comments keep the exception local.
     break_even_only_comments: tuple[str, ...] = ()
