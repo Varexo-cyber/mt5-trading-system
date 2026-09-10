@@ -574,7 +574,7 @@ def _fault_exit_grid(frame, start, idea, baseline_r, baseline_at, cost_r):
     m5 = visible.resample("5min", label="right", closed="left").agg(
         {"open": "first", "high": "max", "low": "min", "close": "last"}
     ).dropna()
-    m5 = m5[(m5.index > start) & (m5.index < baseline_at)]
+    m5 = m5[m5.index < baseline_at]
     if len(m5) < 24:
         return tuple((label, baseline_r) for label in labels)
     close = m5["close"].astype(float)
@@ -583,10 +583,15 @@ def _fault_exit_grid(frame, start, idea, baseline_r, baseline_at, cost_r):
     prior_high = m5["high"].astype(float).shift(1).rolling(6).max()
     peak_r, fired = 0.0, {}
     thresholds = {"LOSS@-0.15R": -0.15, "LOSS@-0.25R": -0.25, "LOSS@-0.35R": -0.35}
-    for pos in range(23, len(m5)):
+    first_live = max(23, int(m5.index.searchsorted(start, side="right")))
+    for pos in range(first_live, len(m5)):
         price = float(close.iloc[pos])
         r_now = (price - float(idea.entry)) * sign / risk
-        peak_r = max(peak_r, r_now)
+        favourable = (
+            float(m5["high"].iloc[pos]) - float(idea.entry)
+            if sign > 0 else float(idea.entry) - float(m5["low"].iloc[pos])
+        ) / risk
+        peak_r = max(peak_r, favourable)
         slope = float(ema.iloc[pos] - ema.iloc[pos - 3])
         adverse_drift = (price < float(ema.iloc[pos]) and slope < 0) if sign > 0 else (
             price > float(ema.iloc[pos]) and slope > 0
