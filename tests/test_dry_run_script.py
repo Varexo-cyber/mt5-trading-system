@@ -5583,3 +5583,35 @@ def test_foutcheck_is_shadow_only_and_defaults_to_180_days() -> None:
     assert "section_five_ndx100_m5,section_six_gold_m5" in launcher
     assert "--manage-grid" not in launcher
     assert build_parser().parse_args(["--fault-exit-grid"]).fault_exit_grid
+
+
+def test_fault_exit_can_act_immediately_using_pre_entry_context() -> None:
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    from core.types import Direction
+    from scripts.dry_run_sections import _fault_exit_grid
+
+    index = pd.date_range("2026-01-01", periods=190, freq="1min", tz="UTC")
+    prices = [100.0 + minute * 0.002 for minute in range(160)]
+    prices += [100.32 - minute * 0.22 for minute in range(30)]
+    frame = pd.DataFrame(
+        {
+            "open": prices,
+            "high": [price + 0.03 for price in prices],
+            "low": [price - 0.03 for price in prices],
+            "close": prices,
+        },
+        index=index,
+    )
+    idea = SimpleNamespace(
+        entry=100.32,
+        stop_loss=90.32,
+        direction=Direction.LONG,
+    )
+    measured = dict(
+        _fault_exit_grid(frame, index[159], idea, -1.0, index[-1], 0.0)
+    )
+    assert measured["LOSS@-0.15R"] > -1.0
+    assert measured["LOSS@-0.25R"] > -1.0
