@@ -3174,6 +3174,12 @@ def main(argv: list[str] | None = None) -> None:
                 for name, tf_name in passes
                 for timeframe in _frames_read(settings, Timeframe.parse(tf_name), finest, (name,))
             }
+        # The sections themselves run on M5 and therefore do not ordinarily
+        # request M15. The trend counterfactual does: without this, every M15
+        # reading is silently zero and the table pretends it blocked every
+        # trade. Fetch and attach the frame only for this measurement mode.
+        if args.trend_grid:
+            required_frames.update({Timeframe.M5, Timeframe.M15})
         fetch_these = tuple(
             tf
             for tf in sorted(required_frames, key=lambda item: item.duration)
@@ -3419,7 +3425,13 @@ def main(argv: list[str] | None = None) -> None:
                     equity=equity,
                     clock=clock,
                     resolve_on=finest,
-                    needed=_frames_read(settings, clock, finest, tuple(names)),
+                    needed=tuple(
+                        sorted(
+                            set(_frames_read(settings, clock, finest, tuple(names)))
+                            | ({Timeframe.M15} if args.trend_grid else set()),
+                            key=lambda timeframe: timeframe.duration,
+                        )
+                    ),
                     manage_grid=exit_variants,
                     legs=(leg_frames if legs_name in names else None),
                 )
