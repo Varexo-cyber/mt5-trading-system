@@ -390,28 +390,6 @@ class ConfluenceEngine:
             family in setup_family for family in self.config.strategy_owned_entry_families
         )
 
-        if any(family in setup_family for family in self.config.countertrend_veto_families):
-            opposing = [
-                signal
-                for signal in signals
-                if signal.score * int(direction) < 0
-                and abs(signal.score) >= self.config.countertrend_veto_minimum_score
-                and signal.confidence >= self.config.countertrend_veto_minimum_confidence
-            ]
-            if len(opposing) >= self.config.countertrend_veto_minimum_signals:
-                readers = ", ".join(
-                    f"{signal.module} {signal.score:+.0f}/{signal.confidence:.2f}"
-                    for signal in opposing
-                )
-                return self._reject(
-                    ctx,
-                    signals,
-                    f"countertrend entry blocked: {len(opposing)} strong readers oppose "
-                    f"{direction.name} ({readers})",
-                    score,
-                    confidence,
-                )
-
         against_the_tide = (
             None
             if strategy_owned
