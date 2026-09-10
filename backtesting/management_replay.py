@@ -364,7 +364,23 @@ def replay_management(
     # high/low from before the position existed, so begin at the first bar at
     # or after the exact fill timestamp.
     opened_at = trade.opened_at if trade.opened_at.tzinfo else trade.opened_at.replace(tzinfo=UTC)
-    first = int(frame.index.searchsorted(pd.Timestamp(opened_at), side="left"))
+    # Pandas 3 refuses `searchsorted` when MT5's second-resolution index and
+    # Python's microsecond timestamp cannot be losslessly coerced to one
+    # datetime64 unit. Compare ordinary UTC datetimes instead; this is only a
+    # few days of M1 context and avoids any precision conversion altogether.
+    first = next(
+        (
+            index
+            for index, stamp in enumerate(frame.index)
+            if (
+                stamp.to_pydatetime()
+                if stamp.to_pydatetime().tzinfo
+                else stamp.to_pydatetime().replace(tzinfo=UTC)
+            )
+            >= opened_at
+        ),
+        len(frame),
+    )
     last = min(len(frame), first + max_bars)
     for index in range(first, last):
         broker.cursor = index

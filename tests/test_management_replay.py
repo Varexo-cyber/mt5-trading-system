@@ -198,6 +198,19 @@ def test_bars_before_the_fill_are_context_not_execution(spec, settings) -> None:
     assert outcome.bars == 2
 
 
+def test_second_resolution_mt5_index_accepts_a_microsecond_fill(spec, settings) -> None:  # type: ignore[no-untyped-def]
+    """Pandas 3 may not losslessly coerce these units for searchsorted."""
+    frame = bars([at_r(0.1), at_r(-1.2)])
+    frame.index = frame.index.as_unit("s")
+
+    outcome = replay_management(
+        trade(opened_at=OPENED + timedelta(microseconds=123456)), frame, settings, spec
+    )
+
+    assert outcome.exit_reason == "STOP"
+    assert outcome.bars == 1
+
+
 # ------------------------------------------------- the loop feeds back ---
 
 
