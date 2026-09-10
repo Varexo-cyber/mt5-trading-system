@@ -2842,6 +2842,12 @@ analysis:
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
     # maken. Harde account-, nieuws-, kosten- en brokerchecks blijven actief.
     strategy_owned_entry_families: [section_six_gold_m5, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
+    # Live loss guard: these two standalone models may no longer buy while two
+    # independent readers strongly say down, or sell while both say up.
+    countertrend_veto_families: [section_five_ndx100_m5, section_six_gold_m5]
+    countertrend_veto_minimum_signals: 2
+    countertrend_veto_minimum_confidence: 0.35
+    countertrend_veto_minimum_score: 50.0
     # De 1R-doelen van deze twee families zijn rechtstreeks gemeten op hun
     # eigen entries. De generieke rolling reach-test blijft in het reviewpakket
     # staan, maar mag die gemeten setup niet vóór de reviewer vervangen door
@@ -5436,6 +5442,9 @@ trade_management:
   close_near_target_max_share: 0.10
 
   fixed_exit_comments: [JARVIS-S5-NDX-M5, JARVIS-S10-AU-M1]
+  # S10 keeps its original target, but a move that has already paid now moves
+  # the stop into profit at the broker instead of being allowed back to -1R.
+  protected_fixed_exit_comments: [JARVIS-S10-AU-M1]
   # S6 is exact op deze ene managementregel gemeten. Geen partial, trailing,
   # giveback, health- of time-exit mag die gemeten route stilletjes veranderen.
   break_even_only_comments: [JARVIS-S6-AU-M5]

@@ -574,6 +574,19 @@ class PositionManager:
             events.append(doorstep)
             return events
         comment = str(position.comment).casefold()
+        if comment in {
+            item.casefold() for item in config.protected_fixed_exit_comments
+        }:
+            protected = self._break_even_move(position, config, r_now, risk, risk_money)
+            if protected is not None:
+                events.append(protected)
+                return events
+            locked = self._profit_lock(
+                position, r_now, peak_r, risk, risk_money=risk_money, tick=tick
+            )
+            if locked is not None:
+                events.append(locked)
+            return events
         if comment in {item.casefold() for item in config.fixed_exit_comments}:
             # This family was selected and holdout-tested with unchanged SL/TP.
             # Every discretionary manager below changes that measured exit.
