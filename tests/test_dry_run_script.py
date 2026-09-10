@@ -5571,3 +5571,15 @@ def test_trendcheck_is_a_fast_entry_grid_not_an_exit_grid() -> None:
     parsed = build_parser().parse_args(["--trend-grid"])
     assert parsed.trend_grid
     assert "required_frames.update({Timeframe.M5, Timeframe.M15})" in SOURCE
+
+
+def test_foutcheck_is_shadow_only_and_defaults_to_180_days() -> None:
+    from scripts.dry_run_sections import build_parser
+
+    launcher = (ROOT / "foutcheck.cmd").read_text(encoding="utf-8")
+    assert "set DAGEN=180" in launcher
+    assert "--fault-exit-grid" in launcher
+    assert "--jarvis-replay" in launcher
+    assert "section_five_ndx100_m5,section_six_gold_m5" in launcher
+    assert "--manage-grid" not in launcher
+    assert build_parser().parse_args(["--fault-exit-grid"]).fault_exit_grid
