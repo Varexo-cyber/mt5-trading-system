@@ -5534,3 +5534,39 @@ class TestTheSharedBookCountsPositionsAndNamesItsRefusals:
         assert "raising it cannot buy a trade" in out, (
             "when the cap refused nothing, the report has to say so or it will be blamed again"
         )
+
+
+def test_trend_grid_reports_wins_cut_losses_cut_and_net(capsys) -> None:
+    from datetime import datetime
+
+    from scripts.dry_run_sections import Decision, _trend_grid_report
+
+    def row(result: float, m5: int, m15: int) -> Decision:
+        return Decision(
+            datetime(2026, 9, 1, tzinfo=UTC),
+            "NDX100",
+            "section_five_ndx100_m5",
+            "TRADE",
+            direction="LONG",
+            result_r=result,
+            pass_key=("section_five_ndx100_m5", "M5"),
+            trend_m5=m5,
+            trend_m15=m15,
+        )
+
+    _trend_grid_report([row(1.0, 1, 1), row(-1.0, -1, -1)], managed=False)
+    output = capsys.readouterr().out
+
+    assert "M5 aligned" in output
+    assert "+0.00" in output  # baseline
+    assert "+1.00" in output  # loss removed / net saved / filtered result
+
+
+def test_trendcheck_is_a_fast_entry_grid_not_an_exit_grid() -> None:
+    from scripts.dry_run_sections import build_parser
+
+    launcher = (ROOT / "trendcheck.cmd").read_text(encoding="utf-8")
+    assert "--trend-grid" in launcher
+    assert "--exit-grid" not in launcher
+    parsed = build_parser().parse_args(["--trend-grid"])
+    assert parsed.trend_grid

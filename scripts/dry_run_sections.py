@@ -537,6 +537,25 @@ class Decision:
     #: number stays recoverable, because every figure this script produced
     #: before 31 August was gross and the difference has to stay visible.
     cost_r: float = 0.0
+    #: Causal short-trend reading at entry. -1 bearish, 0 mixed, +1 bullish.
+    trend_m5: int = 0
+    trend_m15: int = 0
+
+
+def _short_trend(ctx: MarketContext, timeframe: Timeframe) -> int:
+    """Closed-bar EMA20 direction: price side and three-bar slope must agree."""
+    series = ctx.series.get(timeframe)
+    if series is None or len(series.df) < 23:
+        return 0
+    close = series.df["close"].astype(float)
+    ema = close.ewm(span=20, adjust=False).mean()
+    side = float(close.iloc[-1] - ema.iloc[-1])
+    slope = float(ema.iloc[-1] - ema.iloc[-4])
+    if side > 0.0 and slope > 0.0:
+        return 1
+    if side < 0.0 and slope < 0.0:
+        return -1
+    return 0
 
 
 def _context(
@@ -1770,6 +1789,8 @@ def _one_clock(
                     managed_money=None if managed_r is None else managed_r * risk_money,
                     cost_r=cost,
                     grid_r=grid_rows,
+                    trend_m5=_short_trend(ctx, Timeframe.M5),
+                    trend_m15=_short_trend(ctx, Timeframe.M15),
                 )
             )
     # SAID OUT LOUD, PER CLOCK. A timeout is a trade the harness stopped
@@ -2304,6 +2325,14 @@ def build_parser() -> argparse.ArgumentParser:
             "resolve every taken trade again under each exit rule in the grid "
             "and print what each one would have kept, on the same entries as "
             "the fixed exit"
+        ),
+    )
+    parser.add_argument(
+        "--trend-grid",
+        action="store_true",
+        help=(
+            "compare existing entries with M5, M15 and combined short-trend "
+            "alignment; no live setting is changed and no exit grid is run"
         ),
     )
     parser.add_argument(
@@ -3542,6 +3571,8 @@ def main(argv: list[str] | None = None) -> None:
         _break_even_rule(settings) is not None,
         sections=tuple(sorted({name for name, _tf in passes})),
     )
+    if args.trend_grid:
+        _trend_grid_report(decisions, _break_even_rule(settings) is not None)
     _gates_this_run_does_not_apply(
         btc_research_parity=args.btc_research_parity,
         btc_jarvis_replay=args.btc_jarvis_replay,
@@ -3627,6 +3658,58 @@ def _live_exit(decision: Decision, managed: bool) -> float | None:
     One function, so the two can no longer drift apart.
     """
     return decision.managed_r if managed else decision.result_r
+
+
+def _trend_grid_report(decisions: list[Decision], managed: bool) -> None:
+    """Cost and benefit of aligning S5/S6 entries with closed M5/M15 trend."""
+    names = {"section_five_ndx100_m5", "section_six_gold_m5"}
+    relevant = [
+        row
+        for row in decisions
+        if row.outcome == "TRADE"
+        and row.pass_key[0] in names
+        and _live_exit(row, managed) is not None
+    ]
+    print(f"\n{'=' * 78}")
+    print("SHORT-TREND ENTRY FILTER — SAME TRADES, NO LIVE CHANGE")
+    print("  Trend = close above/below EMA20 and EMA20 sloping the same way over")
+    print("  the last three closed bars. Mixed readings are not called a trend.")
+    print("  Positive net saved R means the filter helped; negative means it hurt.")
+    for module in sorted(names):
+        rows = [row for row in relevant if row.pass_key[0] == module]
+        if not rows:
+            continue
+        baseline = sum(_live_exit(row, managed) or 0.0 for row in rows)
+        print(f"\n  {module}   {len(rows)} trades   baseline {baseline:+.2f} R")
+        print(
+            f"    {'filter':<14}{'kept':>6}{'blocked':>9}{'wins cut':>10}"
+            f"{'loss cut':>10}{'net saved':>12}{'result':>10}"
+        )
+
+        def direction(row: Decision) -> int:
+            return 1 if row.direction == "LONG" else -1
+
+        variants = (
+            ("M5 aligned", lambda row: row.trend_m5 == direction(row)),
+            ("M15 aligned", lambda row: row.trend_m15 == direction(row)),
+            (
+                "M5 + M15",
+                lambda row: row.trend_m5 == direction(row)
+                and row.trend_m15 == direction(row),
+            ),
+        )
+        for label, allowed in variants:
+            blocked = [row for row in rows if not allowed(row)]
+            blocked_r = [_live_exit(row, managed) or 0.0 for row in blocked]
+            wins_cut = sum(value for value in blocked_r if value > 0.0)
+            losses_cut = -sum(value for value in blocked_r if value < 0.0)
+            saved = losses_cut - wins_cut
+            print(
+                f"    {label:<14}{len(rows) - len(blocked):>6}{len(blocked):>9}"
+                f"{wins_cut:>+10.2f}{losses_cut:>+10.2f}{saved:>+12.2f}"
+                f"{baseline + saved:>+10.2f}"
+            )
+    print(f"{'=' * 78}")
 
 
 def _live_config_report(results: dict, settings, equity: float, days: int) -> None:
