@@ -192,6 +192,31 @@ def test_disagreement_blocks() -> None:
     assert not idea.approved
 
 
+def test_named_family_is_blocked_by_two_strong_countertrend_readers() -> None:
+    reads = [
+        StubModule(Signal("section_five_ndx100_m5", 80, 0.90, invalidation_price=1.1050)),
+        StubModule(Signal("one", 70, 0.80, invalidation_price=1.1060)),
+        StubModule(Signal("trend_momentum", -65, 0.47)),
+        StubModule(Signal("drift_continuation", -55, 0.74)),
+    ]
+    cfg = config(
+        weights={
+            "section_five_ndx100_m5": 1.0,
+            "one": 1.0,
+            "trend_momentum": 0.2,
+            "drift_continuation": 0.2,
+        },
+        countertrend_veto_families=("section_five_ndx100_m5",),
+    )
+
+    idea = ConfluenceEngine(reads, cfg).evaluate(context(), TradingMode.PAPER)
+
+    assert not idea.approved
+    assert "countertrend entry blocked" in idea.reason
+    assert "trend_momentum" in idea.reason
+    assert "drift_continuation" in idea.reason
+
+
 def test_direction_vote_uses_measured_strength_not_only_static_weight() -> None:
     reads = [
         StubModule(Signal("one", 45, 0.50, invalidation_price=1.1050)),

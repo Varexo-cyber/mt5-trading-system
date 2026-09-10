@@ -270,6 +270,29 @@ def test_a_measured_fixed_exit_family_keeps_its_broker_stop_and_target() -> None
     assert manager.last_observation[held.ticket]["r_now"] == pytest.approx(0.8)
 
 
+def test_a_protected_fixed_exit_family_locks_earned_profit() -> None:
+    """S10 keeps its target, but may no longer hand a real peak back to -1R."""
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(
+        broker,
+        journal,
+        fixed_exit_comments=("JARVIS-S10-AU-M1",),
+        protected_fixed_exit_comments=("JARVIS-S10-AU-M1",),
+        break_even_at_r=0.25,
+        profit_lock_from_r=0.20,
+    )
+    held = replace(position(), comment="JARVIS-S10-AU-M1")
+
+    at(broker, 1.20)
+    events = manager.manage([held], NOW)
+
+    assert events
+    assert events[0].action in {"BREAK_EVEN", "PROFIT_LOCK"}
+    assert broker.modified
+    assert broker.modified[-1] > held.price_open
+    assert broker.closed == []
+
+
 def test_a_break_even_only_family_cannot_inherit_partial_or_trailing_exits() -> None:
     """S6 was replayed with one rule; generic management is another system."""
     broker, journal = BrokerStub(), JournalStub()
