@@ -4830,6 +4830,11 @@ class TradeManagementConfig(Base):
     #: Strategies whose measured edge uses the original broker SL/TP unchanged.
     #: Exact MT5 comments prevent unrelated positions from inheriting this.
     fixed_exit_comments: tuple[str, ...] = ()
+    #: Fixed-exit families for which the *only* active profit management is a
+    #: single partial close. The remaining volume keeps its original broker
+    #: SL/TP; naming a family here does not enable generic management.
+    partial_only_comments: tuple[str, ...] = ()
+    partial_only_at_r: float = Field(default=1.0, gt=0.0)
     #: Families measured with break-even protection but without the generic
     #: discretionary exits. Exact comments keep the exception local.
     break_even_only_comments: tuple[str, ...] = ()

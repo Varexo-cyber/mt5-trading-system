@@ -5469,6 +5469,11 @@ trade_management:
   close_near_target_max_share: 0.10
 
   fixed_exit_comments: [JARVIS-S5-NDX-M5, JARVIS-S7-SMC, JARVIS-S10-AU-M1]
+  # S10: neem exact eenmaal de helft af op +1R. De resterende helft houdt de
+  # oorspronkelijke broker-SL/TP. Dit is bewust GEEN toegang tot de overige
+  # break-even, trailing, health- of time-exits.
+  partial_only_comments: [JARVIS-S10-AU-M1]
+  partial_only_at_r: 1.0
   # S6 is exact op deze ene managementregel gemeten. Geen partial, trailing,
   # giveback, health- of time-exit mag die gemeten route stilletjes veranderen.
   break_even_only_comments: [JARVIS-S6-AU-M5]

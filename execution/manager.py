@@ -574,6 +574,21 @@ class PositionManager:
             events.append(doorstep)
             return events
         comment = str(position.comment).casefold()
+        if comment in {item.casefold() for item in config.partial_only_comments}:
+            partial = self._partial_close(
+                position, config, r_now, at_r=config.partial_only_at_r
+            )
+            if partial is not None:
+                events.append(partial)
+                return events
+            # Keep the measured fixed SL/TP after this one allowed action.
+            # In particular, do not activate break-even, trailing, health or
+            # time exits merely to make a partial close possible.
+            if comment in {item.casefold() for item in config.pre_close_flatten_comments}:
+                wind_down = self._evening_flatten(position, now, r_now)
+                if wind_down is not None:
+                    events.append(wind_down)
+            return events
         if comment in {item.casefold() for item in config.fixed_exit_comments}:
             # This family was selected and holdout-tested with unchanged SL/TP.
             # Every discretionary manager below changes that measured exit.
@@ -726,28 +741,10 @@ class PositionManager:
         if protected is not None:
             events.append(protected)
             return events
-        partial_actions = ("PARTIAL_CLOSE", "PARTIAL_CLOSE_RECOVERED")
-        if r_now >= config.partial_close_at_r and not self.journal.management_action_exists(
-            position.ticket, partial_actions
-        ):
-            spec = self.broker.spec(position.symbol)
-            close_volume = spec.round_volume_down(position.volume * config.partial_close_fraction)
-            remaining = spec.round_volume_down(position.volume - close_volume)
-            if close_volume >= spec.volume_min and remaining >= spec.volume_min:
-                result = self.broker.close_position(position, close_volume)
-                if result.ok:
-                    events.append(
-                        ManagementEvent(
-                            position.ticket,
-                            "PARTIAL_CLOSE",
-                            f"closed {result.filled_volume:g} lots at {r_now:.2f}R",
-                            exit_price=result.filled_price,
-                            volume_closed=result.filled_volume,
-                            remaining_volume=remaining,
-                            r_at_action=r_now,
-                        )
-                    )
-                    return events
+        partial = self._partial_close(position, config, r_now, at_r=config.partial_close_at_r)
+        if partial is not None:
+            events.append(partial)
+            return events
 
         # A SCALP WHOSE MINUTE IS OVER TAKES WHAT IT HAS. Checked before
         # every stop rule below, because those all reason about a trade
@@ -2797,6 +2794,38 @@ class PositionManager:
             )
 
         return events
+
+    def _partial_close(
+        self,
+        position: Position,
+        config: TradeManagementConfig,
+        r_now: float,
+        *,
+        at_r: float,
+    ) -> ManagementEvent | None:
+        """Close one configured fraction once, if the broker can split it."""
+        partial_actions = ("PARTIAL_CLOSE", "PARTIAL_CLOSE_RECOVERED")
+        if r_now < at_r or self.journal.management_action_exists(
+            position.ticket, partial_actions
+        ):
+            return None
+        spec = self.broker.spec(position.symbol)
+        close_volume = spec.round_volume_down(position.volume * config.partial_close_fraction)
+        remaining = spec.round_volume_down(position.volume - close_volume)
+        if close_volume < spec.volume_min or remaining < spec.volume_min:
+            return None
+        result = self.broker.close_position(position, close_volume)
+        if not result.ok:
+            return None
+        return ManagementEvent(
+            position.ticket,
+            "PARTIAL_CLOSE",
+            f"closed {result.filled_volume:g} lots at {r_now:.2f}R",
+            exit_price=result.filled_price,
+            volume_closed=result.filled_volume,
+            remaining_volume=remaining,
+            r_at_action=r_now,
+        )
 
     def _break_even_move(
         self,
