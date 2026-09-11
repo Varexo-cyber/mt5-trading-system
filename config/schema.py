@@ -4070,8 +4070,13 @@ class SectionSevenSmcConfig(Base):
     timeframe: str = "M5"
     allowed_symbols: tuple[str, ...] = ("XAUUSD",)
     liquidity_lookback: int = Field(default=20, ge=5, le=200)
+    pivot_span: int = Field(default=2, ge=1, le=10)
     choch_lookback: int = Field(default=3, ge=2, le=20)
     context_lookback: int = Field(default=20, ge=10, le=100)
+    displacement_window_bars: int = Field(default=6, ge=1, le=50)
+    retest_window_bars: int = Field(default=12, ge=1, le=100)
+    sweep_excursion_atr: float = Field(default=0.03, ge=0.0, le=2.0)
+    sweep_close_location: float = Field(default=0.65, gt=0.0, lt=1.0)
     stop_buffer_atr: float = Field(default=0.15, ge=0.0, le=2.0)
     displacement_body_atr: float = Field(default=0.8, gt=0.0, le=5.0)
     fvg_minimum_atr: float = Field(default=0.05, ge=0.0, le=2.0)
