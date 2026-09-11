@@ -552,6 +552,8 @@ class Decision:
     breakout_body_atr: float = 0.0
     breakout_wick_share: float = 0.0
     breakout_volume_ratio: float = 0.0
+    #: Preregistered human-context market story that produced the entry.
+    story: str = ""
 
 
 def _trade_diagnostics(frame, start, end, idea, ctx, spread_price):
@@ -1871,6 +1873,19 @@ def _one_clock(
                 managed_at if managed_at is not None else exit_at,
                 idea, ctx, spread_price,
             )
+            human_signal = next(
+                (
+                    signal
+                    for signal in idea.signals
+                    if signal.module == "human_context_decision" and signal.score
+                ),
+                None,
+            )
+            story = (
+                str(human_signal.details.get("story", ""))
+                if human_signal is not None
+                else ""
+            )
             out[name].append(
                 Decision(
                     upto,
@@ -1919,6 +1934,7 @@ def _one_clock(
                     breakout_body_atr=diagnostics[8],
                     breakout_wick_share=diagnostics[9],
                     breakout_volume_ratio=diagnostics[10],
+                    story=story,
                 )
             )
     # SAID OUT LOUD, PER CLOCK. A timeout is a trade the harness stopped
@@ -3821,6 +3837,7 @@ def main(argv: list[str] | None = None) -> None:
                     "breakout_body_atr",
                     "breakout_wick_share",
                     "breakout_volume_ratio",
+                    "story",
                     "trend_m5",
                     "trend_m15",
                     "note",
@@ -3857,6 +3874,7 @@ def main(argv: list[str] | None = None) -> None:
                         round(d.breakout_body_atr, 4),
                         round(d.breakout_wick_share, 4),
                         round(d.breakout_volume_ratio, 4),
+                        d.story,
                         d.trend_m5,
                         d.trend_m15,
                         d.note,

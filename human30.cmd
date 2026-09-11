@@ -35,6 +35,7 @@ if not exist "runtime" mkdir runtime
   --only human_context_decision ^
   --section-markets ^
   --jarvis-replay ^
+  --fixed-exits ^
   --csv runtime\human-context-30.csv
 
 if errorlevel 1 (

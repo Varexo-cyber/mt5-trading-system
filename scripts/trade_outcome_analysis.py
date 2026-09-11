@@ -29,6 +29,7 @@ class Row:
     breakout_body: float = 0.0
     breakout_wick: float = 0.0
     breakout_volume: float = 0.0
+    story: str = ""
 
 
 def load_rows(path: Path) -> list[Row]:
@@ -68,6 +69,7 @@ def load_rows(path: Path) -> list[Row]:
                     breakout_body=float(item.get("breakout_body_atr") or 0),
                     breakout_wick=float(item.get("breakout_wick_share") or 0),
                     breakout_volume=float(item.get("breakout_volume_ratio") or 0),
+                    story=item.get("story", "").strip(),
                 )
             )
     return rows
@@ -147,6 +149,12 @@ def render(path: Path, rows: list[Row]) -> str:
         "PER SECTIE + RICHTING",
         _group(ordered, lambda row: f"{row.module} {row.direction}"),
     )
+    stories = [row for row in ordered if row.story]
+    if stories:
+        lines += _table(
+            "PER MARKTVERHAAL",
+            _group(stories, lambda row: f"{row.module} {row.story}"),
+        )
     lines += _table(
         "PER SECTIE + UTC-UUR",
         _group(ordered, lambda row: f"{row.module} {row.when.hour:02d}:00"),
