@@ -32,6 +32,7 @@ import argparse
 import csv
 import io
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 #: Weigeringen die de replay TOCH heeft uitgelopen. `dry_run_sections` schrijft
@@ -105,22 +106,52 @@ def _number(row: dict[str, str], *names: str) -> float:
     return 0.0
 
 
-def report(path: Path) -> None:
+def _span(rows: list[dict[str, str]]) -> tuple[datetime, datetime] | None:
+    """Eerste en laatste beslissing in een bestand, of None als niets leesbaar is."""
+
+    stamps = []
+    for row in rows:
+        value = (row.get("when") or "").strip()
+        if not value:
+            continue
+        try:
+            stamps.append(datetime.fromisoformat(value))
+        except ValueError:
+            continue
+    return (min(stamps), max(stamps)) if stamps else None
+
+
+def _tally(rows: list[dict[str, str]]) -> dict[str, list[float]]:
+    """Per sectie: aantal, netto R, betaalde kosten R."""
+
+    per_module: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+    for row in rows:
+        values = per_module[row["module"].strip() or "ONBEKEND"]
+        values[0] += 1
+        values[1] += _number(row, "managed_r_LIVE", "result_r_fixed_stop")
+        values[2] += _number(row, "cost_r_charged")
+    return per_module
+
+
+def report(path: Path) -> dict[str, list[float]]:
+    """Print het rapport voor een bestand en geef de telling terug om te bundelen."""
+
     every = _rows(path)
     rows = _taken(every)
     if not rows:
         print(f"{path}: geen enkele regel met outcome TRADE.")
-        return
+        return {}
 
-    per_module: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
-    for row in rows:
-        net = _number(row, "managed_r_LIVE", "result_r_fixed_stop")
-        cost = _number(row, "cost_r_charged")
-        values = per_module[row["module"].strip() or "ONBEKEND"]
-        values[0] += 1
-        values[1] += net
-        values[2] += cost
+    per_module = _tally(rows)
 
+    span = _span(every)
+    if span:
+        start, end = span
+        days = max((end - start).days, 1)
+        print(
+            f"\nPERIODE — {path.name}: {start:%d-%m-%Y} t/m {end:%d-%m-%Y} "
+            f"({days} dagen, {len(rows)} trades)"
+        )
     print(f"\nBRUTO TEGEN NETTO — {path.name}")
     print("  bruto = netto + kosten. De kosten stonden al in de netto-kolom;")
     print("  dit telt ze alleen terug op. Er is niets opnieuw gedraaid.")
@@ -171,6 +202,7 @@ def report(path: Path) -> None:
     print("  Het zegt alleen WAAR het verlies zit, niet dat het te vermijden was.\n")
 
     _gate_report(path, every, {module: values[1] for module, values in per_module.items()})
+    return per_module
 
 
 def _gate_report(path: Path, every: list[dict[str, str]], taken_net: dict[str, float]) -> None:
@@ -227,12 +259,100 @@ def _gate_report(path: Path, every: list[dict[str, str]], taken_net: dict[str, f
     print("  een bedrag dat je gemist hebt.\n")
 
 
+def _overlaps(spans: list[tuple[Path, tuple[datetime, datetime]]]) -> list[tuple[Path, Path]]:
+    """Paren bestanden waarvan de periodes elkaar raken.
+
+    DIT IS DE ENIGE REDEN DAT DEZE CONTROLE BESTAAT. `hoeveel-goud-360.csv`
+    loopt 360 dagen terug en `september-2025-goud.csv` valt daar middenin. Die
+    twee optellen telt dezelfde trades twee keer, en het resultaat is een groter
+    getal dat nergens op slaat -- precies het soort stille fout waar dit hele
+    project aan lijdt. Dus wordt er niet opgeteld, maar gezegd waarom niet.
+    """
+
+    clashes = []
+    for index, (left, (left_start, left_end)) in enumerate(spans):
+        for right, (right_start, right_end) in spans[index + 1 :]:
+            if left_start <= right_end and right_start <= left_end:
+                clashes.append((left, right))
+    return clashes
+
+
+def combined(
+    results: list[tuple[Path, dict[str, list[float]], tuple[datetime, datetime] | None]],
+) -> None:
+    """Een totaal over meerdere bestanden, of de reden dat het er niet is."""
+
+    spans = [(path, span) for path, _tally, span in results if span]
+    clashes = _overlaps(spans)
+    if clashes:
+        print(f"\n{'=' * 78}")
+        print("GEEN TOTAAL — DE PERIODES OVERLAPPEN")
+        print(f"{'=' * 78}")
+        for left, right in clashes:
+            print(f"  {left.name} en {right.name} beslaan deels dezelfde dagen.")
+        print("\n  Optellen zou dezelfde trades dubbel tellen en een groter getal")
+        print("  opleveren dat nergens op slaat. Draai dit opnieuw met alleen de")
+        print("  bestanden die elkaar niet raken, bijvoorbeeld de holdout plus de")
+        print("  360-daagse run.\n")
+        return
+
+    per_module: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+    for _path, tally, _span in results:
+        for module, (count, net, cost) in tally.items():
+            values = per_module[module]
+            values[0] += count
+            values[1] += net
+            values[2] += cost
+    if not per_module:
+        return
+
+    starts = [span[0] for _p, span in spans]
+    ends = [span[1] for _p, span in spans]
+    print(f"\n{'=' * 78}")
+    print(f"ALLES SAMEN — {min(starts):%d-%m-%Y} t/m {max(ends):%d-%m-%Y}")
+    print(f"{'=' * 78}")
+    print(f"  {len(results)} bestanden, periodes sluiten niet op elkaar aan maar overlappen niet.")
+    print(
+        f"\n  {'sectie':<28}{'trades':>7}{'bruto R':>10}{'kosten R':>10}"
+        f"{'netto R':>10}{'per trade':>11}{'kosten%':>9}"
+    )
+    total = [0.0, 0.0, 0.0]
+    for module, (count, net, cost) in sorted(per_module.items()):
+        gross = net + cost
+        total[0] += count
+        total[1] += net
+        total[2] += cost
+        share = cost / abs(gross) if gross else 0.0
+        print(
+            f"  {module:<28}{int(count):>7}{gross:>+10.2f}{cost:>10.2f}"
+            f"{net:>+10.2f}{net / count:>+11.3f}{share:>8.0%}"
+        )
+    count, net, cost = total
+    gross = net + cost
+    share = cost / abs(gross) if gross else 0.0
+    print(f"  {'-' * 83}")
+    print(
+        f"  {'samen':<28}{int(count):>7}{gross:>+10.2f}{cost:>10.2f}"
+        f"{net:>+10.2f}{net / count:>+11.3f}{share:>8.0%}"
+    )
+    print("\n  LET OP: dit zijn losse runs achter elkaar geplakt, geen doorlopende")
+    print("  rekening. Elke run begon met hetzelfde startkapitaal, dus dit is een")
+    print("  som van R en niet wat een rekening over die hele periode zou hebben")
+    print("  gedaan -- daar hoort samengestelde groei en een doorlopend")
+    print("  positieboek bij.\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("csv", type=Path, nargs="+", help="replay-CSV uit runtime\\")
     args = parser.parse_args()
+    results = []
     for path in args.csv:
-        report(path)
+        tally = report(path)
+        if tally:
+            results.append((path, tally, _span(_rows(path))))
+    if len(results) > 1:
+        combined(results)
 
 
 if __name__ == "__main__":
