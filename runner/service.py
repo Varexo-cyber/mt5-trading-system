@@ -64,6 +64,7 @@ from analysis import (
     SectionEightTrendDayH1,
     SectionFiveM5,
     SectionNineSessionVwapM30,
+    SectionSevenGoldSmc,
     SectionSixGoldM5,
     SectionSixSpxH1,
     SectionTenGoldM1,
@@ -525,6 +526,8 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         ),
         SectionSixGoldM5(analysis.section_six_gold_m5),
         SectionSixSpxH1(analysis.section_six_spx_h1),
+        # Shadow-only until its chronological session/clock study passes.
+        SectionSevenGoldSmc(analysis.section_seven_gold_smc),
         SectionEightTrendDayH1(analysis.section_eight_trend_day_h1),
         SectionNineSessionVwapM30(analysis.section_nine_vwap_m30),
         SectionTenGoldM1(analysis.section_ten_gold_m1),

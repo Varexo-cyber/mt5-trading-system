@@ -37,6 +37,7 @@ from analysis.order_block import OrderBlock
 from analysis.seasonality import Seasonality
 from analysis.section_five_ndx100_m5 import SectionFiveM5
 from analysis.section_six_adaptive import SectionSixGoldM5, SectionSixSpxH1
+from analysis.section_seven_smc import SectionSevenGoldSmc
 from analysis.sections_eight_nine import (
     SectionEightTrendDayH1,
     SectionNineSessionVwapM30,
@@ -81,6 +82,7 @@ __all__ = [
     "SectionNineSessionVwapM30",
     "SectionSixGoldM5",
     "SectionSixSpxH1",
+    "SectionSevenGoldSmc",
     "SectionTenGoldM1",
     "SessionBreakout",
     "SetupLifecycleBook",

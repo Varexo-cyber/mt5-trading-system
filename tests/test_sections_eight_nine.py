@@ -144,6 +144,7 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
     )
     assert ten.blocked_start_hour_utc == 7
     assert ten.blocked_end_hour_utc == 13
+    assert ten.blocked_hours_by_symbol["XAUUSD"] == (7, 8, 9, 10, 11, 12, 16)
     # SECTIE 8 IS 7 SEPTEMBER VAN DE ALLOWLIST, op instructie van de eigenaar,
     # op de 180-daagse rekeningreplay: 22 trades, 81,8% raak, -1,73 R,
     # EUR -7,09. Een hoog raakpercentage met een negatieve uitkomst betekent
@@ -590,6 +591,9 @@ class TestSectionTenBlocksHoursPerMarket:
         for symbol in [s for s in config.allowed_symbols if s != "XAUUSD"]:
             assert config.hour_is_blocked(symbol, 16), symbol
             assert config.hour_is_blocked(symbol, 17), symbol
-        # And gold keeps its own, different window.
+        # Gold keeps London morning shut and now also blocks 16:00: the
+        # independent 360-day gold run found 122 trades at -10.52R, negative
+        # in both time halves. 17:00 did not meet that bar.
         assert config.hour_is_blocked("XAUUSD", 8)
-        assert not config.hour_is_blocked("XAUUSD", 16)
+        assert config.hour_is_blocked("XAUUSD", 16)
+        assert not config.hour_is_blocked("XAUUSD", 17)

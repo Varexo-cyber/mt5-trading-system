@@ -1129,6 +1129,8 @@ def _frames_read(
     """
     confluence = settings.analysis.confluence
     wanted: set[Timeframe] = {clock, finest, Timeframe.M5}
+    if "section_seven_gold_smc" in sections:
+        wanted.update({Timeframe.M15, Timeframe.M30, Timeframe.H1, Timeframe.H4})
     for name in sections:
         if any(family in name for family in confluence.strategy_owned_entry_families):
             # A standalone section owns its trigger and stop. Loading an H4
@@ -2973,6 +2975,7 @@ def main(argv: list[str] | None = None) -> None:
             "section_five_ndx100_m5": "section_five_ndx100_m5",
             "section_six_gold_m5": "section_six_gold_m5",
             "section_six_spx_h1": "section_six_spx_h1",
+            "section_seven_gold_smc": "section_seven_gold_smc",
             "section_eight_trend_day_h1": "section_eight_trend_day_h1",
             "section_nine_vwap_m30": "section_nine_vwap_m30",
             "section_ten_gold_m1": "section_ten_gold_m1",
