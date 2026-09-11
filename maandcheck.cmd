@@ -17,9 +17,10 @@ if not exist ".venv-live\Scripts\python.exe" (
 set BESTANDEN=
 if exist "runtime\hoeveel.csv" set BESTANDEN=%BESTANDEN% "runtime\hoeveel.csv"
 if exist "runtime\hoeveel-stapel2.csv" set BESTANDEN=%BESTANDEN% "runtime\hoeveel-stapel2.csv"
+if exist "runtime\hoeveel-goud-360.csv" set BESTANDEN=%BESTANDEN% "runtime\hoeveel-goud-360.csv"
 
 if not defined BESTANDEN (
-  echo  Geen runtime\hoeveel.csv of runtime\hoeveel-stapel2.csv gevonden.
+  echo  Geen hoeveel-CSV gevonden in runtime.
   echo  Draai eerst hoeveel.cmd; bestaande bestanden worden direct hergebruikt.
   pause
   exit /b 1

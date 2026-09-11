@@ -42,3 +42,9 @@ def test_report_uses_managed_result_and_ignores_refusals(tmp_path: Path) -> None
     assert "2026-02   ROOD       -3.00" in report
     assert "zonder slecht" in report
     assert "+2.00" in report
+
+
+def test_launcher_also_reads_the_gold_only_replay() -> None:
+    launcher = (Path(__file__).parents[1] / "maandcheck.cmd").read_text()
+
+    assert 'runtime\\hoeveel-goud-360.csv"' in launcher
