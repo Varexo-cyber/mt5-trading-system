@@ -1,142 +1,100 @@
-"""Section seven: replayable multi-timeframe gold liquidity-sweep reversal."""
-
+"""Stateful, replayable gold liquidity-sweep reversal."""
 from __future__ import annotations
-
+from dataclasses import dataclass
 import pandas as pd
-
 from config.schema import SectionSevenSmcConfig
 from core.types import MarketContext, Signal, Timeframe
 
+def _atr(f, period=14):
+    prev=f["close"].shift(1)
+    tr=pd.concat([f["high"]-f["low"],(f["high"]-prev).abs(),(f["low"]-prev).abs()],axis=1).max(axis=1)
+    return float(tr.rolling(period).mean().iloc[-1])
 
-def _atr(frame: pd.DataFrame, period: int = 14) -> float:
-    previous = frame["close"].shift(1)
-    true_range = pd.concat(
-        [
-            frame["high"] - frame["low"],
-            (frame["high"] - previous).abs(),
-            (frame["low"] - previous).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return float(true_range.rolling(period).mean().iloc[-1])
-
+@dataclass
+class _Setup:
+    direction:int; swept_at:object; extreme:float; liquidity:float; structure:float
+    stage:str="displacement"; gap_low:float|None=None; gap_high:float|None=None; displaced_at:object|None=None
 
 class SectionSevenGoldSmc:
-    """Trade a sweep only after displacement leaves and price retests an FVG."""
+    """Track sweep -> BOS/CHOCH displacement -> FVG -> defended retest."""
+    name="section_seven_gold_smc"
+    def __init__(self,config=None):
+        self.config=config or SectionSevenSmcConfig(); self._last_trade_day={}; self._last_seen_bar={}; self._setups={}
 
-    name = "section_seven_gold_smc"
+    @staticmethod
+    def _pivots(s,span,is_high):
+        a=s.astype(float).tolist(); out=[]
+        for i in range(span,len(a)-span):
+            w=a[i-span:i+span+1]
+            if (is_high and a[i]==max(w)) or (not is_high and a[i]==min(w)): out.append(a[i])
+        return out
 
-    def __init__(self, config: SectionSevenSmcConfig | None = None) -> None:
-        self.config = config or SectionSevenSmcConfig()
-        self._last_trade_day: dict[str, object] = {}
+    @staticmethod
+    def _age(f,stamp):
+        pos=f.index.get_indexer([stamp])[0]
+        return len(f) if pos<0 else len(f)-1-int(pos)
 
-    def analyze(self, ctx: MarketContext) -> Signal:
-        cfg = self.config
-        if not cfg.enabled or ctx.symbol not in cfg.allowed_symbols:
-            return Signal.neutral(self.name, "section seven SMC disabled for this market")
-        clock = Timeframe.parse(cfg.timeframe)
-        series = ctx.series.get(clock)
-        required = (Timeframe.M15, Timeframe.M30, Timeframe.H1, Timeframe.H4)
-        if series is None or any(ctx.series.get(frame) is None for frame in required):
-            return Signal.neutral(self.name, "S7 needs entry, M15, M30, H1 and H4 closed bars")
-        frame = series.df
-        if len(frame) < cfg.liquidity_lookback + 8:
-            return Signal.neutral(self.name, "S7 needs more closed bars for swing structure")
-        today = frame.index[-1].date()
-        if self._last_trade_day.get(ctx.symbol) == today:
-            return Signal.neutral(self.name, "S7 already produced its one setup for this UTC day")
+    def _new_sweep(self,f,unit):
+        c=self.config; hist=f.iloc[-(c.liquidity_lookback+1):-1]
+        ph=self._pivots(hist.high,c.pivot_span,True); pl=self._pivots(hist.low,c.pivot_span,False)
+        if not ph or not pl:return None
+        h,l,x=map(float,(f.high.iloc[-1],f.low.iloc[-1],f.close.iloc[-1]))
+        loc=(x-l)/max(h-l,unit*.01); excursion=c.sweep_excursion_atr*unit
+        sh=h>=ph[-1]+excursion and x<ph[-1] and loc<=c.sweep_close_location
+        sl=l<=pl[-1]-excursion and x>pl[-1] and loc>=1-c.sweep_close_location
+        if sh==sl:return None
+        d=-1 if sh else 1
+        return _Setup(d,f.index[-1],h if d<0 else l,ph[-1] if d<0 else pl[-1],pl[-1] if d<0 else ph[-1])
 
-        open_ = frame["open"].astype(float)
-        high = frame["high"].astype(float)
-        low = frame["low"].astype(float)
-        close = frame["close"].astype(float)
-        unit = _atr(frame.iloc[:-3])
-        if not pd.notna(unit) or unit <= 0:
-            return Signal.neutral(self.name, "S7 ATR is unavailable")
+    def _advance(self,s,f,unit):
+        c=self.config; d=s.direction; age=self._age(f,s.swept_at); x=float(f.close.iloc[-1])
+        if (d>0 and float(f.low.iloc[-1])<s.extreme) or (d<0 and float(f.high.iloc[-1])>s.extreme):return "invalid"
+        if s.stage=="displacement":
+            if age==0:return "waiting"
+            if age>c.displacement_window_bars:return "invalid"
+            broke=x>s.structure if d>0 else x<s.structure
+            body=abs(float(f.close.iloc[-1]-f.open.iloc[-1]))
+            if not broke or body<c.displacement_body_atr*unit:return "waiting"
+            lo,hi=(float(f.high.iloc[-3]),float(f.low.iloc[-1])) if d>0 else (float(f.high.iloc[-1]),float(f.low.iloc[-3]))
+            if hi-lo<c.fvg_minimum_atr*unit:return "waiting"
+            s.stage="retest";s.gap_low=lo;s.gap_high=hi;s.displaced_at=f.index[-1];return "waiting"
+        age=self._age(f,s.displaced_at)
+        if age==0:return "waiting"
+        if age>c.retest_window_bars:return "invalid"
+        tol=c.retest_tolerance_atr*unit
+        touched=float(f.low.iloc[-1])<=s.gap_high+tol and float(f.high.iloc[-1])>=s.gap_low-tol
+        held=x>=s.gap_low if d>0 else x<=s.gap_high
+        return "ready" if touched and held else "waiting"
 
-        # Four closed bars, in order: sweep, displacement/BOS, FVG confirmation,
-        # then the retest.  Entering immediately on the CHOCH was the defective
-        # first design: it bought the expansion rather than its return to value.
-        history = slice(-(cfg.liquidity_lookback + 4), -4)
-        prior_high = float(high.iloc[history].max())
-        prior_low = float(low.iloc[history].min())
-        swept_high = float(high.iloc[-4]) > prior_high and float(close.iloc[-4]) < prior_high
-        swept_low = float(low.iloc[-4]) < prior_low and float(close.iloc[-4]) > prior_low
-        if swept_high == swept_low:
-            return Signal.neutral(self.name, "no single-sided closed liquidity sweep")
-
-        direction = -1 if swept_high else 1
-        micro = cfg.choch_lookback
-        if direction < 0:
-            choch_level = float(low.iloc[-(micro + 4) : -4].min())
-            changed = float(close.iloc[-3]) < choch_level
-            sweep_extreme = float(high.iloc[-4])
-            gap_low, gap_high = float(high.iloc[-2]), float(low.iloc[-4])
-        else:
-            choch_level = float(high.iloc[-(micro + 4) : -4].max())
-            changed = float(close.iloc[-3]) > choch_level
-            sweep_extreme = float(low.iloc[-4])
-            gap_low, gap_high = float(high.iloc[-4]), float(low.iloc[-2])
-        if not changed:
-            return Signal.neutral(self.name, "sweep had no displacement close through structure")
-        displacement_body = abs(float(close.iloc[-3] - open_.iloc[-3]))
-        if displacement_body < cfg.displacement_body_atr * unit:
-            return Signal.neutral(self.name, "structure break was not displacement")
-        if gap_high - gap_low < cfg.fvg_minimum_atr * unit:
-            return Signal.neutral(self.name, "displacement left no measurable FVG")
-
-        tolerance = cfg.retest_tolerance_atr * unit
-        touched = (
-            float(low.iloc[-1]) <= gap_high + tolerance
-            and float(high.iloc[-1]) >= gap_low - tolerance
-        )
-        held = (
-            float(close.iloc[-1]) >= gap_low
-            if direction > 0
-            else float(close.iloc[-1]) <= gap_high
-        )
-        if not touched or not held:
-            return Signal.neutral(self.name, "FVG was not retested and defended")
-
-        h1 = ctx.series[Timeframe.H1].df
-        h1_high = float(h1["high"].astype(float).iloc[-cfg.context_lookback :].max())
-        h1_low = float(h1["low"].astype(float).iloc[-cfg.context_lookback :].min())
-        midpoint = (h1_high + h1_low) / 2.0
-        entry = ctx.tick.mid if ctx.tick is not None else float(close.iloc[-1])
-        if (direction < 0 and entry < midpoint) or (direction > 0 and entry > midpoint):
-            return Signal.neutral(self.name, "sweep is not in H1 premium/discount territory")
-
-        aligned = 0
-        against = 0
-        for timeframe in required:
-            closes = ctx.series[timeframe].df["close"].astype(float)
-            middle = float(closes.iloc[-cfg.context_lookback :].median())
-            bias = 1 if float(closes.iloc[-1]) > middle else -1
-            aligned += int(bias == direction)
-            against += int(bias == -direction)
-        if against >= 3:
-            return Signal.neutral(self.name, "three higher clocks oppose the reversal")
-
-        stop = sweep_extreme - direction * cfg.stop_buffer_atr * unit
-        if direction * (entry - stop) <= 0:
-            return Signal.neutral(self.name, "S7 structural stop is behind the entry")
-        liquidity_target = prior_high if direction > 0 else prior_low
-        risk = abs(entry - stop)
-        reward_r = direction * (liquidity_target - entry) / risk
-        if reward_r < cfg.minimum_liquidity_reward_r:
-            return Signal.neutral(self.name, "opposing liquidity offers less than the required R")
-        self._last_trade_day[ctx.symbol] = today
-        return Signal(
-            module=self.name,
-            score=cfg.score * direction,
-            confidence=cfg.confidence,
-            reasoning="liquidity sweep, displacement/BOS, FVG retest and opposing liquidity",
-            invalidation_price=stop,
-            key_levels=(gap_low, gap_high, choch_level, midpoint, liquidity_target),
-            details={
-                "timeframe": cfg.timeframe,
-                "htf_aligned": aligned,
-                "liquidity_target": liquidity_target,
-                "liquidity_reward_r": reward_r,
-            },
-        )
+    def analyze(self,ctx:MarketContext)->Signal:
+        c=self.config
+        if not c.enabled or ctx.symbol not in c.allowed_symbols:return Signal.neutral(self.name,"section seven SMC disabled for this market")
+        clock=Timeframe.parse(c.timeframe); series=ctx.series.get(clock); required=(Timeframe.M15,Timeframe.M30,Timeframe.H1,Timeframe.H4)
+        if series is None or any(ctx.series.get(t) is None for t in required):return Signal.neutral(self.name,"S7 needs entry, M15, M30, H1 and H4 closed bars")
+        f=series.df
+        if len(f)<c.liquidity_lookback+c.pivot_span+8:return Signal.neutral(self.name,"S7 needs confirmed swing structure")
+        key=f"{ctx.symbol}:{c.timeframe}";stamp=f.index[-1]
+        if self._last_seen_bar.get(key)==stamp:return Signal.neutral(self.name,"S7 already assessed this closed bar")
+        self._last_seen_bar[key]=stamp;today=stamp.date()
+        if self._last_trade_day.get(key)==today:return Signal.neutral(self.name,"S7 already produced its one setup for this UTC day")
+        unit=_atr(f.iloc[:-1])
+        if not pd.notna(unit) or unit<=0:return Signal.neutral(self.name,"S7 ATR is unavailable")
+        s=self._setups.get(key)
+        if s is None:
+            s=self._new_sweep(f,unit)
+            if s is None:return Signal.neutral(self.name,"no confirmed external liquidity sweep")
+            self._setups[key]=s;return Signal.neutral(self.name,"liquidity swept; awaiting displacement/BOS")
+        state=self._advance(s,f,unit)
+        if state=="invalid":self._setups.pop(key,None);return Signal.neutral(self.name,"SMC sequence expired or invalidated")
+        if state!="ready":return Signal.neutral(self.name,f"SMC sequence awaiting {s.stage}")
+        d=s.direction;h1=ctx.series[Timeframe.H1].df;hh=float(h1.high.iloc[-c.context_lookback:].max());ll=float(h1.low.iloc[-c.context_lookback:].min());mid=(hh+ll)/2
+        entry=ctx.tick.mid if ctx.tick is not None else float(f.close.iloc[-1])
+        if (d<0 and entry<mid) or (d>0 and entry>mid):self._setups.pop(key,None);return Signal.neutral(self.name,"outside H1 premium/discount")
+        biases=[];slopes=[]
+        for tf in required:
+            z=ctx.series[tf].df.close.astype(float).iloc[-c.context_lookback:];half=max(2,len(z)//2);slope=float(z.iloc[-half:].median()-z.iloc[:half].median());slopes.append(slope);biases.append(1 if slope>0 else -1 if slope<0 else 0)
+        if biases[-2]==biases[-1]==-d:self._setups.pop(key,None);return Signal.neutral(self.name,"H1 and H4 oppose reversal")
+        stop=s.extreme-d*c.stop_buffer_atr*unit;risk=abs(entry-stop);target=hh if d>0 else ll;rr=d*(target-entry)/risk if risk else -1
+        if d*(entry-stop)<=0 or rr<c.minimum_liquidity_reward_r:self._setups.pop(key,None);return Signal.neutral(self.name,"opposing liquidity offers insufficient R")
+        self._setups.pop(key,None);self._last_trade_day[key]=today
+        return Signal(module=self.name,score=c.score*d,confidence=c.confidence,reasoning="liquidity sweep, displacement/BOS, FVG retest and HTF structure",invalidation_price=stop,key_levels=(s.liquidity,s.gap_low,s.gap_high,mid,target),details={"timeframe":c.timeframe,"htf_biases":biases,"trend_slopes":slopes,"liquidity_target":target,"liquidity_reward_r":rr})

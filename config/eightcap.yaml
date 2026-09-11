@@ -1456,8 +1456,13 @@ analysis:
     timeframe: M5
     allowed_symbols: [XAUUSD]
     liquidity_lookback: 20
+    pivot_span: 2
     choch_lookback: 3
     context_lookback: 20
+    displacement_window_bars: 6
+    retest_window_bars: 12
+    sweep_excursion_atr: 0.03
+    sweep_close_location: 0.65
     stop_buffer_atr: 0.15
     displacement_body_atr: 0.80
     fvg_minimum_atr: 0.05
