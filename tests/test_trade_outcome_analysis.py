@@ -52,3 +52,28 @@ def test_constant_diagnostic_is_called_out_instead_of_looking_useful(tmp_path) -
 
     assert "GEEN ONDERSCHEID (0.400)" in report
     assert "trek hier geen filterconclusie uit" in report
+
+
+def test_human_context_report_splits_the_preregistered_market_stories(tmp_path) -> None:
+    rows = [
+        Row(
+            datetime(2025, 1, 1),
+            "human_context_decision",
+            "LONG",
+            2.0,
+            story="trend_continuation",
+        ),
+        Row(
+            datetime(2025, 1, 2),
+            "human_context_decision",
+            "SHORT",
+            -1.0,
+            story="failed_auction",
+        ),
+    ]
+
+    report = render(tmp_path / "human.csv", rows)
+
+    story_block = report.split("PER MARKTVERHAAL", 1)[1].split("PER SECTIE + UTC-UUR", 1)[0]
+    assert "trend_continuation" in story_block
+    assert "failed_auction" in story_block
