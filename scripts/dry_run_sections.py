@@ -1177,6 +1177,9 @@ def _frames_read(
     wanted: set[Timeframe] = {clock, finest, Timeframe.M5}
     if "section_seven_gold_smc" in sections:
         wanted.update({Timeframe.M15, Timeframe.M30, Timeframe.H1, Timeframe.H4})
+    if "human_context_decision" in sections:
+        context = settings.analysis.human_context_decision.context_timeframes
+        wanted.update(Timeframe.parse(value) for value in context)
     for name in sections:
         if any(family in name for family in confluence.strategy_owned_entry_families):
             # A standalone section owns its trigger and stop. Loading an H4

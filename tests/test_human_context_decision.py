@@ -11,6 +11,7 @@ from config.loader import load_settings
 from config.schema import HumanContextDecisionConfig
 from core.types import MarketContext, Series, Timeframe
 from runner.service import build_analysis_modules
+from scripts.dry_run_sections import _frames_read
 
 
 def _frame(freq: str, *, rising: bool = True, periods: int = 80) -> pd.DataFrame:
@@ -95,3 +96,18 @@ def test_human30_launcher_is_one_frozen_shadow_measurement() -> None:
     assert "--jarvis-replay" in launcher
     assert "--exit-grid" not in launcher
     assert "runtime\\human-context-30.csv" in launcher
+
+
+def test_replay_fetches_every_context_timeframe_the_decision_reads() -> None:
+    settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
+
+    frames = set(
+        _frames_read(
+            settings,
+            Timeframe.M5,
+            Timeframe.M1,
+            ("human_context_decision",),
+        )
+    )
+
+    assert {Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4} <= frames
