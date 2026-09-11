@@ -95,7 +95,7 @@ def test_human30_launcher_is_one_frozen_shadow_measurement() -> None:
     assert "--only human_context_decision" in launcher
     assert "--jarvis-replay" in launcher
     assert "--fixed-exits" in launcher
-    assert "--exit-grid" not in launcher
+    assert "--exit-grid alles" in launcher
     assert "runtime\\human-context-30.csv" in launcher
 
 
@@ -112,3 +112,20 @@ def test_replay_fetches_every_context_timeframe_the_decision_reads() -> None:
     )
 
     assert {Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4} <= frames
+
+
+def test_wide_exit_grid_includes_human_cashout_and_protection_choices() -> None:
+    from scripts.dry_run_sections import exit_grid
+
+    variants = exit_grid(wide=True)
+    labels = {variant.label for variant in variants}
+
+    assert "cash all @ 0.25R" in labels
+    assert "cash all @ 1.75R" in labels
+    assert "BE@0.25R" in labels
+    assert "part 50% @ 1.00R" in labels
+    assert any(label.startswith("trail ") for label in labels)
+    assert "giveback 50% after 0.50R" in labels
+    assert "lock 75% peak>0.50R" in labels
+    assert "stall 15m after 0.75R" in labels
+    assert "time exit 1h" in labels
