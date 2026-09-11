@@ -248,6 +248,9 @@ class SectionTenGoldM1:
                                         "break_atr": round(break_atr, 6),
                                         "m5_ema_slope": round(m5_slope, 6),
                                         "wait_bars": age,
+                                        "break_body_atr": candidate["body_atr"],
+                                        "break_wick_share": candidate["wick_share"],
+                                        "break_volume_ratio": candidate["volume_ratio"],
                                     },
                                 )
                         else:
@@ -281,6 +284,9 @@ class SectionTenGoldM1:
                 "unit": unit,
                 "age": 0,
                 "break_atr": break_atr,
+                "body_atr": abs(float(close.iloc[at] - frame["open"].iloc[at])) / unit,
+                "wick_share": 1.0 - abs(float(close.iloc[at] - frame["open"].iloc[at])) / max(float(high.iloc[at] - low.iloc[at]), unit * 0.01),
+                "volume_ratio": float(frame["volume"].iloc[at] / frame["volume"].iloc[max(0, at - 30):at].median()) if "volume" in frame and at > 0 and frame["volume"].iloc[max(0, at - 30):at].median() > 0 else 0.0,
             }
 
         state["last_seen"] = current_stamp
