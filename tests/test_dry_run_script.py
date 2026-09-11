@@ -5053,8 +5053,6 @@ class TestTheExitGridComparesEveryWayOfManagingATrade:
         from config.loader import load_settings
 
         settings = load_settings(overlay=ROOT / "config" / "eightcap.yaml", env_overrides=False)
-        live = set(settings.analysis.confluence.live_enabled_modules)
-
         for word, wanted in cases.items():
             assert f'if /i "%~1"=="{word}" set SECTIES=--only ' in launcher, word
             named = launcher.split(f'"%~1"=="{word}" set SECTIES=--only ', 1)[1].split("\n", 1)[0]
@@ -5064,10 +5062,10 @@ class TestTheExitGridComparesEveryWayOfManagingATrade:
                     f"{word} passes a comma list unquoted; cmd may split it into two arguments"
                 )
             assert set(named.strip('"').split(",")) == wanted, word
-            # `--only` is refused for a section --live-only already dropped, so
-            # a shortcut naming a benched section would be a launcher that
-            # exits instead of measuring.
-            assert wanted <= live, f"{word} names a section that is not live"
+            # `beheer` is also the research tool for a benched section. It may
+            # name one that cannot spend live money, but never one disabled so
+            # completely that the run would only manufacture empty output.
+            assert all(getattr(settings.analysis, name).enabled for name in wanted)
 
     def test_two_choices_cannot_collide_on_one_filename(self):
         """`beheer.cmd 180 goud alles` is offered in the help text, and with a
@@ -5290,17 +5288,14 @@ class TestSectionTenIsNoLongerRefusedByTheReachGate:
         assert "target_reach_advisory_families" in runner
         assert "target_reach_advisory_families" in SOURCE
 
-    def test_the_sections_that_keep_the_hard_gate_still_have_it(self):
-        # A blanket "advisory for everyone" would have been the easy edit and
-        # would have removed the gate from sections nobody measured it on.
+    def test_the_two_remaining_live_sections_use_their_measured_advisory_policy(self):
+        # The allowlist was intentionally reduced to the two measured gold
+        # sections. Both already had a measured advisory reach policy; this is
+        # not a blanket change to the shadow modules.
         families = set(self._settings().analysis.confluence.target_reach_advisory_families)
         live = set(self._settings().analysis.confluence.live_enabled_modules)
-        still_gated = {
-            name
-            for name in live
-            if not any(family in name for family in families)
-        }
-        assert still_gated, "every live section is now advisory; the gate stops nothing"
+        assert live == {"section_six_gold_m5", "section_ten_gold_m1"}
+        assert live <= families
 
 
 class TestTheSharedBookCountsPositionsAndNamesItsRefusals:

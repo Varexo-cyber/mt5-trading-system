@@ -2347,6 +2347,16 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, default=7)
+    parser.add_argument(
+        "--start-date",
+        default="",
+        help="exact first UTC calendar day (YYYY-MM-DD); requires --end-date",
+    )
+    parser.add_argument(
+        "--end-date",
+        default="",
+        help="exact last UTC calendar day, inclusive (YYYY-MM-DD); requires --start-date",
+    )
     parser.add_argument("--symbols", default="", help="comma list; default = the live universe")
     parser.add_argument("--csv", default="", help="write every decision to this file")
     parser.add_argument("--equity", type=float, default=0.0, help="override account equity")
@@ -2891,12 +2901,27 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  skipping {len(dropped)} the section cannot trade")
 
         stored_window = store.window() if store is not None else None
-        end = (
-            datetime.fromisoformat(stored_window[1])
-            if stored_window is not None and stored_window[1]
-            else datetime.now(UTC)
-        )
-        start = end - timedelta(days=args.days)
+        if bool(args.start_date) != bool(args.end_date):
+            raise SystemExit("--start-date en --end-date moeten samen worden gebruikt")
+        if args.start_date:
+            try:
+                start = datetime.strptime(args.start_date, "%Y-%m-%d").replace(tzinfo=UTC)
+                last_day = datetime.strptime(args.end_date, "%Y-%m-%d").replace(tzinfo=UTC)
+            except ValueError as exc:
+                raise SystemExit("datums moeten YYYY-MM-DD zijn") from exc
+            if last_day < start:
+                raise SystemExit("--end-date moet op of na --start-date liggen")
+            # `_one_clock` includes its endpoint. Stop one microsecond before
+            # the next midnight so 30 September cannot leak an October bar.
+            end = last_day + timedelta(days=1) - timedelta(microseconds=1)
+            args.days = (last_day.date() - start.date()).days + 1
+        else:
+            end = (
+                datetime.fromisoformat(stored_window[1])
+                if stored_window is not None and stored_window[1]
+                else datetime.now(UTC)
+            )
+            start = end - timedelta(days=args.days)
         # `fetch_these` is decided AFTER `passes`, further down: a live section
         # sitting on M1 needs M1 bars whatever --no-m1 says, and the clock came
         # from the config rather than from this command line.
