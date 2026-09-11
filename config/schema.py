@@ -16,8 +16,8 @@ serialised into a log or a journal row.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
 from datetime import datetime
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -554,11 +554,12 @@ class RiskConfig(Base):
     risk_per_trade_pct: Pct = 1.0
     #: Ceiling the sizer will never exceed regardless of setup quality.
     max_risk_per_trade_pct: Pct = 1.0
-    #: A retained, typed tombstone for an unsafe historical override. The
-    #: broker minimum is not permission to exceed the stake behind a decision.
-    #: `Literal[False]` makes a future YAML edit fail at startup instead of
-    #: quietly reintroducing upward lot rounding.
-    allow_minimum_lot_above_target: Literal[False] = False
+    #: Permit the broker minimum when the requested percentage rounds below
+    #: one lot step. This never makes the minimum unconditional: the resulting
+    #: loss must still fit below the mode's per-trade ceiling and, when set,
+    #: below the fixed daily money stop. This lets a small account express a
+    #: valid setup without turning "minimum lot" into unlimited risk.
+    allow_minimum_lot_above_target: bool = False
     #: Stake by conviction. See `ConvictionRiskConfig`.
     conviction_risk: ConvictionRiskConfig = ConvictionRiskConfig()
     #: Total risk allowed across every open position at once, as a percentage

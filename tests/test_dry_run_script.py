@@ -3695,6 +3695,15 @@ class TestTheEuroAnswerIsActuallyComputed:
         assert "+2.00" in out
         assert "IF THIS HAD BEEN RUNNING FOR 180 DAYS" in out
 
+    def test_fixed_daily_stop_uses_closed_pnl_before_later_entries(self) -> None:
+        from scripts.dry_run_sections import _under_daily_money_stop
+
+        rows = self._trades([-1.0] * 12)
+        accepted, skipped = _under_daily_money_stop(rows, 20.0, managed=True)
+
+        assert len(accepted) == 5
+        assert skipped == 7
+
     def _lotted(self, results, *, per_lot: float, minimum: float = 0.01, step: float = 0.01):
         """Trades that carry the lot economics a real re-size needs."""
         rows = self._trades(results)
@@ -3779,6 +3788,28 @@ class TestTheEuroAnswerIsActuallyComputed:
         assert run.taken == 0
         assert run.skipped_too_small == len(rows)
         assert run.balance == pytest.approx(252.18)
+
+    def test_bounded_minimum_lot_override_takes_the_trade(self) -> None:
+        from scripts.dry_run_sections import _compound
+
+        settings = self._live_mode()
+        # Target stake is about EUR 6.84; the minimum lot risks EUR 10.
+        # That is above 2%, but below both 10% and the EUR 20 daily stop.
+        run = _compound(self._lotted([1.0], per_lot=1_000.0), settings, 341.95)
+
+        assert run.taken == 1
+        assert run.minimum_lot_overrides == 1
+        assert run.skipped_too_small == 0
+
+    def test_daily_money_stop_pauses_new_entries_until_next_day(self) -> None:
+        from scripts.dry_run_sections import _compound
+
+        settings = self._live_mode()
+        rows = self._lotted([-1.0] * 12, per_lot=385.0)
+        run = _compound(rows, settings, 252.18)
+
+        assert run.skipped_daily_loss > 0
+        assert run.taken + run.skipped_daily_loss == len(rows)
 
     def test_a_wiped_account_stops_trading(self) -> None:
         """Booking results on a negative balance is how a replay produces a

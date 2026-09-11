@@ -366,17 +366,39 @@ class PositionSizer:
             affordable_pips = spec.max_sl_pips_for_risk(intended_money)
 
         if volume < spec.volume_min:
-            return result(
-                RiskDecision.block(
-                    Reason.UNDERCAPITALIZED,
-                    f"{intended_pct:.2f}% of {equity:.2f} is {intended_money:.2f}, which buys "
-                    f"{raw_volume:.4f} lots — below the {spec.volume_min:g} minimum. The "
-                    f"smallest tradable position would risk {shortfall_pct:.2f}%. At this "
-                    f"risk level the widest affordable stop is {affordable_pips:.1f} pips, "
-                    f"and this setup needs {sl_pips:.1f}.",
-                ),
-                raw=raw_volume,
-            )
+            minimum_risk_money = cost_per_lot * spec.volume_min
+            ceiling_money = equity * self.settings.effective_max_risk_pct() / 100.0
+            daily_money = self.settings.risk.daily_loss_limit_money
+            fits_daily_stop = daily_money <= 0.0 or minimum_risk_money <= daily_money + 1e-9
+            if (
+                self.settings.risk.allow_minimum_lot_above_target
+                and minimum_risk_money <= ceiling_money + 1e-9
+                and fits_daily_stop
+            ):
+                volume = spec.volume_min
+            else:
+                limits = [f"{self.settings.effective_max_risk_pct():.2f}% per-trade ceiling"]
+                if daily_money > 0.0:
+                    limits.append(f"{daily_money:.2f} daily money stop")
+                override_state = (
+                    "enabled"
+                    if self.settings.risk.allow_minimum_lot_above_target
+                    else "disabled"
+                )
+                return result(
+                    RiskDecision.block(
+                        Reason.UNDERCAPITALIZED,
+                        f"{intended_pct:.2f}% of {equity:.2f} is {intended_money:.2f}, which buys "
+                        f"{raw_volume:.4f} lots — below the {spec.volume_min:g} minimum. The "
+                        f"smallest tradable position would risk {shortfall_pct:.2f}% "
+                        f"({minimum_risk_money:.2f}). Minimum-lot override is "
+                        f"{override_state}; "
+                        f"hard limits: {', '.join(limits)}. At the target risk the widest "
+                        f"affordable stop is {affordable_pips:.1f} pips, and this setup needs "
+                        f"{sl_pips:.1f}.",
+                    ),
+                    raw=raw_volume,
+                )
 
         # -- 6. final ceiling check ---------------------------------------
         # Rounding down can only reduce risk, so this should never fire. It is
@@ -401,6 +423,11 @@ class PositionSizer:
             f"{volume:g} lots risks {actual_money:.2f} ({actual_pct:.2f}%) over a "
             f"{sl_pips:.1f} pip stop, R:R 1:{reward_risk:.2f}"
         )
+        if raw_volume < spec.volume_min:
+            detail += (
+                f" — broker-minimum override above the {intended_pct:.2f}% target; "
+                "bounded by the per-trade ceiling and daily money stop"
+            )
         if capped:
             detail += f" — capped at the broker's {spec.volume_max:g} lot maximum"
 
