@@ -23,7 +23,10 @@ echo   Op exact dezelfde toegelaten entries worden vergeleken:
 echo     - vaste SL/TP tegenover huidig live break-even
 echo     - meerdere robuuste break-even-niveaus en stopplaatsen
 echo     - M5-, M15- en gecombineerde trendrichting bij entry
-echo     - vroege exit bij aantoonbare trend- plus structuurbreuk
+echo     - trendkandidaten apart in vroege en late helft; geen schijnwinst
+echo     - S10 breakout/body/wick/volume in tertielen binnen echte trades
+echo     - conditionele give-back exits na +0.50R, +0.75R en +1.00R
+echo     - vroege exit alleen bij aantoonbare trend- plus structuurbreuk
 echo     - richting, UTC-uur, weekdag en herhaalde verliesuren
 echo.
 echo   Dit wijzigt NIETS live en kan langer duren dan goud360.cmd.
