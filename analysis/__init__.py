@@ -16,6 +16,7 @@ from analysis.entry_quality import (
 from analysis.evidence_families import family_for, supporting_families
 from analysis.failed_session_breakout import FailedSessionBreakout
 from analysis.fast_ema_cross import FastEmaCross
+from analysis.human_context_decision import HumanContextDecision
 from analysis.impulse_break import ImpulseBreak
 from analysis.impulse_retest import ImpulseRetest
 from analysis.level_retest import LevelRetest
@@ -36,8 +37,8 @@ from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, Volat
 from analysis.order_block import OrderBlock
 from analysis.seasonality import Seasonality
 from analysis.section_five_ndx100_m5 import SectionFiveM5
-from analysis.section_six_adaptive import SectionSixGoldM5, SectionSixSpxH1
 from analysis.section_seven_smc import SectionSevenGoldSmc
+from analysis.section_six_adaptive import SectionSixGoldM5, SectionSixSpxH1
 from analysis.sections_eight_nine import (
     SectionEightTrendDayH1,
     SectionNineSessionVwapM30,
@@ -61,6 +62,7 @@ __all__ = [
     "EntryTimingDecision",
     "FailedSessionBreakout",
     "FastEmaCross",
+    "HumanContextDecision",
     "ImpulseBreak",
     "ImpulseRetest",
     "LevelReaction",
@@ -80,9 +82,9 @@ __all__ = [
     "SectionEightTrendDayH1",
     "SectionFiveM5",
     "SectionNineSessionVwapM30",
+    "SectionSevenGoldSmc",
     "SectionSixGoldM5",
     "SectionSixSpxH1",
-    "SectionSevenGoldSmc",
     "SectionTenGoldM1",
     "SessionBreakout",
     "SetupLifecycleBook",

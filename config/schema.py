@@ -4086,6 +4086,42 @@ class SectionSevenSmcConfig(Base):
     confidence: float = Field(default=0.65, ge=0.0, le=1.0)
 
 
+class HumanContextDecisionConfig(Base):
+    """Shadow-only top-down decision process over closed gold candles."""
+
+    enabled: bool = False
+    allowed_symbols: tuple[str, ...] = ("XAUUSD",)
+    entry_timeframe: str = "M5"
+    context_timeframes: tuple[str, ...] = ("M15", "H1", "H4")
+    atr_period: int = Field(default=14, ge=5, le=100)
+    context_bars: int = Field(default=20, ge=8, le=200)
+    level_lookback: int = Field(default=12, ge=5, le=100)
+    slope_bars: int = Field(default=6, ge=2, le=50)
+    minimum_body_atr: float = Field(default=0.35, gt=0.0, le=3.0)
+    close_location: float = Field(default=0.65, gt=0.5, lt=1.0)
+    pullback_tolerance_atr: float = Field(default=0.25, ge=0.0, le=2.0)
+    sweep_excursion_atr: float = Field(default=0.05, ge=0.0, le=2.0)
+    break_buffer_atr: float = Field(default=0.10, ge=0.0, le=2.0)
+    stop_buffer_atr: float = Field(default=0.15, ge=0.0, le=2.0)
+    minimum_stop_atr: float = Field(default=0.35, gt=0.0, le=3.0)
+    maximum_stop_atr: float = Field(default=2.0, gt=0.0, le=10.0)
+    minimum_reward_r: float = Field(default=2.0, gt=0.0, le=10.0)
+    minimum_context_agreement: int = Field(default=2, ge=1, le=3)
+    story_priority: tuple[str, ...] = (
+        "failed_auction",
+        "break_retest",
+        "trend_continuation",
+    )
+    score: float = Field(default=72.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.60, ge=0.0, le=1.0)
+
+    @property
+    def timeframe(self) -> str:
+        """Expose the entry clock through the common replay-section contract."""
+
+        return self.entry_timeframe
+
+
 class SectionFiveM5Config(Base):
     """SECTION FIVE: frozen nonlinear M5 NDX100 model."""
 
@@ -4622,6 +4658,7 @@ class AnalysisConfig(Base):
     walkforward_index: WalkforwardIndexConfig = WalkforwardIndexConfig()
     failed_session_breakout: FailedSessionBreakoutConfig = FailedSessionBreakoutConfig()
     section_seven_gold_smc: SectionSevenSmcConfig = SectionSevenSmcConfig()
+    human_context_decision: HumanContextDecisionConfig = HumanContextDecisionConfig()
     section_five_ndx100_m5: SectionFiveM5Config = SectionFiveM5Config()
     section_six_gold_m5: SectionSixModelConfig = SectionSixModelConfig()
     section_six_spx_h1: SectionSixModelConfig = SectionSixModelConfig(timeframe="H1")

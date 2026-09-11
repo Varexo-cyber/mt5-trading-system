@@ -1469,6 +1469,34 @@ analysis:
     retest_tolerance_atr: 0.15
     minimum_liquidity_reward_r: 2.0
 
+  # CENTRALE HUMAN-CONTEXT BESLISSER — uitsluitend shadow/replay. Dit is geen
+  # vierde patroonsectie: continuation, failed auction en break-retest moeten
+  # allemaal hetzelfde complete verhaal leveren (HTF-controle, gesloten M5
+  # bevestiging, structureel ongelijk en uitvoerbare stop). Niet live totdat
+  # de vooraf vastgelegde 30-dagenrun en een latere holdout positief zijn.
+  human_context_decision:
+    enabled: true
+    allowed_symbols: [XAUUSD]
+    entry_timeframe: M5
+    context_timeframes: [M15, H1, H4]
+    atr_period: 14
+    context_bars: 20
+    level_lookback: 12
+    slope_bars: 6
+    minimum_body_atr: 0.35
+    close_location: 0.65
+    pullback_tolerance_atr: 0.25
+    sweep_excursion_atr: 0.05
+    break_buffer_atr: 0.10
+    stop_buffer_atr: 0.15
+    minimum_stop_atr: 0.35
+    maximum_stop_atr: 2.0
+    minimum_reward_r: 2.0
+    minimum_context_agreement: 2
+    story_priority: [failed_auction, break_retest, trend_continuation]
+    score: 72.0
+    confidence: 0.60
+
   # SECTIE VIJF. NDX100 M5, nonlinear state model. Middelste kwart:
   # 62 trades, +0,218R/trade. Onaangeraakt nieuwste kwart: 87 trades,
   # 59,8% raak, +0,114R/trade, EUR +15,65 op EUR 203. Andere markten faalden.
@@ -2815,6 +2843,7 @@ analysis:
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.5
       section_ten_gold_m1: 1.5
+      human_context_decision: 2.0
       # SECTIE ELF is op 1,5 gefit en moet op 1,5 handelen. De trainer maakte
       # elke trade op stop 1,0 ATR en doel 1,5 R; een ander doel hier maakt
       # van deze modellen een meting van iets anders dan wat ze gaan doen.
@@ -3591,6 +3620,7 @@ analysis:
       # generieke 0,65-lone-modulepoort letterlijk ieder geldig S10-signaal.
       # Dit verlaagt geen algemene poort en raakt geen andere detector.
       section_ten_gold_m1: 0.58
+      human_context_decision: 0.60
       # Sectie elf mag alleen handelen, net als tien: hij IS de these, en een
       # generieke lone-modulepoort zou elk geldig signaal weigeren.
       section_eleven_xaujpy_legs_m5: 0.55
@@ -3755,6 +3785,7 @@ analysis:
       section_eight_trend_day_h1: 1.0
       section_nine_vwap_m30: 1.0
       section_ten_gold_m1: 1.0
+      human_context_decision: 1.0
       # NUL OMDAT ZE VAN DE ALLOWLIST AF ZIJN, 6 september, en dat hoort bij
       # elkaar: gewicht dragen en toestemming hebben is EEN toestand met twee
       # kanten. Gewicht zonder toestemming is misleidend -- `effective_weights`
