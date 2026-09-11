@@ -541,6 +541,43 @@ class Decision:
     trend_m5: int = 0
     trend_m15: int = 0
     fault_grid_r: tuple[tuple[str, float | None], ...] = ()
+    mae_r: float = 0.0
+    mfe_r: float = 0.0
+    spread_stop_pct: float = 0.0
+    atr_regime: float = 0.0
+    h1_distance_atr: float = 0.0
+    h4_distance_atr: float = 0.0
+    breakout_atr: float = 0.0
+    retest_bars: int = 0
+    breakout_body_atr: float = 0.0
+    breakout_wick_share: float = 0.0
+    breakout_volume_ratio: float = 0.0
+
+
+def _trade_diagnostics(frame, start, end, idea, ctx, spread_price):
+    """Causal entry features plus realised excursions; reporting only."""
+    risk = abs(float(idea.entry) - float(idea.stop_loss))
+    sign = 1.0 if idea.direction is Direction.LONG else -1.0
+    last = end if end is not None else start
+    walked = frame.iloc[
+        int(frame.index.searchsorted(start, side="left")):
+        int(frame.index.searchsorted(last, side="right"))
+    ]
+    if risk > 0 and not walked.empty:
+        mfe = max(0.0, float((walked.high.max() - idea.entry) * sign / risk) if sign > 0 else float((idea.entry - walked.low.min()) / risk))
+        mae = max(0.0, float((idea.entry - walked.low.min()) / risk) if sign > 0 else float((walked.high.max() - idea.entry) / risk))
+    else:
+        mae = mfe = 0.0
+    def distance(tf):
+        series = ctx.series.get(tf)
+        if series is None or len(series.df) < 20:return 0.0
+        close = series.df.close.astype(float); ema = close.ewm(span=20, adjust=False).mean(); unit = _atr_of(series.df)[-1]
+        return float((idea.entry - ema.iloc[-1]) / unit) if unit and np.isfinite(unit) else 0.0
+    own = next((s for s in idea.signals if s.module == "section_ten_gold_m1" and s.score), None)
+    details = own.details if own is not None else {}
+    clock_frame = ctx.series[Timeframe.parse(details.get("timeframe", "M5"))].df
+    atrs = _atr_of(clock_frame); recent = atrs[-100:]; median = float(np.nanmedian(recent)); ratio = float(atrs[-1] / median) if median > 0 else 0.0
+    return mae, mfe, (100.0 * spread_price / risk if risk else 0.0), ratio, distance(Timeframe.H1), distance(Timeframe.H4), float(details.get("break_atr", 0.0)), int(details.get("wait_bars", 0)), float(details.get("break_body_atr", 0.0)), float(details.get("break_wick_share", 0.0)), float(details.get("break_volume_ratio", 0.0))
 
 
 def _short_trend(ctx: MarketContext, timeframe: Timeframe) -> int:
@@ -1817,6 +1854,11 @@ def _one_clock(
                         (variant.label, None if grid_result is None else grid_result - cost)
                     )
                 grid_rows = tuple(measured)
+            diagnostics = _trade_diagnostics(
+                resolve_frame, upto,
+                managed_at if managed_at is not None else exit_at,
+                idea, ctx, spread_price,
+            )
             out[name].append(
                 Decision(
                     upto,
@@ -1854,6 +1896,17 @@ def _one_clock(
                             managed_at if managed_at is not None else exit_at, cost,
                         ) if fault_exit_grid else ()
                     ),
+                    mae_r=diagnostics[0],
+                    mfe_r=diagnostics[1],
+                    spread_stop_pct=diagnostics[2],
+                    atr_regime=diagnostics[3],
+                    h1_distance_atr=diagnostics[4],
+                    h4_distance_atr=diagnostics[5],
+                    breakout_atr=diagnostics[6],
+                    retest_bars=diagnostics[7],
+                    breakout_body_atr=diagnostics[8],
+                    breakout_wick_share=diagnostics[9],
+                    breakout_volume_ratio=diagnostics[10],
                 )
             )
     # SAID OUT LOUD, PER CLOCK. A timeout is a trade the harness stopped
@@ -3293,7 +3346,9 @@ def main(argv: list[str] | None = None) -> None:
         # reading is silently zero and the table pretends it blocked every
         # trade. Fetch and attach the frame only for this measurement mode.
         if args.trend_grid or args.fault_exit_grid:
-            required_frames.update({Timeframe.M5, Timeframe.M15})
+            required_frames.update(
+                {Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4}
+            )
         fetch_these = tuple(
             tf
             for tf in sorted(required_frames, key=lambda item: item.duration)
@@ -3741,6 +3796,17 @@ def main(argv: list[str] | None = None) -> None:
                     # the haircut is visible per clock -- it is 1% of an H4
                     # stop and 12% of an M1 one.
                     "cost_r_charged",
+                    "mae_r",
+                    "mfe_r",
+                    "spread_stop_pct",
+                    "atr_regime_ratio",
+                    "h1_distance_atr",
+                    "h4_distance_atr",
+                    "breakout_atr",
+                    "retest_bars",
+                    "breakout_body_atr",
+                    "breakout_wick_share",
+                    "breakout_volume_ratio",
                     "note",
                 ]
             )
@@ -3764,6 +3830,17 @@ def main(argv: list[str] | None = None) -> None:
                         "" if d.managed_r is None else round(d.managed_r, 3),
                         "" if d.managed_money is None else round(d.managed_money, 2),
                         round(d.cost_r, 4),
+                        round(d.mae_r, 4),
+                        round(d.mfe_r, 4),
+                        round(d.spread_stop_pct, 3),
+                        round(d.atr_regime, 4),
+                        round(d.h1_distance_atr, 4),
+                        round(d.h4_distance_atr, 4),
+                        round(d.breakout_atr, 4),
+                        d.retest_bars,
+                        round(d.breakout_body_atr, 4),
+                        round(d.breakout_wick_share, 4),
+                        round(d.breakout_volume_ratio, 4),
                         d.note,
                     ]
                 )
