@@ -103,6 +103,39 @@ def _table(title: str, groups: dict[str, list[Row]]) -> list[str]:
     return lines
 
 
+def _tertiles(rows: list[Row], value, labels: tuple[str, str, str]):
+    """Split the trades by their own distribution instead of config floors.
+
+    Section ten already refuses breakouts below its configured minimum. Fixed
+    buckets around that same minimum therefore put every accepted trade in one
+    row and look diagnostic while measuring nothing.
+    """
+    finite = sorted(float(value(row)) for row in rows)
+    if len(finite) < 3 or finite[0] == finite[-1]:
+        return {f"GEEN ONDERSCHEID ({finite[0]:.3f})" if finite else "GEEN DATA": rows}
+    low = finite[(len(finite) - 1) // 3]
+    high = finite[(2 * (len(finite) - 1)) // 3]
+    named = (
+        f"{labels[0]} <= {low:.3f}",
+        f"{labels[1]} {low:.3f}..{high:.3f}",
+        f"{labels[2]} > {high:.3f}",
+    )
+    if low == high:
+        return _group(rows, lambda row: named[0] if value(row) <= low else named[2])
+    return _group(
+        rows,
+        lambda row: named[0] if value(row) <= low else named[1] if value(row) <= high else named[2],
+    )
+
+
+def _diagnostic_table(title: str, rows: list[Row], value, labels) -> list[str]:
+    groups = _tertiles(rows, value, labels)
+    lines = _table(title, groups)
+    if len(groups) == 1:
+        lines.append("WAARSCHUWING: dit veld onderscheidt deze trades niet; trek hier geen filterconclusie uit.")
+    return lines
+
+
 def render(path: Path, rows: list[Row]) -> str:
     if not rows:
         return f"{path}: geen uitgevoerde trades"
@@ -136,11 +169,11 @@ def render(path: Path, rows: list[Row]) -> str:
     )
     s10 = [r for r in ordered if "section_ten" in r.module]
     if s10:
-        lines += _table("S10 BREAKOUTGROOTTE", _group(s10, lambda r: "<0.20 ATR" if r.breakout_atr < .2 else "0.20-0.40 ATR" if r.breakout_atr < .4 else ">=0.40 ATR"))
+        lines += _diagnostic_table("S10 BREAKOUTGROOTTE (TERTIELEN)", s10, lambda r: r.breakout_atr, ("kleinste 1/3", "middelste 1/3", "grootste 1/3"))
         lines += _table("S10 SNELHEID VAN RETEST", _group(s10, lambda r: "1 bar" if r.retest_bars <= 1 else "2-3 bars" if r.retest_bars <= 3 else "4+ bars"))
-        lines += _table("S10 BREAKOUT BODY/DISPLACEMENT", _group(s10, lambda r: "zwak <0.5 ATR" if r.breakout_body < .5 else "sterk >=0.5 ATR"))
-        lines += _table("S10 BREAKOUT WICK", _group(s10, lambda r: "lange wick >=50%" if r.breakout_wick >= .5 else "compact"))
-        lines += _table("S10 BREAKOUT VOLUME", _group(s10, lambda r: "onder normaal" if r.breakout_volume < 1 else "boven normaal"))
+        lines += _diagnostic_table("S10 BREAKOUT BODY/DISPLACEMENT (TERTIELEN)", s10, lambda r: r.breakout_body, ("zwakste 1/3", "middelste 1/3", "sterkste 1/3"))
+        lines += _diagnostic_table("S10 BREAKOUT WICK (TERTIELEN)", s10, lambda r: r.breakout_wick, ("kleinste wick 1/3", "middelste wick 1/3", "grootste wick 1/3"))
+        lines += _diagnostic_table("S10 BREAKOUT VOLUME (TERTIELEN)", s10, lambda r: r.breakout_volume, ("laagste 1/3", "middelste 1/3", "hoogste 1/3"))
 
     lines.extend(["", "MAE/MFE — excursie voor de werkelijk gebruikte exit", "groep                         n   gem MAE   gem MFE  verliezers die eerst +0.50R zagen"])
     for module, group in sorted(_group(ordered, lambda r: r.module).items()):

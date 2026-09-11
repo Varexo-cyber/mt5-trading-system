@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from scripts.trade_outcome_analysis import Row, render
+from scripts.trade_outcome_analysis import Row, _tertiles, render
 
 
 def test_s6s10_launcher_is_read_only_and_runs_all_measurements() -> None:
@@ -28,3 +28,27 @@ def test_only_hours_negative_in_both_halves_are_candidates(tmp_path) -> None:
     candidate_block = report.split("HERHAALDE VERLIESUREN", 1)[1].split("RODE DAGEN", 1)[0]
     assert "s10|05:00" in candidate_block
     assert "s10|06:00" not in candidate_block
+
+
+def test_diagnostics_use_the_distribution_of_accepted_trades() -> None:
+    rows = [
+        Row(datetime(2025, 1, day + 1), "section_ten_gold_m1", "LONG", 1.0, breakout_atr=value)
+        for day, value in enumerate((0.41, 0.45, 0.52, 0.60, 0.75, 1.10))
+    ]
+
+    groups = _tertiles(rows, lambda row: row.breakout_atr, ("laag", "midden", "hoog"))
+
+    assert len(groups) == 3
+    assert sum(map(len, groups.values())) == len(rows)
+
+
+def test_constant_diagnostic_is_called_out_instead_of_looking_useful(tmp_path) -> None:
+    rows = [
+        Row(datetime(2025, 1, day + 1), "section_ten_gold_m1", "LONG", 1.0, breakout_atr=0.4)
+        for day in range(6)
+    ]
+
+    report = render(tmp_path / "gold.csv", rows)
+
+    assert "GEEN ONDERSCHEID (0.400)" in report
+    assert "trek hier geen filterconclusie uit" in report

@@ -5641,3 +5641,12 @@ def test_fault_exit_can_act_immediately_using_pre_entry_context() -> None:
     )
     assert measured["LOSS@-0.15R"] > -1.0
     assert measured["LOSS@-0.25R"] > -1.0
+
+
+def test_fault_exit_reports_separate_confirmed_giveback_levels() -> None:
+    from scripts.dry_run_sections import _fault_exit_grid
+
+    source = inspect.getsource(_fault_exit_grid)
+    assert "GIVEBACK@0.50R" in source
+    assert "GIVEBACK@0.75R" in source
+    assert "GIVEBACK@1.00R" in source

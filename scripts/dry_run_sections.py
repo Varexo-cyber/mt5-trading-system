@@ -598,7 +598,10 @@ def _short_trend(ctx: MarketContext, timeframe: Timeframe) -> int:
 
 def _fault_exit_grid(frame, start, idea, baseline_r, baseline_at, cost_r):
     """Closed-M5, two-factor thesis exits; shadow measurement only."""
-    labels = ("LOSS@-0.15R", "LOSS@-0.25R", "LOSS@-0.35R", "PROFIT_BREAK", "SMART")
+    labels = (
+        "LOSS@-0.15R", "LOSS@-0.25R", "LOSS@-0.35R",
+        "GIVEBACK@0.50R", "GIVEBACK@0.75R", "GIVEBACK@1.00R", "SMART",
+    )
     if baseline_r is None or baseline_at is None:
         return tuple((label, baseline_r) for label in labels)
     risk = abs(float(idea.entry) - float(idea.stop_loss))
@@ -641,9 +644,15 @@ def _fault_exit_grid(frame, start, idea, baseline_r, baseline_at, cost_r):
         for label, threshold in thresholds.items():
             if label not in fired and r_now <= threshold:
                 fired[label] = r_now - cost_r
-        profit_break = peak_r >= 0.50 and r_now > -0.15
-        if "PROFIT_BREAK" not in fired and profit_break:
-            fired["PROFIT_BREAK"] = r_now - cost_r
+        givebacks = {
+            "GIVEBACK@0.50R": (0.50, 0.00),
+            "GIVEBACK@0.75R": (0.75, 0.10),
+            "GIVEBACK@1.00R": (1.00, 0.25),
+        }
+        for label, (needed_peak, floor) in givebacks.items():
+            if label not in fired and peak_r >= needed_peak and r_now <= floor:
+                fired[label] = r_now - cost_r
+        profit_break = peak_r >= 0.50 and r_now <= 0.00
         if "SMART" not in fired and (r_now <= -0.25 or profit_break):
             fired["SMART"] = r_now - cost_r
     return tuple((label, fired.get(label, baseline_r)) for label in labels)
@@ -3807,6 +3816,8 @@ def main(argv: list[str] | None = None) -> None:
                     "breakout_body_atr",
                     "breakout_wick_share",
                     "breakout_volume_ratio",
+                    "trend_m5",
+                    "trend_m15",
                     "note",
                 ]
             )
@@ -3841,6 +3852,8 @@ def main(argv: list[str] | None = None) -> None:
                         round(d.breakout_body_atr, 4),
                         round(d.breakout_wick_share, 4),
                         round(d.breakout_volume_ratio, 4),
+                        d.trend_m5,
+                        d.trend_m15,
                         d.note,
                     ]
                 )
@@ -3952,6 +3965,18 @@ def _trend_grid_report(decisions: list[Decision], managed: bool) -> None:
                 f"    {label:<14}{len(rows) - len(blocked):>6}{len(blocked):>9}"
                 f"{wins_cut:>+10.2f}{losses_cut:>+10.2f}{saved:>+12.2f}"
                 f"{baseline + saved:>+10.2f}"
+            )
+            midpoint = sorted(rows, key=lambda item: item.when)[len(rows) // 2].when
+            early = [row for row in rows if row.when < midpoint]
+            late = [row for row in rows if row.when >= midpoint]
+            def half_saved(part):
+                rejected = [_live_exit(row, managed) or 0.0 for row in part if not allowed(row)]
+                return -sum(rejected)
+            early_saved, late_saved = half_saved(early), half_saved(late)
+            verdict = "BEIDE HELPEN" if early_saved > 0 and late_saved > 0 else "NIET ROBUUST"
+            print(
+                f"      tijdhelften: vroeg {early_saved:+.2f}R | laat {late_saved:+.2f}R"
+                f" -> {verdict}"
             )
     print(f"{'=' * 78}")
 
