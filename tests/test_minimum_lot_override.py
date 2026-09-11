@@ -1,4 +1,4 @@
-"""The broker minimum never grants permission to round risk upward."""
+"""The broker minimum may round upward only inside both hard money caps."""
 
 from __future__ import annotations
 
@@ -6,6 +6,11 @@ import pytest
 
 from config.loader import DEFAULT_CONFIG_PATH, load_settings
 from config.schema import TradingMode
+from core.instrument import InstrumentSpec
+from core.types import Direction
+from risk.position_sizer import PositionSizer
+from risk.reasons import Reason
+from tests.fakes.fake_mt5 import eurusd_spec
 
 
 def _live_settings(**risk_changes):
@@ -22,21 +27,54 @@ def _live_settings(**risk_changes):
     return settings
 
 
-class TestMinimumLotCannotOverrideTheStake:
-    def test_it_is_disabled_on_the_live_account(self) -> None:
-        assert _live_settings().risk.allow_minimum_lot_above_target is False
+class TestMinimumLotOverrideIsBounded:
+    def test_it_is_enabled_on_the_live_account(self) -> None:
+        assert _live_settings().risk.allow_minimum_lot_above_target is True
 
     def test_the_base_config_leaves_it_off(self) -> None:
         """The hard rule is identical in the base and account overlay."""
         assert load_settings(env_overrides=False).risk.allow_minimum_lot_above_target is False
 
-    def test_yaml_cannot_turn_the_unsafe_override_back_on(self) -> None:
-        from pydantic import ValidationError
-
+    def test_schema_accepts_an_explicit_bounded_override(self) -> None:
         from config.schema import RiskConfig
 
-        with pytest.raises(ValidationError):
-            RiskConfig(allow_minimum_lot_above_target=True)
+        assert RiskConfig(allow_minimum_lot_above_target=True).allow_minimum_lot_above_target
+
+    def test_live_override_still_has_both_hard_caps(self) -> None:
+        settings = _live_settings()
+
+        assert settings.effective_max_risk_pct() == pytest.approx(10.0)
+        assert settings.risk.daily_loss_limit_money == pytest.approx(20.0)
+
+    def test_minimum_lot_is_admitted_above_target_inside_both_caps(self) -> None:
+        result = PositionSizer(_live_settings()).size(
+            spec=InstrumentSpec.from_mt5(eurusd_spec()),
+            equity=100.0,
+            direction=Direction.LONG,
+            entry=1.085,
+            sl=1.082,
+            tp=1.094,
+            spread_price=0.0001,
+        )
+
+        assert result.approved
+        assert result.volume == pytest.approx(0.01)
+        assert result.actual_risk_pct > result.intended_risk_pct
+        assert "broker-minimum override" in result.decision.detail
+
+    def test_minimum_lot_stays_refused_above_the_ten_percent_cap(self) -> None:
+        result = PositionSizer(_live_settings()).size(
+            spec=InstrumentSpec.from_mt5(eurusd_spec()),
+            equity=20.0,
+            direction=Direction.LONG,
+            entry=1.085,
+            sl=1.082,
+            tp=1.094,
+            spread_price=0.0001,
+        )
+
+        assert not result.approved
+        assert result.reason is Reason.UNDERCAPITALIZED
 
 
 class TestOnlySectionsTwoAndThreeTradeRealMoney:
@@ -155,8 +193,8 @@ class TestTheCeilingIsTenAndAllThreeKnobsAgree:
     def test_what_it_means_in_euros_on_this_account(self) -> None:
         """The number worth reading before agreeing to it. The thirty-day
         measurement put 75 of 255 trades above the 2% target because the broker
-        minimum forced them there, topping out at 7.89%. That group now has
-        room up to 10%, and there is no daily loss limit under it."""
+        minimum forced them there, topping out at 7.89%. That group has room
+        up to 10%, while the fixed EUR 20 daily loss stop stays active."""
         settings = _live_settings()
         equity = 215.34
 

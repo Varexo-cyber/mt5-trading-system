@@ -3743,6 +3743,42 @@ def _live_exit(decision: Decision, managed: bool) -> float | None:
     return decision.managed_r if managed else decision.result_r
 
 
+def _under_daily_money_stop(
+    trades: list[Decision], limit: float, managed: bool
+) -> tuple[list[Decision], int]:
+    """Refuse entries after resolved losses reach the fixed daily money stop.
+
+    Exits are settled before each later entry, so a multi-hour position counts
+    on the day it actually closes rather than on the day it opened. Open-trade
+    drawdown is unavailable to this account-level walk; live is stricter
+    because its equity mark includes that floating loss.
+    """
+    if limit <= 0.0:
+        return sorted(trades, key=lambda row: row.when), 0
+
+    import heapq
+
+    accepted: list[Decision] = []
+    exits: list[tuple[datetime, int, float]] = []
+    daily_pnl: dict[object, float] = {}
+    skipped = 0
+    serial = 0
+    for row in sorted(trades, key=lambda item: item.when):
+        while exits and exits[0][0] <= row.when:
+            closed_at, _serial, money = heapq.heappop(exits)
+            key = closed_at.date()
+            daily_pnl[key] = daily_pnl.get(key, 0.0) + money
+        if daily_pnl.get(row.when.date(), 0.0) <= -limit:
+            skipped += 1
+            continue
+        accepted.append(row)
+        money = row.managed_money if managed else row.pnl_money
+        if money is not None:
+            serial += 1
+            heapq.heappush(exits, (row.exit_at or row.when, serial, float(money)))
+    return accepted, skipped
+
+
 def _trend_grid_report(decisions: list[Decision], managed: bool) -> None:
     """Cost and benefit of aligning S5/S6 entries with closed M5/M15 trend."""
     names = {"section_five_ndx100_m5", "section_six_gold_m5"}
@@ -3894,6 +3930,9 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     has_break_even = _break_even_rule(settings) is not None
     all_fixed = len(fixed_names) == len(keys)
     managed = has_break_even and not all_fixed
+    trades, refused_daily = _under_daily_money_stop(
+        trades, settings.risk.daily_loss_limit_money, managed
+    )
     closed = [d for d in trades if _live_exit(d, managed) is not None]
 
     print("\n" + "=" * 78)
@@ -3901,6 +3940,12 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
     print("=" * 78)
     print("  " + ", ".join(f"{name} on {clock}" for name, clock in keys))
     print(f"  max {slots} positions at once at EUR {equity:.2f}, one per symbol")
+    if settings.risk.daily_loss_limit_money > 0.0:
+        print(
+            f"  daily loss stop EUR {settings.risk.daily_loss_limit_money:.2f}: "
+            f"{refused_daily} later entries refused until the next trading day"
+        )
+        print("    replay counts resolved P/L; live also counts floating equity loss")
     if all_fixed:
         print("  exit: fixed broker stop/target, which these sections actually run")
     elif fixed_names:
@@ -4972,6 +5017,15 @@ def _jarvis_replay_contract(settings, equity: float, offered: int, allowed: int)
     )
     print(f"      {offered - allowed} of {offered} entries were refused by that book")
     print("    the real Eightcap spread per bar, the real minimum lot, the real sizer")
+    print(
+        f"    fixed daily loss stop: EUR {settings.risk.daily_loss_limit_money:.2f}; "
+        "new entries pause for the rest of that day"
+    )
+    print(
+        "    minimum-lot override: "
+        + ("ON" if settings.risk.allow_minimum_lot_above_target else "OFF")
+        + f", still capped at {settings.effective_max_risk_pct():.2f}% per trade"
+    )
     print("    the configured break-even move and pre-close flatten")
     print("  NOT APPLIED, AND EACH ONE ONLY EVER REMOVES TRADES")
     print("    the news blackout: no calendar archive of the window exists, and")
@@ -4996,6 +5050,8 @@ class _CompoundedRun:
     worst_drawdown: float
     taken: int
     skipped_too_small: int
+    skipped_daily_loss: int
+    minimum_lot_overrides: int
     first_risk: float
     last_risk: float
     biggest_risk: float
@@ -5049,11 +5105,17 @@ def _compound(trades: list[Decision], settings, equity: float) -> _CompoundedRun
     worst = 0.0
     taken = 0
     skipped = 0
+    skipped_daily = 0
+    overridden = 0
     first_risk = 0.0
     last_risk = 0.0
     biggest = 0.0
     next_step = 0.0
     curve: list[tuple[datetime, float]] = []
+
+    daily_limit = settings.risk.daily_loss_limit_money
+    day = None
+    day_start_balance = equity
 
     for row in sorted(trades, key=lambda item: item.when):
         if balance <= 0.0:
@@ -5063,6 +5125,14 @@ def _compound(trades: list[Decision], settings, equity: float) -> _CompoundedRun
             break
         result_r = row.managed_r
         if result_r is None:
+            continue
+
+        row_day = row.when.date()
+        if row_day != day:
+            day = row_day
+            day_start_balance = balance
+        if daily_limit > 0.0 and balance - day_start_balance <= -daily_limit:
+            skipped_daily += 1
             continue
 
         per_lot = row.risk_per_lot
@@ -5078,11 +5148,19 @@ def _compound(trades: list[Decision], settings, equity: float) -> _CompoundedRun
             steps = int(wanted / per_lot / step)
             volume = steps * step
             if volume < minimum - 1e-12:
-                # THE TRADE THE ACCOUNT CANNOT AFFORD. Live this is
-                # UNDERCAPITALIZED and no order is sent; a rescale takes it
-                # anyway and that is the single largest lie in the old number.
-                skipped += 1
-                continue
+                minimum_risk = minimum * per_lot
+                ceiling_money = balance * settings.effective_max_risk_pct() / 100.0
+                fits_daily = daily_limit <= 0.0 or minimum_risk <= daily_limit + 1e-9
+                if (
+                    settings.risk.allow_minimum_lot_above_target
+                    and minimum_risk <= ceiling_money + 1e-9
+                    and fits_daily
+                ):
+                    volume = minimum
+                    overridden += 1
+                else:
+                    skipped += 1
+                    continue
             risk_money = volume * per_lot
             balance += float(result_r) * risk_money
             taken += 1
@@ -5107,6 +5185,8 @@ def _compound(trades: list[Decision], settings, equity: float) -> _CompoundedRun
         worst_drawdown=worst,
         taken=taken,
         skipped_too_small=skipped,
+        skipped_daily_loss=skipped_daily,
+        minimum_lot_overrides=overridden,
         first_risk=first_risk,
         last_risk=last_risk,
         biggest_risk=biggest,
@@ -5194,6 +5274,18 @@ def _what_the_account_would_be_worth(
         print(f"      before {pct:.2f}% buys one more lot step. Below that, compounded and flat")
         print("      are the same number and the difference between them is rounding.")
     print(f"    {run.taken} of {len(booked)} trades were affordable")
+    if run.minimum_lot_overrides:
+        print(
+            f"    {run.minimum_lot_overrides} used the broker minimum above the "
+            f"{settings.effective_risk_pct():.2f}% target, but stayed below the "
+            f"{settings.effective_max_risk_pct():.2f}% hard ceiling and EUR "
+            f"{settings.risk.daily_loss_limit_money:.2f} daily stop"
+        )
+    if run.skipped_daily_loss:
+        print(
+            f"    {run.skipped_daily_loss} entries were refused after the day had lost "
+            f"EUR {settings.risk.daily_loss_limit_money:.2f}; trading resumed next day"
+        )
     if run.skipped_too_small:
         # NOT A ROUNDING DETAIL. On this account size it is the difference
         # between a replay and a fantasy: a trade whose minimum lot risks more

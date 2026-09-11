@@ -5150,11 +5150,11 @@ risk:
   # er daarna beschikbaar is, dus dat getal is een richting en geen belofte.
   max_concurrent_positions: 10
 
-  # De broker-minimumlot mag het bedoelde risico nooit overschrijden. XAU/XPT
-  # kunnen op deze equity soms niet binnen 2% worden uitgedrukt; die kandidaat
-  # wordt dan normaal als UNDERCAPITALIZED overgeslagen, zonder stacktrace en
-  # zonder de rest van de batch te raken.
-  allow_minimum_lot_above_target: false
+  # Een geldige setup die bij 2% net onder 0,01 lot uitkomt mag naar het
+  # broker-minimum worden afgerond. Dit is begrensd: de werkelijke stoploss
+  # moet binnen het 10%-plafond van micro_live EN binnen de vaste EUR 20
+  # dagstop passen. Een brede stop krijgt dus nog steeds UNDERCAPITALIZED.
+  allow_minimum_lot_above_target: true
 
   # De anti-martingale-halvering staat uit op DIT account, en alleen omdat hij
   # hier niet doet waar hij voor bedoeld is.
