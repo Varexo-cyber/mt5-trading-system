@@ -5644,12 +5644,13 @@ def test_fault_exit_can_act_immediately_using_pre_entry_context() -> None:
 
 
 def test_fault_exit_reports_separate_confirmed_giveback_levels() -> None:
-    from scripts.dry_run_sections import _fault_exit_grid
+    from scripts.dry_run_sections import _fault_exit_grid, _fault_exit_report
 
     source = inspect.getsource(_fault_exit_grid)
     assert "GIVEBACK@0.50R" in source
     assert "GIVEBACK@0.75R" in source
     assert "GIVEBACK@1.00R" in source
+    assert "TE WEINIG" in inspect.getsource(_fault_exit_report)
 
 
 def test_s10_quality_candidates_require_both_time_halves(capsys) -> None:
