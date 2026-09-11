@@ -3,6 +3,18 @@ from datetime import datetime
 from scripts.trade_outcome_analysis import Row, render
 
 
+def test_s6s10_launcher_is_read_only_and_runs_all_measurements() -> None:
+    from pathlib import Path
+
+    launcher = Path("s6s10-meting.cmd").read_text(encoding="utf-8")
+    assert "--days 360" in launcher
+    assert "--only section_six_gold_m5,section_ten_gold_m1" in launcher
+    assert "--exit-grid kern" in launcher
+    assert "--trend-grid" in launcher
+    assert "--fault-exit-grid" in launcher
+    assert "scripts.trade_outcome_analysis" in launcher
+
+
 def test_only_hours_negative_in_both_halves_are_candidates(tmp_path) -> None:
     rows = []
     for day in range(1, 12):
