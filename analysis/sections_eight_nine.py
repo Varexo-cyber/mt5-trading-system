@@ -215,6 +215,9 @@ class SectionTenGoldM1:
                     candidate = None
                 elif touched:
                     break_atr = float(candidate["break_atr"])
+                    break_body_atr = float(candidate["body_atr"])
+                    break_wick_share = float(candidate["wick_share"])
+                    break_volume_ratio = float(candidate["volume_ratio"])
                     candidate = None
                     consumed = True
                     in_session = (
@@ -248,9 +251,9 @@ class SectionTenGoldM1:
                                         "break_atr": round(break_atr, 6),
                                         "m5_ema_slope": round(m5_slope, 6),
                                         "wait_bars": age,
-                                        "break_body_atr": candidate["body_atr"],
-                                        "break_wick_share": candidate["wick_share"],
-                                        "break_volume_ratio": candidate["volume_ratio"],
+                                        "break_body_atr": break_body_atr,
+                                        "break_wick_share": break_wick_share,
+                                        "break_volume_ratio": break_volume_ratio,
                                     },
                                 )
                         else:

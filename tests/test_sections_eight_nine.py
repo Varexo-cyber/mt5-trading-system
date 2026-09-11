@@ -232,6 +232,9 @@ def test_section_ten_enters_first_closed_bar_retest_after_large_gold_break() -> 
     assert signal.invalidation_price is not None
     assert signal.details["wait_bars"] == 1
     assert signal.details["confirmation_timeframe"] == "M5"
+    assert signal.details["break_body_atr"] > 0
+    assert 0 <= signal.details["break_wick_share"] <= 1
+    assert signal.details["break_volume_ratio"] > 0
 
 
 def test_section_ten_rejects_an_m1_retest_against_the_closed_m5_slope() -> None:
