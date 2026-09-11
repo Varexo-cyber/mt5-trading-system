@@ -2401,6 +2401,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--strict-risk",
+        action="store_true",
+        help=(
+            "replay-only: refuse the broker minimum lot when its real stop risk "
+            "exceeds the configured per-trade target"
+        ),
+    )
+    parser.add_argument(
         "--trend-grid",
         action="store_true",
         help=(
@@ -2707,6 +2715,18 @@ def main(argv: list[str] | None = None) -> None:
     settings = settings.model_copy(
         update={"system": settings.system.model_copy(update={"mode": TradingMode.MICRO_LIVE})}
     )
+    if args.strict_risk:
+        settings = settings.model_copy(
+            update={
+                "risk": settings.risk.model_copy(
+                    update={"allow_minimum_lot_above_target": False}
+                )
+            }
+        )
+        print(
+            "STRICT RISK REPLAY: minimum lot may not exceed the configured risk target; "
+            "live configuration is untouched."
+        )
     if args.risk_percent:
         if not 0.0 < args.risk_percent <= 20.0:
             raise SystemExit("--risk-percent must be above 0 and at most 20")

@@ -11,6 +11,7 @@ def test_every_live_setup_family_has_an_unambiguous_mt5_label() -> None:
         "section_five_ndx100_m5": (5, "M5", "JARVIS-S5-NDX-M5"),
         "section_six_gold_m5": (6, "M5", "JARVIS-S6-AU-M5"),
         "section_six_spx_h1": (6, "H1", "JARVIS-S6-SP-H1"),
+        "section_seven_gold_smc_m1": (7, "MULTI", "JARVIS-S7-SMC"),
         "section_eleven_xaujpy_legs_m5": (11, "M5", "JARVIS-S11-LEG-M5"),
         "section_twelve_xaujpy_m5": (12, "M5", "JARVIS-S12-XJ-M5"),
         "section_thirteen_xaujpy_m15": (13, "M15", "JARVIS-S13-XJ-M15"),

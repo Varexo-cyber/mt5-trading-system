@@ -28,7 +28,9 @@ def test_section_seven_has_all_requested_context_and_one_daily_setup_contract() 
         assert f"Timeframe.{timeframe}" in source
     assert "_last_trade_day" in source
     assert "liquidity sweep" in source
-    assert "change of character" in source
+    assert "displacement/BOS" in source
+    assert "FVG retest" in source
+    assert "liquidity_target" in source
     assert family_for(SectionSevenGoldSmc.name) == "liquidity_structure"
 
 
@@ -39,4 +41,6 @@ def test_research_launcher_compares_m1_and_slower_execution_clocks() -> None:
     assert "--only section_seven_gold_smc" in launcher
     assert "--sweep M1 M5 M15 M30 H1" in launcher
     assert "--no-m1" not in launcher
+    assert "--fixed-exits" in launcher
+    assert "--strict-risk" in launcher
     assert "M1, M5, M15, M30 en H1" in launcher

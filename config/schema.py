@@ -4064,7 +4064,7 @@ class FailedSessionBreakoutConfig(Base):
 
 
 class SectionSevenSmcConfig(Base):
-    """Shadow-only multi-timeframe gold liquidity-sweep reversal."""
+    """Shadow-only gold sweep, displacement, FVG and retest model."""
 
     enabled: bool = False
     timeframe: str = "M5"
@@ -4073,6 +4073,10 @@ class SectionSevenSmcConfig(Base):
     choch_lookback: int = Field(default=3, ge=2, le=20)
     context_lookback: int = Field(default=20, ge=10, le=100)
     stop_buffer_atr: float = Field(default=0.15, ge=0.0, le=2.0)
+    displacement_body_atr: float = Field(default=0.8, gt=0.0, le=5.0)
+    fvg_minimum_atr: float = Field(default=0.05, ge=0.0, le=2.0)
+    retest_tolerance_atr: float = Field(default=0.15, ge=0.0, le=2.0)
+    minimum_liquidity_reward_r: float = Field(default=2.0, gt=0.0, le=10.0)
     score: float = Field(default=70.0, ge=0.0, le=100.0)
     confidence: float = Field(default=0.65, ge=0.0, le=1.0)
 
