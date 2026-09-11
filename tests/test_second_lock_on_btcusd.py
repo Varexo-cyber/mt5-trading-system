@@ -25,8 +25,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from config.loader import load_settings
 from config.schema import SYMBOLS_THAT_REQUIRE_A_SPREAD_CEILING
 from core.instrument import InstrumentSpec
@@ -219,16 +217,14 @@ class TestTheLockCannotBeRemovedWhileTheMarketIsLive:
                     for name in settings.risk.hard_spread_ceiling_by_symbol
                 }
 
-    def test_removing_it_refuses_to_load(self) -> None:
-        """Load time, not startup, so no process can reach that state -- not
-        from a script, not from a research run, not from a `model_copy`."""
+    def test_shadow_btc_does_not_require_the_live_spread_lock(self) -> None:
+        """The second lock is mandatory only while BTC may spend live money."""
         settings = live_settings()
-        assert "section_fifteen_btc_m1" in settings.analysis.confluence.live_enabled_modules
+        assert "section_fifteen_btc_m1" not in settings.analysis.confluence.live_enabled_modules
         stripped = settings.model_copy(
             update={"risk": settings.risk.model_copy(update={"hard_spread_ceiling_by_symbol": {}})}
         )
-        with pytest.raises(ValueError, match="hard_spread_ceiling_by_symbol"):
-            type(settings).model_validate(stripped.model_dump())
+        type(settings).model_validate(stripped.model_dump())
 
     def test_taking_the_section_off_the_allowlist_is_the_other_way_out(self) -> None:
         """The refusal names two remedies and both have to work, or it is a

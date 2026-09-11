@@ -3310,7 +3310,11 @@ analysis:
     # positief is. Een nieuwe sectie wordt om dezelfde reden niet verzonnen en
     # live gezet zonder bewijs.
     live_enabled_modules:
-      - failed_session_breakout
+      # 11 september: op uitdrukkelijke instructie van de eigenaar blijft het
+      # live boek uitsluitend bij de twee goudsecties. De 360-daagse replay
+      # gaf S6 +95,47R en S10 +111,07R. Failed breakout (-4,25R), S5 NDX100
+      # (-23,20R) en S15 BTC (onvoldoende onafhankelijke holdout) blijven wel
+      # enabled voor shadow-metingen, maar mogen geen echt geld uitgeven.
       # SECTIE 6 STAAT ER 3 SEPTEMBER WEER OP, op uitdrukkelijke instructie van
       # de eigenaar, en het cijfer waarop hij eraf ging staat hieronder zodat
       # niemand later denkt dat het per ongeluk gebeurde:
@@ -3398,7 +3402,7 @@ analysis:
       # Deze drie zijn ONTDEKT door alle drie de periodes te bekijken. Er is
       # geen onaangeraakte holdout en die komt er voor deze data ook niet
       # meer. Wat S15 begrenst is de sectiebreaker, niet een meting.
-      - section_fifteen_btc_m1
+      # - section_fifteen_btc_m1
 
       # SECTIE VIJF, 6 september, TERUG op de allowlist op instructie van de
       # eigenaar en op het grootste cijfer in de hele 180-daagse meting:
@@ -3412,7 +3416,7 @@ analysis:
       # HERNOEMD naar `section_five_ndx100_m5`, want hij handelt NDX100 en
       # niets anders, en een naam die zijn markt niet noemt is een naam die
       # bij de volgende sectie op M5 verwarring oplevert.
-      - section_five_ndx100_m5
+      # - section_five_ndx100_m5
 
     # De oude vaste S6-exit faalde over 180 dagen. Hij kwam alleen terug na
     # een aparte causale trendbevestiging en exact H1-ATR break-evenbeheer.
