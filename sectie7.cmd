@@ -14,9 +14,9 @@ echo  ========================================================================
 echo   SECTIE 7 SMC GOUD - 180 DAGEN SHADOW - KLOK EN SESSIE ZOEKEN
 echo  ========================================================================
 echo.
-echo   M5, M15, M30 en H1 worden apart vergeleken. Elke variant leest daarnaast
-echo   M15/M30/H1/H4-context. M1 wordt alleen geladen voor de gedeelde volume-
-echo   spike gate en is GEEN S7-entryklok. Maximaal een setup per UTC-dag.
+echo   M1, M5, M15, M30 en H1 worden apart vergeleken. Elke variant leest
+echo   daarnaast M15/M30/H1/H4-context. Maximaal een setup per UTC-dag per
+echo   onderzochte klok; dit is nog steeds SHADOW en handelt niet live.
 echo   Nieuws is niet historisch reproduceerbaar en wordt daarom eerlijk als
 echo   ontbrekend gemeld. Live zou de bestaande nieuwsblokkade wel gelden.
 echo   NIETS wordt aan de live allowlist toegevoegd.
@@ -33,7 +33,7 @@ if not exist "runtime" mkdir runtime
   --days 180 ^
   --only section_seven_gold_smc ^
   --section-markets ^
-  --sweep M5 M15 M30 H1 ^
+  --sweep M1 M5 M15 M30 H1 ^
   --jarvis-replay ^
   --csv runtime\sectie7-smc.csv
 
