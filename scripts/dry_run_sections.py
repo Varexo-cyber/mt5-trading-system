@@ -3061,6 +3061,7 @@ def main(argv: list[str] | None = None) -> None:
             "section_eight_trend_day_h1": "section_eight_trend_day_h1",
             "section_nine_vwap_m30": "section_nine_vwap_m30",
             "section_ten_gold_m1": "section_ten_gold_m1",
+            "human_context_decision": "human_context_decision",
             "section_eleven_xaujpy_legs_m5": "section_eleven_xaujpy_legs_m5",
             "section_twelve_xaujpy_m5": "section_twelve_xaujpy_m5",
             "section_thirteen_xaujpy_m15": "section_thirteen_xaujpy_m15",

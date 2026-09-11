@@ -46,6 +46,7 @@ from analysis import (
     EntryTimingDecision,
     FailedSessionBreakout,
     FastEmaCross,
+    HumanContextDecision,
     ImpulseBreak,
     ImpulseRetest,
     LevelReaction,
@@ -531,6 +532,11 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         SectionEightTrendDayH1(analysis.section_eight_trend_day_h1),
         SectionNineSessionVwapM30(analysis.section_nine_vwap_m30),
         SectionTenGoldM1(analysis.section_ten_gold_m1),
+        # One shadow-only top-down decision process. It is deliberately absent
+        # from the live allowlist until its frozen replay and forward period
+        # exist; constructing it merely makes every neutral and candidate
+        # decision observable and replayable.
+        HumanContextDecision(analysis.human_context_decision),
         # SECTION ELEVEN is built with whatever models exist, and none is a
         # section that stays silent. Whether silence is ACCEPTABLE is a
         # question about the live allowlist, not about building a module, and

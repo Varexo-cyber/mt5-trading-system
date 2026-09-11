@@ -21,6 +21,7 @@ class TradeOrigin:
 # Specific aliases must precede their parent family.  Setup-family names carry
 # the module alias plus the clock (for example ``order_block_fast_m1``).
 _ORIGINS: tuple[tuple[str, TradeOrigin], ...] = (
+    ("human_context_decision", TradeOrigin(0, "human_context", "M5", "JARVIS-HUMAN-XAU-M5")),
     # SECTION ELEVEN WENT LIVE WITHOUT ONE OF THESE, and the omission is the
     # same defect this project keeps shipping: a section wired into the
     # allowlist, the weights, the breakers and the guards, whose TRADES were
