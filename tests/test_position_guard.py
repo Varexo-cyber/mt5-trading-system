@@ -270,6 +270,48 @@ def test_a_measured_fixed_exit_family_keeps_its_broker_stop_and_target() -> None
     assert manager.last_observation[held.ticket]["r_now"] == pytest.approx(0.8)
 
 
+def test_s10_can_take_one_half_at_one_r_without_inheriting_generic_management() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(
+        broker,
+        journal,
+        fixed_exit_comments=("JARVIS-S10-AU-M1",),
+        partial_only_comments=("JARVIS-S10-AU-M1",),
+        partial_only_at_r=1.0,
+        partial_close_fraction=0.5,
+        break_even_at_r=0.1,
+        trailing_mode="atr",
+    )
+    held = replace(position(volume=0.02), comment="JARVIS-S10-AU-M1")
+
+    at(broker, 1.0)
+    events = manager.manage([held], NOW)
+
+    assert [event.action for event in events] == ["PARTIAL_CLOSE"]
+    assert broker.closed == [(held.ticket, 0.01)]
+    assert broker.modified == [], "partial-only S10 must not inherit stop management"
+
+
+def test_s10_partial_only_respects_minimum_lot_and_stays_fixed_exit() -> None:
+    broker, journal = BrokerStub(), JournalStub()
+    manager = manager_for(
+        broker,
+        journal,
+        fixed_exit_comments=("JARVIS-S10-AU-M1",),
+        partial_only_comments=("JARVIS-S10-AU-M1",),
+        partial_only_at_r=1.0,
+        break_even_at_r=0.1,
+    )
+    held = replace(position(volume=0.01), comment="JARVIS-S10-AU-M1")
+
+    at(broker, 2.0)
+    events = manager.manage([held], NOW)
+
+    assert events == []
+    assert broker.closed == []
+    assert broker.modified == []
+
+
 def test_a_break_even_only_family_cannot_inherit_partial_or_trailing_exits() -> None:
     """S6 was replayed with one rule; generic management is another system."""
     broker, journal = BrokerStub(), JournalStub()
