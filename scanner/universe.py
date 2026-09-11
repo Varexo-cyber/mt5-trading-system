@@ -14,6 +14,9 @@ from core.broker import Broker
 from core.clock import Clock, LiveClock
 from core.instrument import AssetClass
 from core.types import Direction, SymbolDescriptor, Timeframe
+from infra.logging import get_logger
+
+log = get_logger(__name__)
 
 #: How long a contract's minimum-lot margin stays usable. It moves with price
 #: and price moves slowly relative to a whole catalogue sweep.
@@ -126,6 +129,9 @@ class UniverseScanner:
         # rotation, so the markets that CAN trade were still waiting their turn
         # behind hundreds that cannot. This takes them out of the queue.
         self._unaffordable_until: dict[str, float] = {}
+        #: Missing-name sets already reported, so the complaint is loud once
+        #: instead of every cycle.
+        self._complained_about: set[tuple[str, ...]] = set()
 
     def catalogue(self) -> list[SymbolDescriptor]:
         """Every broker symbol the operator has asked to look at.
@@ -140,11 +146,17 @@ class UniverseScanner:
         names = (
             {self.settings.instruments.broker_symbol(name) for name in chosen} if chosen else set()
         )
+        # ONE CALL, not two: `symbols()` is an MT5 round trip over the whole
+        # catalogue and this method already runs every cycle.
+        rows = list(self.broker.symbols())
+        self._complain_about_names_the_broker_does_not_have(
+            chosen, names, {item.name for item in rows}
+        )
 
         now = time.monotonic()
         return [
             item
-            for item in self.broker.symbols()
+            for item in rows
             # Empty means literally every row returned by MT5's symbols_get(),
             # including a future Eightcap folder this version does not yet know.
             # Unknown families are still visible in telemetry and are rejected
@@ -160,6 +172,55 @@ class UniverseScanner:
             # markets that never will.
             and self._unaffordable_until.get(item.name, 0.0) <= now
         ]
+
+    def _complain_about_names_the_broker_does_not_have(
+        self, chosen: tuple[str, ...], names: set[str], listed: set[str]
+    ) -> None:
+        """Say out loud when `symbols_only` names a market this broker has not got.
+
+        THE WHOLE LIST IS ONE TYPO AWAY FROM SILENCE, and the silence looks
+        exactly like a quiet market. `symbols_only` is resolved through
+        `broker_symbol`, so `NDX100` becomes `NDX100.i` under the default suffix
+        and stays `NDX100` under a `symbol_overrides` entry -- and if the entry
+        has the spelling wrong, the filter matches nothing, the symbol never
+        enters the catalogue, and every section that trades it goes quiet with
+        no gate, no refusal and no line in `waarom.cmd`.
+
+        So it is named here, once per cycle, with the near miss beside it:
+        `NDX100 -> NDX100 (broker lists NDX100.i)` is a complete diagnosis and
+        `NDX100 is not in the catalogue` is not. It logs rather than raises
+        because a missing name removes a market from a scan, which is a
+        measurement failure, not an unsafe trade.
+        """
+
+        if not names:
+            return
+        missing = sorted(names - listed)
+        # ONCE PER DISTINCT PROBLEM. This runs every cycle, and a warning that
+        # repeats every few seconds is read as noise and then not read at all.
+        if not missing or tuple(missing) in self._complained_about:
+            return
+        self._complained_about.add(tuple(missing))
+        near = {
+            name: sorted(
+                other
+                for other in listed
+                if other != name and (other.startswith(name) or name.startswith(other))
+            )
+            for name in missing
+        }
+        detail = ", ".join(
+            f"{name}{' (broker lists ' + ', '.join(near[name]) + ')' if near[name] else ''}"
+            for name in missing
+        )
+        log.warning(
+            "instruments.symbols_only asks for %d symbol(s) this broker does not list, "
+            "so they are scanned by nothing and every section on them stays silent: %s. "
+            "Configured names: %s",
+            len(missing),
+            detail,
+            ", ".join(chosen),
+        )
 
     def scan(
         self,
