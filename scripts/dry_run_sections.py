@@ -3764,6 +3764,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     if args.trend_grid:
         _trend_grid_report(decisions, _break_even_rule(settings) is not None)
+        _s10_quality_filter_report(decisions, _break_even_rule(settings) is not None)
     if args.fault_exit_grid:
         _fault_exit_report(
             decisions, _break_even_rule(settings) is not None, equity
@@ -3981,6 +3982,85 @@ def _trend_grid_report(decisions: list[Decision], managed: bool) -> None:
     print(f"{'=' * 78}")
 
 
+def _drawdown_r(values: list[float]) -> float:
+    equity = peak = worst = 0.0
+    for value in values:
+        equity += value
+        peak = max(peak, equity)
+        worst = max(worst, peak - equity)
+    return worst
+
+
+def _s10_quality_filter_report(decisions: list[Decision], managed: bool) -> None:
+    """Pre-registered S10 candle-shape candidates on identical entries.
+
+    The limits are deliberately round values next to, rather than exact copies
+    of, the exploratory tertile cuts (body 1.719 ATR, wick 0.098). That avoids
+    presenting the best accidental decimal from one sample as a trading rule.
+    """
+    rows = sorted(
+        (
+            row for row in decisions
+            if row.outcome == "TRADE"
+            and row.pass_key[0] == "section_ten_gold_m1"
+            and _live_exit(row, managed) is not None
+        ),
+        key=lambda row: row.when,
+    )
+    if not rows:
+        return
+    baseline_values = [float(_live_exit(row, managed) or 0.0) for row in rows]
+    midpoint = rows[len(rows) // 2].when
+    variants = (
+        ("compact wick <=0.10", lambda row: row.breakout_wick_share <= 0.10),
+        ("sterke body >=1.70", lambda row: row.breakout_body_atr >= 1.70),
+        (
+            "body+wick samen",
+            lambda row: row.breakout_body_atr >= 1.70
+            and row.breakout_wick_share <= 0.10,
+        ),
+    )
+    print(f"\n{'=' * 92}")
+    print("S10 FALSE-BREAKOUT KANDIDATEN — DEZELFDE ENTRIES, GEEN LIVE WIJZIGING")
+    print("  Vaste ronde grenzen uit de eerdere diagnose; vroeg en laat moeten beide helpen.")
+    print(
+        f"  {'filter':<22}{'keep':>7}{'cut':>7}{'wins cut':>11}{'loss cut':>11}"
+        f"{'result':>11}{'DD':>9}{'vroeg':>10}{'laat':>10}  verdict"
+    )
+    print(
+        f"  {'CURRENT':<22}{len(rows):>7}{0:>7}{0.0:>+11.2f}{0.0:>+11.2f}"
+        f"{sum(baseline_values):>+11.2f}{_drawdown_r(baseline_values):>9.2f}"
+        f"{0.0:>+10.2f}{0.0:>+10.2f}  baseline"
+    )
+    for label, allowed in variants:
+        kept = [row for row in rows if allowed(row)]
+        blocked = [row for row in rows if not allowed(row)]
+        blocked_values = [float(_live_exit(row, managed) or 0.0) for row in blocked]
+        kept_values = [float(_live_exit(row, managed) or 0.0) for row in kept]
+        wins_cut = sum(value for value in blocked_values if value > 0.0)
+        losses_cut = -sum(value for value in blocked_values if value <= 0.0)
+
+        def saved(part: list[Decision]) -> float:
+            return -sum(
+                float(_live_exit(row, managed) or 0.0)
+                for row in part if not allowed(row)
+            )
+
+        early = [row for row in rows if row.when < midpoint]
+        late = [row for row in rows if row.when >= midpoint]
+        early_saved, late_saved = saved(early), saved(late)
+        enough = len(kept) >= 200 and len(kept) >= len(rows) * 0.20
+        robust = early_saved > 0.0 and late_saved > 0.0 and enough
+        print(
+            f"  {label:<22}{len(kept):>7}{len(blocked):>7}{wins_cut:>+11.2f}"
+            f"{losses_cut:>+11.2f}{sum(kept_values):>+11.2f}"
+            f"{_drawdown_r(kept_values):>9.2f}{early_saved:>+10.2f}"
+            f"{late_saved:>+10.2f}  {'KANDIDAAT' if robust else 'AFWIJZEN'}"
+        )
+    print("  Een kandidaat is nog shadow: pas live na een causale accountreplay.")
+    print(f"{'=' * 92}")
+
+
 def _fault_exit_report(decisions: list[Decision], managed: bool, equity: float) -> None:
     """Show plainly whether a shadow exit saved losses or murdered winners."""
     rows = [
@@ -4034,6 +4114,20 @@ def _fault_exit_report(decisions: list[Decision], managed: bool, equity: float) 
             print(f"    {label:<16}{acted:>7}{result_r:>+10.2f}{sum(deltas):>+10.2f}"
                   f"{loss_saved:>+13.2f}{profit_saved:>+14.2f}{profit_cut:>+12.2f}"
                   f"{equity + result_eur:>14.2f}")
+            midpoint = sorted(section, key=lambda row: row.when)[len(section) // 2].when
+            early_delta = sum(
+                delta for delta, row in zip(deltas, section, strict=True)
+                if row.when < midpoint
+            )
+            late_delta = sum(
+                delta for delta, row in zip(deltas, section, strict=True)
+                if row.when >= midpoint
+            )
+            verdict = "BEIDE HELPEN" if early_delta > 0 and late_delta > 0 else "NIET ROBUUST"
+            print(
+                f"      tijdhelften: vroeg {early_delta:+.2f}R | laat {late_delta:+.2f}R"
+                f" -> {verdict}"
+            )
     print("\n  Positive net R means the exit helped after counting winners it cut.")
     print(f"{'=' * 78}")
 
