@@ -131,3 +131,12 @@ def test_wide_exit_grid_includes_human_cashout_and_protection_choices() -> None:
     assert "lock 75% peak>0.50R" in labels
     assert "stall 15m after 0.75R" in labels
     assert "time exit 1h" in labels
+
+
+def test_shadow_human_run_prints_the_exit_grid_outside_the_live_report() -> None:
+    import inspect
+    from scripts import dry_run_sections
+
+    source = inspect.getsource(dry_run_sections.main)
+    assert "if exit_variants:" in source
+    assert "_manage_grid_report(decisions, exit_variants)" in source
