@@ -37,6 +37,8 @@ if not exist "runtime" mkdir runtime
   --jarvis-replay ^
   --fixed-exits ^
   --exit-grid alles ^
+  --trend-grid ^
+  --fault-exit-grid ^
   --csv runtime\human-context-30.csv
 
 if errorlevel 1 (

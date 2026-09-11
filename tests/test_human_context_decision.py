@@ -96,6 +96,8 @@ def test_human30_launcher_is_one_frozen_shadow_measurement() -> None:
     assert "--jarvis-replay" in launcher
     assert "--fixed-exits" in launcher
     assert "--exit-grid alles" in launcher
+    assert "--trend-grid" in launcher
+    assert "--fault-exit-grid" in launcher
     assert "runtime\\human-context-30.csv" in launcher
 
 

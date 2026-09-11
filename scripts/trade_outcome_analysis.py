@@ -30,6 +30,10 @@ class Row:
     breakout_wick: float = 0.0
     breakout_volume: float = 0.0
     story: str = ""
+    context_votes: int = 0
+    confirmation: str = ""
+    risk_atr: float = 0.0
+    available_reward_r: float = 0.0
 
 
 def load_rows(path: Path) -> list[Row]:
@@ -70,6 +74,10 @@ def load_rows(path: Path) -> list[Row]:
                     breakout_wick=float(item.get("breakout_wick_share") or 0),
                     breakout_volume=float(item.get("breakout_volume_ratio") or 0),
                     story=item.get("story", "").strip(),
+                    context_votes=int(float(item.get("context_votes") or 0)),
+                    confirmation=item.get("confirmation", "").strip(),
+                    risk_atr=float(item.get("risk_atr") or 0),
+                    available_reward_r=float(item.get("available_reward_r") or 0),
                 )
             )
     return rows
@@ -154,6 +162,22 @@ def render(path: Path, rows: list[Row]) -> str:
         lines += _table(
             "PER MARKTVERHAAL",
             _group(stories, lambda row: f"{row.module} {row.story}"),
+        )
+        lines += _table(
+            "PER CONTEXTSTERKTE",
+            _group(stories, lambda row: f"{row.module} {row.context_votes} HTF stemmen"),
+        )
+        lines += _diagnostic_table(
+            "PER STRUCTURELE STOPAFSTAND IN ATR",
+            stories,
+            lambda row: row.risk_atr,
+            ("kleinste 1/3", "middelste 1/3", "grootste 1/3"),
+        )
+        lines += _diagnostic_table(
+            "PER BESCHIKBARE RUIMTE TOT OBJECTIEF IN R",
+            stories,
+            lambda row: row.available_reward_r,
+            ("minste 1/3", "middelste 1/3", "meeste 1/3"),
         )
     lines += _table(
         "PER SECTIE + UTC-UUR",

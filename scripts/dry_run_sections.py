@@ -599,6 +599,10 @@ class Decision:
     breakout_volume_ratio: float = 0.0
     #: Preregistered human-context market story that produced the entry.
     story: str = ""
+    context_votes: int = 0
+    confirmation: str = ""
+    risk_atr: float = 0.0
+    available_reward_r: float = 0.0
 
 
 def _trade_diagnostics(frame, start, end, idea, ctx, spread_price):
@@ -646,6 +650,10 @@ def _short_trend(ctx: MarketContext, timeframe: Timeframe) -> int:
 def _fault_exit_grid(frame, start, idea, baseline_r, baseline_at, cost_r):
     """Closed-M5, two-factor thesis exits; shadow measurement only."""
     labels = (
+        "PRICE@-0.15R", "PRICE@-0.25R", "PRICE@-0.35R",
+        "DRIFT@-0.15R", "DRIFT@-0.25R", "DRIFT@-0.35R",
+        "STRUCT@-0.15R", "STRUCT@-0.25R", "STRUCT@-0.35R",
+        "BOTH@-0.15R", "BOTH@-0.25R", "BOTH@-0.35R",
         "LOSS@-0.15R", "LOSS@-0.25R", "LOSS@-0.35R",
         "GIVEBACK@0.50R", "GIVEBACK@0.75R", "GIVEBACK@1.00R", "SMART",
     )
@@ -669,7 +677,7 @@ def _fault_exit_grid(frame, start, idea, baseline_r, baseline_at, cost_r):
     prior_low = m5["low"].astype(float).shift(1).rolling(6).min()
     prior_high = m5["high"].astype(float).shift(1).rolling(6).max()
     peak_r, fired = 0.0, {}
-    thresholds = {"LOSS@-0.15R": -0.15, "LOSS@-0.25R": -0.25, "LOSS@-0.35R": -0.35}
+    thresholds = (-0.15, -0.25, -0.35)
     first_live = max(23, int(m5.index.searchsorted(start, side="right")))
     for pos in range(first_live, len(m5)):
         price = float(close.iloc[pos])
@@ -686,11 +694,20 @@ def _fault_exit_grid(frame, start, idea, baseline_r, baseline_at, cost_r):
         structure_broken = price < float(prior_low.iloc[pos]) if sign > 0 else (
             price > float(prior_high.iloc[pos])
         )
+        for threshold in thresholds:
+            suffix = f"@{threshold:.2f}R"
+            conditions = {
+                f"PRICE{suffix}": True,
+                f"DRIFT{suffix}": adverse_drift,
+                f"STRUCT{suffix}": structure_broken,
+                f"BOTH{suffix}": adverse_drift and structure_broken,
+                f"LOSS{suffix}": adverse_drift and structure_broken,
+            }
+            for label, confirmed in conditions.items():
+                if confirmed and label not in fired and r_now <= threshold:
+                    fired[label] = r_now - cost_r
         if not (adverse_drift and structure_broken):
             continue
-        for label, threshold in thresholds.items():
-            if label not in fired and r_now <= threshold:
-                fired[label] = r_now - cost_r
         givebacks = {
             "GIVEBACK@0.50R": (0.50, 0.00),
             "GIVEBACK@0.75R": (0.75, 0.10),
@@ -1942,6 +1959,7 @@ def _one_clock(
                 if human_signal is not None
                 else ""
             )
+            human_details = human_signal.details if human_signal is not None else {}
             out[name].append(
                 Decision(
                     upto,
@@ -1991,6 +2009,12 @@ def _one_clock(
                     breakout_wick_share=diagnostics[9],
                     breakout_volume_ratio=diagnostics[10],
                     story=story,
+                    context_votes=int(human_details.get("context_votes", 0)),
+                    confirmation=str(human_details.get("confirmation", "")),
+                    risk_atr=float(human_details.get("risk_atr", 0.0)),
+                    available_reward_r=float(
+                        human_details.get("available_reward_r", 0.0)
+                    ),
                 )
             )
     # SAID OUT LOUD, PER CLOCK. A timeout is a trade the harness stopped
@@ -3894,6 +3918,10 @@ def main(argv: list[str] | None = None) -> None:
                     "breakout_wick_share",
                     "breakout_volume_ratio",
                     "story",
+                    "context_votes",
+                    "confirmation",
+                    "risk_atr",
+                    "available_reward_r",
                     "trend_m5",
                     "trend_m15",
                     "note",
@@ -3931,6 +3959,10 @@ def main(argv: list[str] | None = None) -> None:
                         round(d.breakout_wick_share, 4),
                         round(d.breakout_volume_ratio, 4),
                         d.story,
+                        d.context_votes,
+                        d.confirmation,
+                        round(d.risk_atr, 4),
+                        round(d.available_reward_r, 4),
                         d.trend_m5,
                         d.trend_m15,
                         d.note,
@@ -3998,7 +4030,11 @@ def _under_daily_money_stop(
 
 def _trend_grid_report(decisions: list[Decision], managed: bool) -> None:
     """Cost and benefit of aligning S5/S6 entries with closed M5/M15 trend."""
-    names = {"section_five_ndx100_m5", "section_six_gold_m5"}
+    names = {
+        "section_five_ndx100_m5",
+        "section_six_gold_m5",
+        "human_context_decision",
+    }
     relevant = [
         row
         for row in decisions
@@ -4147,8 +4183,8 @@ def _fault_exit_report(decisions: list[Decision], managed: bool, equity: float) 
     ]
     print(f"\n{'=' * 78}")
     print("SMART FAULT EXIT — SHADOW ONLY, NOTHING LIVE CHANGED")
-    print("  Fires on CLOSED M5 only when BOTH adverse EMA20 drift and a break")
-    print("  beyond the preceding six-bar structure agree. One signal cannot exit.")
+    print("  CLOSED-M5 comparisons: price-only loss cap, adverse EMA20 drift,")
+    print("  six-bar structure break, both confirmations together, and give-back.")
     print("  SMART = confirmed failure at -0.25R OR confirmed give-back after +0.50R.")
     modules = sorted({row.pass_key[0] for row in rows})
     groups = [("ACCOUNT TOTAL", rows)] + [
