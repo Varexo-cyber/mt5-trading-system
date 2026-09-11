@@ -165,21 +165,15 @@ def test_new_sections_are_live_promoted_with_measured_targets() -> None:
 
     live = settings.analysis.confluence.live_enabled_modules
     assert "section_nine_vwap_m30" not in live
-    # SECTION FIVE WENT BACK ON 6 SEPTEMBER, at the owner's instruction, on the
-    # 180-day account replay: 546 trades, 56.2% win, +42.76 R, +EUR 181.75 --
-    # the largest single figure in that measurement, larger than section six.
-    # The -1.09 R over 170 trades that took it off in September is not
-    # disputed; it was a smaller sample on a shorter window.
-    #
-    # Asserted as PRESENT rather than deleted, because "section five is
-    # benched" was a decision and pinning it made this test fail on a correct
-    # config -- the shape this file has already been rewritten for twice.
-    assert "section_five_ndx100_m5" in live
+    # The 360-day account replay settled the shorter-window disagreement:
+    # section five lost 23.20R. It stays enabled for measurement, not money.
+    assert "section_five_ndx100_m5" not in live
     # SECTION SIX WENT BACK ON 3 SEPTEMBER, at the owner's instruction, with a
     # causal 12-bar confirmation and with position management actually reaching
     # it -- see `TestSectionSixIsBackWithManagementAndAFilter`. The -71.65R
     # replay that took it off is not disputed; it is being re-measured.
     assert "section_six_gold_m5" in live
+    assert set(live) == {"section_six_gold_m5", "section_ten_gold_m1"}
     # Off is not deleted. A module with no weight cannot be measured, and that
     # is how three M1 detectors went unjudged for months.
     assert settings.analysis.section_nine_vwap_m30.enabled is True
