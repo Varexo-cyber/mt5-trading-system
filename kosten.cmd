@@ -59,8 +59,14 @@ echo  BRUTO IS GEEN HAALBAAR RESULTAAT. Handelen zonder spread bestaat niet.
 echo  Het zegt WAAR het verlies zit, niet dat het te vermijden was.
 echo.
 echo  GEBRUIK
-echo    kosten.cmd                                alle CSV's in runtime\
+echo    kosten.cmd            de holdout 2024-2025 PLUS de 360-daagse run,
+echo                          met een totaal over allebei -- dat is 2024 t/m 2026
+echo    kosten.cmd alles      elke CSV in runtime\, los
 echo    kosten.cmd runtime\jarvis-holdout-2024-2025.csv   alleen die ene
+echo.
+echo  OVERLAPPENDE PERIODES WORDEN NIET OPGETELD. `september-2025-goud.csv`
+echo  valt middenin `hoeveel-goud-360.csv`; die twee bij elkaar optellen telt
+echo  dezelfde trades dubbel. Dan komt er geen totaal en staat erbij waarom.
 echo.
 
 if not exist ".venv-live\Scripts\python.exe" (
@@ -69,23 +75,42 @@ if not exist ".venv-live\Scripts\python.exe" (
   exit /b 1
 )
 
+rem GEEN WILDCARD DOORGEVEN AAN PYTHON. cmd expandeert `runtime\*.csv` niet
+rem zelf en python krijgt dan de letterlijke ster, wat een bestandsnaam is die
+rem niet bestaat -- en dat leest als "geen trades" in plaats van als een fout.
+if /i "%DOEL%"=="alles" (
+  set GEVONDEN=
+  for %%f in (runtime\*.csv) do (
+    set GEVONDEN=1
+    .venv-live\Scripts\python.exe -m scripts.gross_vs_net "%%f"
+  )
+  if not defined GEVONDEN (
+    echo  Geen enkele CSV in runtime\. Draai eerst hoeveel.cmd, beheer.cmd of
+    echo  jarvis-holdout-2024-2025.cmd.
+  )
+  goto einde
+)
+
 if not "%DOEL%"=="" (
   .venv-live\Scripts\python.exe -m scripts.gross_vs_net "%DOEL%"
   goto einde
 )
 
-rem GEEN WILDCARD DOORGEVEN AAN PYTHON. cmd expandeert `runtime\*.csv` niet
-rem zelf en python krijgt dan de letterlijke ster, wat een bestandsnaam is die
-rem niet bestaat -- en dat leest als "geen trades" in plaats van als een fout.
-set GEVONDEN=
-for %%f in (runtime\*.csv) do (
-  set GEVONDEN=1
-  .venv-live\Scripts\python.exe -m scripts.gross_vs_net "%%f"
+rem STANDAARD: DE TWEE BESTANDEN DIE SAMEN 2024 T/M 2026 DEKKEN, in EEN aanroep
+rem zodat het script er een totaal over kan trekken. Apart aanroepen geeft twee
+rem losse tabellen en geen som, en dat was juist de vraag.
+set SAMEN=
+if exist "runtime\jarvis-holdout-2024-2025.csv" set SAMEN=%SAMEN% "runtime\jarvis-holdout-2024-2025.csv"
+if exist "runtime\hoeveel-goud-360.csv" set SAMEN=%SAMEN% "runtime\hoeveel-goud-360.csv"
+if not defined SAMEN (
+  echo  Geen van de twee verwachte bestanden gevonden:
+  echo    runtime\jarvis-holdout-2024-2025.csv   uit jarvis-holdout-2024-2025.cmd
+  echo    runtime\hoeveel-goud-360.csv           uit goud360.cmd
+  echo.
+  echo  Draai `kosten.cmd alles` om te zien wat er wel ligt.
+  goto einde
 )
-if not defined GEVONDEN (
-  echo  Geen enkele CSV in runtime\. Draai eerst hoeveel.cmd, beheer.cmd of
-  echo  jarvis-holdout-2024-2025.cmd.
-)
+.venv-live\Scripts\python.exe -m scripts.gross_vs_net %SAMEN%
 
 :einde
 echo.
