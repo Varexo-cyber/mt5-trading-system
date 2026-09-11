@@ -4123,7 +4123,12 @@ def _fault_exit_report(decisions: list[Decision], managed: bool, equity: float) 
                 delta for delta, row in zip(deltas, section, strict=True)
                 if row.when >= midpoint
             )
-            verdict = "BEIDE HELPEN" if early_delta > 0 and late_delta > 0 else "NIET ROBUUST"
+            if acted < 20:
+                verdict = f"TE WEINIG ({acted} acties)"
+            elif early_delta > 0 and late_delta > 0:
+                verdict = "BEIDE HELPEN"
+            else:
+                verdict = "NIET ROBUUST"
             print(
                 f"      tijdhelften: vroeg {early_delta:+.2f}R | laat {late_delta:+.2f}R"
                 f" -> {verdict}"
