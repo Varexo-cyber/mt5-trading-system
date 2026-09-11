@@ -52,6 +52,7 @@ _ORIGINS: tuple[tuple[str, TradeOrigin], ...] = (
     ("section_eight_trend_day_h1", TradeOrigin(8, "trend_day", "H1", "JARVIS-S8-TD-H1")),
     ("section_nine_vwap_m30", TradeOrigin(9, "session_vwap", "M30", "JARVIS-S9-VW-M30")),
     ("section_six_gold_m5", TradeOrigin(6, "adaptive_gold", "M5", "JARVIS-S6-AU-M5")),
+    ("section_seven_gold_smc", TradeOrigin(7, "gold_smc", "MULTI", "JARVIS-S7-SMC")),
     ("section_six_spx_h1", TradeOrigin(6, "adaptive_spx", "H1", "JARVIS-S6-SP-H1")),
     ("section_five_ndx100_m5", TradeOrigin(5, "nonlinear_state", "M5", "JARVIS-S5-NDX-M5")),
     (

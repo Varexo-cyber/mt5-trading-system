@@ -1445,12 +1445,12 @@ analysis:
     trade_window_hours: 3.0
     stop_range_share: 0.5
 
-  # NIEUWE SECTIE ZEVEN — SHADOW, GEEN LIVE GELD. Objectieve SMC-regels:
-  # een gesloten liquidity sweep, daarna gesloten CHOCH, entry alleen in de
-  # juiste helft van de H1-range en met M15/M30/H1/H4 als trendcontext.
-  # Maximaal een setup per UTC-dag. `sectie7.cmd` vergelijkt M5/M15/M30/H1
-  # en rapporteert de UTC-uren; nieuws kan historisch niet worden herspeeld,
-  # maar live loopt deze gewone module door de bestaande nieuwsblokkade.
+  # NIEUWE SECTIE ZEVEN — SHADOW, GEEN LIVE GELD. Volledige gesloten-barroute:
+  # externe liquidity sweep -> displacement/BOS -> aantoonbare FVG -> retest
+  # die de zone verdedigt. Structurele stop achter de sweep; de tegenoverliggende
+  # liquiditeit moet minstens 2R ruimte bieden. M15/M30/H1/H4 leveren context.
+  # `sectie7.cmd` vergelijkt M1/M5/M15/M30/H1 met vaste SL/TP en strikt 2%-risico.
+  # Nieuws kan historisch niet worden herspeeld; live blijft de bestaande gate gelden.
   section_seven_gold_smc:
     enabled: true
     timeframe: M5
@@ -1459,6 +1459,10 @@ analysis:
     choch_lookback: 3
     context_lookback: 20
     stop_buffer_atr: 0.15
+    displacement_body_atr: 0.80
+    fvg_minimum_atr: 0.05
+    retest_tolerance_atr: 0.15
+    minimum_liquidity_reward_r: 2.0
 
   # SECTIE VIJF. NDX100 M5, nonlinear state model. Middelste kwart:
   # 62 trades, +0,218R/trade. Onaangeraakt nieuwste kwart: 87 trades,
@@ -2799,7 +2803,7 @@ analysis:
       order_block_h1: 1.0
       walkforward_index: 1.5
       failed_session_breakout: 1.5
-      section_seven_gold_smc: 1.5
+      section_seven_gold_smc: 2.0
       section_five_ndx100_m5: 1.0
       section_six_gold_m5: 3.0
       section_six_spx_h1: 1.0
@@ -2860,7 +2864,7 @@ analysis:
     # model-event IS de entry en zijn 0,8-ATR invalidatie is de stop; de
     # generieke HTF-, chase- en lifecyclepoorten zouden een andere strategie
     # maken. Harde account-, nieuws-, kosten- en brokerchecks blijven actief.
-    strategy_owned_entry_families: [section_six_gold_m5, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
+    strategy_owned_entry_families: [section_six_gold_m5, section_seven_gold_smc, section_fifteen_btc_m1, section_sixteen_btc_m5, section_seventeen_btc_m15]
     # De 1R-doelen van deze twee families zijn rechtstreeks gemeten op hun
     # eigen entries. De generieke rolling reach-test blijft in het reviewpakket
     # staan, maar mag die gemeten setup niet vóór de reviewer vervangen door
@@ -5459,7 +5463,7 @@ trade_management:
   close_near_target_spreads: 1.5
   close_near_target_max_share: 0.10
 
-  fixed_exit_comments: [JARVIS-S5-NDX-M5, JARVIS-S10-AU-M1]
+  fixed_exit_comments: [JARVIS-S5-NDX-M5, JARVIS-S7-SMC, JARVIS-S10-AU-M1]
   # S6 is exact op deze ene managementregel gemeten. Geen partial, trailing,
   # giveback, health- of time-exit mag die gemeten route stilletjes veranderen.
   break_even_only_comments: [JARVIS-S6-AU-M5]

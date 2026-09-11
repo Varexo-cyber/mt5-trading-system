@@ -35,6 +35,8 @@ if not exist "runtime" mkdir runtime
   --section-markets ^
   --sweep M1 M5 M15 M30 H1 ^
   --jarvis-replay ^
+  --fixed-exits ^
+  --strict-risk ^
   --csv runtime\sectie7-smc.csv
 
 echo.
