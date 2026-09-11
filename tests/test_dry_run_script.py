@@ -5596,7 +5596,30 @@ def test_trendcheck_is_a_fast_entry_grid_not_an_exit_grid() -> None:
     assert "--exit-grid" not in launcher
     parsed = build_parser().parse_args(["--trend-grid"])
     assert parsed.trend_grid
-    assert "required_frames.update({Timeframe.M5, Timeframe.M15})" in SOURCE
+
+
+def test_the_trend_grid_fetches_the_frames_it_reads() -> None:
+    """The counterfactual reads frames the sections never ask for.
+
+    M15 is not on any live section's clock, so nothing else causes it to be
+    fetched, and an absent frame reads as EMPTY rather than as an error: the
+    table would have said the filter blocked every trade while it had in fact
+    seen nothing. The property is "the run fetches what the grid reads", and
+    the previous version of this test asserted instead that one exact line of
+    source existed -- so widening the set to H1 and H4, which is strictly more
+    correct, turned the suite red for an improvement.
+    """
+
+    from core.types import Timeframe
+    from scripts.dry_run_sections import _frames_a_measurement_mode_adds, build_parser
+
+    for flag in ("--trend-grid", "--fault-exit-grid"):
+        added = _frames_a_measurement_mode_adds(build_parser().parse_args([flag]))
+        assert {Timeframe.M5, Timeframe.M15} <= added, flag
+
+    # And nothing extra when neither counterfactual was asked for, because a
+    # frame fetched for nobody is minutes per symbol per run.
+    assert _frames_a_measurement_mode_adds(build_parser().parse_args([])) == set()
 
 
 def test_foutcheck_is_shadow_only_and_defaults_to_180_days() -> None:

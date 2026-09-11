@@ -544,3 +544,94 @@ def test_zero_hours_switches_the_hold_off_entirely() -> None:
     measured_again = {args[0] for name, args in fake.calls if name == "symbol_info_tick"}
     assert measured_again == {"EURUSD", "GBPUSD"}
     market.shutdown()
+
+
+def test_a_symbols_only_name_this_broker_does_not_list_is_said_out_loud(caplog) -> None:
+    """`symbols_only` is one spelling away from removing a market silently.
+
+    The list is resolved through `broker_symbol`, so a `symbol_overrides` entry
+    decides whether `NDX100` means `NDX100` or `NDX100.i`. Get that wrong and
+    the filter matches nothing: the symbol never enters the catalogue, every
+    section on it produces no signal, and there is no gate, no refusal and no
+    line in `waarom.cmd` to read -- it looks exactly like a quiet market.
+
+    This is the project's most-repeated defect in its purest form, so the test
+    asks for the NEAR MISS by name. "NDX100 is missing" sends the reader
+    looking; "NDX100, broker lists NDX100.i" IS the answer.
+    """
+
+    from types import SimpleNamespace
+
+    from scanner.universe import UniverseScanner
+
+    settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
+    settings = settings.model_copy(
+        update={
+            "instruments": settings.instruments.model_copy(
+                update={"symbols_only": ("NDX100", "XAUUSD"), "symbol_overrides": {}}
+            )
+        }
+    )
+    broker = SimpleNamespace(
+        symbols=lambda: [
+            SimpleNamespace(name="NDX100.i", path="Indices"),
+            SimpleNamespace(name="XAUUSD.i", path="Commodities\\Metals"),
+        ]
+    )
+
+    with caplog.at_level("WARNING"):
+        catalogue = UniverseScanner(broker, settings).catalogue()
+
+    # With no overrides both names take the `.i` suffix, so both resolve and
+    # nothing is missing -- this half exists so the complaint cannot pass by
+    # firing on everything.
+    assert {item.name for item in catalogue} == {"NDX100.i", "XAUUSD.i"}
+    assert "symbols_only" not in caplog.text
+
+    caplog.clear()
+    bare = settings.model_copy(
+        update={
+            "instruments": settings.instruments.model_copy(
+                update={
+                    "symbols_only": ("NDX100", "XAUUSD"),
+                    "symbol_overrides": {"NDX100": "NDX100"},
+                }
+            )
+        }
+    )
+    with caplog.at_level("WARNING"):
+        catalogue = UniverseScanner(broker, bare).catalogue()
+
+    assert {item.name for item in catalogue} == {"XAUUSD.i"}
+    assert "NDX100" in caplog.text
+    assert "NDX100.i" in caplog.text, "the near miss is the diagnosis; without it this is a riddle"
+
+
+def test_the_missing_symbol_complaint_does_not_repeat_every_cycle(caplog) -> None:
+    """Loud once. A warning that repeats every few seconds stops being read."""
+
+    from types import SimpleNamespace
+
+    from scanner.universe import UniverseScanner
+
+    settings = load_settings(overlay="config/eightcap.yaml", env_overrides=False)
+    settings = settings.model_copy(
+        update={
+            "instruments": settings.instruments.model_copy(
+                update={"symbols_only": ("NOSUCH",), "symbol_overrides": {"NOSUCH": "NOSUCH"}}
+            )
+        }
+    )
+    broker = SimpleNamespace(
+        symbols=lambda: [SimpleNamespace(name="XAUUSD.i", path="Commodities\\Metals")]
+    )
+    scanner = UniverseScanner(broker, settings)
+
+    with caplog.at_level("WARNING"):
+        scanner.catalogue()
+        scanner.catalogue()
+        scanner.catalogue()
+
+    assert caplog.text.count("NOSUCH") == 2, (
+        "one warning naming the symbol twice: the miss and the list"
+    )

@@ -3800,12 +3800,15 @@ analysis:
       section_eleven_xaujpy_legs_m5: 0.0
       section_twelve_xaujpy_m5: 0.0
       section_thirteen_xaujpy_m15: 0.0
-      # 1,0 SINDS 6 SEPTEMBER, samen met de allowlist hierboven. Dit was 0,0
-      # en dat is geen "uit maar meetbaar": de engine test `if weight > 0`,
-      # dus met nul telt de stem niet mee al staat de sectie op de allowlist.
-      # Een sectie die live mag en niets kan doen is precies de stilte die
-      # dit bestand overal probeert te voorkomen.
-      section_fifteen_btc_m1: 1.0
+      # WEER 0,0 OP 11 SEPTEMBER, tegelijk met de allowlist hierboven. Hij
+      # stond op 1,0 sinds 6 september OMDAT hij toen live mocht; die reden
+      # verdween toen de regel op de allowlist uitgecommentarieerd werd, en
+      # gewicht zonder toestemming is de misleidende helft die het blok
+      # hierboven beschrijft: live zet `effective_weights` het toch op nul,
+      # maar elke researchrun en het journaal lezen deze ruwe tabel. Een
+      # meting tilt het gewicht zelf naar 1,0 op een KOPIE van de settings,
+      # dus S15 blijft volledig meetbaar.
+      section_fifteen_btc_m1: 0.0
       # ZESTIEN EN ZEVENTIEN STONDEN HIER EEN DAG OP 1,0 en zijn 6 september
       # weer op nul gezet toen ze van de allowlist gingen. De cijfers staan
       # bij de allowlist hierboven.
