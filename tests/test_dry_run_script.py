@@ -5650,3 +5650,37 @@ def test_fault_exit_reports_separate_confirmed_giveback_levels() -> None:
     assert "GIVEBACK@0.50R" in source
     assert "GIVEBACK@0.75R" in source
     assert "GIVEBACK@1.00R" in source
+
+
+def test_s10_quality_candidates_require_both_time_halves(capsys) -> None:
+    from datetime import datetime
+
+    from scripts.dry_run_sections import Decision, _s10_quality_filter_report
+
+    rows = []
+    for month in (1, 7):
+        rows.extend(
+            [
+                Decision(
+                    datetime(2026, month, 1, tzinfo=UTC),
+                    "XAUUSD", "section_ten_gold_m1", "TRADE",
+                    direction="LONG", result_r=1.0,
+                    pass_key=("section_ten_gold_m1", "M1"),
+                    breakout_body_atr=2.0, breakout_wick_share=0.05,
+                ),
+                Decision(
+                    datetime(2026, month, 2, tzinfo=UTC),
+                    "XAUUSD", "section_ten_gold_m1", "TRADE",
+                    direction="LONG", result_r=-1.0,
+                    pass_key=("section_ten_gold_m1", "M1"),
+                    breakout_body_atr=1.0, breakout_wick_share=0.30,
+                ),
+            ]
+        )
+
+    _s10_quality_filter_report(rows * 120, managed=False)
+    output = capsys.readouterr().out
+
+    assert "body+wick samen" in output
+    assert "KANDIDAAT" in output
+    assert "vroeg" in output and "laat" in output and "DD" in output

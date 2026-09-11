@@ -25,6 +25,8 @@ echo     - meerdere robuuste break-even-niveaus en stopplaatsen
 echo     - M5-, M15- en gecombineerde trendrichting bij entry
 echo     - trendkandidaten apart in vroege en late helft; geen schijnwinst
 echo     - S10 breakout/body/wick/volume in tertielen binnen echte trades
+echo     - S10 compacte-wick, sterke-body en gecombineerde A/B-kandidaten
+echo       met resultaat, drawdown en vroege/late helft in dezelfde ene run
 echo     - conditionele give-back exits na +0.50R, +0.75R en +1.00R
 echo     - vroege exit alleen bij aantoonbare trend- plus structuurbreuk
 echo     - richting, UTC-uur, weekdag en herhaalde verliesuren
