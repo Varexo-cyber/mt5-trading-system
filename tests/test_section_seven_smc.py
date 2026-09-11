@@ -32,11 +32,11 @@ def test_section_seven_has_all_requested_context_and_one_daily_setup_contract() 
     assert family_for(SectionSevenGoldSmc.name) == "liquidity_structure"
 
 
-def test_research_launcher_compares_execution_clocks_and_keeps_m1_gate_data() -> None:
+def test_research_launcher_compares_m1_and_slower_execution_clocks() -> None:
     launcher = Path("sectie7.cmd").read_text(encoding="utf-8")
 
     assert "--days 180" in launcher
     assert "--only section_seven_gold_smc" in launcher
-    assert "--sweep M5 M15 M30 H1" in launcher
+    assert "--sweep M1 M5 M15 M30 H1" in launcher
     assert "--no-m1" not in launcher
-    assert "M1 wordt alleen geladen" in launcher
+    assert "M1, M5, M15, M30 en H1" in launcher
