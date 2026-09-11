@@ -48,3 +48,17 @@ def test_launcher_also_reads_the_gold_only_replay() -> None:
     launcher = (Path(__file__).parents[1] / "maandcheck.cmd").read_text()
 
     assert 'runtime\\hoeveel-goud-360.csv"' in launcher
+
+
+def test_windows_1252_notes_do_not_break_a_saved_replay(tmp_path: Path) -> None:
+    path = tmp_path / "windows.csv"
+    content = (
+        "when,module,outcome,result_r_fixed_stop,pnl_money_fixed_stop,note\r\n"
+        "2026-01-02T10:00:00,goud,TRADE,1.25,12.50,reden — geldig\r\n"
+    )
+    path.write_bytes(content.encode("cp1252"))
+
+    trades = load_trades(path)
+
+    assert len(trades) == 1
+    assert trades[0].result_r == 1.25
