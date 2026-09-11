@@ -4063,6 +4063,20 @@ class FailedSessionBreakoutConfig(Base):
     confidence: float = Field(default=0.80, ge=0.0, le=1.0)
 
 
+class SectionSevenSmcConfig(Base):
+    """Shadow-only multi-timeframe gold liquidity-sweep reversal."""
+
+    enabled: bool = False
+    timeframe: str = "M5"
+    allowed_symbols: tuple[str, ...] = ("XAUUSD",)
+    liquidity_lookback: int = Field(default=20, ge=5, le=200)
+    choch_lookback: int = Field(default=3, ge=2, le=20)
+    context_lookback: int = Field(default=20, ge=10, le=100)
+    stop_buffer_atr: float = Field(default=0.15, ge=0.0, le=2.0)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+
+
 class SectionFiveM5Config(Base):
     """SECTION FIVE: frozen nonlinear M5 NDX100 model."""
 
@@ -4598,6 +4612,7 @@ class AnalysisConfig(Base):
     candle_momentum: CandleMomentumConfig = CandleMomentumConfig()
     walkforward_index: WalkforwardIndexConfig = WalkforwardIndexConfig()
     failed_session_breakout: FailedSessionBreakoutConfig = FailedSessionBreakoutConfig()
+    section_seven_gold_smc: SectionSevenSmcConfig = SectionSevenSmcConfig()
     section_five_ndx100_m5: SectionFiveM5Config = SectionFiveM5Config()
     section_six_gold_m5: SectionSixModelConfig = SectionSixModelConfig()
     section_six_spx_h1: SectionSixModelConfig = SectionSixModelConfig(timeframe="H1")

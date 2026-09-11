@@ -1433,18 +1433,32 @@ analysis:
     allowed_symbols: [SPX500]
     threshold: 0.075
 
-  # SECTIE ZEVEN. Tweede chronologische kandidaat op dezelfde brokerhistorie.
-  # Gekozen op dagen 91-135 en pas daarna bekeken op dagen 136-180:
-  # 20 holdout-trades, 50% raak bij 1,5R, +0,185R/trade, EUR +7,45.
-  # Dit is dun bewijs en daarom alleen SPX500, met een eigen snelle noodrem.
+  # OUDE SECTIE ZEVEN, GEPENSIONEERD. De implementatie blijft alleen bestaan
+  # om oude journals/configuraties te kunnen lezen; hij wordt niet meer gemeten
+  # en kan niet live handelen. Sectie zeven is hieronder opnieuw opgebouwd.
   failed_session_breakout:
-    enabled: true
+    enabled: false
     timeframe: M5
     allowed_symbols: [SPX500]
     range_start_hour: 7
     range_end_hour: 9
     trade_window_hours: 3.0
     stop_range_share: 0.5
+
+  # NIEUWE SECTIE ZEVEN — SHADOW, GEEN LIVE GELD. Objectieve SMC-regels:
+  # een gesloten liquidity sweep, daarna gesloten CHOCH, entry alleen in de
+  # juiste helft van de H1-range en met M15/M30/H1/H4 als trendcontext.
+  # Maximaal een setup per UTC-dag. `sectie7.cmd` vergelijkt M5/M15/M30/H1
+  # en rapporteert de UTC-uren; nieuws kan historisch niet worden herspeeld,
+  # maar live loopt deze gewone module door de bestaande nieuwsblokkade.
+  section_seven_gold_smc:
+    enabled: true
+    timeframe: M5
+    allowed_symbols: [XAUUSD]
+    liquidity_lookback: 20
+    choch_lookback: 3
+    context_lookback: 20
+    stop_buffer_atr: 0.15
 
   # SECTIE VIJF. NDX100 M5, nonlinear state model. Middelste kwart:
   # 62 trades, +0,218R/trade. Onaangeraakt nieuwste kwart: 87 trades,
@@ -1643,10 +1657,14 @@ analysis:
     # gelijk: sectie zes en sectie tien zijn voor GOUD gebouwd. De overige
     # metalen krijgen hun eigen sectie of ze krijgen niets.
     #
-    # `blocked_hours_by_symbol` is leeg omdat er niets meer in kan staan: goud
-    # is het enige symbool en dat gebruikt het globale 07:00-13:00 hieronder.
+    # 11 september: de volledige 360-daagse goudanalyse vond daarnaast 16:00
+    # op 122 XAUUSD-trades negatief in BEIDE tijdhelften: -8,95R vroeg en
+    # -1,57R laat, -10,52R samen. De expliciete symboollijst vervangt het
+    # globale venster, dus hij bevat zowel het bewezen 07:00-12:59-blok als
+    # 16:00-16:59. Dit is alleen een entryblok; een open trade blijft beheerd.
     allowed_symbols: [XAUUSD]
-    blocked_hours_by_symbol: {}
+    blocked_hours_by_symbol:
+      XAUUSD: [7, 8, 9, 10, 11, 12, 16]
     channel_period: 20
     minimum_break_atr: 0.75
     retest_tolerance_atr: 0.15
@@ -2781,6 +2799,7 @@ analysis:
       order_block_h1: 1.0
       walkforward_index: 1.5
       failed_session_breakout: 1.5
+      section_seven_gold_smc: 1.5
       section_five_ndx100_m5: 1.0
       section_six_gold_m5: 3.0
       section_six_spx_h1: 1.0
@@ -3720,6 +3739,7 @@ analysis:
       order_block_h1: 1.0
       walkforward_index: 1.0
       failed_session_breakout: 1.0
+      section_seven_gold_smc: 1.0
       section_five_ndx100_m5: 1.0
       section_six_gold_m5: 1.0
       section_six_spx_h1: 1.0
