@@ -335,11 +335,16 @@ class ExitVariant:
     #: Whether the partial close may fire. Off for trailing rows so the trail
     #: is measured alone -- the two share `partial_close_at_r` as their arm.
     partial: bool = False
+    #: Close the complete position at this R multiple. Zero keeps the idea's
+    #: original target.
+    target_r: float = 0.0
 
     @property
     def kind(self) -> str:
         if self.manage_fields:
             return "mechanism"
+        if self.target_r > 0.0:
+            return "cash-out"
         return "break-even" if self.trigger_r > 0.0 else "fixed"
 
     def stop_offset(self, risk_price: float, atr: float) -> float:
@@ -435,15 +440,50 @@ def _mechanism_variants(wide: bool) -> tuple[ExitVariant, ...]:
                 )
             )
     for from_r in ((0.5, 0.7, 1.0) if wide else (0.7,)):
-        rows.append(
-            ExitVariant(
-                label=f"lock 50% peak>{from_r:.2f}R",
-                manage_fields=(
-                    ("profit_lock_from_r", from_r),
-                    ("profit_lock_fraction", 0.5),
-                ),
+        for fraction in ((0.25, 0.50, 0.75) if wide else (0.50,)):
+            rows.append(
+                ExitVariant(
+                    label=f"lock {fraction:.0%} peak>{from_r:.2f}R",
+                    manage_fields=(
+                        ("profit_lock_from_r", from_r),
+                        ("profit_lock_fraction", fraction),
+                    ),
+                )
             )
-        )
+    if wide:
+        for arm_r in (0.50, 0.75, 1.00):
+            for fraction in (0.25, 0.50, 0.75):
+                rows.append(
+                    ExitVariant(
+                        label=f"giveback {fraction:.0%} after {arm_r:.2f}R",
+                        manage_fields=(
+                            ("giveback_arm_r", arm_r),
+                            ("giveback_fraction", fraction),
+                        ),
+                    )
+                )
+        for arm_r in (0.50, 0.75, 1.00):
+            for minutes in (5.0, 15.0, 30.0):
+                rows.append(
+                    ExitVariant(
+                        label=f"stall {minutes:.0f}m after {arm_r:.2f}R",
+                        manage_fields=(
+                            ("peak_stall_arm_r", arm_r),
+                            ("peak_stall_minutes", minutes),
+                            ("peak_stall_share_of_horizon", 0.0),
+                        ),
+                    )
+                )
+        for hours in (0.25, 0.50, 1.00, 2.00, 4.00):
+            rows.append(
+                ExitVariant(
+                    label=f"time exit {hours:g}h",
+                    manage_fields=(
+                        ("time_exit_hours", hours),
+                        ("time_exit_uses_plan_horizon", False),
+                    ),
+                )
+            )
     return tuple(rows)
 
 
@@ -458,6 +498,11 @@ def exit_grid(wide: bool = False) -> tuple[ExitVariant, ...]:
 
     placements = STOP_PLACEMENTS_WIDE if wide else STOP_PLACEMENTS_CORE
     rows: list[ExitVariant] = [ExitVariant(label="fixed SL/TP")]
+    if wide:
+        rows.extend(
+            ExitVariant(label=f"cash all @ {target_r:.2f}R", target_r=target_r)
+            for target_r in (0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 1.75)
+        )
     for trigger in BREAK_EVEN_TRIGGERS:
         for suffix, lock_r, lock_atr in placements:
             if lock_r >= trigger:
@@ -1815,6 +1860,17 @@ def _one_clock(
                         # every other row is judged against.
                         measured.append((variant.label, r))
                         continue
+                    variant_idea = idea
+                    if variant.kind == "cash-out":
+                        direction_sign = 1.0 if idea.direction is Direction.LONG else -1.0
+                        risk_price = abs(idea.entry - idea.stop_loss)
+                        variant_idea = replace(
+                            idea,
+                            take_profit=(
+                                idea.entry
+                                + direction_sign * variant.target_r * risk_price
+                            ),
+                        )
                     management = None
                     manage_pair = None
                     if variant.kind == "mechanism":
@@ -1830,7 +1886,7 @@ def _one_clock(
                                 sizer.settings.trade_management, variant
                             )
                             variant_configs[key] = management
-                    else:
+                    elif variant.kind == "break-even":
                         manage_pair = (
                             variant.trigger_r,
                             variant.stop_offset(risk_price, grid_atr),
@@ -1838,7 +1894,7 @@ def _one_clock(
                     _f, _e, grid_result, _ga = _resolve(
                         resolve_frame,
                         upto,
-                        idea,
+                        variant_idea,
                         horizon_bars=resolved_horizon,
                         manage=manage_pair,
                         arrays=resolve_arrays,
@@ -4734,6 +4790,8 @@ def _manage_grid_report(trades: list[Decision], variants: tuple[ExitVariant, ...
     by_section: dict[str, list[Decision]] = {}
     for row in graded:
         by_section.setdefault(row.module, []).append(row)
+        if row.story:
+            by_section.setdefault(f"{row.module} / {row.story}", []).append(row)
 
     for module, rows in sorted(by_section.items()):
         early = [r for r in rows if r.when < split]
