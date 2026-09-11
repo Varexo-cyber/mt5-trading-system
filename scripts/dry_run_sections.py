@@ -3862,6 +3862,12 @@ def main(argv: list[str] | None = None) -> None:
         _break_even_rule(settings) is not None,
         sections=tuple(sorted({name for name, _tf in passes})),
     )
+    # A requested exit grid also belongs to shadow-only candidates. This used
+    # to live solely in `_live_config_report`, so human30 calculated every
+    # alternative and then printed none of them because the candidate is not
+    # allowed to trade real money.
+    if exit_variants:
+        _manage_grid_report(decisions, exit_variants)
     if args.trend_grid:
         _trend_grid_report(decisions, _break_even_rule(settings) is not None)
         _s10_quality_filter_report(decisions, _break_even_rule(settings) is not None)
@@ -4417,7 +4423,6 @@ def _live_config_report(results: dict, settings, equity: float, days: int) -> No
 
     if managed:
         _break_even_verdict(trades, settings)
-    _manage_grid_report(trades)
     _by_market_report(trades)
     _by_hour_report(trades, settings)
     _hours_for_other_sections(trades, settings)
