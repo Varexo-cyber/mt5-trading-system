@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,7 +29,15 @@ def _number(row: dict[str, str], preferred: str, fallback: str) -> float:
 
 
 def load_trades(path: Path) -> list[Trade]:
-    with path.open(newline="", encoding="utf-8-sig") as handle:
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # Native Excel/cmd exports on Dutch Windows commonly contain CP-1252
+        # punctuation in the explanatory note. Numeric trade fields are the
+        # same, so accept that encoding instead of losing a completed replay.
+        text = raw.decode("cp1252")
+    with io.StringIO(text, newline="") as handle:
         reader = csv.DictReader(handle)
         required = {"when", "module", "outcome", "result_r_fixed_stop", "pnl_money_fixed_stop"}
         missing = required.difference(reader.fieldnames or ())
