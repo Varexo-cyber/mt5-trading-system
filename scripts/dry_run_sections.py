@@ -1267,6 +1267,26 @@ def _frames_read(
     return tuple(sorted(wanted, key=lambda tf: tf.duration))
 
 
+def _frames_a_measurement_mode_adds(args) -> set[Timeframe]:
+    """Frames a counterfactual reads that the sections themselves never ask for.
+
+    The sections run on M5 and M1, so `_frames_read` has no reason to fetch M15
+    or above for them. The trend and fault-exit grids DO read those frames, and
+    a frame that was never fetched reads as empty rather than as an error -- so
+    without this the tables would have reported that every trade was blocked by
+    a filter that in fact saw nothing at all.
+
+    A FUNCTION AND NOT AN INLINE `if`, because the only test that covered this
+    asserted that one literal line of source existed. Adding H1 and H4 to the
+    set -- strictly more correct -- broke that test while the behaviour improved.
+    A test can now ask what the run will fetch instead of how it was spelled.
+    """
+
+    if args.trend_grid or args.fault_exit_grid:
+        return {Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4}
+    return set()
+
+
 def _hopeless_on_cost(sizer, spec, frames: dict, clocks: tuple[Timeframe, ...]) -> float | None:
     """The best cost share this symbol can reach, or None if it can trade.
 
@@ -3490,10 +3510,7 @@ def main(argv: list[str] | None = None) -> None:
         # request M15. The trend counterfactual does: without this, every M15
         # reading is silently zero and the table pretends it blocked every
         # trade. Fetch and attach the frame only for this measurement mode.
-        if args.trend_grid or args.fault_exit_grid:
-            required_frames.update(
-                {Timeframe.M5, Timeframe.M15, Timeframe.H1, Timeframe.H4}
-            )
+        required_frames.update(_frames_a_measurement_mode_adds(args))
         fetch_these = tuple(
             tf
             for tf in sorted(required_frames, key=lambda item: item.duration)
