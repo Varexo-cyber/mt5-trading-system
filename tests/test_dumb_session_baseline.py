@@ -256,3 +256,55 @@ def test_it_finds_a_planted_effect_and_does_not_invent_one() -> None:
     for start, end in ((8, 12), (13, 19)):
         elsewhere = measured(start, end)
         assert elsewhere["t"] < 0.0, f"{start}-{end} zou geen positief effect mogen tonen"
+
+
+def test_not_significant_is_never_reported_as_nothing(tmp_path, capsys, monkeypatch) -> None:
+    """De eerste versie zei bij t=0,82 en +91,46 R "het venster doet niets".
+
+    Dat is precies verkeerd, en het is de omgekeerde vorm van de fout waar dit
+    project vol mee zit: een rapport dat ontkent wat het zelf laat zien. Niet
+    significant betekent dat de spreiding te groot is voor een uitspraak over
+    HET GEMIDDELDE. Het TOTAAL is wat naast sectie zes gelegd wordt, en dat was
+    +91,46 R tegen de +95,45 R die sectie zes met veertig parameters ophaalde.
+    """
+
+    from scripts import dumb_session_baseline as mod
+
+    # Exact de vorm van de echte uitkomst: 255 dagen, +0,4087 R bruto per dag,
+    # en zoveel spreiding dat t rond 0,8 blijft. Het gemiddelde wordt HARD gezet
+    # in plaats van geloot -- een ongelukkige trekking maakt zo'n test
+    # willekeurig rood, en dat zegt dan niets over de code.
+    rng = np.random.default_rng(1)
+    spread = rng.normal(0.0, 7.0, 255)
+    returns = pd.Series(spread - spread.mean() + 0.4087)
+    stats = _stats(returns, 0.05)
+
+    assert abs(stats["t"]) < 1.96, "opzet klopt niet: deze reeks moet niet-significant zijn"
+    assert stats["totaal"] > 20.0, "opzet klopt niet: het totaal moet fors zijn"
+
+    monkeypatch.setattr(mod, "_stats", lambda *a, **k: stats)
+    source = Path(mod.__file__).read_text(encoding="utf-8")
+
+    # De verboden formulering mag nergens meer staan.
+    assert "Het venster alleen doet niets" not in source
+    # En het totaal moet in de niet-significante tak genoemd worden, want dat is
+    # het getal waar de vergelijking op rust.
+    assert "daarmee vergelijk je hieronder" in source
+
+
+def test_the_launcher_can_run_the_untouched_holdout_year() -> None:
+    """De 360-daagse periode is waar de filters van sectie zes op gekozen zijn.
+
+    Alleen daarop vergelijken beantwoordt de makkelijke helft van de vraag. Het
+    onaangeraakte jaar moet met EEN woord te draaien zijn, en met exact hetzelfde
+    venster als `jarvis-holdout-2024-2025.cmd`, anders liggen de twee cijfers
+    niet naast elkaar.
+    """
+
+    launcher = (ROOT / "domtest.cmd").read_text(encoding="utf-8")
+    holdout = (ROOT / "jarvis-holdout-2024-2025.cmd").read_text(encoding="utf-8")
+
+    assert "holdout" in launcher
+    for date in ("2024-09-01", "2025-08-31"):
+        assert date in launcher, date
+        assert date in holdout, f"{date} staat niet in de holdout-launcher"

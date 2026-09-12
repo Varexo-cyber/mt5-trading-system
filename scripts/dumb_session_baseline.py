@@ -204,14 +204,22 @@ def run(args) -> None:
         f"bruto {main['bruto_totaal']:+.2f} R ({main['bruto_per_trade']:+.4f}/dag)   "
         f"netto {main['totaal']:+.2f} R ({main['per_trade']:+.4f}/dag)   t={main['t']:.2f}"
     )
+    # NIET-SIGNIFICANT IS NIET HETZELFDE ALS NUL, en de eerste versie van deze
+    # regel gooide die twee op een hoop: bij t=0,82 en +91,46 R stond er "het
+    # venster alleen doet niets". Dat is precies verkeerd. De vergelijking met
+    # sectie zes gaat over het TOTAAL, en dat totaal was bijna gelijk aan wat
+    # sectie zes met veertig parameters ophaalt.
+    #
     # DE LAT IS 1,96 EN NIET HOGER, want dit is EEN vooraf vastgelegde regel en
     # geen keuze uit vele. Zou dit uit de sweep hieronder geplukt worden, dan
     # gold de Bonferroni-lat voor vierentwintig vensters en die is 3,03.
     if abs(main["t"]) >= 1.96:
-        richting = "positief" if main["per_trade"] > 0 else "NEGATIEF"
-        print(f"    -> dit venster is op zichzelf {richting}, t haalt de 1,96.")
+        richting = "POSITIEF" if main["per_trade"] > 0 else "NEGATIEF"
+        print(f"    -> op zichzelf {richting}: t haalt de 1,96.")
     else:
-        print("    -> niet van nul te onderscheiden. Het venster alleen doet niets.")
+        print(f"    -> de spreiding is te groot voor significantie (t={main['t']:.2f}); dit")
+        print("       venster staat op zichzelf niet vast. Dat is IETS ANDERS dan nul:")
+        print(f"       het totaal is {main['totaal']:+.2f} R en daarmee vergelijk je hieronder.")
 
     print("\n  HOE JE DIT LEEST, en dit is het hele punt:")
     print("    Zet `netto totaal` naast wat sectie zes over dezelfde periode deed")
