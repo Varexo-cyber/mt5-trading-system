@@ -364,3 +364,19 @@ def test_the_report_carries_the_drawdown_next_to_the_total() -> None:
     assert _drawdown(pd.Series([3.0, -5.0, 2.0, 6.0])) == pytest.approx(5.0)
     assert stats["terugval"] == pytest.approx(5.0)
     assert stats["ergste_dag"] == pytest.approx(-5.0)
+
+
+def test_the_share_is_reported_as_a_number_and_not_only_as_a_band() -> None:
+    """0,61 kwam als "ongeveer zijn aandeel" naar buiten, en dat leest verkeerd.
+
+    Het venster haalde 61% van wat zijn uren voorspellen -- bijna veertig
+    procent ONDER zijn aandeel -- en de banden van 0,5 tot 1,5 maakten daar
+    "ongeveer" van. Een band is altijd een keuze; het getal is dat niet, dus het
+    getal hoort in het rapport te staan.
+    """
+
+    source = Path(__file__).resolve().parents[1] / "scripts" / "dumb_session_baseline.py"
+    text = source.read_text(encoding="utf-8")
+
+    assert "van dat aandeel" in text, "de verhouding zelf moet geprint worden"
+    assert "ratio < 0.8" in text, "de ondergrens moet strakker dan 0,5"

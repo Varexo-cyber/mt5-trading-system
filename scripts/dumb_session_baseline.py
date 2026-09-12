@@ -269,15 +269,21 @@ def run(args) -> None:
         )
         print(f"    {hours} van de 24 uur is {share:.0%}, dus een venster zonder eigen effect")
         print(f"    hoort rond {expected:+.2f} R uit te komen.")
-        print(f"    Dit venster doet {main['totaal']:+.2f} R.")
-        if main["totaal"] > expected * 1.5:
+        # DE VERHOUDING ZELF, want daar leest de lezer hem aan af. De eerste
+        # versie noemde alleen een oordeel met banden van 0,5 tot 1,5, en 0,61
+        # kwam daardoor naar buiten als "ongeveer zijn aandeel" terwijl het
+        # venster bijna veertig procent ONDER zijn uren presteerde. Een band is
+        # altijd een keuze; het getal is dat niet.
+        ratio = main["totaal"] / expected if expected else float("nan")
+        print(f"    Dit venster doet {main['totaal']:+.2f} R = {ratio:.0%} van dat aandeel.")
+        if ratio > 1.5:
             print("    -> MEER dan zijn aandeel. Er zit iets in dit venster zelf.")
-        elif main["totaal"] < expected * 0.5:
-            print("    -> MINDER dan zijn aandeel. Dit venster is juist het zwakke deel.")
+        elif ratio < 0.8:
+            print("    -> MINDER dan zijn aandeel. Deze uren zijn juist het ZWAKKE deel")
+            print("       van de dag; er is hier geen sessie-effect om te oogsten.")
         else:
-            print("    -> ONGEVEER zijn aandeel. Dan meet je de trend in goud en")
-            print("       niet een sessie-effect, en dan zegt dit getal niets over")
-            print("       de klok van sectie zes.")
+            print("    -> ONGEVEER zijn aandeel. Dan meet je de trend in het onderliggende")
+            print("       en geen sessie-effect, en dan zegt dit getal niets over de klok.")
     else:
         print("    (niet te berekenen op deze reeks)")
 
