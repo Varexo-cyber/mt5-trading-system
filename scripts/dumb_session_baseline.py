@@ -77,6 +77,10 @@ def _sessions(frame: pd.DataFrame, start_hour: int, end_hour: int) -> pd.DataFra
             "open": grouped["open"].first(),
             "close": grouped["close"].last(),
             "bars": grouped["close"].size(),
+            # HET MOMENT WAAROP HET VENSTER OPENT, want de R hoort bij de
+            # volatiliteit van dat moment. Op de dagstempel afgaan zou voor een
+            # venster van 20:00 tot 02:00 de ATR van twintig uur eerder pakken.
+            "opened_at": pd.Series(picked.index, index=picked.index).groupby(day[inside]).first(),
         }
     )
     # EEN VENSTER MET EEN HANDVOL BARS IS EEN FEESTDAG, geen handelsdag. Zonder
@@ -114,16 +118,39 @@ def _as_r(sessions: pd.DataFrame, stop_atr: float, atr: pd.Series) -> pd.Series:
     lijkt het antwoord wat je wil dat het is.
     """
 
-    risk = (atr.reindex(sessions.index, method="ffill") * stop_atr).replace(0.0, np.nan)
+    # DE ATR OP DE OPENINGSBAR, en dat is geen detail: `atr` loopt op M5 en
+    # `sessions` is per dag gestempeld. Op de dagstempel reindexen zou voor een
+    # venster van 20:00 tot 02:00 de volatiliteit van twintig uur eerder pakken.
+    at_open = atr.reindex(pd.DatetimeIndex(sessions["opened_at"]), method="ffill")
+    risk = pd.Series(at_open.to_numpy() * stop_atr, index=sessions.index).replace(0.0, np.nan)
     return ((sessions["close"] - sessions["open"]) / risk).dropna()
 
 
 def _atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
-    high, low, close = frame["high"], frame["low"], frame["close"]
-    prev = close.shift(1)
-    span = pd.concat([high - low, (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
-    daily = span.resample("1D").mean() * period
-    return daily.ffill()
+    """Exact `analysis.section_six_adaptive._atr`, en dat is hier het hele punt.
+
+    DIT IS EEN KEER FOUT GEGAAN EN HET FLATTEERDE SECTIE ZES. De eerste versie
+    nam het GEMIDDELDE van de M5 true range per dag en vermenigvuldigde dat met
+    14, in plaats van er een voortschrijdend gemiddelde over 14 bars van te
+    nemen. Dat maakt de noemer veertien keer te groot, dus elke R veertien keer
+    te klein, en de domme sessietest kwam uit op +5,91 R bruto terwijl sectie
+    zes over hetzelfde venster +140 R deed. Dat las als "het model verdient zijn
+    plek" en dat was rekenfout, geen bewijs.
+
+    Twee definities van dezelfde grootheid is de fout die dit hele project
+    achtervolgt, dus deze wordt niet nagebouwd maar GEIMPORTEERD. Wijzigt sectie
+    zes zijn ATR, dan wijzigt die van de nulhypothese mee -- automatisch, en
+    zonder dat iemand eraan hoeft te denken.
+    """
+
+    from analysis.section_six_adaptive import _atr as section_six_atr
+
+    if period != 14:
+        raise ValueError(
+            "sectie zes rekent ATR(14) en de nulhypothese moet exact dezelfde "
+            "eenheid gebruiken; een andere periode maakt de vergelijking zinloos"
+        )
+    return section_six_atr(frame)
 
 
 def run(args) -> None:
