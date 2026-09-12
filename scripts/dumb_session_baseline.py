@@ -60,7 +60,15 @@ def _sessions(frame: pd.DataFrame, start_hour: int, end_hour: int) -> pd.DataFra
     """
 
     hours = frame.index.hour
-    if start_hour <= end_hour:
+    if start_hour == end_hour:
+        # HET HELE ETMAAL, en dat is geen randgeval maar de controle: de hele
+        # dag long, om te zien of dit venster meer doet dan zijn aandeel in de
+        # uren. `start <= end` zou hier `uur >= 0 & uur < 0` opleveren, dus nul
+        # rijen -- en een lege controle leest als "geen trend in goud", precies
+        # de conclusie die de test moet kunnen weerleggen.
+        inside = np.ones(len(frame), dtype=bool)
+        day = frame.index.normalize()
+    elif start_hour < end_hour:
         inside = (hours >= start_hour) & (hours < end_hour)
         day = frame.index.normalize()
     else:
@@ -89,8 +97,25 @@ def _sessions(frame: pd.DataFrame, start_hour: int, end_hour: int) -> pd.DataFra
     return out[out["bars"] >= expected * 0.5]
 
 
+def _drawdown(values: pd.Series) -> float:
+    """Diepste terugval in R, en dat getal ontbrak in de eerste versie.
+
+    ZONDER DIT IS DE VERGELIJKING ONEERLIJK IN HET VOORDEEL VAN DE DOMME
+    VERSIE. Sectie zes heeft een stop van 0,8 ATR; de klok heeft er geen en zit
+    zes uur lang vol in de markt. Een nacht waarin goud vijftig dollar zakt kost
+    de klok dertig R en sectie zes één R. Twee totalen naast elkaar zetten
+    zonder dat erbij te vertellen is precies hoe een strategie die de rekening
+    opblaast er beter uitziet dan een die dat niet doet.
+    """
+
+    if values.empty:
+        return 0.0
+    equity = values.cumsum()
+    return float((equity.cummax() - equity).max())
+
+
 def _stats(returns: pd.Series, cost_per_trade_r: float) -> dict:
-    """Totaal, per trade, trefkans en t, netto na een vaste kostenaftrek."""
+    """Totaal, per trade, trefkans, t, terugval en de ergste losse dag."""
 
     if returns.empty:
         return {}
@@ -106,6 +131,8 @@ def _stats(returns: pd.Series, cost_per_trade_r: float) -> dict:
         "t": (mean / (sd / np.sqrt(n))) if sd > 0 else 0.0,
         "bruto_totaal": float(returns.sum()),
         "bruto_per_trade": float(returns.mean()),
+        "terugval": _drawdown(net),
+        "ergste_dag": float(net.min()),
     }
 
 
@@ -221,11 +248,48 @@ def run(args) -> None:
         print("       venster staat op zichzelf niet vast. Dat is IETS ANDERS dan nul:")
         print(f"       het totaal is {main['totaal']:+.2f} R en daarmee vergelijk je hieronder.")
 
+    print(f"    terugval {main['terugval']:.2f} R   ergste dag {main['ergste_dag']:+.2f} R")
+
+    # DE CONTROLE DIE ONTBRAK, en zonder haar is het hele cijfer waardeloos.
+    #
+    # Goud steeg in 2024-2025 hard. Long zitten in WELK venster dan ook verdient
+    # dan geld, en dan meet dit niet een sessie-effect maar een bullmarkt. De
+    # eerlijke vraag is of dit venster MEER oplevert dan zijn aandeel in de
+    # uren: zes van de vierentwintig is een kwart, dus een venster zonder eigen
+    # effect hoort ongeveer een kwart van de hele beweging te pakken.
+    hours = (args.end_hour - args.start_hour) % 24 or 24
+    hold = _stats(_as_r(_sessions(frame, 0, 0), stop_atr, atr), args.cost_r)
+    print("\n  DE CONTROLE: DE HELE DAG LONG, over precies dezelfde dagen")
+    if hold:
+        share = hours / 24.0
+        expected = hold["totaal"] * share
+        print(
+            f"    24 uur long   {hold['n']} dagen   netto {hold['totaal']:+.2f} R   "
+            f"terugval {hold['terugval']:.2f} R"
+        )
+        print(f"    {hours} van de 24 uur is {share:.0%}, dus een venster zonder eigen effect")
+        print(f"    hoort rond {expected:+.2f} R uit te komen.")
+        print(f"    Dit venster doet {main['totaal']:+.2f} R.")
+        if main["totaal"] > expected * 1.5:
+            print("    -> MEER dan zijn aandeel. Er zit iets in dit venster zelf.")
+        elif main["totaal"] < expected * 0.5:
+            print("    -> MINDER dan zijn aandeel. Dit venster is juist het zwakke deel.")
+        else:
+            print("    -> ONGEVEER zijn aandeel. Dan meet je de trend in goud en")
+            print("       niet een sessie-effect, en dan zegt dit getal niets over")
+            print("       de klok van sectie zes.")
+    else:
+        print("    (niet te berekenen op deze reeks)")
+
     print("\n  HOE JE DIT LEEST, en dit is het hele punt:")
     print("    Zet `netto totaal` naast wat sectie zes over dezelfde periode deed")
     print("    (uit kosten.cmd). Doet dit domme ding het net zo goed, dan is het")
     print("    model versiering. Doet het het slechter, dan verdient het model")
     print("    zijn plek -- en dat is dan voor het eerst aangetoond.")
+    print("\n    MAAR LEES DE TERUGVAL ERBIJ. De klok heeft GEEN stop en zit zes uur")
+    print("    vol in de markt; sectie zes wordt op 0,8 ATR uitgestopt. Een groter")
+    print("    totaal met een veel diepere terugval is geen betere strategie, dat")
+    print("    is dezelfde strategie met meer hefboom.")
 
     if not args.sweep:
         print("\n  `--sweep` toont alle vensters. Lees dat als diagnose, niet als")

@@ -308,3 +308,59 @@ def test_the_launcher_can_run_the_untouched_holdout_year() -> None:
     for date in ("2024-09-01", "2025-08-31"):
         assert date in launcher, date
         assert date in holdout, f"{date} staat niet in de holdout-launcher"
+
+
+def test_the_whole_day_is_a_window_and_not_an_empty_selection() -> None:
+    """De hele dag long is DE controle, en die mag nooit stil leeg zijn.
+
+    `start == end` viel in de tak `start <= end` en gaf `uur >= 0 & uur < 0`:
+    nul rijen. Een lege controle leest als "geen trend in goud", en dat is
+    precies de conclusie die deze controle moet kunnen weerleggen -- de
+    gevaarlijkste stilte die dit script kan produceren.
+    """
+
+    frame = _frame(days=8)
+    hele_dag = _sessions(frame, 0, 0)
+
+    assert not hele_dag.empty
+    assert hele_dag["bars"].median() == 288  # een etmaal op M5
+
+
+def test_the_control_asks_whether_the_window_beats_its_share_of_the_hours() -> None:
+    """Goud steeg hard in 2024-2025. Long in elk venster verdient dan geld.
+
+    Zonder deze controle meet de test een bullmarkt en niet een sessie-effect.
+    Zes van de vierentwintig uur is een kwart, dus een venster zonder eigen
+    effect hoort ongeveer een kwart van de hele beweging te pakken. Op een
+    reeks die gelijkmatig stijgt moet dat ook precies uitkomen.
+    """
+
+    from scripts.dumb_session_baseline import _atr
+
+    frame = _frame(days=40)  # strikt lineair oplopend, geen enkel sessie-effect
+    atr = _atr(frame)
+
+    venster = _as_r(_sessions(frame, 20, 2), 0.8, atr).sum()
+    hele_dag = _as_r(_sessions(frame, 0, 0), 0.8, atr).sum()
+
+    # Zes uur van de vierentwintig, op een reeks zonder voorkeursuur.
+    assert venster == pytest.approx(hele_dag * 6 / 24, rel=0.15)
+
+
+def test_the_report_carries_the_drawdown_next_to_the_total() -> None:
+    """Een groter totaal met een diepere terugval is meer hefboom, geen edge.
+
+    De klok heeft geen stop en zit zes uur vol in de markt; sectie zes wordt op
+    0,8 ATR uitgestopt. Twee totalen naast elkaar zetten zonder dat erbij te
+    zeggen laat een strategie die de rekening kan opblazen er beter uitzien dan
+    een die dat niet kan.
+    """
+
+    from scripts.dumb_session_baseline import _drawdown
+
+    # Loopt naar +6 maar zakt onderweg 5 diep.
+    stats = _stats(pd.Series([3.0, -5.0, 2.0, 6.0]), 0.0)
+
+    assert _drawdown(pd.Series([3.0, -5.0, 2.0, 6.0])) == pytest.approx(5.0)
+    assert stats["terugval"] == pytest.approx(5.0)
+    assert stats["ergste_dag"] == pytest.approx(-5.0)
