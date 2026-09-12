@@ -200,9 +200,18 @@ def test_section_ten_enters_first_closed_bar_retest_after_large_gold_break() -> 
     low = np.full(len(index), 99.0)
     close[-2], high[-2], low[-2] = 104.0, 104.5, 100.0
     close[-1], high[-1], low[-1] = 102.0, 103.0, 101.0
+    # THE BREAK BAR NEEDS AN OPEN OF ITS OWN. Every other bar here is a doji
+    # (`open` was the `close` array), which is fine for a flat run-up, but it
+    # made the break bar a doji too -- a four-point range with a zero body --
+    # so `break_body_atr` was 0.0 by construction and the assertion below could
+    # never have passed on any implementation. A bar that breaks a range opens
+    # inside it and closes outside; that is what is being detected.
+    open_ = close.copy()
+    open_[-2] = 100.0
+    open_[-1] = 103.0
     frame = pd.DataFrame(
         {
-            "open": close,
+            "open": open_,
             "high": high,
             "low": low,
             "close": close,
