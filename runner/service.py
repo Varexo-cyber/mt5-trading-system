@@ -62,6 +62,7 @@ from analysis import (
     OrderBlock,
     PeerMove,
     Seasonality,
+    SectionEighteenGoldTrendD1,
     SectionEightTrendDayH1,
     SectionFiveM5,
     SectionNineSessionVwapM30,
@@ -530,6 +531,11 @@ def build_analysis_modules(settings: Settings) -> list[object]:
         # Shadow-only until its chronological session/clock study passes.
         SectionSevenGoldSmc(analysis.section_seven_gold_smc),
         SectionEightTrendDayH1(analysis.section_eight_trend_day_h1),
+        # SECTIE ACHTTIEN, schaduw. Eerste sectie op de dagklok; gebouwd
+        # nadat de holdout liet zien dat goud +1250,93 R deed en sectie
+        # zes er +4,21 R van ving. Niet live tot de vooraf vastgelegde
+        # holdout EN een vooruit gemeten periode positief zijn.
+        SectionEighteenGoldTrendD1(analysis.section_eighteen_gold_trend_d1),
         SectionNineSessionVwapM30(analysis.section_nine_vwap_m30),
         SectionTenGoldM1(analysis.section_ten_gold_m1),
         # One shadow-only top-down decision process. It is deliberately absent

@@ -4185,6 +4185,39 @@ class SectionEightTrendDayConfig(Base):
     confidence: float = Field(default=0.76, ge=0.0, le=1.0)
 
 
+class SectionEighteenGoldTrendConfig(Base):
+    """SECTION EIGHTEEN: XAUUSD daily trend participation. Twee knoppen, met opzet.
+
+    De eerste sectie in dit project op de dagklok. Gebouwd nadat de holdout van
+    12 september liet zien dat goud +1250,93 R deed en sectie zes er +4,21 R van
+    ving: geen kosten- en geen modelprobleem maar een DEELNAMEprobleem.
+
+    `trend_bars` en `stop_atr` zijn de enige twee vrije parameters en de
+    hypothese legt zes toegestane combinaties vast. `_bonferroni_t(6)` is 2,64;
+    bij honderd kandidaten zou de lat 3,48 zijn. Elke extra knop hier verzwakt
+    het bewijs dat deze sectie kan leveren, en dat is precies waarom het er
+    twee zijn.
+    """
+
+    enabled: bool = False
+    timeframe: str = "D1"
+    allowed_symbols: tuple[str, ...] = ("XAUUSD",)
+    #: Lengte van het trage gemiddelde. Toegestaan in de hypothese: 20, 50, 100.
+    trend_bars: int = Field(default=50, ge=5, le=250)
+    #: Stopbreedte in dagelijkse ATR. Toegestaan in de hypothese: 2,0 en 3,0.
+    #: BREED MET OPZET: een trend van weken overleeft geen stop van een halve
+    #: ATR -- die wordt uitgeschud op ruis, en dan betaal je de spread opnieuw
+    #: voor dezelfde these.
+    stop_atr: float = Field(default=2.0, gt=0.0, le=10.0)
+    atr_period: int = Field(default=14, ge=5, le=100)
+    #: Hoe ver boven het gemiddelde nog ingestapt wordt. GEEN vrije parameter:
+    #: hij staat ruim en wordt niet afgesteld, want dat zou een derde knop zijn
+    #: en de Bonferroni-lat verhogen.
+    maximum_stretch_atr: float = Field(default=4.0, gt=0.0, le=20.0)
+    score: float = Field(default=70.0, ge=0.0, le=100.0)
+    confidence: float = Field(default=0.70, ge=0.0, le=1.0)
+
+
 class SectionNineSessionVwapConfig(Base):
     """SECTION NINE: USDJPY UTC-session VWAP reversion on M30."""
 
@@ -4663,6 +4696,9 @@ class AnalysisConfig(Base):
     section_six_gold_m5: SectionSixModelConfig = SectionSixModelConfig()
     section_six_spx_h1: SectionSixModelConfig = SectionSixModelConfig(timeframe="H1")
     section_eight_trend_day_h1: SectionEightTrendDayConfig = SectionEightTrendDayConfig()
+    section_eighteen_gold_trend_d1: SectionEighteenGoldTrendConfig = (
+        SectionEighteenGoldTrendConfig()
+    )
     section_nine_vwap_m30: SectionNineSessionVwapConfig = SectionNineSessionVwapConfig()
     section_ten_gold_m1: SectionTenGoldM1Config = SectionTenGoldM1Config()
     #: THREE CLOCKS, ONE CLASS. A module is one instance reading one

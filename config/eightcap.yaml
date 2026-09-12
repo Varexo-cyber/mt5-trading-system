@@ -1497,6 +1497,39 @@ analysis:
     score: 72.0
     confidence: 0.60
 
+  # SECTIE ACHTTIEN -- SCHADUW, GEEN LIVE GELD. De eerste sectie in dit project
+  # op de DAGKLOK, en dat is de hele reden dat hij bestaat.
+  #
+  # 12 september, `domtest.cmd holdout` over het onaangeraakte jaar:
+  #
+  #     de hele dag long goud, 256 dagen        +1250,93 R
+  #     sectie zes over dezelfde periode           +4,21 R
+  #
+  # Goud maakte een van zijn grootste bewegingen ooit, sectie zes is LONG-ONLY
+  # goud, en hij ving er drie tiende procent van. Dat is geen kostenprobleem en
+  # geen modelprobleem: alle 44 bestaande modules zijn intraday en dus per
+  # definitie afwezig terwijl een beweging van maanden zich voltrekt.
+  #
+  # TWEE VRIJE PARAMETERS, en dat is het ontwerp. `trend_bars` en `stop_atr`.
+  # De hypothese legt zes toegestane combinaties vast (20/50/100 maal 2,0/3,0)
+  # en de Bonferroni-lat voor zes is t>2,64. Sectie zes had veertig knoppen en
+  # heeft nooit een eerlijke lat gehaald omdat niemand ooit telde hoeveel er
+  # geprobeerd was.
+  #
+  # DE LAT IS NIET DE WINST MAAR DE WINST PER TERUGVAL. Buy-and-hold gaf
+  # 1250,93 / 295,08 = 4,24, en is onbruikbaar omdat 295 R een veelvoud van
+  # deze rekening is. Deze sectie moet boven 2,12 uitkomen of hij is een dure
+  # manier om goud te kopen. Dat staat in
+  # `docs/hypotheses/section_eighteen_gold_trend_d1.md`, vooraf opgeschreven.
+  section_eighteen_gold_trend_d1:
+    enabled: true
+    timeframe: D1
+    allowed_symbols: [XAUUSD]
+    trend_bars: 50
+    stop_atr: 2.0
+    atr_period: 14
+    maximum_stretch_atr: 4.0
+
   # SECTIE VIJF. NDX100 M5, nonlinear state model. Middelste kwart:
   # 62 trades, +0,218R/trade. Onaangeraakt nieuwste kwart: 87 trades,
   # 59,8% raak, +0,114R/trade, EUR +15,65 op EUR 203. Andere markten faalden.
@@ -3817,6 +3850,9 @@ analysis:
       # De vier US30-secties: schaduw, dus nul. Een meting tilt het
       # gewicht zelf op naar 1,0 op een kopie van de settings, dus ze
       # blijven volledig meetbaar zonder een stem te hebben.
+      # SECTIE ACHTTIEN: schaduw, dus nul. Een meting tilt het gewicht zelf
+      # naar 1,0 op een KOPIE van de settings, dus hij blijft meetbaar.
+      section_eighteen_gold_trend_d1: 0.0
       section_us30_impulse_m1: 0.0
       section_us30_impulse_m5: 0.0
       section_us30_orderblock_m1: 0.0
