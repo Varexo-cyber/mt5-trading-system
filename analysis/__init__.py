@@ -36,6 +36,7 @@ from analysis.mean_reversion import MeanReversion
 from analysis.modules import LevelReaction, LiquiditySweep, TrendMomentum, VolatilityRegime
 from analysis.order_block import OrderBlock
 from analysis.seasonality import Seasonality
+from analysis.section_eighteen_gold_trend_d1 import SectionEighteenGoldTrendD1
 from analysis.section_five_ndx100_m5 import SectionFiveM5
 from analysis.section_seven_smc import SectionSevenGoldSmc
 from analysis.section_six_adaptive import SectionSixGoldM5, SectionSixSpxH1
@@ -80,6 +81,7 @@ __all__ = [
     "ReviewDriftAssessment",
     "Seasonality",
     "SectionEightTrendDayH1",
+    "SectionEighteenGoldTrendD1",
     "SectionFiveM5",
     "SectionNineSessionVwapM30",
     "SectionSevenGoldSmc",

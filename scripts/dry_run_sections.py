@@ -3214,6 +3214,7 @@ def main(argv: list[str] | None = None) -> None:
             "section_six_spx_h1": "section_six_spx_h1",
             "section_seven_gold_smc": "section_seven_gold_smc",
             "section_eight_trend_day_h1": "section_eight_trend_day_h1",
+            "section_eighteen_gold_trend_d1": "section_eighteen_gold_trend_d1",
             "section_nine_vwap_m30": "section_nine_vwap_m30",
             "section_ten_gold_m1": "section_ten_gold_m1",
             "human_context_decision": "human_context_decision",
@@ -3272,6 +3273,12 @@ def main(argv: list[str] | None = None) -> None:
                 # reach the live intersection below -- listed so that the day
                 # one of them is promoted, `dryrun-live.cmd` already measures
                 # it instead of failing on a name it has never seen.
+                # SECTIE ACHTTIEN, schaduw. Hoort hier vanaf de dag dat hij
+                # geschreven is en niet vanaf de dag dat hij live mag: een
+                # sectie die niet in dit boek staat wordt door `dryrun-live.cmd`
+                # ook niet gemeten, en dat is hoe drie M1-detectors maandenlang
+                # ongetoetst bleven.
+                "section_eighteen_gold_trend_d1",
                 "section_us30_impulse_m1",
                 "section_us30_impulse_m5",
                 "section_us30_orderblock_m1",
