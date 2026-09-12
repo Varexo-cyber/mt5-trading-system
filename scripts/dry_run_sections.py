@@ -1332,6 +1332,7 @@ def _one_clock(
     needed: tuple[Timeframe, ...] | None = None,
     manage_grid: tuple[ExitVariant, ...] = (),
     fault_exit_grid: bool = False,
+    human_story: str = "",
     legs: dict | None = None,
 ) -> dict:
     """Every section that reads one clock, walked ONCE.
@@ -1520,6 +1521,33 @@ def _one_clock(
                     )
                 )
                 continue
+            if human_story:
+                human_signal = next(
+                    (
+                        signal
+                        for signal in idea.signals
+                        if signal.module == "human_context_decision" and signal.score
+                    ),
+                    None,
+                )
+                actual_story = (
+                    str(human_signal.details.get("story", ""))
+                    if human_signal is not None
+                    else ""
+                )
+                if actual_story != human_story:
+                    out[name].append(
+                        Decision(
+                            upto,
+                            symbol,
+                            module,
+                            "REFUSED_STORY",
+                            direction=idea.direction.name,
+                            note=f"story {actual_story or 'unknown'} is not {human_story}",
+                            pass_key=(name, clock.value),
+                        )
+                    )
+                    continue
             if raw_shadow:
                 # Match the discovery replay: signal on this closed clock bar,
                 # fill at the NEXT clock bar's open, with the ATR-sized risk
@@ -2524,6 +2552,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--csv", default="", help="write every decision to this file")
     parser.add_argument("--equity", type=float, default=0.0, help="override account equity")
     parser.add_argument(
+        "--human-story",
+        choices=("trend_continuation", "failed_auction", "break_retest"),
+        default="",
+        help="shadow-only: keep only this preregistered human-context market story",
+    )
+    parser.add_argument(
         "--s5-exit", choices=("fixed", "break-even"), default="",
         help="Replay-only S5 M5 exit comparison; never changes live settings",
     )
@@ -2739,6 +2773,8 @@ def main(argv: list[str] | None = None) -> None:
     selected_only = {
         item.strip() for item in args.only.replace(" ", ",").split(",") if item.strip()
     }
+    if args.human_story and selected_only != {"human_context_decision"}:
+        raise SystemExit("--human-story requires --only human_context_decision")
     if args.s5_exit and (
         selected_only != {"section_five_ndx100_m5"}
         or not args.jarvis_replay
@@ -3712,6 +3748,7 @@ def main(argv: list[str] | None = None) -> None:
                     ),
                     manage_grid=exit_variants,
                     fault_exit_grid=args.fault_exit_grid,
+                    human_story=args.human_story,
                     legs=(leg_frames if legs_name in names else None),
                 )
                 for name, rows in produced.items():

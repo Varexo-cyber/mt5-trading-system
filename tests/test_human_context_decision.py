@@ -140,3 +140,27 @@ def test_shadow_human_run_prints_the_exit_grid_outside_the_live_report() -> None
     source = inspect.getsource(dry_run_sections.main)
     assert "if exit_variants:" in source
     assert "_manage_grid_report(decisions, exit_variants)" in source
+
+
+def test_human180_trend_launcher_freezes_one_story_and_full_diagnostics() -> None:
+    launcher = (Path(__file__).parents[1] / "human180-trend.cmd").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--days 180" in launcher
+    assert "--only human_context_decision" in launcher
+    assert "--human-story trend_continuation" in launcher
+    assert "--fixed-exits" in launcher
+    assert "--exit-grid alles" in launcher
+    assert "--trend-grid" in launcher
+    assert "--fault-exit-grid" in launcher
+    assert "runtime\\human-trend-continuation-180.csv" in launcher
+
+
+def test_human_story_filter_is_restricted_to_the_human_shadow_module() -> None:
+    from scripts.dry_run_sections import build_parser
+
+    parsed = build_parser().parse_args(
+        ["--only", "human_context_decision", "--human-story", "trend_continuation"]
+    )
+    assert parsed.human_story == "trend_continuation"
