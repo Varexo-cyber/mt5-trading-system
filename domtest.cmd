@@ -16,13 +16,18 @@ cd /d "%DOM_ROOT%"
 
 set DAGEN=360
 set SWEEP=
+rem HOLDOUT = exact het venster van jarvis-holdout-2024-2025.cmd, zodat de
+rem uitkomst naast dezelfde CSV gelegd kan worden en niet naast een ander jaar.
+set VENSTER=
 :lees
 if "%~1"=="" goto klaar
 echo %~1| findstr /r "^[0-9][0-9]*$" >nul && set DAGEN=%~1
 if /i "%~1"=="alles" set SWEEP=--sweep
+if /i "%~1"=="holdout" set VENSTER=--start-date 2024-09-01 --end-date 2025-08-31
 shift
 goto lees
 :klaar
+if not "%VENSTER%"=="" set DAGEN=0
 
 echo.
 echo  ==========================================================================
@@ -56,9 +61,15 @@ echo  DAARNA VERGELIJK JE ZELF. Zet `netto totaal` hieronder naast wat sectie
 echo  zes over dezelfde periode deed volgens kosten.cmd. Dat is de hele test.
 echo.
 echo  GEBRUIK
-echo    domtest.cmd            360 dagen, alleen het venster van sectie zes
-echo    domtest.cmd 720        twee jaar
-echo    domtest.cmd 360 alles  ook alle andere vensters, als DIAGNOSE
+echo    domtest.cmd              360 dagen, alleen het venster van sectie zes
+echo    domtest.cmd holdout      HET ONAANGERAAKTE JAAR: 1 sep 2024 - 31 aug 2025,
+echo                             exact het venster van jarvis-holdout-2024-2025.cmd
+echo    domtest.cmd 720          twee jaar
+echo    domtest.cmd 360 alles    ook alle andere vensters, als DIAGNOSE
+echo.
+echo  DRAAI ZE ALLEBEI. Het 360-venster is waar de uren en filters van sectie
+echo  zes op gekozen zijn; de holdout is het jaar dat het systeem nooit gezien
+echo  heeft. Als de domme klok het daar OOK bijhoudt, is de zaak gesloten.
 echo.
 echo  `alles` is geen zoektocht. Ligt 20:00-02:00 tussen even goede buren, dan
 echo  is het effect breed en waarschijnlijk echt. Is het een eenzame piek, dan
@@ -74,7 +85,7 @@ if not exist ".venv-live\Scripts\python.exe" (
   exit /b 1
 )
 
-.venv-live\Scripts\python.exe -m scripts.dumb_session_baseline --days %DAGEN% %SWEEP%
+.venv-live\Scripts\python.exe -m scripts.dumb_session_baseline --days %DAGEN% %VENSTER% %SWEEP%
 
 if errorlevel 1 (
   echo.
