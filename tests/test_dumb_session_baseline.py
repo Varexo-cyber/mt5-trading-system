@@ -118,13 +118,68 @@ def test_the_result_is_expressed_in_r_and_not_in_price() -> None:
     lijkt het antwoord wat je wil dat het is.
     """
 
+    opened = pd.Timestamp("2026-01-02 20:00", tz="UTC")
     sessions = pd.DataFrame(
-        {"open": [2000.0], "close": [2010.0], "bars": [72]},
+        {"open": [2000.0], "close": [2010.0], "bars": [72], "opened_at": [opened]},
         index=pd.DatetimeIndex(["2026-01-02"], tz="UTC"),
     )
-    atr = pd.Series([25.0], index=pd.DatetimeIndex(["2026-01-02"], tz="UTC"))
+    atr = pd.Series([25.0], index=pd.DatetimeIndex([opened]))
 
     # 10 punten winst, stop is 0,8 x 25 = 20 punten -> +0,5 R
+    assert _as_r(sessions, 0.8, atr).iloc[0] == pytest.approx(0.5)
+
+
+def test_the_atr_is_section_sixs_own_and_not_a_second_definition() -> None:
+    """DIT IS EEN KEER FOUT GEGAAN EN HET FLATTEERDE SECTIE ZES.
+
+    De eerste versie nam het gemiddelde van de M5 true range per dag maal 14 in
+    plaats van een voortschrijdend gemiddelde over 14 bars. De noemer werd
+    daarmee veertien keer te groot, elke R veertien keer te klein, en de domme
+    sessietest kwam uit op +5,91 R terwijl sectie zes over hetzelfde venster
+    +140 R deed. Dat las als "het model verdient zijn plek" en het was een
+    rekenfout.
+
+    Twee definities van dezelfde grootheid is de fout die dit project
+    achtervolgt. Deze test eist dat het er letterlijk EEN is.
+    """
+
+    from analysis.section_six_adaptive import _atr as section_six_atr
+    from scripts.dumb_session_baseline import _atr as baseline_atr
+
+    frame = _frame(days=5)
+
+    pd.testing.assert_series_equal(baseline_atr(frame), section_six_atr(frame))
+
+
+def test_a_different_atr_period_is_refused_rather_than_quietly_used() -> None:
+    """Een andere periode maakt de vergelijking zinloos zonder dat het opvalt."""
+
+    from scripts.dumb_session_baseline import _atr as baseline_atr
+
+    with pytest.raises(ValueError, match="ATR\\(14\\)"):
+        baseline_atr(_frame(days=3), period=20)
+
+
+def test_the_r_uses_the_volatility_at_the_moment_the_window_opens() -> None:
+    """Niet die van middernacht, want 20:00-02:00 is per dag gestempeld.
+
+    Op de dagstempel reindexen pakt de ATR van twintig uur voor de instap. Dat
+    is geen vooruitkijken, maar het is wel de verkeerde volatiliteit, en op een
+    dag waarop de markt 's avonds losbarst is het verschil groot.
+    """
+
+    opened = pd.Timestamp("2026-01-02 20:00", tz="UTC")
+    sessions = pd.DataFrame(
+        {"open": [2000.0], "close": [2010.0], "bars": [72], "opened_at": [opened]},
+        index=pd.DatetimeIndex(["2026-01-02"], tz="UTC"),
+    )
+    atr = pd.Series(
+        [100.0, 25.0],
+        index=pd.DatetimeIndex(["2026-01-02 00:00", "2026-01-02 20:00"], tz="UTC"),
+    )
+
+    # Met de ATR van middernacht (100) zou dit +0,125 R zijn; met die van de
+    # opening (25) is het +0,5 R.
     assert _as_r(sessions, 0.8, atr).iloc[0] == pytest.approx(0.5)
 
 
