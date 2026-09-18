@@ -99,18 +99,31 @@ if not exist "config\.env" (
     copy /y "%OUDEENV%" "config\.env" >nul
   )
 )
-if not exist "config\.env" (
+rem BESTAAN IS NIET GENOEG, EN DAAR LIEP HET OP STUK.
+rem
+rem De kopie uit de andere projectmap werd netjes neergezet en bevatte geen
+rem inloggegevens -- waarschijnlijk gewoon het voorbeeldbestand. Mijn controle
+rem keek of het bestand ER WAS en niet of er IETS IN STOND, dus meldde hij
+rem "overgenomen" en viel het daarna alsnog om op dezelfde fout.
+rem
+rem Nu wordt er gezocht naar een ingevulde MT5_LOGIN. Niet naar de regel --
+rem naar een regel met een waarde erachter die niet het voorbeeld is.
+set HEEFTLOGIN=
+if exist "config\.env" (
+  findstr /r /c:"^MT5_LOGIN=[0-9][0-9]*" "config\.env" >nul 2>&1 && set HEEFTLOGIN=1
+  findstr /c:"MT5_LOGIN=12345678" "config\.env" >nul 2>&1 && set HEEFTLOGIN=
+)
+if not defined HEEFTLOGIN (
   echo.
   echo   ============================================================
   echo     JE MT5-INLOGGEGEVENS ONTBREKEN
   echo   ============================================================
   echo.
-  echo   Het bestand config\.env bestaat niet. Daarin staat met welk
-  echo   account ik bij MetaTrader 5 mag. Zonder dat: geen bars.
+  echo   In config\.env staat geen ingevuld MT5_LOGIN. Daarin hoort met
+  echo   welk account ik bij MetaTrader 5 mag. Zonder dat: geen bars.
   echo.
-  echo   Doe dit:
-  echo      copy config\.env.example config\.env
-  echo      notepad config\.env
+  echo   Ik open het bestand nu voor je. Vul de drie regels in, sla op,
+  echo   sluit Kladblok en draai ALLES.cmd opnieuw.
   echo.
   echo   Vul dan deze drie regels in:
   echo      MT5_LOGIN=je accountnummer
@@ -120,6 +133,8 @@ if not exist "config\.env" (
   echo   Die staan in MetaTrader 5 onder Extra ^> Opties ^> Server.
   echo   Dit bestand blijft op je eigen computer; het staat in .gitignore.
   echo.
+  if not exist "config\.env" copy config\.env.example "config\.env" >nul
+  start "" notepad "config\.env"
   pause
   exit /b 1
 )
