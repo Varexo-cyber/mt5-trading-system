@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import argparse
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
+
+from scripts.uitvoering import RAW_GOUD, laad as laad_uitvoering
 
 from scripts.section_twenty_pullback_ladder import (
     KLOKKEN,
@@ -226,7 +228,12 @@ def sectie22(m1: pd.DataFrame, stapels, *, instelling: ElioInstelling) -> list[H
     from scripts.section_twenty_pullback_ladder import stapel_omhoog
 
     melding("  sectie 22  Elio: klein doel, wijde stop ...")
-    kosten = instelling.spread * 2 * instelling.lot * 100.0
+    # Spread EEN keer per rondje (niet twee -- zie `scripts/uitvoering.py`),
+    # en slippage ALLEEN op een stop. Een doel is een limietorder en die
+    # vult op je prijs of beter; een stop is een marktorder en die slipt.
+    uitv = replace(RAW_GOUD, spread=instelling.spread)
+    kosten = uitv.kosten_per_been(instelling.lot)
+    slip = uitv.slippage_kosten(instelling.lot)
     uit: list[Handeling] = []
     i = 0
     while i < len(m1) - 1:
@@ -252,8 +259,10 @@ def sectie22(m1: pd.DataFrame, stapels, *, instelling: ElioInstelling) -> list[H
             punten = float(m1.iloc[pos]["close"]) - entry
         else:
             pos = min(pos, len(m1) - 1)
+        geraakt_stop = punten is not None and punten < 0
         uit.append(Handeling(m1.index[pos], "22",
-                             punten * instelling.lot * 100.0 - kosten,
+                             punten * instelling.lot * 100.0 - kosten
+                             - (slip if geraakt_stop else 0.0),
                              zwevend=-instelling.stop * instelling.lot * 100.0
                              if punten < 0 else 0.0))
         i = pos + instelling.om_de
@@ -329,11 +338,25 @@ def main() -> int:
     samen = _loop_balans(h20 + h21 + h22, args.balans, "alle drie samen")
     dom = koop_en_hou(m1, balans=args.balans)
 
+    # DE BROKER HOORT BOVEN DE UITSLAG TE STAAN, niet in een voetnoot.
+    #
+    # Een eindbedrag zonder de aannames erboven is een getal zonder eenheid.
+    # `herkomst` zegt of deze cijfers uit de terminal komen of terugvallen op
+    # schattingen, en dat verschil weegt zwaarder dan de meeste regels eronder.
+    uitv = laad_uitvoering("runtime/journal.db")
     kop = [
         "",
         "  " + "=" * 74,
         f"   EINDRESULTAAT  --  start EUR {args.balans:,.2f}, {dagen} dagen",
         "  " + "=" * 74,
+        "",
+        f"   broker:   spread {uitv.spread:g} pt   slippage {uitv.slippage:g} pt   "
+        f"hefboom 1:{uitv.hefboom:g}   stop-out {uitv.stop_out_niveau:.0%}",
+        f"             commissie {uitv.commissie_per_lot_per_kant:g}   "
+        f"swap {uitv.swap_per_lot_per_nacht:g}   (allebei nul op goud, gemeten)",
+        f"   herkomst: {uitv.herkomst}",
+        f"   marge:    EUR {uitv.marge_voor(0.01, 4000.0):,.2f} per been van "
+        f"0,01 lot  ->  stop-out volgt de ladder omhoog",
         "",
     ]
     lijf = [regel(u) for u in (u20, u21, u22, samen)]

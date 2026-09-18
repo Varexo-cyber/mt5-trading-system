@@ -41,6 +41,7 @@ from scripts.section_twenty_pullback_ladder import (
 from scripts.section_twentyone_straddle import (
     Instelling as Straddle, straddle_cyclus,
 )
+from scripts.uitvoering import RAW_GOUD
 from scripts.zoektocht import _lot_voor
 
 
@@ -139,7 +140,7 @@ def dagboek_straddle(m1, *, balans: float, inst: Straddle, risico: float,
 
 def dagboek_elio(m1, stapels, *, balans: float, doel: float, stop: float,
                  risico: float, max_bars: int = 60, om_de: int = 30,
-                 spread: float = 0.16) -> list[Regel]:
+                 spread: float = 0.14) -> list[Regel]:
     uit: list[Regel] = []
     huidig = balans
     i = 20
@@ -165,7 +166,9 @@ def dagboek_elio(m1, stapels, *, balans: float, doel: float, stop: float,
             punten = float(m1.iloc[pos]["close"]) - entry
         lot = _lot_voor(huidig, stop, deel=risico, euro_per_punt=1.0)
         factor = lot / 0.01
-        euro = (punten - spread * 2) * factor
+        # Spread een keer, plus slippage als het een STOP was.
+        euro = (punten - spread
+                - (RAW_GOUD.slippage if reden == "STOP" else 0.0)) * factor
         huidig = max(0.0, huidig + euro)
         uit.append(Regel(
             moment=stamp, sectie="S22",

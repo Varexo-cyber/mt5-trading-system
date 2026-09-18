@@ -15,7 +15,9 @@ rem   Je hoeft niets te typen, niets te kiezen en niets te lezen.
 rem ============================================================
 
 set BALANS=%1
-if "%BALANS%"=="" set BALANS=400
+rem JE ECHTE BALANS. Stond op 400 uit een oud voorbeeld; dat was
+rem niet jouw rekening en dus ook niet jouw antwoord.
+if "%BALANS%"=="" set BALANS=59.16
 
 rem TWEE JAAR, want dat is wat er gevraagd is. Let op: MT5 bewaart niet
 rem onbeperkt M1-historie -- krijg je veel minder bars dan verwacht, dan zet
@@ -121,10 +123,23 @@ if exist "config\.env" (
   echo   Geen config\.env -- ik haak aan bij je draaiende terminal.
 )
 
-echo   [1/8] nieuwste code ophalen...
+echo   [1/10] nieuwste code ophalen...
 git pull origin claude/mt5-autonomous-trading-system-ujd1sk >> "%UIT%" 2>&1
 
-echo   [2/8] bars uit MT5 exporteren (%DAGEN% dagen M1)...
+echo   [2/10] de BROKER uitmeten (hefboom, spread, stop-out, marge)...
+echo. >> "%UIT%"
+echo ---------- DE BROKER, GEMETEN UIT DE TERMINAL ---------- >> "%UIT%"
+%PY% -m scripts.uitvoering --symbool XAUUSD >> "%UIT%" 2>&1
+
+rem WELKE BALANS JE NODIG HEBT. Dit is rekenwerk en geen backtest, dus het
+rem draait ook als de bars niet opgehaald kunnen worden -- en het is het
+rem antwoord op de vraag die je stelde, dus het staat bovenaan.
+echo   [3/10] welke balans heb je nodig...
+echo. >> "%UIT%"
+echo ---------- WELKE BALANS HEB JE NODIG ---------- >> "%UIT%"
+%PY% -m scripts.welke_balans --balans %BALANS% >> "%UIT%" 2>&1
+
+echo   [4/10] bars uit MT5 exporteren (%DAGEN% dagen M1)...
 echo. >> "%UIT%"
 echo ---------- BARS ---------- >> "%UIT%"
 %PY% -m scripts.exporteer_bars --days %DAGEN% >> "%UIT%" 2>&1
@@ -149,33 +164,33 @@ rem Hier stond overal ">> %UIT%", dus het scherm bleef twintig minuten leeg en
 rem dat is niet te onderscheiden van een vastgelopen programma. Het antwoord op
 rem de vraag ("wat zou mijn balans nu zijn?") print nu OP HET SCHERM terwijl hij
 rem werkt, en schrijft zichzelf ook naar het bestand.
-echo   [3/8] EINDRESULTAAT -- wat je balans na deze periode zou zijn...
+echo   [5/10] EINDRESULTAAT -- wat je balans na deze periode zou zijn...
 echo.
 echo. >> "%UIT%"
 echo ---------- EINDRESULTAAT ---------- >> "%UIT%"
 %PY% -m scripts.eindresultaat --csv runtime\xauusd_m1.csv --balans %BALANS% --rapport "%UIT%"
 
 echo.
-echo   [4/8] SECTIE 23 -- uitstap: BE, trailen, deels eruit, tijdstop...
+echo   [6/10] SECTIE 23 -- uitstap: BE, trailen, deels eruit, tijdstop...
 echo.
 echo. >> "%UIT%"
 echo ---------- SECTIE 23: UITSTAP + BALANSLADDER ---------- >> "%UIT%"
 %PY% -m scripts.section_twentythree_uitstap --csv runtime\xauusd_m1.csv --balans %BALANS% --rapport "%UIT%"
 
 echo.
-echo   [5/8] DE ZOEKTOCHT -- hij stelt zichzelf bij tot er niets beters komt...
+echo   [7/10] DE ZOEKTOCHT -- hij stelt zichzelf bij tot er niets beters komt...
 echo.
 echo. >> "%UIT%"
 echo ---------- DE ZOEKTOCHT ---------- >> "%UIT%"
 %PY% -m scripts.zoektocht --csv runtime\xauusd_m1.csv --balans %BALANS% --rapport "%UIT%"
 
 echo.
-echo   [6/8] HET DAGBOEK -- elke trade apart, met bar, reden en verloop...
+echo   [8/10] HET DAGBOEK -- elke trade apart, met bar, reden en verloop...
 echo.
 %PY% -m scripts.dagboek --csv runtime\xauusd_m1.csv --balans %BALANS% --uit runtime\dagboek.txt
 
 echo.
-echo   [7/8] alle configuraties doorrekenen ^(dit is de lange^)...
+echo   [9/10] alle configuraties doorrekenen ^(dit is de lange^)...
 echo. >> "%UIT%"
 echo ---------- SECTIE 20: ALLE 72 CONFIGURATIES ---------- >> "%UIT%"
 %PY% -m scripts.section_twenty_pullback_ladder --csv runtime\xauusd_m1.csv --balans %BALANS% --alle-configs >> "%UIT%" 2>&1
@@ -183,7 +198,7 @@ echo. >> "%UIT%"
 echo ---------- SECTIE 21: ALLE 48 CONFIGURATIES ---------- >> "%UIT%"
 %PY% -m scripts.section_twentyone_straddle --csv runtime\xauusd_m1.csv --alle-configs >> "%UIT%" 2>&1
 
-echo   [8/8] sectie 22 -- trackrecords toetsen aan hun eigen beweringen...
+echo   [10/10] sectie 22 -- trackrecords toetsen aan hun eigen beweringen...
 echo. >> "%UIT%"
 echo ---------- SECTIE 22: CLAIM-AUDIT ---------- >> "%UIT%"
 %PY% -m scripts.section_twentytwo_claim_audit >> "%UIT%" 2>&1

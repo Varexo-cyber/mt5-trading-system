@@ -43,6 +43,8 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 import pandas as pd
 
+from scripts.uitvoering import RAW_GOUD
+
 from scripts.section_twenty_pullback_ladder import (
     CONTRACT, KLOKKEN, Instelling as Ladder, _hersample, _lees_csv, _loopt,
     _sessie_van, simuleer as ladder_simuleer, stapel_omhoog,
@@ -149,7 +151,10 @@ def draai_straddle(m1, cfg: dict, *, balans: float, euro_per_punt: float) -> Uit
 
 def draai_elio(m1, stapels, cfg: dict, *, balans: float,
                euro_per_punt: float) -> Uitslag:
-    kosten = cfg["spread"] * 2
+    # In PUNTEN, want deze lus rekent in punten. Spread een keer per rondje;
+    # slippage alleen op de stop, want het doel is een limietorder.
+    kosten = cfg["spread"]
+    slip = RAW_GOUD.slippage
     rijen = []
     i = 20
     while i < len(m1) - 1:
@@ -173,7 +178,9 @@ def draai_elio(m1, stapels, cfg: dict, *, balans: float,
         if punten is None:
             punten = float(m1.iloc[pos]["close"]) - entry
         # Bij een vaste stop is de diepste stand hoogstens die stop.
-        rijen.append((m1.index[pos], punten - kosten,
+        geraakt_stop = punten is not None and punten < 0
+        rijen.append((m1.index[pos], punten - kosten
+                      - (slip if geraakt_stop else 0.0),
                       -cfg["stop"] if punten < 0 else 0.0))
         i = pos + cfg["om_de"]
     return _naar_uitslag(rijen, balans=balans, risico_punten=cfg["stop"],

@@ -34,12 +34,13 @@ hieronder draait in de tests op verzonnen bars, zonder MT5.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC
 
 import numpy as np
 import pandas as pd
 
+from scripts.uitvoering import RAW_GOUD, Uitvoering
 from scripts.section_twenty_pullback_ladder import (
     CONTRACT, _lees_csv, _sessie_van, kosten_per_been,
 )
@@ -62,9 +63,17 @@ class Instelling:
     #: Stop voor het overgebleven been. None = laten lopen, zoals gevraagd.
     winnaar_stop: float | None = None
     lot: float = 0.01
-    spread: float = 0.16
+    spread: float = 0.14
+    #: De broker: marge, stop-out, slippage. Zie `scripts/uitvoering.py`.
+    uitvoering: Uitvoering = RAW_GOUD
     #: Hoeveel bars een cyclus maximaal open blijft voordat hij plat gaat.
     max_bars: int = 240
+
+    @property
+    def uit(self) -> Uitvoering:
+        """De broker met de spread van DEZE configuratie erin."""
+
+        return replace(self.uitvoering, spread=self.spread)
 
     @property
     def naam(self) -> str:
@@ -89,9 +98,23 @@ class Cyclus:
 
 
 def _kosten(instelling: Instelling, benen: int) -> float:
-    """Spread EN commissie, twee keer per been: in en uit."""
+    """Wat `benen` posities kosten van openen tot sluiten.
 
-    return kosten_per_been(instelling.spread, instelling.lot) * benen
+    Spread EEN keer per been -- zie `Uitvoering.kosten_per_been`. Hier stond
+    twee keer, en dat telde de spread dubbel.
+    """
+
+    return instelling.uit.kosten_per_been(instelling.lot) * benen
+
+
+def _slippage(instelling: Instelling, benen: int) -> float:
+    """Wat het SLUITEN van `benen` posities aan slippage kost.
+
+    Bij een straddle gaat er altijd een been met een marktorder dicht -- dat
+    IS het mechanisme. De slippage hoort dus bij elke cyclus en niet bij de
+    uitzonderingen."""
+
+    return instelling.uit.slippage_kosten(instelling.lot, benen)
 
 
 def _loop_een_been(
@@ -174,7 +197,10 @@ def straddle_cyclus(
             # whipsaw die dit mechanisme duur maakt, en hem wegdefinieren zou
             # de hele meting waardeloos maken.
             cyclus.netto_euro = -2 * instelling.kap * instelling.lot * CONTRACT
-            cyclus.netto_euro -= _kosten(instelling, 2)
+            # OOK EEN DUBBELE STOP SLIPT. Twee marktorders in precies het
+            # moment waarop de markt door je beide benen heen ramt; dat is
+            # de slechtst denkbare plek om te vullen.
+            cyclus.netto_euro -= _kosten(instelling, 2) + _slippage(instelling, 2)
             cyclus.diepste_euro = cyclus.netto_euro
             cyclus.gehouden = 0
             cyclus.bars = offset + 1
@@ -184,18 +210,25 @@ def straddle_cyclus(
         if long_af or short_af:
             houd = -1 if long_af else 1
             # WAT DE WINNAAR MOET GOEDMAKEN: het verlies van het afgekapte
-            # been, de marge die je wil overhouden, en de vier spreads.
-            kosten_punten = instelling.spread * 2 * 2
-            nodig = (instelling.kap + instelling.marge + kosten_punten
+            # been, de marge die je wil overhouden, en de kosten van ALLEBEI de
+            # benen -- spread en slippage.
+            #
+            # DE DREMPEL EN DE AFREKENING KOMEN UIT DEZELFDE FORMULE, en dat is
+            # de reden dat dit hier zo staat. Er stond `spread * 2 * 2`, los van
+            # `_kosten`. Zodra de dubbel getelde spread eruit ging, liep de
+            # drempel uit de pas met wat er werkelijk werd afgeboekt, en de test
+            # zag het meteen: netto 2,32 waar 2,00 hoorde te staan.
+            per_punt = instelling.lot * CONTRACT
+            kosten_euro = _kosten(instelling, 2) + _slippage(instelling, 2)
+            nodig = (instelling.kap + instelling.marge + kosten_euro / per_punt
                      if instelling.compenseer else instelling.doel)
             rest_punten, rest_diepste, rest_bars, slot = _loop_een_been(
                 m1, pos, entry, houd, instelling, nodig=nodig
             )
             punten = rest_punten - instelling.kap
-            cyclus.netto_euro = punten * instelling.lot * CONTRACT - _kosten(instelling, 2)
+            cyclus.netto_euro = punten * per_punt - kosten_euro
             cyclus.diepste_euro = (
-                (rest_diepste - instelling.kap) * instelling.lot * CONTRACT
-                - _kosten(instelling, 2)
+                (rest_diepste - instelling.kap) * per_punt - kosten_euro
             )
             cyclus.gehouden = houd
             cyclus.bars = offset + 1 + rest_bars
@@ -205,8 +238,9 @@ def straddle_cyclus(
     # Geen van beide benen geraakt binnen het venster: plat op de slotkoers.
     pos = min(start + instelling.max_bars, len(m1)) - 1
     slot = float(m1.iloc[pos]["close"])
-    # Twee tegengestelde benen salderen tot nul; alleen de kosten blijven over.
-    cyclus.netto_euro = -_kosten(instelling, 2)
+    # Twee tegengestelde benen salderen tot nul; alleen de kosten blijven over --
+    # en ook platgaan op de tijd is een marktorder op twee posities.
+    cyclus.netto_euro = -(_kosten(instelling, 2) + _slippage(instelling, 2))
     cyclus.gehouden = 0
     cyclus.bars = instelling.max_bars
     cyclus.gesloten = m1.index[pos]

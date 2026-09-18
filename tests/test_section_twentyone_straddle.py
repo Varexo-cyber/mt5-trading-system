@@ -26,6 +26,7 @@ import pytest
 
 from scripts.section_twenty_pullback_ladder import CONTRACT, kosten_per_been
 from scripts.section_twentyone_straddle import (
+    _slippage,
     Cyclus,
     Instelling,
     draai,
@@ -54,7 +55,9 @@ class TestDeWhipsawBestaat:
         cyclus = straddle_cyclus(m1, 0, instelling=Instelling(kap=5.0, spread=0.0, lot=0.01))
 
         assert cyclus.gehouden == 0, "er is een been blijven staan na een dubbele stop"
-        verwacht = -2 * 5.0 * 0.01 * CONTRACT - kosten_per_been(0.0, 0.01) * 2
+        inst = Instelling(kap=5.0, spread=0.0, lot=0.01)
+        verwacht = (-2 * 5.0 * 0.01 * CONTRACT
+                    - kosten_per_been(0.0, 0.01) * 2 - _slippage(inst, 2))
         assert cyclus.netto_euro == pytest.approx(verwacht), (
             "een dubbele stop kost twee keer de kap, niet een keer"
         )
@@ -106,7 +109,10 @@ class TestVierSpreadsPerCyclus:
         )
         # En hij komt allebei op de MARGE uit, want dat is de afspraak.
         assert zonder.netto_euro == pytest.approx(
-            2.0 * 0.01 * CONTRACT - kosten_per_been(0.0, 0.01) * 2, abs=0.01)
+            2.0 * 0.01 * CONTRACT, abs=0.01), (
+            "de compenseer-regel hoort precies de MARGE over te houden: de "
+            "kosten zitten al in de drempel verwerkt"
+        )
 
     def test_bij_een_vast_doel_gaan_vier_spreads_er_wel_gewoon_af(self):
         """Zonder deze test zou de test hierboven ook slagen bij een
@@ -167,7 +173,9 @@ class TestDeStopWintDeBar:
         )
 
         # -10 op het overgebleven been, -5 op het afgekapte been, min kosten.
-        verwacht = (-10.0 - 5.0) * 0.01 * CONTRACT - kosten_per_been(0.0, 0.01) * 2
+        inst = Instelling(kap=5.0, doel=20.0, winnaar_stop=10.0, spread=0.0, lot=0.01)
+        verwacht = ((-10.0 - 5.0) * 0.01 * CONTRACT
+                    - kosten_per_been(0.0, 0.01) * 2 - _slippage(inst, 2))
         assert cyclus.netto_euro == pytest.approx(verwacht), (
             "het doel is gepakt in een bar die ook de stop raakte"
         )
