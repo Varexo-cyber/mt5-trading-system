@@ -17,8 +17,10 @@ rem ============================================================
 set BALANS=%1
 if "%BALANS%"=="" set BALANS=400
 
-set STAMP=%DATE:~-4%%DATE:~3,2%%DATE:~0,2%
-set UIT=runtime\uitslag-%STAMP%.txt
+rem GEEN DATUM UIT %DATE% KNIPPEN. Dat formaat hangt af van je
+rem taalinstelling: "Fri 09/18/2026" werd hier "uitslag-2026 0Fr.txt".
+rem Een vaste naam kan niet misgaan en is makkelijker terug te vinden.
+set UIT=runtime\uitslag.txt
 if not exist runtime mkdir runtime
 
 echo.
@@ -31,13 +33,57 @@ echo   Verder hoef je niets te doen.
 echo.
 pause
 
+rem PYTHON ZOEKEN, EN HEM ECHT PROBEREN.
+rem
+rem `where python` SLAAGT op Windows ook als er geen Python staat: er ligt een
+rem nep-python.exe van de Microsoft Store in WindowsApps die alleen een
+rem reclameregel print. Daar liep dit script op stuk --
+rem "Python was not found; run without arguments to install from the
+rem Microsoft Store" -- terwijl het dacht dat het Python had.
+rem
+rem De enige betrouwbare test is hem DRAAIEN en de exitcode bekijken.
 set PY=
-if exist ".venv-live\Scripts\python.exe" set PY=.venv-live\Scripts\python.exe
-if not defined PY if exist ".venv\Scripts\python.exe" set PY=.venv\Scripts\python.exe
-if not defined PY (where py >nul 2>&1 && set PY=py -3)
-if not defined PY (where python >nul 2>&1 && set PY=python)
+if exist ".venv-live\Scripts\python.exe" (
+  .venv-live\Scripts\python.exe -c "pass" >nul 2>&1 && set PY=.venv-live\Scripts\python.exe
+)
+if not defined PY if exist ".venv\Scripts\python.exe" (
+  .venv\Scripts\python.exe -c "pass" >nul 2>&1 && set PY=.venv\Scripts\python.exe
+)
+if not defined PY ( py -3 -c "pass" >nul 2>&1 && set PY=py -3 )
+if not defined PY ( python -c "pass" >nul 2>&1 && set PY=python )
+if not defined PY ( python3 -c "pass" >nul 2>&1 && set PY=python3 )
+
 if not defined PY (
-  echo   Geen Python gevonden. Draai eerst install-market-feed.cmd.
+  echo.
+  echo   ============================================================
+  echo     GEEN WERKENDE PYTHON GEVONDEN
+  echo   ============================================================
+  echo.
+  echo   Dit project heeft Python nodig. Gezocht op:
+  echo     .venv-live\Scripts\python.exe
+  echo     .venv\Scripts\python.exe
+  echo     py -3
+  echo     python  /  python3
+  echo.
+  echo   Krijg je "install from the Microsoft Store"? Dan staat er een
+  echo   NEP-python op je pad en is er geen echte geinstalleerd.
+  echo.
+  echo   Draai eerst:   SETUP.cmd
+  echo.
+  pause
+  exit /b 1
+)
+
+echo   Python gevonden: %PY%
+
+rem EN OF DE PAKKETTEN ER ZIJN. Python hebben is niet hetzelfde als pandas
+rem hebben, en dat verschil merk je anders pas drie stappen verderop.
+%PY% -c "import pandas, numpy, pydantic, yaml" >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo   Python werkt, maar de pakketten ontbreken ^(pandas/numpy/pydantic^).
+  echo   Draai eerst:   SETUP.cmd
+  echo.
   pause
   exit /b 1
 )
