@@ -18,11 +18,13 @@ stilletjes beter uit laten zien dan hij is:
 from __future__ import annotations
 
 from datetime import UTC
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from scripts.section_twenty_pullback_ladder import (
+    COMMISSIE_PER_LOT_PER_KANT,
     CONTRACT,
     KLOKKEN,
     Instelling,
@@ -31,6 +33,7 @@ from scripts.section_twenty_pullback_ladder import (
     simuleer,
     stapel_omhoog,
     stapel_richting,
+    kosten_per_been,
 )
 
 
@@ -133,7 +136,8 @@ class TestDeNogOpenMandTeltMee:
             balans=10_000.0,
         )
 
-        verwacht = (90.0 - 100.0) * 0.01 * CONTRACT
+        # Een been op 100, low 90 -> tien punten onder water, min de kosten.
+        verwacht = (90.0 - 100.0) * 0.01 * CONTRACT - kosten_per_been(0.0, 0.01)
         assert manden[0].diepste_euro == pytest.approx(verwacht), (
             "de diepste stand is op de close gemeten in plaats van op de low"
         )
@@ -216,9 +220,48 @@ class TestKostenPerBeen:
         benen = zonder[0].aantal_benen
         assert benen == 3
         verschil = zonder[0].resultaat_euro - met[0].resultaat_euro
-        verwacht = 0.16 * 2 * 0.01 * CONTRACT * benen
+        # Alleen het SPREAD-deel verschilt; de commissie zit in allebei.
+        verwacht = (kosten_per_been(0.16, 0.01) - kosten_per_been(0.0, 0.01)) * benen
         assert verschil == pytest.approx(verwacht), (
             "de kosten schalen niet met het aantal benen"
+        )
+
+
+class TestGoudBetaaltGeenCommissie:
+    """De kostenformule mag niet opnieuw het FOREX-getal pakken.
+
+    `commission_per_lot_per_side: 2.75` in `config/eightcap.yaml` geldt alleen
+    voor forex. Daaronder staat `commission_by_asset_class` met `metal: 0.0`,
+    gemeten uit de rekening zelf. Ik pakte de eerste en rekende daarmee kosten
+    door die goud nooit betaalt. Deze test leest allebei uit de config en houdt
+    de constante vast aan de juiste.
+    """
+
+    @staticmethod
+    def _uit_config() -> dict:
+        import yaml
+
+        pad = Path(__file__).resolve().parents[1] / "config" / "eightcap.yaml"
+        with open(pad, encoding="utf-8") as f:
+            return yaml.safe_load(f)["risk"]
+
+    def test_de_constante_volgt_de_metaalregel_uit_de_config(self):
+        risk = self._uit_config()
+        metaal = risk["commission_by_asset_class"]["metal"]
+
+        assert metaal == 0.0, "de config zegt niet langer nul voor metaal"
+        assert COMMISSIE_PER_LOT_PER_KANT == metaal, (
+            "de meting rekent een andere commissie dan de config voor goud zegt"
+        )
+        assert COMMISSIE_PER_LOT_PER_KANT != risk["commission_per_lot_per_side"], (
+            "dit is het FOREX-getal; goud valt niet op die regel terug"
+        )
+
+    def test_de_kosten_van_een_been_zijn_puur_spread(self):
+        # 0,16 punt spread, heen en terug, 0,01 lot van 100 ounce = EUR 0,32.
+        assert kosten_per_been(0.16, 0.01) == pytest.approx(0.32)
+        assert kosten_per_been(0.0, 0.01) == pytest.approx(0.0), (
+            "zonder spread hoort een goudbeen niets te kosten"
         )
 
 
