@@ -70,6 +70,8 @@ class Uitkomst:
     handelingen: int
     diepste_terugval: float
     diepste_zwevend: float
+    zwevend_op: pd.Timestamp | None
+    balans_toen: float
     ruine: bool
     ruine_op: pd.Timestamp | None = None
     curve: list[float] = field(default_factory=list)
@@ -94,6 +96,8 @@ def _loop_balans(
     piek = start
     diepste = 0.0
     diepste_zw = 0.0
+    zwevend_op = None
+    balans_toen = start
     curve = [start]
     ruine_op = None
     gedaan = 0
@@ -117,7 +121,25 @@ def _loop_balans(
         # valt een zwevend verlies van EUR 500 niet meer op in een absolute
         # bodem. Wat telt is hoeveel je vanaf je HOOGSTE stand kwijtraakte.
         zwevende_stand = balans + h.zwevend
-        diepste_zw = max(diepste_zw, piek - zwevende_stand)
+        if piek - zwevende_stand > diepste_zw:
+            diepste_zw = piek - zwevende_stand
+            zwevend_op, balans_toen = h.moment, balans
+
+        # DE VRAAG DIE IK NOG NIET BEANTWOORDDE: ging de rekening ONDERWEG
+        # onder nul? Niet op de afrekening, maar terwijl er nog van alles open
+        # hing. Daar valt de margin call, en daarna is er geen rekening meer om
+        # de volgende 79.000 manden mee te handelen.
+        #
+        # Zonder deze controle kan een backtest vrolijk doortellen op een
+        # rekening die in maand twee al weg was. Dat is precies hoe een grid op
+        # papier miljoenen maakt.
+        if zwevende_stand <= 0:
+            return Uitkomst(
+                naam=naam, start=start, eind=0.0, handelingen=gedaan + 1,
+                diepste_terugval=diepste, diepste_zwevend=diepste_zw,
+                zwevend_op=zwevend_op, balans_toen=balans_toen,
+                ruine=True, ruine_op=h.moment, curve=curve)
+
         balans += h.euro
         gedaan += 1
         curve.append(balans)
@@ -131,6 +153,7 @@ def _loop_balans(
     return Uitkomst(
         naam=naam, start=start, eind=balans, handelingen=gedaan,
         diepste_terugval=diepste, diepste_zwevend=diepste_zw,
+        zwevend_op=zwevend_op, balans_toen=balans_toen,
         ruine=ruine_op is not None, ruine_op=ruine_op, curve=curve,
     )
 
@@ -260,15 +283,22 @@ def koop_en_hou(m1: pd.DataFrame, *, balans: float, lot: float = 0.01) -> Uitkom
     return Uitkomst(
         naam="goud kopen en niks doen", start=balans, eind=balans + winst,
         handelingen=1, diepste_terugval=0.0, diepste_zwevend=max(0.0, -zwevend),
+        zwevend_op=m1["low"].idxmin(), balans_toen=balans,
         ruine=balans + zwevend <= 0, curve=[balans, balans + winst],
     )
 
 
 def regel(u: Uitkomst) -> str:
     vlag = "  RUINE" if u.ruine else "       "
+    # DE TERUGVAL IN PROCENT VAN DE STAND OP DAT MOMENT, want EUR 421 op een
+    # rekening van EUR 400 is dood en op EUR 50.000 een schrammetje. Dat
+    # onderscheid ontbrak, en het is het enige dat de vraag beantwoordt.
+    deel = u.diepste_zwevend / u.balans_toen if u.balans_toen else 0.0
+    wanneer = f"{u.zwevend_op:%Y-%m-%d}" if u.zwevend_op is not None else "-"
+    alarm = "  <<< MEER DAN DE HELE REKENING" if deel >= 1.0 else ""
     return (f"  {u.naam:22s}{vlag}  EUR {u.eind:>12,.2f}  {u.rendement:+9.1%}"
-            f"  {u.handelingen:>7,} trades"
-            f"   diepste terugval EUR {u.diepste_zwevend:>11,.2f}")
+            f"  {u.handelingen:>7,} tr   terugval EUR {u.diepste_zwevend:>10,.2f}"
+            f" = {deel:>6.0%} van EUR {u.balans_toen:>10,.2f} op {wanneer}{alarm}")
 
 
 def main() -> int:
