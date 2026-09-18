@@ -24,11 +24,13 @@ import pytest
 
 from scripts.section_twenty_pullback_ladder import (
     CONTRACT,
+    KLOKKEN,
     Instelling,
     rapport,
     rooster,
     simuleer,
     stapel_omhoog,
+    stapel_richting,
 )
 
 
@@ -317,3 +319,91 @@ class TestHetAantalConfiguratiesKlopt:
         configs = rooster()
         assert len(configs) == 72
         assert len({c.naam for c in configs}) == 72, "er zitten dubbele in"
+
+
+class TestDeLadderWerktBeideKantenOp:
+    """DE GROOTSTE TEKORTKOMING VAN DE EERSTE VERSIE, en de eigenaar wees hem aan.
+
+    `stapel_omhoog` gaf alleen True als ALLES omhoog stond. De sectie kon dus
+    niet shorten -- hij kocht of hij deed niets.
+
+    Dat maakte de hele meting waardeloos zonder dat er iets aan de rekensom
+    mankeerde. Goud ging in het gemeten venster ruim 70% omhoog. Een regel die
+    alleen koopt komt in zo'n markt bij elke terugval vanzelf goed: de mand
+    loopt weg, je koopt bij, en de trend haalt je terug. Dat is de stijging en
+    niet de strategie -- en het verklaart de EUR 132.847.
+
+    De regel is TRENDVOLGEND: alle klokken omhoog -> kopen en bijkopen op de
+    dip; alle klokken omlaag -> verkopen en bijverkopen op de rally.
+    """
+
+    def _klokken(self, index, richting):
+        """Alle zeven klokken dezelfde kant op."""
+
+        reeks = index.union(pd.DatetimeIndex([index[0] - pd.Timedelta(hours=2)]))
+        n = len(reeks)
+        if richting > 0:
+            data = {"open": range(n), "close": [i + 0.5 for i in range(n)]}
+        else:
+            data = {"open": range(n, 0, -1), "close": [i - 0.5 for i in range(n, 0, -1)]}
+        frame = pd.DataFrame(data, index=reeks)
+        return {naam: frame for naam, _ in KLOKKEN}
+
+    def test_bij_een_dalende_stapel_wordt_er_VERKOCHT(self):
+        """De kern. Zonder dit is de sectie long-only en meet ze de trend."""
+
+        m1 = _frame([
+            (100.0, 100.0, 100.0, 100.0),
+            (100.0, 101.0, 100.0, 101.0),      # rally: been erbij op 100,5 en 101
+            (101.0, 101.0, 98.0, 98.0),        # en terug omlaag -> winst
+        ])
+        stapels = self._klokken(m1.index, -1)
+
+        manden, _ = simuleer(m1, stapels,
+                             instelling=Instelling(stap=0.5, spread=0.0, lot=0.01),
+                             balans=10_000.0)
+
+        assert manden, "er is geen enkele mand geopend bij een dalende stapel"
+        assert manden[0].kant == -1, "hij opende een KOOPmand in een downtrend"
+        assert manden[0].aantal_benen >= 3, (
+            "de benen zijn niet bijgevuld op de rally; bij een verkoopmand "
+            "liggen ze HOGER en vult de high ze"
+        )
+        assert manden[0].resultaat_euro > 0, "de verkoopmand verdient niets als de prijs zakt"
+
+    def test_bij_een_stijgende_stapel_wordt_er_nog_steeds_GEKOCHT(self):
+        """Anders zou de reparatie de ene fout door de andere vervangen."""
+
+        m1 = _frame([
+            (100.0, 100.0, 100.0, 100.0),
+            (100.0, 100.0, 99.0, 99.0),
+            (99.0, 102.0, 99.0, 102.0),
+        ])
+        stapels = self._klokken(m1.index, +1)
+
+        manden, _ = simuleer(m1, stapels,
+                             instelling=Instelling(stap=0.5, spread=0.0, lot=0.01),
+                             balans=10_000.0)
+
+        assert manden and manden[0].kant == 1
+        assert manden[0].resultaat_euro > 0
+
+    def test_een_verdeelde_stapel_opent_niets(self):
+        """Zeven klokken die het niet eens zijn is geen trend. Zonder deze eis
+        handelt hij overal en meet je ruis."""
+
+        index = pd.date_range("2026-01-05 09:00", periods=4, freq="1min", tz=UTC)
+        omhoog = pd.DataFrame({"open": [1, 2, 3, 4], "close": [1.5, 2.5, 3.5, 4.5]},
+                              index=index)
+        omlaag = pd.DataFrame({"open": [4, 3, 2, 1], "close": [3.5, 2.5, 1.5, 0.5]},
+                              index=index)
+        gemengd = {naam: (omhoog if i % 2 else omlaag)
+                   for i, (naam, _) in enumerate(KLOKKEN)}
+
+        assert stapel_richting(gemengd, index[-1]) == 0
+
+    def test_de_zeven_klokken_staan_er_alle_zeven_in(self):
+        """Gevraagd is M1, M2, M3, M5, M15, M30 en M60. Er stonden er vijf."""
+
+        namen = [naam for naam, _ in KLOKKEN]
+        assert namen == ["M1", "M2", "M3", "M5", "M15", "M30", "M60"]

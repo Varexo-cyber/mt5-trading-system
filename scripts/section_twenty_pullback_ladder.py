@@ -62,7 +62,8 @@ CONTRACT = 100.0
 # andere. M2 en M3 eruit laten maakt de instapvoorwaarde bovendien losser dan
 # gevraagd, dus meer trades met een zwakkere eis.
 KLOKKEN: tuple[tuple[str, str], ...] = (
-    ("M1", "1min"), ("M2", "2min"), ("M3", "3min"), ("M5", "5min"), ("M15", "15min"),
+    ("M1", "1min"), ("M2", "2min"), ("M3", "3min"), ("M5", "5min"),
+    ("M15", "15min"), ("M30", "30min"), ("M60", "60min"),
 )
 
 
@@ -91,6 +92,8 @@ class Mand:
     """Eén ladder van openen tot sluiten."""
 
     geopend: pd.Timestamp
+    #: +1 = koopmand (bijkopen op de dip), -1 = verkoopmand (bijverkopen op de rally)
+    kant: int = 1
     benen: list[float] = field(default_factory=list)
     #: Diepste onderwaterstand in euro, gemeten op elke bar.
     diepste_euro: float = 0.0
@@ -109,6 +112,46 @@ class Mand:
         return self._bars
 
     _bars: int = 0
+
+
+def stapel_richting(frames: dict[str, pd.DataFrame], stamp: pd.Timestamp) -> int:
+    """+1 als alle klokken omhoog staan, -1 als ze allemaal omlaag staan, anders 0.
+
+    DE FOUT DIE DE EIGENAAR VOND, EN HIJ IS GROOT.
+    ============================================================
+    Hier stond alleen `stapel_omhoog`. Die sectie KON dus niet shorten -- hij
+    kocht of hij deed niets.
+
+    Dat maakte de hele meting waardeloos zonder dat er iets aan de rekensom
+    mankeerde. Goud ging in het gemeten venster van 2570 naar 4385, ruim 70%
+    omhoog. Een regel die alleen koopt komt in zo'n markt bij elke terugval
+    vanzelf goed: de mand loopt weg, je koopt bij, en de trend haalt je terug.
+    Dat is geen strategie maar de stijging, en het verklaart de EUR 132.847.
+
+    Wat hij vroeg was TRENDVOLGEND: "als de markt downtrend is voor M1 en M2 en
+    M3 en M5 en M15 en M30 en M60, dan moet hij verkopen." Precies het
+    spiegelbeeld, en dat stond er niet in.
+
+    EN ER KWAMEN TWEE KLOKKEN BIJ. Hij noemde M30 en M60; ik had er vijf. Met
+    zeven klokken is de instapeis strenger en zijn er dus minder maar schonere
+    momenten.
+    """
+
+    kanten = set()
+    for frame in frames.values():
+        pos = frame.index.searchsorted(stamp, side="right") - 1
+        if pos < 1:
+            return 0
+        rij, vorige = frame.iloc[pos], frame.iloc[pos - 1]
+        if rij["close"] > rij["open"] and rij["close"] > vorige["close"]:
+            kanten.add(1)
+        elif rij["close"] < rij["open"] and rij["close"] < vorige["close"]:
+            kanten.add(-1)
+        else:
+            return 0
+        if len(kanten) > 1:
+            return 0
+    return kanten.pop() if kanten else 0
 
 
 def stapel_omhoog(frames: dict[str, pd.DataFrame], stamp: pd.Timestamp) -> bool:
@@ -147,10 +190,18 @@ def _sessie_van(stamp: pd.Timestamp) -> str:
     return actief[0] if actief else "buiten"
 
 
-def _pnl_euro(benen: list[float], prijs: float, lot: float) -> float:
-    """Open resultaat van de hele mand, kosten nog niet afgetrokken."""
+def _pnl_euro(benen: list[float], prijs: float, lot: float, kant: int = 1) -> float:
+    """Open resultaat van de hele mand, kosten nog niet afgetrokken.
 
-    return sum(prijs - been for been in benen) * lot * CONTRACT
+    EXPLICIET PER KANT en niet met een tekentruc. Een koopmand verdient als de
+    prijs boven de benen staat; een verkoopmand als hij eronder staat. Dat met
+    een `* kant` oplossen is precies hoe je hier een omgedraaid teken in stopt
+    dat niemand meer terugvindt -- dezelfde afweging als in sectie 21.
+    """
+
+    if kant > 0:
+        return sum(prijs - been for been in benen) * lot * CONTRACT
+    return sum(been - prijs for been in benen) * lot * CONTRACT
 
 
 def simuleer(
@@ -182,9 +233,12 @@ def simuleer(
         if mand is None:
             if stamp.floor("h") in nieuws_set:
                 continue
-            if not stapel_omhoog(stapels, stamp):
+            # BEIDE KANTEN. Alle klokken omhoog -> kopen en bijkopen op de dip.
+            # Alle klokken omlaag -> verkopen en bijverkopen op de rally.
+            kant = stapel_richting(stapels, stamp)
+            if kant == 0:
                 continue
-            mand = Mand(geopend=stamp, benen=[float(bar["open"])])
+            mand = Mand(geopend=stamp, kant=kant, benen=[float(bar["open"])])
             # EN DAN VALT HIJ DOOR NAAR HET BEHEER VAN DEZELFDE BAR.
             #
             # De eerste versie sprong hier met `continue` naar de volgende bar.
@@ -198,21 +252,34 @@ def simuleer(
 
         # 1. EERST BIJVULLEN, en pas daarna op winst kijken. Dit is de
         #    pessimistische volgorde en ze is met opzet gekozen.
+        #
+        #    Bij een KOOPmand liggen de volgende benen LAGER en vult de low ze;
+        #    bij een VERKOOPmand liggen ze HOGER en vult de high ze.
         laatste = mand.benen[-1]
-        while float(bar["low"]) <= laatste - instelling.stap:
-            if instelling.max_benen is not None and len(mand.benen) >= instelling.max_benen:
-                break
-            laatste = laatste - instelling.stap
-            mand.benen.append(laatste)
+        if mand.kant > 0:
+            while float(bar["low"]) <= laatste - instelling.stap:
+                if (instelling.max_benen is not None
+                        and len(mand.benen) >= instelling.max_benen):
+                    break
+                laatste = laatste - instelling.stap
+                mand.benen.append(laatste)
+        else:
+            while float(bar["high"]) >= laatste + instelling.stap:
+                if (instelling.max_benen is not None
+                        and len(mand.benen) >= instelling.max_benen):
+                    break
+                laatste = laatste + instelling.stap
+                mand.benen.append(laatste)
 
         # 2. Diepste stand van deze bar, op de LOW -- dat is waar de rekening
         #    het krapst stond, en niet op de close.
-        onder = _pnl_euro(mand.benen, float(bar["low"]), instelling.lot)
+        slechtste_prijs = float(bar["low"]) if mand.kant > 0 else float(bar["high"])
+        onder = _pnl_euro(mand.benen, slechtste_prijs, instelling.lot, mand.kant)
         onder -= kosten_per_been * len(mand.benen)
         if onder < mand.diepste_euro:
             mand.diepste_euro = onder
             mand.diepste_punten = sum(
-                float(bar["low"]) - been for been in mand.benen
+                (slechtste_prijs - been) * mand.kant for been in mand.benen
             ) / len(mand.benen)
 
         # 3. Ruine gaat voor alles. Staat het verlies onder de hele balans, dan
@@ -237,7 +304,8 @@ def simuleer(
                 continue
 
         # 5. En pas nu: staat de mand op de HIGH in winst?
-        boven = _pnl_euro(mand.benen, float(bar["high"]), instelling.lot)
+        beste_prijs = float(bar["high"]) if mand.kant > 0 else float(bar["low"])
+        boven = _pnl_euro(mand.benen, beste_prijs, instelling.lot, mand.kant)
         boven -= kosten_per_been * len(mand.benen)
         if boven > 0:
             mand.gesloten = stamp
@@ -257,7 +325,7 @@ def simuleer(
     # mee, gewaardeerd op de laatste koers, met zijn diepste stand erbij.
     if mand is not None and not kapot:
         slot = float(m1.iloc[-1]["close"])
-        mand.resultaat_euro = _pnl_euro(mand.benen, slot, instelling.lot)
+        mand.resultaat_euro = _pnl_euro(mand.benen, slot, instelling.lot, mand.kant)
         mand.resultaat_euro -= kosten_per_been * len(mand.benen)
         mand.gesloten = None
         manden.append(mand)
