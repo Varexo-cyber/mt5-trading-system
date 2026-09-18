@@ -17,6 +17,13 @@ rem ============================================================
 set BALANS=%1
 if "%BALANS%"=="" set BALANS=400
 
+rem TWEE JAAR, want dat is wat er gevraagd is. Let op: MT5 bewaart niet
+rem onbeperkt M1-historie -- krijg je veel minder bars dan verwacht, dan zet
+rem je in de terminal Extra > Opties > Grafieken > "Max bars in grafiek"
+rem op Onbeperkt en scroll je de M1-grafiek een keer ver terug.
+set DAGEN=%2
+if "%DAGEN%"=="" set DAGEN=730
+
 rem GEEN DATUM UIT %DATE% KNIPPEN. Dat formaat hangt af van je
 rem taalinstelling: "Fri 09/18/2026" werd hier "uitslag-2026 0Fr.txt".
 rem Een vaste naam kan niet misgaan en is makkelijker terug te vinden.
@@ -76,6 +83,47 @@ if not defined PY (
 
 echo   Python gevonden: %PY%
 
+rem DE INLOGGEGEVENS, EN DE FOUT DIE DAAROVER GING WAS ENGELS.
+rem
+rem `core.errors.ConfigError: missing MT5 credential(s)` is een correcte
+rem melding uit de kern -- en de kern is met opzet Engels. Maar hij komt hier
+rem terecht bij iemand die Nederlands leest, dus we vangen hem hier af.
+rem
+rem En als het bestand in de andere kopie van dit project wel staat, halen we
+rem hem daar op in plaats van erover te klagen. Het is zijn eigen bestand op
+rem zijn eigen machine, en config\.env staat in .gitignore.
+set OUDEENV=C:\Users\%USERNAME%\Documents\Codex\2026-08-01\build\work\mt5-trading-system\config\.env
+if not exist "config\.env" (
+  if exist "%OUDEENV%" (
+    echo   config\.env ontbrak -- overgenomen uit je andere projectkopie.
+    copy /y "%OUDEENV%" "config\.env" >nul
+  )
+)
+if not exist "config\.env" (
+  echo.
+  echo   ============================================================
+  echo     JE MT5-INLOGGEGEVENS ONTBREKEN
+  echo   ============================================================
+  echo.
+  echo   Het bestand config\.env bestaat niet. Daarin staat met welk
+  echo   account ik bij MetaTrader 5 mag. Zonder dat: geen bars.
+  echo.
+  echo   Doe dit:
+  echo      copy config\.env.example config\.env
+  echo      notepad config\.env
+  echo.
+  echo   Vul dan deze drie regels in:
+  echo      MT5_LOGIN=je accountnummer
+  echo      MT5_PASSWORD=je wachtwoord
+  echo      MT5_SERVER=bijvoorbeeld Eightcap-Live
+  echo.
+  echo   Die staan in MetaTrader 5 onder Extra ^> Opties ^> Server.
+  echo   Dit bestand blijft op je eigen computer; het staat in .gitignore.
+  echo.
+  pause
+  exit /b 1
+)
+
 rem EN OF DE PAKKETTEN ER ZIJN. Python hebben is niet hetzelfde als pandas
 rem hebben, en dat verschil merk je anders pas drie stappen verderop.
 %PY% -c "import pandas, numpy, pydantic, yaml" >nul 2>&1
@@ -96,10 +144,10 @@ echo.
 echo   [1/5] nieuwste code ophalen...
 git pull origin claude/mt5-autonomous-trading-system-ujd1sk >> "%UIT%" 2>&1
 
-echo   [2/5] bars uit MT5 exporteren (180 dagen M1)...
+echo   [2/5] bars uit MT5 exporteren (%DAGEN% dagen M1)...
 echo. >> "%UIT%"
 echo ---------- BARS ---------- >> "%UIT%"
-%PY% -m scripts.exporteer_bars --days 180 >> "%UIT%" 2>&1
+%PY% -m scripts.exporteer_bars --days %DAGEN% >> "%UIT%" 2>&1
 
 if not exist "runtime\xauusd_m1.csv" (
   echo.
