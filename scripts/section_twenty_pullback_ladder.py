@@ -53,6 +53,18 @@ OVERLAP = ("londen", "newyork")
 #: Wat één punt koers waard is per lot op XAUUSD: 100 troy ounce per lot.
 CONTRACT = 100.0
 
+# DE VIJF KLOKKEN, OP EEN PLEK.
+#
+# Gevraagd is "M1 M2 M3 M5 en M15". De eerste versie van dit bestand nam er
+# DRIE -- M1, M5 en M15 -- terwijl de hypothese ernaast er vijf opsomde. Dat is
+# precies de fout waar dit project telkens over struikelt: twee beschrijvingen
+# van een regel, en het scherm toont het getal van de ene naast de trade van de
+# andere. M2 en M3 eruit laten maakt de instapvoorwaarde bovendien losser dan
+# gevraagd, dus meer trades met een zwakkere eis.
+KLOKKEN: tuple[tuple[str, str], ...] = (
+    ("M1", "1min"), ("M2", "2min"), ("M3", "3min"), ("M5", "5min"), ("M15", "15min"),
+)
+
 
 @dataclass(frozen=True)
 class Instelling:
@@ -329,6 +341,76 @@ def rooster() -> list[Instelling]:
     return uit
 
 
+# ============================================================================
+#  DE BRON VAN DE BARS
+# ============================================================================
+#
+#  MT5 IS WINDOWS-ONLY, en dat maakt elke meting afhankelijk van een machine
+#  die toevallig aanstaat. Daarom twee wegen naar dezelfde bars:
+#
+#    --csv        een uitgevoerd bestand, overal te draaien
+#    (standaard)  rechtstreeks uit de terminal
+#
+#  De CSV wordt geschreven door exporteer-bars.cmd en is hetzelfde formaat dat
+#  `backtesting.replay.archive_frame` al gebruikte: een index `time` in UTC met
+#  open/high/low/close. Een uitgevoerd bestand is bovendien HERHAALBAAR -- twee
+#  runs op verschillende dagen meten dan dezelfde bars.
+
+
+def _lees_csv(pad: str) -> pd.DataFrame:
+    frame = pd.read_csv(pad, index_col="time", parse_dates=["time"])
+    frame.index = pd.DatetimeIndex(frame.index)
+    if frame.index.tz is None:
+        frame.index = frame.index.tz_localize("UTC")
+    ontbreekt = {"open", "high", "low", "close"} - set(frame.columns)
+    if ontbreekt:
+        raise SystemExit(f"  De CSV mist kolommen: {sorted(ontbreekt)}")
+    return frame.sort_index()
+
+
+def _hersample(m1: pd.DataFrame, regel: str) -> pd.DataFrame:
+    """M5 en M15 uit M1 opbouwen in plaats van apart ophalen.
+
+    EEN BRON IS BETER DAN DRIE. Losse reeksen ophalen geeft reeksen met eigen
+    gaten en eigen laatste bar, en dan kijkt de stapel op het ene tijdframe
+    naar een kaars die op het andere nog niet bestaat.
+    """
+
+    uit = m1.resample(regel, label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last"}
+    )
+    return uit.dropna()
+
+
+def _haal_uit_mt5(args) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    from datetime import datetime, timedelta
+
+    from backtesting.replay import fetch_mt5_history
+    from config.loader import load_credentials, load_settings, terminal_path_from_env
+    from core.mt5_connector import MT5Connector
+    from core.types import Timeframe
+
+    settings = load_settings(overlay=args.config, env_overrides=False)
+    # DE OVERLAY WERD GELADEN EN NIET GEBRUIKT. Het symbool moet hier doorheen,
+    # anders vraag je "XAUUSD" aan een broker die het "XAUUSD.i" noemt en krijg
+    # je niets terug -- precies de fout waar benen.cmd op stukliep.
+    symbool = settings.instruments.broker_symbol(args.symbol)
+    eind = datetime.now(UTC)
+    start = eind - timedelta(days=args.days)
+    connector = MT5Connector(
+        settings.mt5,
+        load_credentials(required=True),
+        terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
+    )
+    connector.connect()
+    try:
+        m1 = fetch_mt5_history(connector, symbool, Timeframe.M1, start, eind)
+    finally:
+        connector.shutdown()
+    stapels = {naam: _hersample(m1, regel) for naam, regel in KLOKKEN}
+    return m1, stapels
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", default="XAUUSD")
@@ -351,25 +433,16 @@ def main() -> int:
     # een ladder goedkoper dan hij is, en goedkoop is precies wat een grid
     # nodig heeft om op papier te winnen.
     parser.add_argument("--config", default="config/eightcap.yaml")
+    parser.add_argument("--csv", help="uitgevoerde M1-bars in plaats van MT5")
     args = parser.parse_args()
 
-    from backtesting.replay import fetch_mt5_history
-    from config.loader import load_credentials, load_settings, terminal_path_from_env
-    from core.mt5_connector import MT5Connector
-    from core.types import Timeframe
-
-    settings = load_settings(overlay=args.config, env_overrides=False)
-    connector = MT5Connector(
-        load_credentials(), settings, terminal_path=terminal_path_from_env()
-    )
-    with connector:
-        m1 = fetch_mt5_history(connector, args.symbol, Timeframe.M1, args.days)
-        stapels = {
-            naam: fetch_mt5_history(connector, args.symbol, tf, args.days)
-            for naam, tf in (
-                ("M1", Timeframe.M1), ("M5", Timeframe.M5), ("M15", Timeframe.M15)
-            )
-        }
+    if args.csv:
+        # DE BRUG. MT5 draait alleen op Windows; met een uitgevoerde CSV kan
+        # deze meting overal draaien, ook waar geen terminal is.
+        m1 = _lees_csv(args.csv)
+        stapels = {naam: _hersample(m1, regel) for naam, regel in KLOKKEN}
+    else:
+        m1, stapels = _haal_uit_mt5(args)
 
     configs = rooster() if args.alle_configs else [Instelling()]
     print(f"\n  SECTIE 20 -- terugval-ladder op {args.symbol}, {args.days} dagen")

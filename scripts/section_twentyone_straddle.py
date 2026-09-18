@@ -40,7 +40,7 @@ from datetime import UTC
 import numpy as np
 import pandas as pd
 
-from scripts.section_twenty_pullback_ladder import CONTRACT, _sessie_van
+from scripts.section_twenty_pullback_ladder import CONTRACT, _lees_csv, _sessie_van
 
 
 @dataclass(frozen=True)
@@ -308,6 +308,32 @@ def rooster() -> list[Instelling]:
     ]
 
 
+def _haal_uit_mt5(args) -> pd.DataFrame:
+    """Dezelfde aansluiting als sectie 20, en om dezelfde reden via broker_symbol."""
+
+    from datetime import datetime, timedelta
+
+    from backtesting.replay import fetch_mt5_history
+    from config.loader import load_credentials, load_settings, terminal_path_from_env
+    from core.mt5_connector import MT5Connector
+    from core.types import Timeframe
+
+    settings = load_settings(overlay=args.config, env_overrides=False)
+    symbool = settings.instruments.broker_symbol(args.symbol)
+    eind = datetime.now(UTC)
+    start = eind - timedelta(days=args.days)
+    connector = MT5Connector(
+        settings.mt5,
+        load_credentials(required=True),
+        terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
+    )
+    connector.connect()
+    try:
+        return fetch_mt5_history(connector, symbool, Timeframe.M1, start, eind)
+    finally:
+        connector.shutdown()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", default="XAUUSD")
@@ -316,19 +342,13 @@ def main() -> int:
                         help="minuten tussen instapmomenten")
     parser.add_argument("--alle-configs", action="store_true")
     parser.add_argument("--config", default="config/eightcap.yaml")
+    parser.add_argument("--csv", help="uitgevoerde M1-bars in plaats van MT5")
     args = parser.parse_args()
 
-    from backtesting.replay import fetch_mt5_history
-    from config.loader import load_credentials, load_settings, terminal_path_from_env
-    from core.mt5_connector import MT5Connector
-    from core.types import Timeframe
-
-    settings = load_settings(overlay=args.config, env_overrides=False)
-    connector = MT5Connector(
-        load_credentials(), settings, terminal_path=terminal_path_from_env()
-    )
-    with connector:
-        m1 = fetch_mt5_history(connector, args.symbol, Timeframe.M1, args.days)
+    if args.csv:
+        m1 = _lees_csv(args.csv)
+    else:
+        m1 = _haal_uit_mt5(args)
 
     configs = rooster() if args.alle_configs else [Instelling()]
     print(f"\n  SECTIE 21 -- straddle op {args.symbol}, {args.days} dagen")
