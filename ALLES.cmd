@@ -99,63 +99,28 @@ if not exist "config\.env" (
     copy /y "%OUDEENV%" "config\.env" >nul
   )
 )
-rem BESTAAN IS NIET GENOEG, EN DAAR LIEP HET OP STUK.
+rem DE POORT DIE ER NIET MEER HOORT TE STAAN.
 rem
-rem De kopie uit de andere projectmap werd netjes neergezet en bevatte geen
-rem inloggegevens -- waarschijnlijk gewoon het voorbeeldbestand. Mijn controle
-rem keek of het bestand ER WAS en niet of er IETS IN STOND, dus meldde hij
-rem "overgenomen" en viel het daarna alsnog om op dezelfde fout.
+rem Hier stond een controle die eiste dat config\.env een ingevulde MT5_LOGIN
+rem had, anders stoppen. Die poort is gebouwd toen de scripts inloggegevens
+rem NODIG hadden. Twee commits later heb ik ze optioneel gemaakt -- de scripts
+rem haken sindsdien aan bij een terminal die al draait -- en deze poort bleef
+rem staan. Dus weigerde de launcher te starten om iets wat niemand meer vroeg.
 rem
-rem Nu wordt er gezocht naar een ingevulde MT5_LOGIN. Niet naar de regel --
-rem naar een regel met een waarde erachter die niet het voorbeeld is.
-set HEEFTLOGIN=
+rem De eigenaar zei dit drie keer voordat ik het zag. Hij had gelijk.
+rem
+rem Wat er nu gebeurt: staan er inloggegevens, dan worden ze gebruikt. Staan ze
+rem er niet, dan haken we aan. Geen van beide is een reden om te stoppen.
 if exist "config\.env" (
-  findstr /r /c:"^MT5_LOGIN=[0-9][0-9]*" "config\.env" >nul 2>&1 && set HEEFTLOGIN=1
-  findstr /c:"MT5_LOGIN=12345678" "config\.env" >nul 2>&1 && set HEEFTLOGIN=
-)
-if not defined HEEFTLOGIN (
-  echo.
-  echo   ============================================================
-  echo     JE MT5-INLOGGEGEVENS ONTBREKEN
-  echo   ============================================================
-  echo.
-  echo   In config\.env staat geen ingevuld MT5_LOGIN. Daarin hoort met
-  echo   welk account ik bij MetaTrader 5 mag. Zonder dat: geen bars.
-  echo.
-  echo   Ik open het bestand nu voor je. Vul de drie regels in, sla op,
-  echo   sluit Kladblok en draai ALLES.cmd opnieuw.
-  echo.
-  echo   Vul dan deze drie regels in:
-  echo      MT5_LOGIN=je accountnummer
-  echo      MT5_PASSWORD=je wachtwoord
-  echo      MT5_SERVER=bijvoorbeeld Eightcap-Live
-  echo.
-  echo   Die staan in MetaTrader 5 onder Extra ^> Opties ^> Server.
-  echo   Dit bestand blijft op je eigen computer; het staat in .gitignore.
-  echo.
-  if not exist "config\.env" copy config\.env.example "config\.env" >nul
-  start "" notepad "config\.env"
-  pause
-  exit /b 1
+  findstr /r /c:"^MT5_LOGIN=[0-9][0-9]*" "config\.env" >nul 2>&1 && (
+    echo   Inloggegevens gevonden in config\.env
+  ) || (
+    echo   Geen MT5-inloggegevens -- ik haak aan bij je draaiende terminal.
+  )
+) else (
+  echo   Geen config\.env -- ik haak aan bij je draaiende terminal.
 )
 
-rem EN OF DE PAKKETTEN ER ZIJN. Python hebben is niet hetzelfde als pandas
-rem hebben, en dat verschil merk je anders pas drie stappen verderop.
-%PY% -c "import pandas, numpy, pydantic, yaml" >nul 2>&1
-if errorlevel 1 (
-  echo.
-  echo   Python werkt, maar de pakketten ontbreken ^(pandas/numpy/pydantic^).
-  echo   Draai eerst:   SETUP.cmd
-  echo.
-  pause
-  exit /b 1
-)
-
-echo ==================================================== > "%UIT%"
-echo   UITSLAG  %DATE% %TIME% >> "%UIT%"
-echo ==================================================== >> "%UIT%"
-
-echo.
 echo   [1/5] nieuwste code ophalen...
 git pull origin claude/mt5-autonomous-trading-system-ujd1sk >> "%UIT%" 2>&1
 
