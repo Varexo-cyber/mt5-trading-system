@@ -93,7 +93,7 @@ def _loop_balans(
     balans = start
     piek = start
     diepste = 0.0
-    laagst = start
+    diepste_zw = 0.0
     curve = [start]
     ruine_op = None
     gedaan = 0
@@ -109,7 +109,15 @@ def _loop_balans(
         #
         # Wat telt is hoe laag je rekening ONDERWEG stond, met alles wat open
         # hing meegerekend. Dat is waar een margin call valt.
-        laagst = min(laagst, balans + h.zwevend)
+        # DE TERUGVAL VANAF DE TOP, niet de absolute bodem.
+        #
+        # Eerste versie nam `min(laagst, balans + zwevend)`. Over 79.390 manden
+        # gaf dat EUR 399,64 op een start van EUR 400 -- dus zogenaamd nooit
+        # meer dan 36 cent onder water. Onzin: zodra de balans EUR 100.000 is,
+        # valt een zwevend verlies van EUR 500 niet meer op in een absolute
+        # bodem. Wat telt is hoeveel je vanaf je HOOGSTE stand kwijtraakte.
+        zwevende_stand = balans + h.zwevend
+        diepste_zw = max(diepste_zw, piek - zwevende_stand)
         balans += h.euro
         gedaan += 1
         curve.append(balans)
@@ -122,7 +130,7 @@ def _loop_balans(
 
     return Uitkomst(
         naam=naam, start=start, eind=balans, handelingen=gedaan,
-        diepste_terugval=diepste, diepste_zwevend=start - laagst,
+        diepste_terugval=diepste, diepste_zwevend=diepste_zw,
         ruine=ruine_op is not None, ruine_op=ruine_op, curve=curve,
     )
 
@@ -232,11 +240,35 @@ def sectie22(m1: pd.DataFrame, stapels, *, instelling: ElioInstelling) -> list[H
 
 # ---------------------------------------------------------------------------
 
+def koop_en_hou(m1: pd.DataFrame, *, balans: float, lot: float = 0.01) -> Uitkomst:
+    """DE NULHYPOTHESE DIE ONTBRAK, EN ZONDER HAAR ZEGT DE REST NIETS.
+
+    Sectie 20 en 22 kopen ALLEEN. Over deze periode ging goud van ongeveer
+    2600 naar 4350. Elke long-regel drukt dan geld, ook een volstrekt domme.
+
+    Dit is die domme: koop op de eerste bar 0,01 lot en doe verder niets.
+    Verslaat een sectie dit niet, dan heeft ze de stijging gemeten en niet
+    zichzelf. Dat is precies de fout die dit project in juni al een keer
+    gemaakt heeft (commit bd861a4) en ik maakte hem opnieuw.
+    """
+
+    entry = float(m1.iloc[0]["open"])
+    slot = float(m1.iloc[-1]["close"])
+    winst = (slot - entry) * lot * 100.0
+    laagste = float(m1["low"].min())
+    zwevend = (laagste - entry) * lot * 100.0
+    return Uitkomst(
+        naam="goud kopen en niks doen", start=balans, eind=balans + winst,
+        handelingen=1, diepste_terugval=0.0, diepste_zwevend=max(0.0, -zwevend),
+        ruine=balans + zwevend <= 0, curve=[balans, balans + winst],
+    )
+
+
 def regel(u: Uitkomst) -> str:
     vlag = "  RUINE" if u.ruine else "       "
     return (f"  {u.naam:22s}{vlag}  EUR {u.eind:>12,.2f}  {u.rendement:+9.1%}"
             f"  {u.handelingen:>7,} trades"
-            f"   laagst onderweg EUR {u.start - u.diepste_zwevend:>10,.2f}")
+            f"   diepste terugval EUR {u.diepste_zwevend:>11,.2f}")
 
 
 def main() -> int:
@@ -265,6 +297,7 @@ def main() -> int:
     u21 = _loop_balans(h21, args.balans, "sectie 21 alleen")
     u22 = _loop_balans(h22, args.balans, "sectie 22 alleen")
     samen = _loop_balans(h20 + h21 + h22, args.balans, "alle drie samen")
+    dom = koop_en_hou(m1, balans=args.balans)
 
     kop = [
         "",
@@ -274,9 +307,22 @@ def main() -> int:
         "",
     ]
     lijf = [regel(u) for u in (u20, u21, u22, samen)]
+    lijf += ["", "  " + "-" * 74, regel(dom)]
     staart = [
         "",
-        "  LEES DE LAATSTE KOLOM EERST. Dat is hoe laag je rekening ONDERWEG",
+        f"  GOUD GING IN DEZE PERIODE VAN {float(m1.iloc[0]['open']):,.2f} NAAR "
+        f"{float(m1.iloc[-1]['close']):,.2f}",
+        f"  ({float(m1.iloc[-1]['close']) / float(m1.iloc[0]['open']) - 1:+.1%}). "
+        "Sectie 20 en 22 kopen ALLEEN. Verslaat een",
+        "  sectie de domme regel onderaan niet, dan heeft ze de stijging",
+        "  gemeten en niet zichzelf.",
+        "",
+        "  EN LET OP DE LOTGROOTTE. Deze run houdt 0,01 lot aan van begin tot",
+        "  eind. Bij EUR 400 is een punt 1% van je rekening; bij EUR 132.000",
+        "  is het 0,0008%. Het risico verdampt terwijl de winst doorloopt.",
+        "  Zo handelt niemand, en zo hoort het dus ook niet gelezen te worden.",
+        "",
+        "  LEES DE TERUGVAL-KOLOM EERST. Dat is hoe laag je rekening ONDERWEG",
         "  stond met alles wat openhing meegerekend -- daar valt een margin",
         "  call, niet op het eindbedrag. Een grid sluit alleen winnaars, dus",
         "  zijn gesloten curve loopt altijd mooi omhoog.",
