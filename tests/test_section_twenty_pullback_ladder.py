@@ -352,6 +352,70 @@ class TestDeBrokerGooitJeEruit:
         )
 
 
+class TestDeKlokkenKijkenNietVooruit:
+    """DE FOUT DIE DE HELE METING DROEG, en die het langst onzichtbaar bleef.
+
+    `stapel_richting` en `stapel_omhoog` pakten met
+    `searchsorted(stamp, side="right") - 1` de bar WAARIN `stamp` valt -- de bar
+    die op dat moment nog loopt -- en lazen daar `close` van. De instapregel las
+    daarmee: "koop op de opening van bar T, als bar T groen gaat sluiten." Op M1
+    is dat een minuut vooruit, op M60 negenenvijftig.
+
+    Zeven klokken die het eens zijn over een toekomst die je nog niet kent, en
+    daarna afrekenen op de high van diezelfde bar: EUR 398.572 uit 149.088
+    manden op een rekening van EUR 59,16.
+
+    De docstring van `stapel_omhoog` waarschuwde hier woordelijk voor terwijl de
+    code eronder het toch deed.
+    """
+
+    @staticmethod
+    def _klok(waarden: list[tuple[float, float]], index) -> pd.DataFrame:
+        return pd.DataFrame(
+            [{"open": o, "close": c} for o, c in waarden], index=index)
+
+    def test_de_toekomst_verandert_het_oordeel_niet(self):
+        """DE ALGEMENE EIS, en hij vangt meer dan alleen deze ene fout.
+
+        Het oordeel op tijdstip T mag niet veranderen als je alles vanaf T
+        omgooit. Dat is precies wat vooruitkijken betekent, ongeacht hoe het in
+        de code is opgeschreven.
+        """
+        index = pd.date_range("2026-01-05 09:00", periods=6, freq="1min", tz=UTC)
+        omhoog = [(1.0, 2.0), (2.0, 3.0), (3.0, 4.0), (4.0, 5.0), (5.0, 6.0), (6.0, 7.0)]
+        stamp = index[3]
+
+        met_stijging = {"M1": self._klok(omhoog, index)}
+        # Alles VANAF stamp omgekeerd: het verleden is identiek.
+        gekeerd = omhoog[:3] + [(9.0, 1.0), (9.0, 1.0), (9.0, 1.0)]
+        met_daling = {"M1": self._klok(gekeerd, index)}
+
+        assert (stapel_richting(met_stijging, stamp)
+                == stapel_richting(met_daling, stamp)), (
+            "het oordeel op dit moment verandert als de TOEKOMST verandert -- "
+            "de klok leest de bar die nog loopt"
+        )
+
+    def test_hij_oordeelt_wel_op_het_verleden(self):
+        """Zonder deze test zou 'geef altijd 0 terug' ook slagen."""
+
+        index = pd.date_range("2026-01-05 09:00", periods=6, freq="1min", tz=UTC)
+        omhoog = [(1.0, 2.0), (2.0, 3.0), (3.0, 4.0), (4.0, 5.0), (5.0, 6.0), (6.0, 7.0)]
+        omlaag = [(o, -c) for o, c in omhoog]
+
+        assert stapel_richting({"M1": self._klok(omhoog, index)}, index[3]) == 1
+        assert stapel_richting({"M1": self._klok(omlaag, index)}, index[3]) == -1
+
+    def test_stapel_omhoog_kijkt_evenmin_vooruit(self):
+        index = pd.date_range("2026-01-05 09:00", periods=6, freq="1min", tz=UTC)
+        omhoog = [(1.0, 2.0), (2.0, 3.0), (3.0, 4.0), (4.0, 5.0), (5.0, 6.0), (6.0, 7.0)]
+        gekeerd = omhoog[:3] + [(9.0, 1.0), (9.0, 1.0), (9.0, 1.0)]
+        stamp = index[3]
+
+        assert (stapel_omhoog({"M1": self._klok(omhoog, index)}, stamp)
+                == stapel_omhoog({"M1": self._klok(gekeerd, index)}, stamp))
+
+
 class TestEenBarKanNietEersLaagVullenEnHoogSluiten:
     """DE DUURSTE FOUT VAN DE HELE METING.
 

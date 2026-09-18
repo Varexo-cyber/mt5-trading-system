@@ -177,6 +177,65 @@ class Mand:
     _bevroren_bars: int = 0
 
 
+def _laatste_gesloten(frame: pd.DataFrame, stamp: pd.Timestamp) -> int:
+    """De laatste bar die op `stamp` ECHT AF IS. Een bar terug, en dat is alles.
+
+    DE VOORUITKIJKFOUT DIE DE HELE METING DROEG.
+    ========================================================================
+    Hier stond overal `searchsorted(stamp, side="right") - 1`. Dat geeft de bar
+    WAARIN `stamp` valt -- de bar die op dat moment nog LOOPT. En vervolgens
+    werd `rij["close"]` gelezen: de slotkoers van een bar die nog niet af is.
+
+    De instapregel las daarmee: "koop op de opening van bar T, als bar T groen
+    gaat sluiten." Op M1 is dat een minuut vooruitkijken. Op M60 negenenvijftig.
+    Zeven klokken die het allemaal eens zijn over een toekomst die je nog niet
+    kent -- en daarna afrekenen op de high van diezelfde bar.
+
+    Zo ontstond EUR 398.572 uit 149.088 manden op een rekening van EUR 59,16.
+    Niet door een rekenfout: door een strategie die de uitslag al kende.
+
+    De docstring van `stapel_omhoog` waarschuwde hier woordelijk voor en de
+    code eronder deed het toch. Alweer twee beschrijvingen van dezelfde regel,
+    en alweer deed de code de verkeerde.
+
+    EN HIJ REKENT MET DE BARBREEDTE, NIET MET EEN INDEXTRUC. Mijn eerste versie
+    nam simpelweg een index terug (`searchsorted(...) - 2`). Dat klopt zolang
+    `stamp` middenin een bar valt, maar niet op de rand: op 09:04 is de bar van
+    09:03 wél af, terwijl die telling hem overslaat. Een bestaande test ving dat
+    meteen. Een bar is af zodra zijn EINDE is gepasseerd, en dat einde is
+    `begin + breedte` -- dus daar wordt op gezocht.
+    """
+
+    index = frame.index
+    if len(index) < 2:
+        return -1
+    return int(index.searchsorted(stamp - _barbreedte(frame), side="right")) - 1
+
+
+def _barbreedte(frame: pd.DataFrame) -> pd.Timedelta:
+    """Hoe breed een bar in dit frame is, gemeten en daarna onthouden.
+
+    NIET `index[1] - index[0]`, want die index is niet regelmatig. Goud-M1 heeft
+    ELK WEEKEND een gat van tweeënzestig uur, en de testfixtures zetten er een
+    opwarmbar voor. Eén verschil pakken geeft dan de breedte van een gat in
+    plaats van die van een bar, en dan zoekt `_laatste_gesloten` dagen terug.
+
+    De mediaan van alle verschillen heeft daar geen last van: gaten zijn zeldzaam
+    en de mediaan trekt zich niets van uitschieters aan. Hij wordt één keer per
+    frame berekend en in `attrs` bewaard, want dit wordt per bar aangeroepen en
+    dat zijn er 754.657.
+    """
+
+    bewaard = frame.attrs.get("_barbreedte")
+    if bewaard is not None:
+        return bewaard
+    verschillen = frame.index.to_series().diff().dropna()
+    breedte = (verschillen.median() if len(verschillen)
+               else pd.Timedelta(0))
+    frame.attrs["_barbreedte"] = breedte
+    return breedte
+
+
 def stapel_richting(frames: dict[str, pd.DataFrame], stamp: pd.Timestamp) -> int:
     """+1 als alle klokken omhoog staan, -1 als ze allemaal omlaag staan, anders 0.
 
@@ -202,7 +261,7 @@ def stapel_richting(frames: dict[str, pd.DataFrame], stamp: pd.Timestamp) -> int
 
     kanten = set()
     for frame in frames.values():
-        pos = frame.index.searchsorted(stamp, side="right") - 1
+        pos = _laatste_gesloten(frame, stamp)
         if pos < 1:
             return 0
         rij, vorige = frame.iloc[pos], frame.iloc[pos - 1]
@@ -227,7 +286,7 @@ def stapel_omhoog(frames: dict[str, pd.DataFrame], stamp: pd.Timestamp) -> bool:
     """
 
     for frame in frames.values():
-        pos = frame.index.searchsorted(stamp, side="right") - 1
+        pos = _laatste_gesloten(frame, stamp)
         if pos < 1:
             return False
         rij = frame.iloc[pos]
