@@ -337,6 +337,20 @@ def main() -> int:
                         help="echte startbalans in euro -- de ruinekans hangt eraan")
     parser.add_argument("--alle-configs", action="store_true",
                         help="alle 72 draaien in plaats van alleen de gevraagde")
+    # DE OVERLAY, EN EEN BESTAANDE BEWAKER VING DAT IK HEM VERGAT.
+    #
+    # `load_settings()` zonder overlay geeft de basisconfig, en daar staat geen
+    # symbol_suffix, geen commissie, geen slippage en geen kostenplafond in.
+    # Een onderzoeksrun zonder overlay beprijst dus een ANDERE REKENING dan de
+    # rekening die handelt -- stil, en in de richting waarin de basisdefaults
+    # toevallig wijzen.
+    #
+    # Dat is hier extra pijnlijk, want de hele uitslag van deze meting hangt
+    # aan de kosten per been: een grid opent tien keer zoveel posities als een
+    # gewone regel, dus tien keer zoveel commissie. De verkeerde config maakt
+    # een ladder goedkoper dan hij is, en goedkoop is precies wat een grid
+    # nodig heeft om op papier te winnen.
+    parser.add_argument("--config", default="config/eightcap.yaml")
     args = parser.parse_args()
 
     from backtesting.replay import fetch_mt5_history
@@ -344,7 +358,7 @@ def main() -> int:
     from core.mt5_connector import MT5Connector
     from core.types import Timeframe
 
-    settings = load_settings()
+    settings = load_settings(overlay=args.config, env_overrides=False)
     connector = MT5Connector(
         load_credentials(), settings, terminal_path=terminal_path_from_env()
     )
