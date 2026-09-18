@@ -76,21 +76,49 @@ class TestDeWhipsawBestaat:
 
 
 class TestVierSpreadsPerCyclus:
-    def test_twee_benen_betalen_elk_twee_keer_de_spread(self):
-        """DE PRIJS VAN HET MECHANISME. Bij een gewone trade gaan er twee halve
-        spreads af; hier vier. Dat is precies het verschil dat maakt dat een
-        straddle kan verliezen terwijl hij altijd een winnaar heeft."""
+    def test_bij_de_compenseer_regel_verdwijnt_de_spread_NIET_maar_verplaatst_hij(self):
+        """WAT DE COMPENSEER-REGEL MET KOSTEN DOET, en het is subtiel.
+
+        Bij een VAST doel trekken vier spreads gewoon van je netto af. Bij de
+        compenseer-regel niet: de winnaar loopt door TOT de mand goed staat, en
+        de kosten zitten in die drempel verwerkt. Netto komt er dus hetzelfde
+        uit -- een wijdere spread maakt de uitkomst niet kleiner.
+
+        DAT IS GEEN GRATIS LUNCH. De kosten verdwijnen niet, ze verplaatsen
+        zich: het doel ligt verder weg, dus de winnaar moet verder lopen, dus
+        vaker haalt hij het niet binnen het venster. De prijs staat in het
+        AANTAL trades dat slaagt, niet in het bedrag per geslaagde trade.
+
+        Deze test legt precies dat vast: hetzelfde netto, een verder doel.
+        """
 
         bars = [(100.0, 101.0, 100.0, 101.0), (101.0, 106.0, 101.0, 106.0),
                 (106.0, 121.0, 106.0, 121.0)]
         m1 = _frame(bars)
 
         zonder = straddle_cyclus(
-            m1, 0, instelling=Instelling(kap=5.0, doel=20.0, spread=0.0, lot=0.01)
-        )
+            m1, 0, instelling=Instelling(kap=5.0, marge=2.0, spread=0.0, lot=0.01))
         met = straddle_cyclus(
-            m1, 0, instelling=Instelling(kap=5.0, doel=20.0, spread=0.16, lot=0.01)
+            m1, 0, instelling=Instelling(kap=5.0, marge=2.0, spread=0.16, lot=0.01))
+
+        assert met.netto_euro == pytest.approx(zonder.netto_euro, abs=1e-6), (
+            "de compenseer-regel hoort de kosten in de drempel te verwerken"
         )
+        # En hij komt allebei op de MARGE uit, want dat is de afspraak.
+        assert zonder.netto_euro == pytest.approx(2.0 * 0.01 * CONTRACT, abs=0.01)
+
+    def test_bij_een_vast_doel_gaan_vier_spreads_er_wel_gewoon_af(self):
+        """Zonder deze test zou de test hierboven ook slagen bij een
+        implementatie die de spread helemaal niet rekent."""
+
+        bars = [(100.0, 101.0, 100.0, 101.0), (101.0, 106.0, 101.0, 106.0),
+                (106.0, 121.0, 106.0, 121.0)]
+        m1 = _frame(bars)
+
+        zonder = straddle_cyclus(m1, 0, instelling=Instelling(
+            kap=5.0, doel=20.0, compenseer=False, spread=0.0, lot=0.01))
+        met = straddle_cyclus(m1, 0, instelling=Instelling(
+            kap=5.0, doel=20.0, compenseer=False, spread=0.16, lot=0.01))
 
         verschil = zonder.netto_euro - met.netto_euro
         verwacht = 0.16 * 2 * 0.01 * CONTRACT * 2       # twee benen
@@ -223,3 +251,53 @@ class TestHetAantalConfiguratiesKlopt:
         configs = rooster()
         assert len(configs) == 48
         assert len({c.naam for c in configs}) == 48
+
+
+class TestDeWinnaarCompenseertHetVerlies:
+    """DE REGEL ZOALS HIJ BEDOELD WAS, EN IK BOUWDE HEM VERKEERD.
+
+    Gevraagd: de winnaar loopt door tot hij het verlies van het afgekapte been
+    heeft GOEDGEMAAKT plus wat winst, dan ga je plat. Ik gaf hem een VAST doel.
+
+    Dat is een andere strategie: een vast doel sluit te vroeg als het verlies
+    groot was -- dan is de mand nog negatief -- en te laat als het klein was.
+    Het verschil tussen "ik verdien mijn verlies terug" en "ik pak twintig
+    punten" is precies het verschil tussen zijn regel en de mijne.
+    """
+
+    def test_een_grotere_kap_vraagt_een_grotere_winnaar(self):
+        """De kern: hoeveel de winnaar moet maken HANGT AF van wat het andere
+        been kostte. Bij een vast doel zou dat niet zo zijn."""
+
+        bars = [(100.0, 101.0, 100.0, 101.0)] + [(101.0, 140.0, 101.0, 140.0)] * 3
+        m1 = _frame(bars)
+
+        klein = straddle_cyclus(
+            m1, 0, instelling=Instelling(kap=2.0, marge=2.0, spread=0.0, lot=0.01))
+        groot = straddle_cyclus(
+            m1, 0, instelling=Instelling(kap=20.0, marge=2.0, spread=0.0, lot=0.01))
+
+        # Beide manden komen netto op marge + kosten uit, maar de GROTE kap
+        # moest daarvoor veel verder lopen.
+        assert klein.netto_euro == pytest.approx(groot.netto_euro, abs=0.01), (
+            "de compensatie werkt niet: een grotere kap hoort tot dezelfde "
+            "netto-uitkomst te leiden, niet tot een kleinere"
+        )
+        assert klein.netto_euro > 0
+
+    def test_met_een_vast_doel_gebeurt_dat_juist_niet(self):
+        """Als deze test niet bestond, zou de test hierboven ook slagen bij een
+        implementatie die de kap gewoon negeert."""
+
+        bars = [(100.0, 101.0, 100.0, 101.0)] + [(101.0, 140.0, 101.0, 140.0)] * 3
+        m1 = _frame(bars)
+
+        klein = straddle_cyclus(m1, 0, instelling=Instelling(
+            kap=2.0, doel=20.0, compenseer=False, spread=0.0, lot=0.01))
+        groot = straddle_cyclus(m1, 0, instelling=Instelling(
+            kap=20.0, doel=20.0, compenseer=False, spread=0.0, lot=0.01))
+
+        assert klein.netto_euro > groot.netto_euro, (
+            "bij een VAST doel hoort een grotere kap wel degelijk minder over "
+            "te houden -- anders meet deze test niets"
+        )
