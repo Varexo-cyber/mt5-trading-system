@@ -35,7 +35,8 @@ import numpy as np
 import pandas as pd
 
 from scripts.section_twenty_pullback_ladder import (
-    CONTRACT, KLOKKEN, Instelling as Ladder, _hersample, _lees_csv, _sessie_van,
+    CONTRACT, KLOKKEN, Instelling as Ladder, _hersample, _laatste_gesloten,
+    _lees_csv, _sessie_van,
     simuleer as ladder_simuleer, stapel_omhoog,
 )
 from scripts.section_twentyone_straddle import (
@@ -76,7 +77,8 @@ class Regel:
 def _klokken_eens(stapels, stamp) -> str:
     omhoog = []
     for naam, frame in stapels.items():
-        pos = frame.index.searchsorted(stamp, side="right") - 1
+        # Dezelfde vooruitkijkfout stond hier ook: zie `_laatste_gesloten`.
+        pos = _laatste_gesloten(frame, stamp)
         if pos < 1:
             continue
         rij, vorige = frame.iloc[pos], frame.iloc[pos - 1]
