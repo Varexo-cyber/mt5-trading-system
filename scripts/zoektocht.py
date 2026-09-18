@@ -56,6 +56,18 @@ from scripts.section_twentyone_straddle import (
 #: dat helpt -- niet dat wij vooraf beslissen dat het helpt.
 NIEUWSUREN = (12, 13, 14)
 
+#: DE ZOEKER MAG NIET BUITEN DE EIGEN RISICOGRENS ZOEKEN.
+#:
+#: Op de eerste run koos hij 5% per trade en kwam op EUR 2,9 miljoen uit. Dat
+#: was deels de blinde vlek hierboven, maar ook een fout in de zoekruimte:
+#: `config/eightcap.yaml` zet `risk_per_trade_pct: 2.0`, en de risk manager
+#: gooit een ForbiddenStrategyError zodra een trade daar overheen gaat.
+#:
+#: Een zoeker die 5% aanbeveelt, beveelt iets aan dat de live-kant weigert uit
+#: te voeren. Dan optimaliseer je een systeem dat niet bestaat. De grens van de
+#: rekening is dus ook de grens van de zoektocht.
+RISICO = [0.02, 0.005, 0.01, 0.015]
+
 
 @dataclass
 class Uitslag:
@@ -110,7 +122,7 @@ def draai_ladder(m1, stapels, cfg: dict, *, balans: float,
               if _toegestaan(m.geopend, sessies=cfg["sessies"],
                              mijd_nieuws=cfg["mijd_nieuws"])]
     return _naar_uitslag(
-        [(m.gesloten or m1.index[-1], m.resultaat_euro, m.aantal_benen) for m in manden],
+        [(m.gesloten or m1.index[-1], m.resultaat_euro, m.diepste_euro) for m in manden],
         balans=balans, risico_punten=cfg["stap"] * 20, deel=cfg["risico"],
         euro_per_punt=euro_per_punt)
 
@@ -129,7 +141,7 @@ def draai_straddle(m1, cfg: dict, *, balans: float, euro_per_punt: float) -> Uit
         c = straddle_cyclus(m1, i, instelling=inst)
         if c is None:
             break
-        rijen.append((c.gesloten or c.geopend, c.netto_euro, 2))
+        rijen.append((c.gesloten or c.geopend, c.netto_euro, c.diepste_euro))
         i += max(cfg["om_de"], c.bars)
     return _naar_uitslag(rijen, balans=balans, risico_punten=cfg["kap"] * 2,
                          deel=cfg["risico"], euro_per_punt=euro_per_punt)
@@ -160,7 +172,9 @@ def draai_elio(m1, stapels, cfg: dict, *, balans: float,
                 break
         if punten is None:
             punten = float(m1.iloc[pos]["close"]) - entry
-        rijen.append((m1.index[pos], punten - kosten, 1))
+        # Bij een vaste stop is de diepste stand hoogstens die stop.
+        rijen.append((m1.index[pos], punten - kosten,
+                      -cfg["stop"] if punten < 0 else 0.0))
         i = pos + cfg["om_de"]
     return _naar_uitslag(rijen, balans=balans, risico_punten=cfg["stop"],
                          deel=cfg["risico"], euro_per_punt=euro_per_punt,
@@ -169,7 +183,24 @@ def draai_elio(m1, stapels, cfg: dict, *, balans: float,
 
 def _naar_uitslag(rijen, *, balans, risico_punten, deel, euro_per_punt,
                   in_punten=False) -> Uitslag:
-    """Een balans door de tijd, met meegroeiend lot en de ruine als harde stop."""
+    """Een balans door de tijd, met meegroeiend lot en de ruine als harde stop.
+
+    DE ZWEVENDE STAND MOET MEE, EN DAT VERGAT IK HIER.
+
+    Dit is de duurste fout van de hele zoeklus en een achtergrondrun vond hem:
+    de zoeker kwam op EUR 2,9 MILJOEN uit met zogenaamd 4,8% terugval, en koos
+    daarbij het hoogste risico dat hij mocht.
+
+    De oorzaak: deze functie keek alleen naar GESLOTEN resultaten. Een grid
+    sluit per definitie alleen winnaars -- de verliezers blijven openstaan --
+    dus zijn gesloten curve daalt nooit. De zoeker zag geen enkel gevaar,
+    koos dus 5% per trade, en vermenigvuldigde 1,05 achtduizend keer met
+    zichzelf. Dat is 10^170, en het is geen resultaat maar een blinde vlek.
+
+    Ik had precies dit al gerepareerd in `eindresultaat.py` en vervolgens in
+    de zoeklus opnieuw ingebouwd. Vandaar dat elke rij nu haar diepste
+    ZWEVENDE stand meeneemt, en dat die meeschaalt met de lotgrootte.
+    """
 
     if not rijen:
         return Uitslag(0, balans, balans, 0.0, False, 0.0)
@@ -178,10 +209,20 @@ def _naar_uitslag(rijen, *, balans, risico_punten, deel, euro_per_punt,
     diepste = 0.0
     gedaan = 0
     som = 0.0
-    for moment, waarde, _benen in sorted(rijen, key=lambda r: r[0]):
+    for moment, waarde, zwevend in sorted(rijen, key=lambda r: r[0]):
         lot = _lot_voor(huidig, risico_punten, deel=deel, euro_per_punt=euro_per_punt)
         factor = lot / 0.01
         winst = (waarde * euro_per_punt * factor) if in_punten else (waarde * factor)
+        onder = (zwevend * euro_per_punt * factor) if in_punten else (zwevend * factor)
+
+        # EERST HOE DIEP HIJ ONDERWEG STOND, en pas daarna de afrekening.
+        # Daar valt een margin call, niet op het eindbedrag.
+        laagste = huidig + min(0.0, onder)
+        if laagste <= 0:
+            return Uitslag(gedaan + 1, 0.0, balans, 1.0, True,
+                           som / max(gedaan + 1, 1))
+        diepste = max(diepste, (piek - laagste) / piek)
+
         huidig += winst
         som += winst
         gedaan += 1
@@ -275,21 +316,21 @@ def main() -> int:
             {"stap": [1.0, 0.5, 2.0, 4.0], "max_benen": [10, 5, 20, None],
              "mandstop": [0.05, 0.02, 0.10, None], "spread": [0.16],
              "sessies": SESSIES, "mijd_nieuws": [False, True],
-             "risico": [0.02, 0.01, 0.05]},
+             "risico": RISICO},
             lambda d, s, c, b: draai_ladder(d, s, c, balans=b, euro_per_punt=euro_per_punt),
         ),
         "sectie 21 straddle": (
             {"kap": [5.0, 2.0, 10.0, 20.0], "marge": [2.0, 1.0, 5.0, 10.0],
              "winnaar_stop": [None, 10.0, 20.0], "spread": [0.16],
              "om_de": [60, 30, 120], "sessies": SESSIES,
-             "mijd_nieuws": [False, True], "risico": [0.02, 0.01, 0.05]},
+             "mijd_nieuws": [False, True], "risico": RISICO},
             lambda d, s, c, b: draai_straddle(d, c, balans=b, euro_per_punt=euro_per_punt),
         ),
         "sectie 22 Elio": (
             {"doel": [9.85, 5.0, 15.0, 25.0], "stop": [49.1, 20.0, 35.0, 70.0],
              "max_bars": [60, 30, 120, 240], "spread": [0.16],
              "om_de": [30, 15, 60], "sessies": SESSIES,
-             "mijd_nieuws": [False, True], "risico": [0.02, 0.01, 0.05]},
+             "mijd_nieuws": [False, True], "risico": RISICO},
             lambda d, s, c, b: draai_elio(d, s, c, balans=b, euro_per_punt=euro_per_punt),
         ),
     }

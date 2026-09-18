@@ -14,7 +14,12 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.zoektocht import Uitslag, _lot_voor, punten, zoek
+import pandas as pd
+from datetime import UTC
+
+from scripts.zoektocht import (
+    Uitslag, _lot_voor, _naar_uitslag, punten, zoek,
+)
 
 
 class TestDeScoreKiestNietOpWinst:
@@ -165,3 +170,73 @@ class TestDeLusKlimtEchtEnStoptOok:
         _cfg, _u, n = zoek(self._nep(), {"a": [1, 2, 3], "b": ["y", "x"]},
                            min_trades=10, rondes=5, etiket="test")
         assert n >= 4
+
+
+class TestDeZwevendeStandTeltMee:
+    """DE DUURSTE FOUT VAN DE ZOEKLUS, gevonden door een achtergrondrun.
+
+    De zoeker kwam op EUR 2,9 miljoen uit met zogenaamd 4,8% terugval, en koos
+    daarbij het hoogste risico dat hij mocht. Oorzaak: `_naar_uitslag` keek
+    alleen naar GESLOTEN resultaten. Een grid sluit per definitie alleen
+    winnaars, dus zijn gesloten curve daalt nooit -- de zoeker zag geen gevaar,
+    nam 5% per trade en vermenigvuldigde 1,05 achtduizend keer met zichzelf.
+
+    Ik had precies deze fout al in `eindresultaat.py` gerepareerd en hem
+    vervolgens in de zoeklus opnieuw ingebouwd. Vandaar deze tests.
+    """
+
+    def _rijen(self, n, *, winst, zwevend):
+        idx = pd.date_range("2026-01-01", periods=n, freq="h", tz=UTC)
+        return [(s, winst, zwevend) for s in idx]
+
+    def test_een_reeks_winnaars_met_diepe_zwevende_verliezen_toont_terugval(self):
+        """Elke mand sluit in winst en hing onderweg diep onder water. De
+        gesloten curve loopt kaarsrecht omhoog; de terugval hoort dat niet te
+        doen."""
+
+        uit = _naar_uitslag(self._rijen(50, winst=1.0, zwevend=-25.0),
+                            balans=100.0, risico_punten=10.0, deel=0.02,
+                            euro_per_punt=1.0)
+
+        assert uit.eind > 100.0, "hij sluit wel degelijk in winst"
+        assert uit.diepste_terugval > 0.15, (
+            "de zwevende verliezen zitten niet in de terugval; dan ziet elke "
+            "grid eruit als gratis geld"
+        )
+
+    def test_zonder_zwevende_verliezen_blijft_de_terugval_nul(self):
+        """Anders zou de test hierboven ook slagen bij een functie die overal
+        een terugval verzint."""
+
+        uit = _naar_uitslag(self._rijen(50, winst=1.0, zwevend=0.0),
+                            balans=100.0, risico_punten=10.0, deel=0.02,
+                            euro_per_punt=1.0)
+
+        assert uit.diepste_terugval == pytest.approx(0.0)
+
+    def test_een_zwevend_verlies_groter_dan_de_balans_is_een_ruine(self):
+        """De margin call valt op de ZWEVENDE stand en niet op het eindbedrag.
+        Een mand die halverwege je hele rekening opmaakt, sluit niet meer --
+        ook niet als hij daarna keurig in winst zou zijn geeindigd."""
+
+        uit = _naar_uitslag([(pd.Timestamp("2026-01-01", tz=UTC), 5.0, -500.0)],
+                            balans=100.0, risico_punten=10.0, deel=0.02,
+                            euro_per_punt=1.0)
+
+        assert uit.ruine, "de rekening overleeft een zwevend verlies van 5x zichzelf"
+        assert uit.eind == 0.0
+
+
+class TestDeZoekruimteRespecteertDeEigenGrens:
+    def test_er_wordt_niet_boven_de_twee_procent_gezocht(self):
+        """Een zoeker die 5% aanbeveelt, beveelt iets aan dat de risk manager
+        weigert uit te voeren. Dan optimaliseer je een systeem dat niet
+        bestaat."""
+
+        from scripts.zoektocht import RISICO
+
+        assert max(RISICO) <= 0.02, (
+            f"de zoekruimte gaat tot {max(RISICO):.1%} terwijl "
+            "config/eightcap.yaml op risk_per_trade_pct: 2.0 staat"
+        )
+        assert len(RISICO) > 1, "er valt niets te kiezen"
