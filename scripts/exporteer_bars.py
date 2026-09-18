@@ -73,10 +73,27 @@ def main() -> int:
     eind = datetime.now(UTC)
     start = eind - timedelta(days=args.days)
 
+    aanhaken = load_credentials(required=False) is None
     print(f"\n  {symbool}  M1  {args.days} dagen  ->  {args.uit}")
+    print("  " + ("geen inloggegevens ingesteld -- ik haak aan bij de terminal "
+                  "die al draait" if aanhaken else "inloggegevens uit config/.env"))
+        # AANHAKEN BIJ EEN DRAAIENDE TERMINAL, en dat was de hele blokkade.
+        #
+        # Hier stond `load_credentials(required=True)`, dus dit script eiste
+        # MT5_LOGIN/PASSWORD/SERVER voordat het iets deed -- terwijl de
+        # terminal al open stond en al ingelogd was.
+        #
+        # Dat is niet nodig. `MT5Connector._initialise()` laat login, password
+        # en server gewoon weg zodra `credentials` None is, en `mt5.initialize()`
+        # hangt dan aan de terminal die al draait, op het account waarmee jij
+        # al bent ingelogd. Inloggegevens heb je alleen nodig om ZELF in te
+        # loggen of om van account te wisselen.
+        #
+        # Voor het OPHALEN VAN BARS is dat allebei niet aan de orde. Dus:
+        # staan ze er, dan gebruiken we ze; staan ze er niet, dan haken we aan.
     connector = MT5Connector(
         settings.mt5,
-        load_credentials(required=True),
+        load_credentials(required=False),
         terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
     )
     connector.connect()

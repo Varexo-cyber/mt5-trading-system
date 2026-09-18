@@ -324,7 +324,7 @@ def _haal_uit_mt5(args) -> pd.DataFrame:
     start = eind - timedelta(days=args.days)
     connector = MT5Connector(
         settings.mt5,
-        load_credentials(required=True),
+        load_credentials(required=False),
         terminal_path=settings.mt5.terminal_path or terminal_path_from_env(),
     )
     connector.connect()
