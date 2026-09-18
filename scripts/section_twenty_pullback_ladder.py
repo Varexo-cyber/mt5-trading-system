@@ -36,11 +36,13 @@ mechaniek getest is zonder MT5.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC
 
 import numpy as np
 import pandas as pd
+
+from scripts.uitvoering import RAW_GOUD, Uitvoering
 
 # Sessies in UTC. Ze mogen over middernacht heen lopen en dat doet Asia ook.
 SESSIES: dict[str, tuple[int, int]] = {
@@ -71,14 +73,19 @@ CONTRACT = 100.0
 #: De constante blijft staan omdat de kostenformule dan op EEN plek woont, en
 #: `tests/test_section_twenty_pullback_ladder.py` zet hem vast tegen
 #: `commission_by_asset_class['metal']` uit de config, zodat hij niet opnieuw
-#: kan wegdrijven.
-COMMISSIE_PER_LOT_PER_KANT = 0.0
+#: kan wegdrijven. Hij LEEST uit `scripts/uitvoering.py`, zodat er ook geen
+#: tweede plek is waar hij anders kan gaan staan.
+COMMISSIE_PER_LOT_PER_KANT = RAW_GOUD.commissie_per_lot_per_kant
 
 
 def kosten_per_been(spread: float, lot: float) -> float:
-    """Spread heen en terug, PLUS commissie heen en terug."""
+    """Wat één been kost van openen tot sluiten: spread heen en terug.
 
-    return spread * 2 * lot * CONTRACT + COMMISSIE_PER_LOT_PER_KANT * lot * 2
+    Doorgeefluik naar `Uitvoering.kosten_per_been`, zodat de oude aanroepen
+    blijven werken en er toch maar één formule bestaat.
+    """
+
+    return replace(RAW_GOUD, spread=spread).kosten_per_been(lot)
 
 # DE VIJF KLOKKEN, OP EEN PLEK.
 #
@@ -104,8 +111,24 @@ class Instelling:
     #: None = geen mandstop. Anders: deel van de startbalans.
     mandstop_deel: float | None = None
     lot: float = 0.01
-    #: Spread in punten, twee keer gerekend per been.
-    spread: float = 0.16
+    #: Spread in punten. Blijft hier staan omdat het rooster hem varieert; de
+    #: rest van de broker (marge, stop-out, slippage) komt uit `uitvoering`.
+    spread: float = 0.14
+    #: DE BROKER. Marge, stop-out-niveau, slippage, commissie, swap. Stond hier
+    #: niet, en daarom mat de vorige versie een ladder die pas doodging bij
+    #: balans nul -- terwijl de broker bij 50% margin level liquideert.
+    uitvoering: Uitvoering = RAW_GOUD
+
+    @property
+    def uit(self) -> Uitvoering:
+        """De broker met de spread van DEZE configuratie erin.
+
+        Eén plek waar de twee bij elkaar komen, zodat er geen configuratie kan
+        ontstaan waarin het rooster 2,0 spread zwaait en de kostenregel nog 0,14
+        rekent. Dat soort stille tweespalt is deze week al twee keer langsgekomen.
+        """
+
+        return replace(self.uitvoering, spread=self.spread)
 
     @property
     def naam(self) -> str:
@@ -129,6 +152,12 @@ class Mand:
     resultaat_euro: float = 0.0
     #: True wanneer de mand door de mandstop is gesloten en niet in winst.
     afgekapt: bool = False
+    #: True wanneer de BROKER hem sloot: margin level onder het stop-out-niveau.
+    #: Verschilt van `afgekapt` omdat dit niet jouw keuze was.
+    uitgegooid: bool = False
+    #: True wanneer de margin call het bijvullen stilzette. De mand loopt door,
+    #: maar niet meer als ladder -- en dat is iets anders dan wat gemeten wordt.
+    bevroren: bool = False
 
     @property
     def aantal_benen(self) -> int:
@@ -250,7 +279,8 @@ def simuleer(
     manden: list[Mand] = []
     mand: Mand | None = None
     kapot = False
-    kosten = kosten_per_been(instelling.spread, instelling.lot)
+    uitv = instelling.uit
+    kosten = uitv.kosten_per_been(instelling.lot)
     nieuws_set = set(nieuws or [])
 
     for stamp, bar in m1.iterrows():
@@ -282,11 +312,28 @@ def simuleer(
         #
         #    Bij een KOOPmand liggen de volgende benen LAGER en vult de low ze;
         #    bij een VERKOOPmand liggen ze HOGER en vult de high ze.
+        #    EN DE MARGIN CALL KAN DE LADDER MIDDEN IN HET BIJVULLEN STILZETTEN.
+        #    Onder 100% margin level weigert de broker nieuwe posities. Wat er
+        #    dan overblijft is geen ladder meer maar een stapel verliezers die
+        #    op eigen kracht terug moet -- en dat is een ander mechanisme dan
+        #    het mechanisme dat hier gemeten wordt, dus het hoort zichtbaar te
+        #    zijn en niet stilletjes doorgerekend.
         laatste = mand.benen[-1]
+
+        def _mag_erbij(prijs_nu: float) -> bool:
+            zwevend_nu = _pnl_euro(mand.benen, prijs_nu, instelling.lot, mand.kant)
+            zwevend_nu -= kosten * len(mand.benen)
+            marge_nu = uitv.marge_voor(
+                instelling.lot, mand.benen[0], benen=len(mand.benen))
+            return uitv.mag_bijopenen(balans + zwevend_nu, marge_nu)
+
         if mand.kant > 0:
             while float(bar["low"]) <= laatste - instelling.stap:
                 if (instelling.max_benen is not None
                         and len(mand.benen) >= instelling.max_benen):
+                    break
+                if not _mag_erbij(laatste - instelling.stap):
+                    mand.bevroren = True
                     break
                 laatste = laatste - instelling.stap
                 mand.benen.append(laatste)
@@ -294,6 +341,9 @@ def simuleer(
             while float(bar["high"]) >= laatste + instelling.stap:
                 if (instelling.max_benen is not None
                         and len(mand.benen) >= instelling.max_benen):
+                    break
+                if not _mag_erbij(laatste + instelling.stap):
+                    mand.bevroren = True
                     break
                 laatste = laatste + instelling.stap
                 mand.benen.append(laatste)
@@ -309,34 +359,61 @@ def simuleer(
                 (slechtste_prijs - been) * mand.kant for been in mand.benen
             ) / len(mand.benen)
 
-        # 3. Ruine gaat voor alles. Staat het verlies onder de hele balans, dan
-        #    is er geen mand meer om te sluiten.
-        if balans + onder <= 0:
+        # 3. DE BROKER GAAT VOOR ALLES, EN HIJ WACHT NIET OP BALANS NUL.
+        #
+        #    Hier stond `balans + onder <= 0`. Dat is de regel voor iemand
+        #    zonder broker. Echt gaat het zo: de broker houdt marge in per been,
+        #    dus bij een ladder GROEIT de inhouding terwijl je eigen vermogen
+        #    ZAKT -- twee bewegingen naar elkaar toe. Zodra eigen vermogen
+        #    gedeeld door marge onder het stop-out-niveau komt, liquideert hij,
+        #    en op EUR 59 met 0,01 lot goud gebeurt dat na 9 benen: vier en een
+        #    halve punt. Dat is een rustig half uur op goud.
+        #
+        #    Het verlies is dan niet netjes `onder`. Liquidatie is een
+        #    marktorder op alle benen tegelijk, in precies het slechtste moment,
+        #    dus de slippage komt er nog bij.
+        marge = uitv.marge_voor(instelling.lot, mand.benen[0], benen=len(mand.benen))
+        if uitv.vliegt_eruit(balans + onder, marge):
             mand.gesloten = stamp
-            mand.resultaat_euro = -balans
+            mand.resultaat_euro = max(
+                -balans, onder - uitv.slippage_kosten(instelling.lot, len(mand.benen)))
             mand.afgekapt = True
+            mand.uitgegooid = True
             manden.append(mand)
             kapot = True
             break
 
-        # 4. Mandstop, als die er is.
+        # 4. Mandstop, als die er is. Ook dat is een marktorder, dus ook die slipt.
+        slip = uitv.slippage_kosten(instelling.lot, len(mand.benen))
         if instelling.mandstop_deel is not None:
             grens = -abs(instelling.mandstop_deel) * balans
             if onder <= grens:
                 mand.gesloten = stamp
-                mand.resultaat_euro = onder
+                mand.resultaat_euro = onder - slip
                 mand.afgekapt = True
                 manden.append(mand)
                 mand = None
                 continue
 
         # 5. En pas nu: staat de mand op de HIGH in winst?
+        #
+        #    DE DREMPEL IS DE SLIPPAGE EN NIET NUL, en dat is geen strengheid
+        #    maar de enige samenhangende keuze. Sluiten is een marktorder op
+        #    alle benen tegelijk; die slipt. Een mand die op +EUR 0,01 dichtgaat
+        #    komt er netto negatief uit, en dit mechanisme leeft van precies
+        #    zulke flinterdunne winsten -- bij 200.000 benen is dat het verschil
+        #    tussen werken en niet werken.
+        #
+        #    De slippage wordt EEN keer geteld: hij zit in de drempel omdat de
+        #    bot zijn eigen kosten kent, en hij gaat van het resultaat af omdat
+        #    hij werkelijk betaald wordt. Twee keer aftrekken zou de ladder
+        #    straffen voor het feit dat hij kan rekenen.
         beste_prijs = float(bar["high"]) if mand.kant > 0 else float(bar["low"])
         boven = _pnl_euro(mand.benen, beste_prijs, instelling.lot, mand.kant)
         boven -= kosten * len(mand.benen)
-        if boven > 0:
+        if boven > slip:
             mand.gesloten = stamp
-            mand.resultaat_euro = boven
+            mand.resultaat_euro = boven - slip
             manden.append(mand)
             mand = None
 
@@ -385,6 +462,12 @@ def rapport(manden: list[Mand], kapot: bool, *, balans: float) -> dict[str, obje
             "resultaat_euro": round(ergste.resultaat_euro, 2),
         },
         "afgekapt": int(sum(1 for m in manden if m.afgekapt)),
+        # 5b. WAT DE BROKER DEED, en dat is iets anders dan wat jij deed.
+        #     `uitgegooid` is liquidatie op margin level -- niet jouw mandstop
+        #     en niet balans nul. `bevroren` is de zone ervoor, waarin de ladder
+        #     niet meer mocht bijvullen en dus geen ladder meer was.
+        "uitgegooid_door_broker": int(sum(1 for m in manden if m.uitgegooid)),
+        "bevroren_door_margin_call": int(sum(1 for m in manden if m.bevroren)),
         # 6: en pas hierna het vrolijke deel.
         "manden": len(manden),
         "trefkans": float((resultaten > 0).mean()),

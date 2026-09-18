@@ -23,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from scripts.uitvoering import ZONDER_STOPOUT
 from scripts.section_twenty_pullback_ladder import (
     COMMISSIE_PER_LOT_PER_KANT,
     CONTRACT,
@@ -258,10 +259,133 @@ class TestGoudBetaaltGeenCommissie:
         )
 
     def test_de_kosten_van_een_been_zijn_puur_spread(self):
-        # 0,16 punt spread, heen en terug, 0,01 lot van 100 ounce = EUR 0,32.
-        assert kosten_per_been(0.16, 0.01) == pytest.approx(0.32)
+        # 0,16 punt spread x 0,01 lot x 100 ounce = EUR 0,16 per rondje.
+        #
+        # EEN KEER, en dat was hier fout. Er stond `spread * 2`, alsof je de
+        # spread bij het openen EN bij het sluiten betaalt. De spread IS het gat
+        # tussen bied en laat: je koopt op laat, verkoopt op bied, en betaalt
+        # hem daarmee precies een keer per rondje.
+        assert kosten_per_been(0.16, 0.01) == pytest.approx(0.16)
         assert kosten_per_been(0.0, 0.01) == pytest.approx(0.0), (
             "zonder spread hoort een goudbeen niets te kosten"
+        )
+
+    def test_de_spread_wordt_niet_dubbel_geteld(self):
+        """De live-code vermijdt dit expliciet; de meting deed het toch.
+
+        `runner/service.py::_round_trip_cost_price` laat de spread er met zoveel
+        woorden uit "omdat dat hem twee keer zou tellen". Deze test zet vast dat
+        de meting nu hetzelfde doet.
+        """
+        enkel = kosten_per_been(0.20, 0.01)
+        assert enkel == pytest.approx(0.20 * 0.01 * CONTRACT)
+        assert enkel != pytest.approx(0.20 * 2 * 0.01 * CONTRACT)
+
+
+class TestDeBrokerGooitJeEruit:
+    """De stop-out moet in de SIMULATIE gebeuren, niet alleen in de formule.
+
+    `scripts/uitvoering.py` heeft zijn eigen tests, maar die bewijzen alleen dat
+    de rekensom klopt. Als `simuleer` hem niet aanroept is het dode code, en dan
+    meet de ladder nog steeds een rekening die pas op nul doodgaat.
+    """
+
+    @staticmethod
+    def _wegzakkende_markt():
+        # Goud op 4000 dat tien punten wegzakt: met stap 0,5 zijn dat 21 benen.
+        return _frame([
+            (4000.0, 4000.0, 4000.0, 4000.0),
+            (4000.0, 4000.0, 3990.0, 3990.0),
+            (3990.0, 3990.5, 3990.0, 3990.5),
+        ])
+
+    def test_op_negenenvijftig_euro_gooit_de_broker_je_eruit(self):
+        m1 = self._wegzakkende_markt()
+        manden, kapot = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=59.16)
+
+        assert kapot, "EUR 59,16 hoort een tegenbeweging van 10 punten niet te halen"
+        assert manden[-1].uitgegooid, "hij ging dood, maar niet door de broker"
+        assert manden[-1].resultaat_euro >= -59.16, (
+            "je kunt niet meer verliezen dan er op de rekening stond"
+        )
+
+    def test_dezelfde_beweging_op_een_grote_rekening_overleeft(self):
+        m1 = self._wegzakkende_markt()
+        manden, kapot = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=50_000.0)
+
+        assert not kapot
+        assert not any(m.uitgegooid for m in manden)
+
+    def test_de_margin_call_zet_het_bijvullen_stil(self):
+        """Tussen "mag nog bij" en "eruit" zit een zone, en die hoort te tellen.
+
+        Onder 100% margin level weigert de broker nieuwe posities. De mand loopt
+        door maar groeit niet meer, en dat is een ander mechanisme dan de ladder
+        die gemeten wordt. Als niets dit markeert, meet de uitslag stilletjes
+        een ladder die de broker nooit had toegestaan.
+        """
+        m1 = self._wegzakkende_markt()
+        manden, _ = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=59.16)
+
+        assert any(m.bevroren for m in manden), (
+            "op EUR 59 hoort de margin call het bijvullen te stoppen"
+        )
+
+    def test_zonder_stopout_leeft_dezelfde_rekening_langer(self):
+        """Het verschil met de OUDE meting, in een test in plaats van in proza."""
+        m1 = self._wegzakkende_markt()
+        stapels = _stijgende_stapel(m1.index)
+
+        _, met = simuleer(m1, stapels, balans=59.16,
+                          instelling=Instelling(stap=0.5, lot=0.01))
+        _, zonder = simuleer(m1, stapels, balans=59.16,
+                             instelling=Instelling(stap=0.5, lot=0.01,
+                                                   uitvoering=ZONDER_STOPOUT))
+        assert met and not zonder, (
+            "de oude regel (balans <= 0) hoort deze rekening te laten doorlopen"
+        )
+
+
+class TestEenFlinterdunneWinstIsGeenWinst:
+    """Sluiten is een marktorder, en die slipt.
+
+    Dit mechanisme leeft van heel veel heel kleine winsten. Als een mand op
+    +EUR 0,01 dichtgaat en het sluiten kost EUR 0,10, dan is elke zogenaamde
+    winnaar in werkelijkheid een verliezer -- en bij tienduizenden manden is dat
+    het hele verschil tussen werken en niet werken.
+    """
+
+    #: 0,10 punt slippage x 0,01 lot x 100 ounce = EUR 0,10 per been.
+    SLIP = 0.10
+
+    def _draai(self, top: float):
+        m1 = _frame([
+            (100.0, 100.0, 100.0, 100.0),
+            (100.0, top, 100.0, top),
+        ])
+        return simuleer(
+            m1, _stijgende_stapel(m1.index), balans=10_000.0,
+            instelling=Instelling(stap=100.0, spread=0.0, lot=0.01),
+        )
+
+    def test_een_winst_kleiner_dan_de_slippage_sluit_niet(self):
+        # +0,05 punt = EUR 0,05, en sluiten kost EUR 0,10.
+        manden, _ = self._draai(100.05)
+        assert manden[0].gesloten is None, (
+            "hij sluit op een winst die het sluiten zelf niet eens dekt"
+        )
+
+    def test_een_echte_winst_sluit_wel_en_betaalt_de_slippage(self):
+        manden, _ = self._draai(100.5)
+        assert manden[0].gesloten is not None
+        assert manden[0].resultaat_euro == pytest.approx(0.5 - self.SLIP), (
+            "de slippage is niet van het resultaat af"
         )
 
 
