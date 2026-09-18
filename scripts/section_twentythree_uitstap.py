@@ -33,7 +33,7 @@ import numpy as np
 import pandas as pd
 
 from scripts.section_twenty_pullback_ladder import (
-    CONTRACT, KLOKKEN, _hersample, _lees_csv, _sessie_van, stapel_omhoog,
+    CONTRACT, KLOKKEN, _hersample, _lees_csv, _sessie_van, stapel_richting,
 )
 
 DAGEN = ("maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag")
@@ -75,11 +75,16 @@ def _atr(frame: pd.DataFrame, periode: int = 14) -> pd.Series:
 
 def loop_trade(
     m1: pd.DataFrame, start: int, *, entry: float, stop: float, atr: float,
-    uitstap: Uitstap, kosten_r: float, max_bars: int,
+    uitstap: Uitstap, kosten_r: float, max_bars: int, kant: int = 1,
 ) -> Trade:
-    """Een long van instap tot uitstap, met R gemeten op de EERSTE stop."""
+    """Een trade van instap tot uitstap, met R gemeten op de EERSTE stop.
 
-    risico = entry - stop
+    `kant` is +1 voor long en -1 voor short. Alles hieronder rekent in
+    VOORDEEL en NADEEL in plaats van in hoog en laag, zodat er maar een pad
+    is -- twee gespiegelde takken is hoe je hier een omgedraaid teken in stopt.
+    """
+
+    risico = (entry - stop) * kant
     if risico <= 0:
         return Trade(m1.index[start], 0.0, 0, 0.0, 0.0, "ongeldig")
 
@@ -96,46 +101,53 @@ def loop_trade(
             break
         bar = m1.iloc[pos]
         hoog, laag = float(bar["high"]), float(bar["low"])
-        mfe = max(mfe, (hoog - entry) / risico)
-        mae = min(mae, (laag - entry) / risico)
+        # Beste en slechtste stand VOOR DEZE RICHTING.
+        best = (hoog - entry) * kant if kant > 0 else (entry - laag)
+        slechtst = (laag - entry) * kant if kant > 0 else (entry - hoog)
+        mfe = max(mfe, best / risico)
+        mae = min(mae, slechtst / risico)
 
         # 1. DE STOP EERST, ALTIJD. Raakt deze bar allebei, dan wint de stop.
-        if laag <= huidige_stop:
-            r = (huidige_stop - entry) / risico * nog_open + helft_eruit
+        if (laag <= huidige_stop) if kant > 0 else (hoog >= huidige_stop):
+            r = (huidige_stop - entry) * kant / risico * nog_open + helft_eruit
             return Trade(m1.index[pos], r - kosten_r, offset + 1, mfe, mae,
                          "stop" if huidige_stop <= stop else "stop verschoven")
 
         # 2. Deels eruit.
         if (uitstap.deel_bij is not None and nog_open == 1.0
-                and hoog >= entry + risico * uitstap.deel_bij):
+                and best >= risico * uitstap.deel_bij):
             helft_eruit = 0.5 * uitstap.deel_bij
             nog_open = 0.5
 
         # 3. Doel.
-        if doel is not None and hoog >= doel:
+        if doel is not None and best >= risico * uitstap.doel_r:
             r = uitstap.doel_r * nog_open + helft_eruit
             return Trade(m1.index[pos], r - kosten_r, offset + 1, mfe, mae, "doel")
 
         # 4. Breakeven verschuiven. NA de stopcontrole, want anders krijgt een
         #    trade die in dezelfde bar omhoog en daarna omlaag ging gratis een
         #    beschermde stop die hij live niet had.
-        if uitstap.be_bij is not None and hoog >= entry + risico * uitstap.be_bij:
-            huidige_stop = max(huidige_stop, entry)
+        if uitstap.be_bij is not None and best >= risico * uitstap.be_bij:
+            huidige_stop = entry
 
         # 5. Trailen achter de hoogste stand.
         if uitstap.trail_atr is not None:
-            top = max(top, hoog)
-            huidige_stop = max(huidige_stop, top - atr * uitstap.trail_atr)
+            if kant > 0:
+                top = max(top, hoog)
+                huidige_stop = max(huidige_stop, top - atr * uitstap.trail_atr)
+            else:
+                top = min(top, laag)
+                huidige_stop = min(huidige_stop, top + atr * uitstap.trail_atr)
 
         # 6. Tijdstop.
         if uitstap.tijd_bars is not None and offset + 1 >= uitstap.tijd_bars:
             slot = float(bar["close"])
-            r = (slot - entry) / risico * nog_open + helft_eruit
+            r = (slot - entry) * kant / risico * nog_open + helft_eruit
             return Trade(m1.index[pos], r - kosten_r, offset + 1, mfe, mae, "tijd")
 
     pos = min(start + max_bars, len(m1)) - 1
     slot = float(m1.iloc[pos]["close"])
-    r = (slot - entry) / risico * nog_open + helft_eruit
+    r = (slot - entry) * kant / risico * nog_open + helft_eruit
     return Trade(m1.index[pos], r - kosten_r, max_bars, mfe, mae, "einde venster")
 
 
@@ -150,12 +162,18 @@ def meet(
     trades: list[Trade] = []
     i = 20
     while i < len(m1) - 1:
-        if not stapel_omhoog(stapels, m1.index[i]):
+        # BEIDE KANTEN, en dat was hier ook fout. Sectie 23 mat de uitstap op
+        # een LONG-ONLY ingang, in een venster waarin goud 70% steeg. Die
+        # +0,55 R per trade was dus grotendeels de stijging, net als bij
+        # sectie 20. Dezelfde fout, twee bestanden verder.
+        kant = stapel_richting(stapels, m1.index[i])
+        if kant == 0:
             i += om_de
             continue
         entry = float(m1.iloc[i]["open"])
         a = float(atr.iloc[i]) if not np.isnan(atr.iloc[i]) else entry * 0.0005
-        t = loop_trade(m1, i, entry=entry, stop=entry * (1 - stop_pct), atr=a,
+        stop = entry * (1 - stop_pct) if kant > 0 else entry * (1 + stop_pct)
+        t = loop_trade(m1, i, entry=entry, stop=stop, atr=a, kant=kant,
                        uitstap=uitstap, kosten_r=kosten_r, max_bars=max_bars)
         trades.append(t)
         i += max(om_de, t.bars)
@@ -269,9 +287,22 @@ def hoeveel_verliezen_dodelijk(
     }
 
 
+#: WAT DE BROKER JE MAXIMAAL LAAT HANDELEN. Eightcap zit rond de 50 lot per
+#: order op XAUUSD; andere brokers zitten in dezelfde orde.
+#:
+#: ZONDER DEZE GRENS IS DE LADDER ONZIN. Een positieve verwachting samengesteld
+#: over 2570 trades explodeert altijd: EUR 59 werd EUR 3.500.000.000.000, en
+#: bij die stand zou je 73 miljoen lot moeten handelen -- 7 miljard ounce goud,
+#: terwijl de hele COMEX er 25 miljoen per dag doet.
+#:
+#: De rekensom klopte; hij beschreef alleen een markt die niet bestaat. Een
+#: backtest die dat niet afkapt, meet samengestelde groei en geen strategie.
+MAX_LOT = 50.0
+
+
 def balansladder(
     trades: list[Trade], *, stop_punten: float, euro_per_punt_min: float = 0.87,
-    risico_deel: float = 0.02, lotstap: float = 0.01,
+    risico_deel: float = 0.02, lotstap: float = 0.01, max_lot: float = MAX_LOT,
 ) -> pd.DataFrame:
     """WAT DEZELFDE REGEL OP EEN ANDERE STARTBALANS HAD GEDAAN.
 
@@ -303,11 +334,16 @@ def balansladder(
         piek = start
         diepste = 0.0
         kapot = False
+        geplafonneerd = False
         gedaan = 0
         for tr in sorted(trades, key=lambda x: x.moment):
             # Lotgrootte uit de risicogrens, met het minimumlot als vloer.
             gewenst = risico_deel * balans / (stop_punten * euro_per_punt_min / lotstap)
-            lot = max(lotstap, (int(gewenst / lotstap)) * lotstap)
+            # Vloer EN plafond: kleiner dan 0,01 bestaat niet, groter dan wat de
+            # broker accepteert ook niet.
+            lot = min(max_lot, max(lotstap, (int(gewenst / lotstap)) * lotstap))
+            if lot >= max_lot:
+                geplafonneerd = True
             risico_euro = stop_punten * euro_per_punt_min * (lot / lotstap)
             balans += tr.r * risico_euro
             gedaan += 1
@@ -328,6 +364,7 @@ def balansladder(
             "trades": gedaan,
             "terugval": diepste,
             "ruine": kapot,
+            "geplafonneerd": geplafonneerd,
         })
     return pd.DataFrame(rijen)
 
@@ -405,8 +442,8 @@ def main() -> int:
            f"  BALANSLADDER  --  {beste}, lot groeit mee met 2% risico",
            "  " + "=" * 74, ""]
     for _, rij in ladder.iterrows():
-        merk = "RUINE " if rij["ruine"] else ("      " if rij["haalbaar"]
-                                              else "TE KLEIN")
+        merk = ("RUINE " if rij["ruine"] else "MAXLOT" if rij["geplafonneerd"]
+                else "      " if rij["haalbaar"] else "TE KLEIN")
         lad.append(
             f"  start EUR {rij['start']:>9,.2f}  {merk}  eind EUR {rij['eind']:>13,.2f}"
             f"   x{rij['keer']:>8,.1f}   risico 1e trade {rij['risico_eerste_trade']:>6.1%}"
@@ -421,6 +458,16 @@ def main() -> int:
             f"   (kans op zo'n reeks {d['kans_op_die_reeks']:.2%},"
             f" verwacht {d['verwacht_aantal']:.2f}x in deze reeks)")
     lad += ["",
+            f"  'MAXLOT' betekent: de positie liep tegen de {MAX_LOT:.0f} lot aan die",
+            "  je broker maximaal accepteert. Vanaf daar groeit hij niet meer mee",
+            "  en is het rendement in procenten dus geen extrapolatie meer.",
+            "",
+            "  EN LEES GEEN EINDBEDRAG MET TIEN NULLEN ALS EEN VOORSPELLING.",
+            "  Elke positieve verwachting samengesteld over duizenden trades",
+            "  explodeert -- dat is de rekensom en niet de strategie. Bij zulke",
+            "  standen zou je meer goud moeten handelen dan er per dag omgaat,",
+            "  en dan bestaat de voorsprong al lang niet meer.",
+            "",
             "  DAT EUR 59 HET GROOTSTE VEELVOUD HAALT IS GEEN VOORDEEL.",
             "  Die rekening groeit zo snel omdat ze GEDWONGEN wordt vijftien",
             "  procent per trade te riskeren -- het minimumlot is een vloer, er",
