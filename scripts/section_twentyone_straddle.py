@@ -40,7 +40,9 @@ from datetime import UTC
 import numpy as np
 import pandas as pd
 
-from scripts.section_twenty_pullback_ladder import CONTRACT, _lees_csv, _sessie_van
+from scripts.section_twenty_pullback_ladder import (
+    CONTRACT, _lees_csv, _sessie_van, kosten_per_been,
+)
 
 
 @dataclass(frozen=True)
@@ -87,9 +89,9 @@ class Cyclus:
 
 
 def _kosten(instelling: Instelling, benen: int) -> float:
-    """Spread twee keer per been: in en uit."""
+    """Spread EN commissie, twee keer per been: in en uit."""
 
-    return instelling.spread * 2 * instelling.lot * CONTRACT * benen
+    return kosten_per_been(instelling.spread, instelling.lot) * benen
 
 
 def _loop_een_been(

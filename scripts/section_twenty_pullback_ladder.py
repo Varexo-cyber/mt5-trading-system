@@ -53,6 +53,33 @@ OVERLAP = ("londen", "newyork")
 #: Wat één punt koers waard is per lot op XAUUSD: 100 troy ounce per lot.
 CONTRACT = 100.0
 
+#: COMMISSIE OP GOUD IS NUL, EN DAT IS EEN METING, GEEN AANNAME.
+#:
+#: Ik las `commission_per_lot_per_side: 2.75` uit `config/eightcap.yaml` en
+#: rekende die op elk been door. Dat getal geldt alleen voor FOREX. Twee regels
+#: lager in datzelfde bestand staat `commission_by_asset_class` met
+#: `metal: 0.0`, en de toelichting erbij is uit de rekening zelf gemeten: negen
+#: gesloten trades op 24 augustus, samen EUR 0,67 commissie, waarvan USDJPY
+#: alleen al 0,12 lot x 5,50 = EUR 0,66. De XAUUSD-, SPX500-, SG30- en
+#: BTCUSD-trades in datzelfde venster droegen samen NUL bij, en het detailpaneel
+#: van de SPX500-deal zei het letterlijk: `Commission: 0.00`.
+#:
+#: Dus dezelfde fout als de rest van deze week: er staan twee beschrijvingen van
+#: een regel in het project en ik pakte de verkeerde. Bij goud zit de kost in de
+#: spread en nergens anders.
+#:
+#: De constante blijft staan omdat de kostenformule dan op EEN plek woont, en
+#: `tests/test_section_twenty_pullback_ladder.py` zet hem vast tegen
+#: `commission_by_asset_class['metal']` uit de config, zodat hij niet opnieuw
+#: kan wegdrijven.
+COMMISSIE_PER_LOT_PER_KANT = 0.0
+
+
+def kosten_per_been(spread: float, lot: float) -> float:
+    """Spread heen en terug, PLUS commissie heen en terug."""
+
+    return spread * 2 * lot * CONTRACT + COMMISSIE_PER_LOT_PER_KANT * lot * 2
+
 # DE VIJF KLOKKEN, OP EEN PLEK.
 #
 # Gevraagd is "M1 M2 M3 M5 en M15". De eerste versie van dit bestand nam er
@@ -223,7 +250,7 @@ def simuleer(
     manden: list[Mand] = []
     mand: Mand | None = None
     kapot = False
-    kosten_per_been = instelling.spread * 2 * instelling.lot * CONTRACT
+    kosten = kosten_per_been(instelling.spread, instelling.lot)
     nieuws_set = set(nieuws or [])
 
     for stamp, bar in m1.iterrows():
@@ -275,7 +302,7 @@ def simuleer(
         #    het krapst stond, en niet op de close.
         slechtste_prijs = float(bar["low"]) if mand.kant > 0 else float(bar["high"])
         onder = _pnl_euro(mand.benen, slechtste_prijs, instelling.lot, mand.kant)
-        onder -= kosten_per_been * len(mand.benen)
+        onder -= kosten * len(mand.benen)
         if onder < mand.diepste_euro:
             mand.diepste_euro = onder
             mand.diepste_punten = sum(
@@ -306,7 +333,7 @@ def simuleer(
         # 5. En pas nu: staat de mand op de HIGH in winst?
         beste_prijs = float(bar["high"]) if mand.kant > 0 else float(bar["low"])
         boven = _pnl_euro(mand.benen, beste_prijs, instelling.lot, mand.kant)
-        boven -= kosten_per_been * len(mand.benen)
+        boven -= kosten * len(mand.benen)
         if boven > 0:
             mand.gesloten = stamp
             mand.resultaat_euro = boven
@@ -326,7 +353,7 @@ def simuleer(
     if mand is not None and not kapot:
         slot = float(m1.iloc[-1]["close"])
         mand.resultaat_euro = _pnl_euro(mand.benen, slot, instelling.lot, mand.kant)
-        mand.resultaat_euro -= kosten_per_been * len(mand.benen)
+        mand.resultaat_euro -= kosten * len(mand.benen)
         mand.gesloten = None
         manden.append(mand)
 

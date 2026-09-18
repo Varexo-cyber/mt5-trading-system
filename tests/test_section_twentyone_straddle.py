@@ -24,7 +24,7 @@ from datetime import UTC
 import pandas as pd
 import pytest
 
-from scripts.section_twenty_pullback_ladder import CONTRACT
+from scripts.section_twenty_pullback_ladder import CONTRACT, kosten_per_been
 from scripts.section_twentyone_straddle import (
     Cyclus,
     Instelling,
@@ -54,7 +54,7 @@ class TestDeWhipsawBestaat:
         cyclus = straddle_cyclus(m1, 0, instelling=Instelling(kap=5.0, spread=0.0, lot=0.01))
 
         assert cyclus.gehouden == 0, "er is een been blijven staan na een dubbele stop"
-        verwacht = -2 * 5.0 * 0.01 * CONTRACT
+        verwacht = -2 * 5.0 * 0.01 * CONTRACT - kosten_per_been(0.0, 0.01) * 2
         assert cyclus.netto_euro == pytest.approx(verwacht), (
             "een dubbele stop kost twee keer de kap, niet een keer"
         )
@@ -105,7 +105,8 @@ class TestVierSpreadsPerCyclus:
             "de compenseer-regel hoort de kosten in de drempel te verwerken"
         )
         # En hij komt allebei op de MARGE uit, want dat is de afspraak.
-        assert zonder.netto_euro == pytest.approx(2.0 * 0.01 * CONTRACT, abs=0.01)
+        assert zonder.netto_euro == pytest.approx(
+            2.0 * 0.01 * CONTRACT - kosten_per_been(0.0, 0.01) * 2, abs=0.01)
 
     def test_bij_een_vast_doel_gaan_vier_spreads_er_wel_gewoon_af(self):
         """Zonder deze test zou de test hierboven ook slagen bij een
@@ -121,7 +122,8 @@ class TestVierSpreadsPerCyclus:
             kap=5.0, doel=20.0, compenseer=False, spread=0.16, lot=0.01))
 
         verschil = zonder.netto_euro - met.netto_euro
-        verwacht = 0.16 * 2 * 0.01 * CONTRACT * 2       # twee benen
+        # Alleen het SPREAD-deel verschilt; de commissie zit in allebei.
+        verwacht = (kosten_per_been(0.16, 0.01) - kosten_per_been(0.0, 0.01)) * 2
         assert verschil == pytest.approx(verwacht), (
             "er wordt maar voor een been spread gerekend"
         )
@@ -142,7 +144,8 @@ class TestVierSpreadsPerCyclus:
         met = een_richting_cyclus(m1, 0, instelling=instelling, richting=1)
 
         verschil = zonder.netto_euro - met.netto_euro
-        assert verschil == pytest.approx(0.16 * 2 * 0.01 * CONTRACT), (
+        assert verschil == pytest.approx(
+            kosten_per_been(0.16, 0.01) - kosten_per_been(0.0, 0.01)), (
             "de controle rekent niet met precies een been"
         )
 
@@ -163,8 +166,8 @@ class TestDeStopWintDeBar:
                                   spread=0.0, lot=0.01),
         )
 
-        # -10 op het overgebleven been, -5 op het afgekapte been.
-        verwacht = (-10.0 - 5.0) * 0.01 * CONTRACT
+        # -10 op het overgebleven been, -5 op het afgekapte been, min kosten.
+        verwacht = (-10.0 - 5.0) * 0.01 * CONTRACT - kosten_per_been(0.0, 0.01) * 2
         assert cyclus.netto_euro == pytest.approx(verwacht), (
             "het doel is gepakt in een bar die ook de stop raakte"
         )
