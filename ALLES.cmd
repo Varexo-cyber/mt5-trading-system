@@ -121,10 +121,10 @@ if exist "config\.env" (
   echo   Geen config\.env -- ik haak aan bij je draaiende terminal.
 )
 
-echo   [1/5] nieuwste code ophalen...
+echo   [1/6] nieuwste code ophalen...
 git pull origin claude/mt5-autonomous-trading-system-ujd1sk >> "%UIT%" 2>&1
 
-echo   [2/5] bars uit MT5 exporteren (%DAGEN% dagen M1)...
+echo   [2/6] bars uit MT5 exporteren (%DAGEN% dagen M1)...
 echo. >> "%UIT%"
 echo ---------- BARS ---------- >> "%UIT%"
 %PY% -m scripts.exporteer_bars --days %DAGEN% >> "%UIT%" 2>&1
@@ -149,14 +149,21 @@ rem Hier stond overal ">> %UIT%", dus het scherm bleef twintig minuten leeg en
 rem dat is niet te onderscheiden van een vastgelopen programma. Het antwoord op
 rem de vraag ("wat zou mijn balans nu zijn?") print nu OP HET SCHERM terwijl hij
 rem werkt, en schrijft zichzelf ook naar het bestand.
-echo   [3/5] EINDRESULTAAT -- wat je balans na deze periode zou zijn...
+echo   [3/6] EINDRESULTAAT -- wat je balans na deze periode zou zijn...
 echo.
 echo. >> "%UIT%"
 echo ---------- EINDRESULTAAT ---------- >> "%UIT%"
 %PY% -m scripts.eindresultaat --csv runtime\xauusd_m1.csv --balans %BALANS% --rapport "%UIT%"
 
 echo.
-echo   [4/5] alle configuraties doorrekenen ^(dit is de lange^)...
+echo   [4/6] SECTIE 23 -- uitstap: BE, trailen, deels eruit, tijdstop...
+echo.
+echo. >> "%UIT%"
+echo ---------- SECTIE 23: UITSTAP + BALANSLADDER ---------- >> "%UIT%"
+%PY% -m scripts.section_twentythree_uitstap --csv runtime\xauusd_m1.csv --balans %BALANS% --rapport "%UIT%"
+
+echo.
+echo   [5/6] alle configuraties doorrekenen ^(dit is de lange^)...
 echo. >> "%UIT%"
 echo ---------- SECTIE 20: ALLE 72 CONFIGURATIES ---------- >> "%UIT%"
 %PY% -m scripts.section_twenty_pullback_ladder --csv runtime\xauusd_m1.csv --balans %BALANS% --alle-configs >> "%UIT%" 2>&1
@@ -164,7 +171,7 @@ echo. >> "%UIT%"
 echo ---------- SECTIE 21: ALLE 48 CONFIGURATIES ---------- >> "%UIT%"
 %PY% -m scripts.section_twentyone_straddle --csv runtime\xauusd_m1.csv --alle-configs >> "%UIT%" 2>&1
 
-echo   [5/5] sectie 22 -- trackrecords toetsen aan hun eigen beweringen...
+echo   [6/6] sectie 22 -- trackrecords toetsen aan hun eigen beweringen...
 echo. >> "%UIT%"
 echo ---------- SECTIE 22: CLAIM-AUDIT ---------- >> "%UIT%"
 %PY% -m scripts.section_twentytwo_claim_audit >> "%UIT%" 2>&1
