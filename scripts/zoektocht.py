@@ -87,9 +87,31 @@ class Uitslag:
         return self.eind / self.start - 1.0 if self.start else 0.0
 
 
+#: HET PLAFOND DAT HIER ONTBRAK, EN DAT KOSTTE DE HELE ZOEKTOCHT.
+#:
+#: Zonder bovengrens gaf deze functie op de echte data dit:
+#:
+#:     [sectie 20 ladder] ronde 1: stap -> 2.0
+#:         350,916,914,454,371,078,504,448.00 EUR
+#:
+#: Driehonderdvijftig triljard euro. Dat is geen resultaat maar een
+#: samengestelde reeks die op hol slaat, en het ergste is niet het getal zelf:
+#: de zoeker KIEST op dat getal. Elke "verbetering" die hij daarna rapporteert
+#: is dus gestuurd door een overloop en niet door de markt.
+#:
+#: 50 lot is waar `section_twentythree_uitstap.balansladder` al op stond. Die
+#: grens bestond daar wel en hier niet -- alweer twee beschrijvingen van
+#: dezelfde regel, en alweer de verkeerde op de plek waar het geld wordt geteld.
+#:
+#: Boven dit plafond zegt een rendement in procenten ook niets meer: 50 lot goud
+#: is 5.000 ounce, en die vult de markt niet geruisloos tegen dezelfde spread.
+MAX_LOT = 50.0
+
+
 def _lot_voor(balans: float, risico_punten: float, *, deel: float,
-              euro_per_punt: float, stap: float = 0.01) -> float:
-    """DE LOTGROOTTE GROEIT MEE, en het minimumlot is een harde vloer.
+              euro_per_punt: float, stap: float = 0.01,
+              max_lot: float = MAX_LOT) -> float:
+    """DE LOTGROOTTE GROEIT MEE, tussen een harde vloer en een hard plafond.
 
     Dit is wat er in de eerste meting ontbrak en waarom die EUR 132.847 nep
     was: met een vast lot verdampt je risico terwijl je balans groeit. Jarvis
@@ -98,10 +120,13 @@ def _lot_voor(balans: float, risico_punten: float, *, deel: float,
     De vloer blijft: onder 0,01 lot bestaat niet. Op een kleine rekening kun je
     dus NIET binnen je grens blijven, en dat is geen detail maar de reden dat
     kleine rekeningen anders werken dan grote.
+
+    En nu ook een PLAFOND, want dat ontbrak, en zo ontstond 10^23 euro. Zie
+    `MAX_LOT` hierboven.
     """
 
     gewenst = deel * balans / max(risico_punten * euro_per_punt / stap, 1e-9)
-    return max(stap, int(gewenst / stap) * stap)
+    return min(max_lot, max(stap, int(gewenst / stap) * stap))
 
 
 def _toegestaan(stamp: pd.Timestamp, *, sessies: tuple[str, ...],

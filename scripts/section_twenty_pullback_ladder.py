@@ -167,7 +167,14 @@ class Mand:
     def bars_onder_water(self) -> int:
         return self._bars
 
+    @property
+    def minuten_geblokkeerd(self) -> int:
+        """Minuten dat deze mand bevroren stond en dus alles tegenhield."""
+
+        return self._bevroren_bars
+
     _bars: int = 0
+    _bevroren_bars: int = 0
 
 
 def stapel_richting(frames: dict[str, pd.DataFrame], stamp: pd.Timestamp) -> int:
@@ -283,6 +290,18 @@ def simuleer(
     kosten = uitv.kosten_per_been(instelling.lot)
     nieuws_set = set(nieuws or [])
 
+    # DE BALANS LOOPT MEE, EN DAT DEED HIJ NIET.
+    # ========================================================================
+    # Hier stond `balans` als vaste startwaarde in elke marge-controle, terwijl
+    # `eindresultaat._loop_balans` diezelfde manden BUITEN deze functie tegen
+    # een GROEIENDE balans afrekende. Twee rekeningen in een getal: de stop-out
+    # keek naar EUR 59,16 terwijl het rapport EUR 2.945 claimde.
+    #
+    # Dat is precies de tweespalt die deze week al drie keer is langsgekomen --
+    # dubbele spread, forex-commissie op goud, long-only ladder. Eén bedrag, op
+    # één plek, dat meebeweegt met wat er werkelijk gebeurde.
+    stand = balans
+
     for stamp, bar in m1.iterrows():
         if kapot:
             break
@@ -306,6 +325,13 @@ def simuleer(
             # verkeerde plek zich meteen wreekt.
 
         mand._bars += 1
+        # HOELANG DE REKENING STILSTOND. Een bevroren mand sluit nooit uit
+        # zichzelf, en zolang hij openstaat opent er geen nieuwe -- er valt
+        # niets om, er gebeurt alleen niets meer. Precies dat verzweeg het
+        # rapport: 4.282 manden in drie weken en daarna 700 dagen stilte,
+        # gepresenteerd als +4779%.
+        if mand.bevroren:
+            mand._bevroren_bars += 1
 
         # 1. EERST BIJVULLEN, en pas daarna op winst kijken. Dit is de
         #    pessimistische volgorde en ze is met opzet gekozen.
@@ -319,13 +345,14 @@ def simuleer(
         #    het mechanisme dat hier gemeten wordt, dus het hoort zichtbaar te
         #    zijn en niet stilletjes doorgerekend.
         laatste = mand.benen[-1]
+        benen_voor = len(mand.benen)
 
         def _mag_erbij(prijs_nu: float) -> bool:
             zwevend_nu = _pnl_euro(mand.benen, prijs_nu, instelling.lot, mand.kant)
             zwevend_nu -= kosten * len(mand.benen)
             marge_nu = uitv.marge_voor(
                 instelling.lot, mand.benen[0], benen=len(mand.benen))
-            return uitv.mag_bijopenen(balans + zwevend_nu, marge_nu)
+            return uitv.mag_bijopenen(stand + zwevend_nu, marge_nu)
 
         if mand.kant > 0:
             while float(bar["low"]) <= laatste - instelling.stap:
@@ -373,10 +400,10 @@ def simuleer(
         #    marktorder op alle benen tegelijk, in precies het slechtste moment,
         #    dus de slippage komt er nog bij.
         marge = uitv.marge_voor(instelling.lot, mand.benen[0], benen=len(mand.benen))
-        if uitv.vliegt_eruit(balans + onder, marge):
+        if uitv.vliegt_eruit(stand + onder, marge):
             mand.gesloten = stamp
             mand.resultaat_euro = max(
-                -balans, onder - uitv.slippage_kosten(instelling.lot, len(mand.benen)))
+                -stand, onder - uitv.slippage_kosten(instelling.lot, len(mand.benen)))
             mand.afgekapt = True
             mand.uitgegooid = True
             manden.append(mand)
@@ -386,12 +413,13 @@ def simuleer(
         # 4. Mandstop, als die er is. Ook dat is een marktorder, dus ook die slipt.
         slip = uitv.slippage_kosten(instelling.lot, len(mand.benen))
         if instelling.mandstop_deel is not None:
-            grens = -abs(instelling.mandstop_deel) * balans
+            grens = -abs(instelling.mandstop_deel) * stand
             if onder <= grens:
                 mand.gesloten = stamp
                 mand.resultaat_euro = onder - slip
                 mand.afgekapt = True
                 manden.append(mand)
+                stand += mand.resultaat_euro
                 mand = None
                 continue
 
@@ -408,13 +436,39 @@ def simuleer(
         #    bot zijn eigen kosten kent, en hij gaat van het resultaat af omdat
         #    hij werkelijk betaald wordt. Twee keer aftrekken zou de ladder
         #    straffen voor het feit dat hij kan rekenen.
-        beste_prijs = float(bar["high"]) if mand.kant > 0 else float(bar["low"])
+        #    EN DIT IS DE ZWAARSTE REGEL VAN HET HELE BESTAND.
+        #    ================================================================
+        #    Heeft deze bar NIEUWE BENEN gevuld, dan mag hij NIET ook op zijn
+        #    gunstige uiterste sluiten. Dat deed hij wel, en het verzon geld.
+        #
+        #    Bewijs, een enkele bar: open 4000, hoog 4000, laag 3996, slot 3996.
+        #    De prijs gaat alleen maar OMLAAG en eindigt op 3996. De ladder
+        #    vulde zes benen op de weg naar beneden en sloot ze in diezelfde bar
+        #    af op 4000 -- de hoogste prijs van de bar, die de OPENING was, van
+        #    vóór de daling. Resultaat: +EUR 6,06 uit een bar waarin niets
+        #    terugkwam.
+        #
+        #    Binnen een bar weet niemand de volgorde. Benen vullen op de low en
+        #    dan afrekenen op de high is niet pessimistisch maar het gunstigst
+        #    denkbare pad, elke bar opnieuw. Op M1-goud met halve punten vuurt
+        #    dat aan de lopende band, en dat is precies wat "4.282 manden,
+        #    gemiddeld EUR 0,66, +4779% in drie weken" was.
+        #
+        #    Dus: bar die benen vulde -> afrekenen op het SLOT, dat we echt
+        #    hebben gezien. Bar zonder nieuwe benen -> het uiterste mag, want
+        #    dan is er geen volgorde om over te liegen.
+        vulde_benen = len(mand.benen) > benen_voor
+        if vulde_benen:
+            beste_prijs = float(bar["close"])
+        else:
+            beste_prijs = float(bar["high"]) if mand.kant > 0 else float(bar["low"])
         boven = _pnl_euro(mand.benen, beste_prijs, instelling.lot, mand.kant)
         boven -= kosten * len(mand.benen)
         if boven > slip:
             mand.gesloten = stamp
             mand.resultaat_euro = boven - slip
             manden.append(mand)
+            stand += mand.resultaat_euro
             mand = None
 
     # DE MAND DIE AAN HET EIND NOG OPENSTAAT, EN DIT IS GEEN DETAIL.
@@ -468,6 +522,28 @@ def rapport(manden: list[Mand], kapot: bool, *, balans: float) -> dict[str, obje
         #     niet meer mocht bijvullen en dus geen ladder meer was.
         "uitgegooid_door_broker": int(sum(1 for m in manden if m.uitgegooid)),
         "bevroren_door_margin_call": int(sum(1 for m in manden if m.bevroren)),
+        # 5c. HOELANG DE REKENING STILSTOND, EN DIT ONTBRAK HELEMAAL.
+        #
+        #     De uitslag zei "+4779%, 4.282 manden" over 730 dagen. Wat er niet
+        #     stond: de laatste mand bevroor in week drie en bleef daarna open,
+        #     en zolang die openstaat opent er geen nieuwe. Er viel niets om, er
+        #     gebeurde alleen niets meer -- en dat las als winst.
+        #
+        #     Staat er een datum bij `handel_gestopt_op`, dan is het eindbedrag
+        #     de stand van DIE dag en niet van het eind van de meting.
+        #
+        #     EN DE BLOKKADE VRAAGT GEEN MARGIN CALL. Elke mand die nooit meer
+        #     sluit houdt alles tegen, bevroren of niet -- er opent er namelijk
+        #     geen nieuwe zolang deze openstaat. Mijn eerste versie keek alleen
+        #     naar `bevroren` en miste daarmee de gewone variant: een mand van
+        #     een enkel been dat gewoon nooit meer in winst kwam.
+        "handel_gestopt_op": (
+            str(manden[-1].geopend) if manden[-1].gesloten is None else None),
+        "dagen_stil_aan_het_eind": round(
+            manden[-1].bars_onder_water / 1440.0, 2
+        ) if manden[-1].gesloten is None else 0.0,
+        "dagen_bevroren": round(
+            sum(m.minuten_geblokkeerd for m in manden) / 1440.0, 2),
         # 6: en pas hierna het vrolijke deel.
         "manden": len(manden),
         "trefkans": float((resultaten > 0).mean()),
