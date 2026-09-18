@@ -49,8 +49,14 @@ class Instelling:
 
     #: Verlies waarbij het tegendraadse been eruit gaat, in punten.
     kap: float = 5.0
-    #: Doel voor het overgebleven been, in punten.
+    #: Doel voor het overgebleven been, in punten. Alleen gebruikt als
+    #: `compenseer` uit staat.
     doel: float = 20.0
+    #: DE REGEL ZOALS HIJ BEDOELD IS. De winnaar loopt door tot de hele mand
+    #: het verlies van het gesloten been heeft goedgemaakt PLUS deze marge in
+    #: punten. Niet tot een vast doel -- dat was mijn fout.
+    compenseer: bool = True
+    marge: float = 2.0
     #: Stop voor het overgebleven been. None = laten lopen, zoals gevraagd.
     winnaar_stop: float | None = None
     lot: float = 0.01
@@ -61,6 +67,8 @@ class Instelling:
     @property
     def naam(self) -> str:
         stop = "geen" if self.winnaar_stop is None else f"{self.winnaar_stop:g}"
+        if self.compenseer:
+            return f"kap{self.kap:g}·compenseer+{self.marge:g}·stop{stop}"
         return f"kap{self.kap:g}·doel{self.doel:g}·stop{stop}"
 
 
@@ -85,9 +93,18 @@ def _kosten(instelling: Instelling, benen: int) -> float:
 
 
 def _loop_een_been(
-    m1: pd.DataFrame, start: int, entry: float, richting: int, instelling: Instelling
+    m1: pd.DataFrame, start: int, entry: float, richting: int, instelling: Instelling,
+    nodig: float | None = None,
 ) -> tuple[float, float, int, pd.Timestamp | None]:
-    """Het overgebleven been tot doel, stop of tijd. Punten, diepste, bars, slot."""
+    """Het overgebleven been tot het doel, de stop of de tijd.
+
+    `nodig` is hoeveel punten dit been moet maken. Bij de compenseer-regel is
+    dat het verlies van het afgekapte been plus de marge plus de kosten; bij
+    een vast doel is het gewoon `instelling.doel`.
+    """
+
+    if nodig is None:
+        nodig = instelling.doel
 
     diepste = 0.0
     for offset in range(instelling.max_bars):
@@ -109,8 +126,17 @@ def _loop_een_been(
         # aanname flatteert elke uitslag.
         if instelling.winnaar_stop is not None and slechtst <= -instelling.winnaar_stop:
             return -instelling.winnaar_stop, diepste, offset + 1, m1.index[pos]
-        if best >= instelling.doel:
-            return instelling.doel, diepste, offset + 1, m1.index[pos]
+        # HET DOEL IS NIET VAST MAAR AFGELEID.
+        #
+        # Gevraagd is: de winnaar loopt door tot hij het verlies van het
+        # afgekapte been heeft GOEDGEMAAKT plus wat winst. Ik had er een vast
+        # doel van gemaakt, en dat is een andere strategie -- een vast doel
+        # sluit te vroeg als het verlies groot was en te laat als het klein was.
+        #
+        # `nodig` wordt door de aanroeper meegegeven: de kap plus de marge plus
+        # de vier spreads. Precies genoeg om de mand op winst te zetten.
+        if best >= nodig:
+            return nodig, diepste, offset + 1, m1.index[pos]
 
     pos = min(start + instelling.max_bars, len(m1)) - 1
     slot = float(m1.iloc[pos]["close"])
@@ -155,8 +181,13 @@ def straddle_cyclus(
 
         if long_af or short_af:
             houd = -1 if long_af else 1
+            # WAT DE WINNAAR MOET GOEDMAKEN: het verlies van het afgekapte
+            # been, de marge die je wil overhouden, en de vier spreads.
+            kosten_punten = instelling.spread * 2 * 2
+            nodig = (instelling.kap + instelling.marge + kosten_punten
+                     if instelling.compenseer else instelling.doel)
             rest_punten, rest_diepste, rest_bars, slot = _loop_een_been(
-                m1, pos, entry, houd, instelling
+                m1, pos, entry, houd, instelling, nodig=nodig
             )
             punten = rest_punten - instelling.kap
             cyclus.netto_euro = punten * instelling.lot * CONTRACT - _kosten(instelling, 2)
@@ -300,10 +331,13 @@ def per_groep(cycli: list[Cyclus], sleutel) -> pd.DataFrame:
 def rooster() -> list[Instelling]:
     """De 48 configuraties uit de vooraf vastgelegde hypothese."""
 
+    # DE MARGE IS DE KNOP, NIET HET DOEL. Bij de compenseer-regel bepaalt de
+    # kap hoeveel de winnaar moet goedmaken; wat je zelf kiest is hoeveel winst
+    # je daarbovenop wil voordat je plat gaat.
     return [
-        Instelling(kap=kap, doel=doel, winnaar_stop=stop)
+        Instelling(kap=kap, marge=marge, winnaar_stop=stop, compenseer=True)
         for kap in (2.0, 5.0, 10.0, 20.0)
-        for doel in (5.0, 10.0, 20.0, 40.0)
+        for marge in (1.0, 2.0, 5.0, 10.0)
         for stop in (None, 10.0, 20.0)
     ]
 
