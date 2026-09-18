@@ -352,6 +352,193 @@ class TestDeBrokerGooitJeEruit:
         )
 
 
+class TestEenBarKanNietEersLaagVullenEnHoogSluiten:
+    """DE DUURSTE FOUT VAN DE HELE METING.
+
+    De lus vulde benen op de LOW van een bar en keek in DIEZELFDE bar op de
+    HIGH of de mand in winst stond. Binnen een bar kent niemand de volgorde, en
+    deze combinatie kiest elke bar opnieuw het gunstigst denkbare pad: koop
+    onderaan, verkoop bovenaan, zonder dat de prijs ooit terugkwam.
+
+    Een enkele bar bewijst het: open 4000, hoog 4000, laag 3996, slot 3996. De
+    prijs gaat alleen maar omlaag. De oude code vulde zes benen en boekte
+    +EUR 6,06; in werkelijkheid sta je EUR 17,34 onder water.
+
+    Op M1-goud met halve punten vuurt dit aan de lopende band. Het is waar
+    "4.282 manden, gemiddeld EUR 0,66 winst, +4779% in drie weken" vandaan kwam.
+    """
+
+    @staticmethod
+    def _alleen_omlaag():
+        return _frame([(4000.0, 4000.0, 4000.0, 4000.0),
+                       (4000.0, 4000.0, 3996.0, 3996.0)])
+
+    def test_een_bar_die_alleen_zakt_levert_geen_winst_op(self):
+        m1 = self._alleen_omlaag()
+        manden, _ = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=59.16)
+
+        assert manden[0].aantal_benen == 6, "de benen horen wel gevuld te worden"
+        assert manden[0].resultaat_euro < 0, (
+            "een bar waarin de prijs alleen maar zakt, levert winst op -- de "
+            "benen zijn op de low gevuld en op de high afgerekend"
+        )
+        assert manden[0].gesloten is None, (
+            "hij sluit in de bar die zijn eigen benen vulde"
+        )
+
+    def test_een_bar_zonder_nieuwe_benen_mag_wel_op_zijn_uiterste_sluiten(self):
+        """Zonder deze test zou 'sluit nooit op de high' ook goedgekeurd worden.
+
+        Vulde een bar geen benen, dan valt er over de volgorde niets te liegen
+        en mag het gunstige uiterste gewoon meetellen.
+        """
+        m1 = _frame([(100.0, 100.0, 100.0, 100.0),
+                     (100.0, 100.2, 100.0, 100.0)])   # geen nieuwe benen, wel hoger
+        manden, _ = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=100.0, spread=0.0, lot=0.01), balans=10_000.0)
+
+        assert manden[0].gesloten is not None, (
+            "een bar zonder nieuwe benen mag wel op zijn high afrekenen"
+        )
+
+
+class TestDeStilstandStaatInHetRapport:
+    """WAT DE UITSLAG VERZWEEG, en waardoor "+4779%" gelezen werd als winst.
+
+    Op de echte data opende sectie 20 in drie weken 4.282 manden en daarna,
+    zevenhonderd dagen lang, geen enkele meer. De laatste mand bevroor op de
+    margin call: hij mag niet bijvullen, komt niet in winst, gaat niet dicht --
+    en zolang hij openstaat opent er geen nieuwe. Er viel niets om, er gebeurde
+    alleen niets meer, en het rapport zei daar geen woord over.
+
+    Bewijs uit zijn eigen uitslag: de diepste terugval stond op 2024-10-10 bij
+    een balans van EUR 2.945,69, en het eindbedrag na 730 dagen was EUR
+    2.886,53. De stand van week drie IS het eindbedrag.
+    """
+
+    @staticmethod
+    def _vastlopende_markt():
+        # Zakt weg en komt nooit meer terug: de mand bevriest en blijft hangen.
+        bars = [(4000.0, 4000.0, 4000.0, 4000.0),
+                (4000.0, 4000.0, 3996.0, 3996.0)]
+        bars += [(3996.0, 3996.2, 3995.8, 3996.0)] * 30
+        return _frame(bars)
+
+    def test_een_bevroren_mand_blokkeert_alle_volgende(self):
+        m1 = self._vastlopende_markt()
+        manden, kapot = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=59.16)
+
+        assert not kapot, "deze markt hoort niet te liquideren, alleen vast te lopen"
+        assert manden[-1].gesloten is None, "de laatste mand hoort open te blijven"
+        assert manden[-1].bevroren, "hij hoort door de margin call bevroren te zijn"
+
+    def test_het_rapport_zegt_hoelang_de_rekening_stilstond(self):
+        m1 = self._vastlopende_markt()
+        manden, kapot = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=59.16)
+        uit = rapport(manden, kapot, balans=59.16)
+
+        assert uit["handel_gestopt_op"] is not None, (
+            "het rapport moet zeggen WANNEER er feitelijk gestopt is met handelen"
+        )
+        assert uit["dagen_stil_aan_het_eind"] > 0, (
+            "het rapport moet zeggen HOELANG de rekening stilstond"
+        )
+
+    def test_een_gezonde_run_meldt_geen_stilstand(self):
+        """Zonder deze test zou het rapport altijd 'gestopt' kunnen zeggen."""
+
+        m1 = _frame([(100.0, 100.0, 100.0, 100.0),
+                     (100.0, 100.0, 99.0, 99.0),
+                     (99.0, 102.0, 99.0, 102.0)])
+        manden, kapot = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=10_000.0)
+        uit = rapport(manden, kapot, balans=10_000.0)
+
+        assert uit["handel_gestopt_op"] is None
+        assert uit["dagen_stil_aan_het_eind"] == 0
+        assert uit["dagen_bevroren"] == 0
+
+
+class TestDeStopOutVolgtDeLopendeBalans:
+    """Twee rekeningen in een getal, en dat was de tweede grote fout.
+
+    De marge-controle keek naar de STARTbalans terwijl `eindresultaat` diezelfde
+    manden buiten deze functie tegen een groeiende balans afrekende. De stop-out
+    oordeelde dus over EUR 59,16 terwijl het rapport EUR 2.945 claimde.
+    """
+
+    #: Waar de margin call valt, uit `scripts/welke_balans.py`: op EUR 59,16
+    #: bevriest een ladder van 0,01 lot met halve punten bij ZEVEN benen. Op een
+    #: rekening van rond EUR 200 pas bij zeventien.
+    BENEN_OP_59 = 7
+
+    def test_verdiende_winst_telt_mee_in_de_marge_controle(self):
+        """De test die het verschil ECHT ziet.
+
+        Eerst een reeks kleine winnaars die de rekening van EUR 59 naar ruim
+        EUR 200 tilt, dan een tegenbeweging van vier punten -- negen benen.
+
+        Met een MEELOPENDE balans past dat ruim: op EUR 200 bevriest hij pas bij
+        zeventien benen. Met de oude BEVROREN startbalans van EUR 59,16 zou hij
+        bij zeven blijven steken, want dan telt de winst die hetzelfde rapport
+        opschrijft niet mee in de marge.
+        """
+        # Bars die GEEN benen vullen (de low blijft boven de volgende stap) en
+        # op hun high wel in winst staan: elke bar een schone kleine winnaar.
+        bars = [(4000.0, 4000.6, 4000.0, 4000.0)] * 450
+        bars.append((4000.0, 4000.0, 3996.0, 3996.0))   # vier punten tegen
+        m1 = _frame(bars)
+
+        manden, kapot = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=59.16)
+
+        gegroeid = 59.16 + sum(m.resultaat_euro for m in manden[:-1])
+        assert gegroeid > 200.0, (
+            f"de opwarmfase levert te weinig op om iets te bewijzen: {gegroeid:.2f}")
+        assert not kapot
+
+        laatste = manden[-1]
+        assert laatste.aantal_benen > self.BENEN_OP_59, (
+            f"de ladder stopte bij {laatste.aantal_benen} benen. De marge-controle "
+            f"kijkt nog naar de STARTbalans van EUR 59,16 in plaats van naar de "
+            f"EUR {gegroeid:.2f} die dezelfde meting zelf rapporteert"
+        )
+        assert not laatste.bevroren, (
+            "op ruim EUR 200 hoort vier punten geen margin call te geven"
+        )
+
+    def test_verdiende_winst_houdt_de_broker_van_de_deur(self):
+        """Hetzelfde, maar dan voor de LIQUIDATIE en niet voor de margin call.
+
+        Zeven punten tegen je in doodt een rekening van EUR 59 (zie de tabel in
+        `scripts/welke_balans.py`) en een rekening van ruim EUR 200 niet. Kijkt
+        de stop-out nog naar de startbalans, dan gooit de broker een rekening
+        eruit die in dezelfde meting al ruim drie keer zo groot is.
+        """
+        bars = [(4000.0, 4000.6, 4000.0, 4000.0)] * 450
+        bars.append((4000.0, 4000.0, 3993.0, 3993.0))   # zeven punten tegen
+        m1 = _frame(bars)
+
+        manden, kapot = simuleer(
+            m1, _stijgende_stapel(m1.index),
+            instelling=Instelling(stap=0.5, lot=0.01), balans=59.16)
+
+        assert not kapot, (
+            "de rekening is geliquideerd op een stand van EUR 59,16, terwijl "
+            "dezelfde meting er ruim EUR 200 op had staan"
+        )
+        assert not any(m.uitgegooid for m in manden)
+
+
 class TestEenFlinterdunneWinstIsGeenWinst:
     """Sluiten is een marktorder, en die slipt.
 

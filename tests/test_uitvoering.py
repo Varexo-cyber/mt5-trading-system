@@ -176,3 +176,35 @@ class TestSlippageUitDeEigenFills:
 
     def test_een_ontbrekende_database_is_geen_crash(self, tmp_path):
         assert slippage_uit_db(tmp_path / "bestaat-niet.db") is None
+
+
+class TestDeLotgrootteHeeftEenPlafond:
+    """Wat 350 triljard euro produceerde.
+
+    `zoektocht._lot_voor` had wel een vloer (0,01) en geen plafond. Op de echte
+    data gaf dat EUR 350.916.914.454.371.078.504.448 -- en de zoeker KIEST op
+    dat getal, dus elke instelling die hij daarna "beter" noemde was gestuurd
+    door een overloop.
+    """
+
+    def test_een_absurde_balans_loopt_tegen_het_plafond(self):
+        from scripts.zoektocht import MAX_LOT, _lot_voor
+
+        lot = _lot_voor(1e18, risico_punten=10.0, deel=0.02, euro_per_punt=1.0)
+        assert lot == MAX_LOT, "zonder plafond groeit de positie ongelimiteerd door"
+
+    def test_de_vloer_blijft_staan(self):
+        from scripts.zoektocht import _lot_voor
+
+        # Op EUR 59 met 2% risico en een stop van 10 punten is het gewenste lot
+        # kleiner dan 0,01 -- en 0,01 is het kleinste dat bestaat.
+        assert _lot_voor(59.16, risico_punten=10.0, deel=0.02,
+                         euro_per_punt=1.0) == 0.01
+
+    def test_tussen_vloer_en_plafond_schaalt_hij_gewoon_mee(self):
+        from scripts.zoektocht import _lot_voor
+
+        klein = _lot_voor(10_000.0, risico_punten=10.0, deel=0.02, euro_per_punt=1.0)
+        groot = _lot_voor(20_000.0, risico_punten=10.0, deel=0.02, euro_per_punt=1.0)
+        assert 0.01 < klein < groot < 50.0
+        assert groot == pytest.approx(klein * 2, rel=0.05)
