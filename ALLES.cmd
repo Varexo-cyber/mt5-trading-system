@@ -47,10 +47,10 @@ echo   UITSLAG  %DATE% %TIME% >> "%UIT%"
 echo ==================================================== >> "%UIT%"
 
 echo.
-echo   [1/4] nieuwste code ophalen...
+echo   [1/5] nieuwste code ophalen...
 git pull origin claude/mt5-autonomous-trading-system-ujd1sk >> "%UIT%" 2>&1
 
-echo   [2/4] bars uit MT5 exporteren (180 dagen M1)...
+echo   [2/5] bars uit MT5 exporteren (180 dagen M1)...
 echo. >> "%UIT%"
 echo ---------- BARS ---------- >> "%UIT%"
 %PY% -m scripts.exporteer_bars --days 180 >> "%UIT%" 2>&1
@@ -60,22 +60,31 @@ if not exist "runtime\xauusd_m1.csv" (
   echo   !! De export is mislukt. Staat MetaTrader 5 open en ingelogd?
   echo      De reden staat in %UIT%
   echo.
+  echo   Sectie 22 heeft de bars NIET nodig, die draai ik alvast wel.
+  echo. >> "%UIT%"
+  echo ---------- SECTIE 22: CLAIM-AUDIT ---------- >> "%UIT%"
+  %PY% -m scripts.section_twentytwo_claim_audit >> "%UIT%" 2>&1
   notepad "%UIT%"
   pause
   exit /b 1
 )
 
-echo   [3/4] sectie 20 -- de terugval-ladder...
+echo   [3/5] sectie 20 -- de terugval-ladder...
 echo. >> "%UIT%"
 echo ---------- SECTIE 20: LADDER ---------- >> "%UIT%"
 %PY% -m scripts.section_twenty_pullback_ladder --csv runtime\xauusd_m1.csv --balans %BALANS% >> "%UIT%" 2>&1
 %PY% -m scripts.section_twenty_pullback_ladder --csv runtime\xauusd_m1.csv --balans %BALANS% --alle-configs >> "%UIT%" 2>&1
 
-echo   [4/4] sectie 21 -- de straddle...
+echo   [4/5] sectie 21 -- de straddle...
 echo. >> "%UIT%"
 echo ---------- SECTIE 21: STRADDLE ---------- >> "%UIT%"
 %PY% -m scripts.section_twentyone_straddle --csv runtime\xauusd_m1.csv >> "%UIT%" 2>&1
 %PY% -m scripts.section_twentyone_straddle --csv runtime\xauusd_m1.csv --alle-configs >> "%UIT%" 2>&1
+
+echo   [5/5] sectie 22 -- trackrecords toetsen aan hun eigen beweringen...
+echo. >> "%UIT%"
+echo ---------- SECTIE 22: CLAIM-AUDIT ---------- >> "%UIT%"
+%PY% -m scripts.section_twentytwo_claim_audit >> "%UIT%" 2>&1
 
 echo.
 echo   ===========================================
