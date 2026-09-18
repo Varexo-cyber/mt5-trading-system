@@ -16,6 +16,7 @@ VIJF KEUZES DIE BEPALEN OF DE UITSLAG IETS WAARD IS:
 from __future__ import annotations
 
 from datetime import UTC
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -195,4 +196,83 @@ class TestDeVloerIsEchtEenVloer:
         assert 0.07 < verloren / 10_000.0 < 0.11, (
             f"een grote rekening verloor {verloren / 10_000.0:.1%} over vijf "
             "verliezers; bij 2% per trade hoort dat rond de 9,6% te zijn"
+        )
+
+
+class TestDeMarktIsEindig:
+    """EUR 59 WERD EUR 3.500.000.000.000, en de rekensom klopte.
+
+    Dat is het probleem: elke positieve verwachting samengesteld over
+    tweeduizend trades explodeert. 2.570 trades x +0,5474 R bij 2% risico is
+    een factor 1,4 biljoen, en dat is de vermenigvuldiging en niet de
+    strategie.
+
+    Bij die eindstand zou je 73 miljoen lot moeten handelen -- zeven miljard
+    ounce goud, terwijl de hele COMEX er vijfentwintig miljoen per dag doet.
+    De ladder beschreef een markt die niet bestaat.
+    """
+
+    def _winnaars(self, n=3000):
+        idx = pd.date_range("2026-01-01", periods=n, freq="h", tz=UTC)
+        return [Trade(s, 0.5, 5, 1.0, 0.0, "doel") for s in idx]
+
+    def test_de_lotgrootte_loopt_tegen_het_plafond_van_de_broker(self):
+        from scripts.section_twentythree_uitstap import MAX_LOT
+
+        lad = balansladder(self._winnaars(), stop_punten=10.94)
+        groot = lad[lad["start"] >= 5_000.0]
+
+        assert groot["geplafonneerd"].any(), (
+            "geen enkele rekening loopt tegen het lotplafond; dan groeit hij "
+            "door tot in het oneindige"
+        )
+        assert MAX_LOT <= 100.0, "een plafond van meer dan 100 lot is geen plafond"
+
+    def test_zonder_plafond_zou_het_eindbedrag_absurd_zijn(self):
+        """Het verschil MOET groot zijn, anders doet het plafond niets."""
+
+        met = balansladder(self._winnaars(), stop_punten=10.94, max_lot=50.0)
+        zonder = balansladder(self._winnaars(), stop_punten=10.94, max_lot=1e12)
+
+        groot_met = met[met["start"] == 10_000.0].iloc[0]["eind"]
+        groot_zonder = zonder[zonder["start"] == 10_000.0].iloc[0]["eind"]
+
+        assert groot_zonder > groot_met * 1000, (
+            "het plafond verandert de uitkomst nauwelijks; dan is de grens te "
+            "hoog gekozen om iets te betekenen"
+        )
+
+
+class TestSectie23MeetBeideRichtingen:
+    """DEZELFDE FOUT ALS IN SECTIE 20, TWEE BESTANDEN VERDER.
+
+    `meet` gebruikte `stapel_omhoog` en mat de uitstap dus op een LONG-ONLY
+    ingang, in een venster waarin goud 70% steeg. Die +0,55 R per trade was
+    grotendeels de stijging. Ik repareerde sectie 20 en liet sectie 23 staan.
+    """
+
+    def test_een_short_die_zakt_levert_positieve_R_op(self):
+        m1 = _f([(100.0, 100.0, 100.0, 100.0),
+                 (100.0, 100.0, 97.0, 97.0)])
+        t = loop_trade(m1, 0, entry=100.0, stop=101.0, atr=1.0, kant=-1,
+                       uitstap=Uitstap("x", doel_r=2.0), kosten_r=0.0, max_bars=10)
+
+        assert t.r == pytest.approx(2.0), "een short die drie punten zakt heet geen +2R"
+        assert t.reden == "doel"
+
+    def test_een_short_die_stijgt_levert_min_een_R_op(self):
+        m1 = _f([(100.0, 100.0, 100.0, 100.0),
+                 (100.0, 102.0, 100.0, 102.0)])
+        t = loop_trade(m1, 0, entry=100.0, stop=101.0, atr=1.0, kant=-1,
+                       uitstap=Uitstap("x", doel_r=2.0), kosten_r=0.0, max_bars=10)
+
+        assert t.r == pytest.approx(-1.0)
+        assert t.reden == "stop"
+
+    def test_de_meting_gebruikt_de_richting_en_niet_alleen_omhoog(self):
+        bron = (Path(__file__).resolve().parent.parent
+                / "scripts" / "section_twentythree_uitstap.py").read_text()
+        assert "stapel_richting(" in bron
+        assert "stapel_omhoog(" not in bron, (
+            "hij kijkt nog steeds alleen naar een stijgende stapel"
         )
