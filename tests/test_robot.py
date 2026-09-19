@@ -24,7 +24,7 @@ import pytest
 from dataclasses import replace
 
 from scripts.robot import (
-    CONTRACT, Regels, _stopprijs, draai, koop_en_hou,
+    CONTRACT, EURUSD, Regels, _nachten, _stopprijs, draai, koop_en_hou,
 )
 from scripts.uitvoering import Uitvoering
 
@@ -153,7 +153,7 @@ class TestDeKostenGaanEraf:
         assert all(t.lot == 0.01 for t in gratis.trades)
         # 0,20 spread + 0,10 slippage, op 0,01 lot van 100 ounce = $0,30 per trade.
         verwacht_usd = 0.30 * 0.01 * CONTRACT * len(gratis.trades)
-        assert gratis.eind - duur.eind == pytest.approx(verwacht_usd / 1.10,
+        assert gratis.eind - duur.eind == pytest.approx(verwacht_usd / EURUSD,
                                                         rel=0.001)
 
 

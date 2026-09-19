@@ -21,9 +21,16 @@ VIER DINGEN STAAN HIER, EN DE VOLGORDE IS DE VOLGORDE VAN HUN GEWICHT:
   3. SPREAD. Raw account, dus klein -- maar bij een grid met 200.000 benen is
      klein keer heel vaak nog steeds geld.
 
-  4. COMMISSIE EN SWAP. Op XAUUSD allebei NUL. De commissie is gemeten
-     (`commission_by_asset_class: metal: 0.0`, uit de deals van 24 augustus);
-     swap is nul volgens de eigenaar van de rekening.
+  4. SWAP. Nul op deze rekening, op gezag van de rekeninghouder: raw account,
+     swapvrij. Het SYMBOOL draagt wel een swapregeling (-80,67 long, +23,83
+     short per lot per nacht) en die staat in `gemeten_broker.json`, maar dat is
+     de regeling van het instrument en niet van het account. Zou hij toch
+     gelden, dan kost een nacht op 0,01 lot EUR 0,81 tegenover EUR 0,26 voor een
+     heel rondje handelen -- daarom zit het als schakelaar in de meting en niet
+     als stilzwijgende nul.
+
+  5. COMMISSIE. Wel nul, en dat IS gemeten: `commission_by_asset_class` zet
+     `metal: 0.0`, teruggerekend uit de deals van 24 augustus.
 
 WAT HIER MET OPZET NIET IN ZIT: verzonnen precisie. Elk getal hieronder is
 ofwel gemeten, ofwel een expliciet gemarkeerde terugval die `meet_uit_terminal`
@@ -71,8 +78,20 @@ class Uitvoering:
     #: klopt als dezelfde module ooit forex moet rekenen.
     commissie_per_lot_per_kant: float = 0.0
 
-    #: Nul op XAUUSD bij deze broker.
-    swap_per_lot_per_nacht: float = 0.0
+    #: NUL, OP GEZAG VAN DE REKENINGHOUDER. Hij heeft een raw account zonder
+    #: swap en heeft dat twee keer bevestigd.
+    #:
+    #: `symbol_info("XAUUSD").swap_long` gaf -80,67 en `swap_short` +23,83,
+    #: en dat staat ook in `config/gemeten_broker.json`. Maar dat veld is de
+    #: swapREGELING VAN HET SYMBOOL, niet van het account: bij een swapvrije
+    #: rekening blijft dat getal gewoon staan terwijl er niets wordt geboekt.
+    #:
+    #: Wat het definitief beslecht is de dealhistorie -- net zoals de
+    #: commissie is vastgesteld uit negen echte trades. Tot die meting er is
+    #: geldt wat de rekeninghouder zegt, en `robot.py --swap-schema` laat
+    #: zien wat het zou kosten als hij zich vergist.
+    swap_long_per_lot: float = 0.0
+    swap_short_per_lot: float = 0.0
 
     #: 1:500. Bepaalt de marge per been en daarmee wanneer je eruit vliegt.
     hefboom: float = 500.0
@@ -129,11 +148,19 @@ class Uitvoering:
 
         return self.slippage * lot * CONTRACT * benen
 
-    def swap_kosten(self, lot: float, nachten: int, benen: int = 1) -> float:
-        """Financiering. Nul op goud, maar de formule staat er zodat een
-        toekomstige verandering bij de broker één getal is en geen verbouwing."""
+    def swap_kosten(self, lot: float, nachten: int, *, richting: int = 1,
+                    benen: int = 1) -> float:
+        """Financiering per nacht. POSITIEF betekent dat het je geld KOST.
 
-        return self.swap_per_lot_per_nacht * lot * nachten * benen
+        Per richting verschillend, en dat verschil is enorm: een long betaalt
+        80,67 per lot per nacht, een short KRIJGT 23,83. Bij goud is dat geen
+        detail maar de reden dat een regel die over de nacht heen gaat aan de
+        longkant bijna niet kan werken en aan de shortkant een meewind heeft.
+        """
+
+        per_nacht = (self.swap_long_per_lot if richting > 0
+                     else self.swap_short_per_lot)
+        return -per_nacht * lot * nachten * benen
 
     # -- marge -------------------------------------------------------------
 
@@ -330,7 +357,7 @@ def laad(db_pad: Path | str | None = None) -> Uitvoering:
             m = {}
         velden = {k: m[k] for k in
                   ("spread", "hefboom", "stop_out_niveau", "margin_call_niveau",
-                   "commissie_per_lot_per_kant", "swap_per_lot_per_nacht")
+                   "commissie_per_lot_per_kant")
                   if k in m}
         if velden:
             uit = replace(uit, **velden)
@@ -383,7 +410,6 @@ def meet_uit_terminal(symbool: str = "XAUUSD") -> dict[str, object]:
             "margin_call_niveau": float(rekening.margin_so_call) / 100.0,
             "swap_long_per_lot": float(info.swap_long),
             "swap_short_per_lot": float(info.swap_short),
-            "swap_per_lot_per_nacht": 0.0,
             "commissie_per_lot_per_kant": 0.0,
             "marge_per_lot": float(marge_1lot) if marge_1lot else None,
             "balans": float(rekening.balance),
