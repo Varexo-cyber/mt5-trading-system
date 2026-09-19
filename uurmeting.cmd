@@ -59,8 +59,21 @@ if not defined PY (
 echo   Python gevonden: %PY%
 echo.
 
+rem DE VOORTGANG HOORT OP HET SCHERM.
+rem
+rem Hier stond `> "%UIT%" 2>&1` achter deze aanroep, en dat maakte het scherm
+rem leeg terwijl er een meting van uren liep. `dry_run_sections` print onderweg
+rem wel degelijk waar hij is, maar dat verdween allemaal in het bestand -- en
+rem een stilstaand scherm is niet te onderscheiden van een vastgelopen
+rem programma. Dat is precies het bezwaar waar `eindresultaat.py` al een
+rem `melding()` voor heeft.
+rem
+rem De CSV is hier het resultaat dat telt, niet de tekst, dus die tekst mag
+rem gewoon meelopen op het scherm.
 echo   [1/2] shadow-meting over %DAGEN% dagen ...
 echo   (elke beslissing gaat naar %BESLISSINGEN%)
+echo   Dit is de lange stap. 730 dagen x vijf klokken is veel werk; laat hem staan.
+echo.
 %PY% -m scripts.dry_run_sections ^
   --days %DAGEN% ^
   --only section_seven_gold_smc ^
@@ -69,19 +82,19 @@ echo   (elke beslissing gaat naar %BESLISSINGEN%)
   --jarvis-replay ^
   --fixed-exits ^
   --strict-risk ^
-  --csv "%BESLISSINGEN%" > "%UIT%" 2>&1
+  --csv "%BESLISSINGEN%"
 
 if not exist "%BESLISSINGEN%" (
   echo.
-  echo   !! De meting heeft geen CSV geschreven. De reden staat in %UIT%
-  notepad "%UIT%"
+  echo   !! De meting heeft geen CSV geschreven. De reden staat hierboven
+  echo      op het scherm -- scroll terug naar de eerste foutregel.
   pause
   exit /b 1
 )
 
+echo.
 echo   [2/2] uitsplitsen per uur, sessie en weekdag ...
-echo. >> "%UIT%"
-%PY% -m scripts.per_uur_en_sessie --csv "%BESLISSINGEN%" >> "%UIT%" 2>&1
+%PY% -m scripts.per_uur_en_sessie --csv "%BESLISSINGEN%" --uit "%UIT%"
 
 echo.
 echo   Klaar. Alles staat in %UIT%
