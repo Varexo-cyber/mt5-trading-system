@@ -3008,7 +3008,25 @@ def main(argv: list[str] | None = None) -> None:
         connector = _StoredMarket(store, args.equity)
         print(f"reading bars from {store.root} — MT5 is not being contacted")
     else:
-        credentials = load_credentials(required=True)
+        # GEEN INLOGGEGEVENS NODIG ALS DE TERMINAL AL DRAAIT.
+        #
+        # Hier stond `required=True`, en dat blokkeerde dit script op een
+        # machine waar MetaTrader 5 gewoon openstaat en ingelogd is:
+        #
+        #     ConfigError: missing MT5 credential(s):
+        #         MT5_LOGIN, MT5_PASSWORD, MT5_SERVER
+        #
+        # Dat is geen echte eis. `MT5Connector._initialise` zet login, password
+        # en server alleen in `initialize()` wanneer er inloggegevens ZIJN
+        # (`if self.credentials is not None`); zonder die gegevens haakt hij aan
+        # bij de terminal die al draait en al is ingelogd. Precies wat een
+        # meting nodig heeft, en niets meer.
+        #
+        # Tien andere scripts hiernaast doen het al met `required=False` --
+        # exporteer_bars, backtest_modules, replay_trade en de rest. Dit script
+        # was de uitzondering, en daardoor liep de uurmeting stuk op een drempel
+        # die nergens voor nodig was.
+        credentials = load_credentials(required=False)
         connector = MT5Connector(
             settings.mt5,
             credentials,
