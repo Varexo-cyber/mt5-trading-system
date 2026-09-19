@@ -1,0 +1,18 @@
+{
+  "symbool": "XAUUSD",
+  "gemeten_op": "2026-09-18T21:56:58+00:00",
+  "spread": 0.16,
+  "punt": 0.01,
+  "digits": 2,
+  "hefboom": 500.0,
+  "stop_out_niveau": 0.5,
+  "margin_call_niveau": 0.8,
+  "swap_long_per_lot": -80.67,
+  "swap_short_per_lot": 23.83,
+  "swap_per_lot_per_nacht": 0.0,
+  "commissie_per_lot_per_kant": 0.0,
+  "marge_per_lot": 762.45,
+  "balans": 59.16,
+  "valuta": "EUR",
+  "hefboom_uit_marge": 574.2
+}
