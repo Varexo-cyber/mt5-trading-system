@@ -75,7 +75,13 @@ CONTRACT = 100.0
 #: waarheid, maar het is oneindig veel beter dan dollars en euro's door elkaar
 #: halen -- wat de vorige metingen deden. Het getal staat in het rapport zodat
 #: iedereen ziet waar de omrekening vandaan komt.
-EURUSD = 1.10
+#:
+#: 1,1489 IS GEEN GOK MAAR EEN AFGELEIDE METING. `config/gemeten_broker.json`
+#: geeft `marge_per_lot: 762.45` in euro en `hefboom: 500`. Bij een goudprijs
+#: van 4380 is de marge in dollars 100 x 4380 / 500 = 876. De verhouding
+#: 876 / 762,45 = 1,1489 is dus de koers waar de broker zelf mee rekende op
+#: het moment van meten. Mijn eerdere 1,10 was een ronde greep.
+EURUSD = 1.1489
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,7 @@ class Trade:
     gesloten: pd.Timestamp | None = None
     exit: float = 0.0
     reden: str = ""
+    nachten: int = 0
     euro: float = 0.0
     r: float = 0.0
     bars: int = 0
@@ -161,6 +168,29 @@ def _atr(m1: pd.DataFrame, lengte: int) -> pd.Series:
     bereik = pd.concat([hoog - laag, (hoog - vorig).abs(), (laag - vorig).abs()],
                        axis=1).max(axis=1)
     return bereik.rolling(lengte).mean().shift(1)
+
+
+def _nachten(open_op: pd.Timestamp, dicht_op: pd.Timestamp) -> int:
+    """Hoeveel keer de rollover gepasseerd is tussen openen en sluiten.
+
+    BENADERING, EN DIE MOET GEZEGD WORDEN. MT5 boekt swap op de rollover van de
+    broker (rond middernacht servertijd) en driedubbel op woensdag, voor het
+    weekend. Hier wordt geteld hoeveel UTC-dagovergangen er tussen zitten, met
+    de woensdagvermenigvuldiging erbij. Servertijd is bij deze broker niet UTC,
+    dus rond middernacht kan het er eentje naast zitten.
+
+    Een dag te veel of te weinig op een reeks van honderden trades verandert de
+    orde van grootte niet, en de orde van grootte is hier het punt: EUR 0,81 per
+    nacht tegenover EUR 0,26 per rondje.
+    """
+
+    nachten = (dicht_op.normalize() - open_op.normalize()).days
+    if nachten <= 0:
+        return 0
+    # Woensdagnacht telt voor drie: dan wordt het weekend vooruit geboekt.
+    extra = sum(2 for n in range(nachten)
+                if (open_op.normalize() + pd.Timedelta(days=n + 1)).weekday() == 2)
+    return nachten + extra
 
 
 def _stopprijs(stop: float, bar_open: float, richting: int) -> float:
@@ -249,8 +279,16 @@ def draai(m1: pd.DataFrame, *, regels: Regels, balans: float,
                 t.exit, t.reden = opens[i], "tijd"
             if t.reden:
                 punten = (t.exit - t.entry) * t.richting
+                # SWAP PER NACHT, en die is op goud groter dan de spread.
+                # Een long betaalt 80,67 per lot per nacht, een short krijgt
+                # 23,83. Op 0,01 lot is dat EUR 0,81 tegen EUR 0,26 voor een
+                # heel rondje. Een regel die over de nacht heen gaat wordt
+                # hier gemaakt of gebroken, en ik rekende hem op nul.
+                t.nachten = _nachten(t.geopend, index[i])
                 kosten = (uitv.kosten_per_been(t.lot)
-                          + uitv.slippage_kosten(t.lot))
+                          + uitv.slippage_kosten(t.lot)
+                          + uitv.swap_kosten(t.lot, t.nachten,
+                                             richting=t.richting))
                 usd = punten * t.lot * CONTRACT - kosten
                 t.euro = usd / regels.eurusd
                 risico_usd = abs(t.entry - t.stop) * t.lot * CONTRACT
@@ -317,8 +355,28 @@ def koop_en_hou(m1: pd.DataFrame, *, balans: float, eurusd: float = EURUSD) -> f
     20 twee jaar lang verborg.
     """
 
-    punten = float(m1.iloc[-1]["close"]) - float(m1.iloc[0]["open"])
-    return balans + punten * 0.01 * CONTRACT / eurusd
+    entry = float(m1.iloc[0]["open"])
+    punten = float(m1.iloc[-1]["close"]) - entry
+    eind = balans + punten * 0.01 * CONTRACT / eurusd
+
+    # JE KUNT NIET MINDER DAN NUL OVERHOUDEN, en dat stond er niet.
+    #
+    # Op het toetsdeel gaf dit -EUR 413,47, oftewel -798%. Dat is geen
+    # rendement maar een rekenfout in het rapport: goud zakte 543 punten en op
+    # 0,01 lot is dat EUR 473 op een rekening van EUR 59. Je bent dan al lang
+    # geliquideerd; wat er daarna met de koers gebeurt gaat jou niet meer aan.
+    #
+    # Dat de NULHYPOTHESE zelf ook omvalt is trouwens het echte nieuws van die
+    # regel, en dan hoort er nul te staan en geen fantasiegetal.
+    if eind <= 0:
+        return 0.0
+
+    # EN ONDERWEG MOET HIJ HET OOK UITGEHOUDEN HEBBEN. De diepste stand bepaalt
+    # of de broker je eruit gooide voordat de koers terugkwam.
+    diepste = float(m1["low"].min()) - entry
+    if balans + diepste * 0.01 * CONTRACT / eurusd <= 0:
+        return 0.0
+    return eind
 
 
 def regel(u: Uitslag) -> str:

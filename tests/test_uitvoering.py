@@ -139,9 +139,46 @@ class TestDeKosten:
         # 0,14 punt x 0,01 lot x 100 ounce = EUR 0,14 per been.
         assert RAW_GOUD.kosten_per_been(0.01) == pytest.approx(0.14)
 
-    def test_commissie_en_swap_zijn_nul_op_goud(self):
+    def test_commissie_en_swap_zijn_nul_op_deze_rekening(self):
+        """Allebei nul, maar om VERSCHILLENDE redenen, en dat verschil telt.
+
+        De commissie is gemeten: negen echte trades op 24 augustus, waarvan de
+        goudtrades samen nul commissie droegen. De swap is nul op gezag van de
+        rekeninghouder -- raw account, swapvrij, twee keer bevestigd.
+
+        Het symbool draagt wel een swapregeling (-80,67 long), maar dat is de
+        regeling van het INSTRUMENT en niet van het ACCOUNT. `laad()` mag hem
+        daarom niet stilletjes uit `gemeten_broker.json` overnemen.
+        """
         assert RAW_GOUD.commissie_per_lot_per_kant == 0.0
-        assert RAW_GOUD.swap_kosten(0.01, nachten=730, benen=50) == 0.0
+        assert RAW_GOUD.swap_kosten(0.01, nachten=730, richting=1) == 0.0
+        assert RAW_GOUD.swap_kosten(0.01, nachten=730, richting=-1) == 0.0
+
+    def test_de_symboolregeling_sluipt_niet_via_de_config_naar_binnen(self):
+        """`gemeten_broker.json` bevat swap_long_per_lot. Die hoort NIET
+        automatisch de rekening in te komen."""
+
+        import json
+        from scripts.uitvoering import GEMETEN, laad
+
+        if not GEMETEN.exists():
+            pytest.skip("geen gemeten brokerbestand in deze omgeving")
+        m = json.loads(GEMETEN.read_text(encoding="utf-8"))
+        if not m.get("swap_long_per_lot"):
+            pytest.skip("de config draagt geen swapregeling")
+
+        assert laad().swap_long_per_lot == 0.0, (
+            "de swapregeling van het symbool wordt als accountkosten geboekt")
+
+    def test_de_schakelaar_zet_hem_wel_aan(self):
+        """Wie hem wil doorrekenen moet dat kunnen, anders is de aanname
+        onzichtbaar geworden in plaats van expliciet."""
+
+        from dataclasses import replace
+
+        met = replace(RAW_GOUD, swap_long_per_lot=-80.67, swap_short_per_lot=23.83)
+        assert met.swap_kosten(0.01, nachten=1, richting=1) == pytest.approx(0.8067)
+        assert met.swap_kosten(0.01, nachten=1, richting=-1) == pytest.approx(-0.2383)
 
     def test_slippage_staat_los_van_de_spread(self):
         # Een marktexit van tien benen slipt tien keer.
